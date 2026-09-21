@@ -1,0 +1,13 @@
+# infra/units/fly-watchdog.timer — docs/design/infra.md section 3:
+# OnBootSec=2min, OnUnitActiveSec=60s, AccuracySec=5s.
+[Unit]
+Description=Run fly-watchdog's nine health checks every 60s
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=fly-watchdog.service
+
+[Install]
+WantedBy=timers.target

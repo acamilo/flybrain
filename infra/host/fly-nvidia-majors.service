@@ -1,0 +1,35 @@
+# infra/host/fly-nvidia-majors.service — installed BY HAND on the host as
+# /etc/systemd/system/fly-nvidia-majors.service. NOT pushed into any
+# container and NOT installed by provision.sh: this is a host unit that
+# writes /etc/pve, which is not reachable through pct exec.
+# See infra/host/README.md and docs/design/gpu.md section 1.
+#
+# Ordering is the whole point. The host already runs nvidia-devnodes.service
+# (Before=pve-guests.service), which materialises /dev/nvidia* but does NOT
+# rewrite the majors in the guest configs — which is exactly why the neighbouring GPU container's
+# conf still allows the stale `c 509:*` and `c 234:*`. This unit is the
+# missing other half (the LLM host has it as pve-nvidia-majors.service) and must
+# run after the nodes exist and before any guest starts, because lxc.* keys
+# are only read at container start.
+#
+# Default id list: 122 150 151 199.
+#   122 = ml/the GPU workload in the neighbouring container, already on this GPU since August. Including it repairs
+#         its stale majors as a side effect. The operator approved this (2026-09-15);
+#         it is a change to a production container, so do not quietly drop
+#         or extend this list.
+#   150/151 = fly-pokemon / fly-platformer.
+#   199 = fly-spike, absent most of the time. A missing conf is reported and
+#         skipped, not an error, so the list can name CTs that do not exist.
+[Unit]
+Description=Refresh NVIDIA device majors in LXC guest configs
+Wants=nvidia-devnodes.service
+After=nvidia-devnodes.service
+Before=pve-guests.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/fly-nvidia-majors.sh 122 150 151 199
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,64 @@
+# infra/config/chromium-flags — pushed to /etc/fly/chromium-flags, one flag
+# per line, read by infra/bin/flystage-launch (flystage.service's
+# ExecStart). Comment and blank lines are stripped there, which is a small
+# deviation from the raw `cat | tr` in docs/design/infra.md section 3 —
+# kept because the design's own flag table has a "why" for every single
+# flag and losing that at the one place ops actually reads is a bad trade
+# for saving one grep. See docs/design/infra.md section 3 for the full
+# rationale table this mirrors, and stage-bridge.md section 0 for the two
+# corrections (no --mute-audio, no SwiftShader flags) already applied here.
+
+--kiosk
+--window-position=0,0
+--window-size=1920,1080
+# one window filling the root, no browser chrome in frame
+
+--user-data-dir=/var/lib/fly/chrome
+# writable profile outside a nologin home, survives restarts
+
+--no-first-run
+--no-default-browser-check
+--disable-search-engine-choice-screen
+# no first-run UI on stream
+
+--noerrdialogs
+--disable-session-crashed-bubble
+--disable-infobars
+--hide-scrollbars
+# nothing modal can appear over the broadcast
+
+--autoplay-policy=no-user-gesture-required
+# page-played audio has no click to wait for (decision 8: page plays audio, no --mute-audio)
+
+--disable-background-timer-throttling
+# Chromium throttles background timers to ~1 Hz
+
+--disable-backgrounding-occluded-windows
+# an occluded window must not be treated as background
+
+--disable-renderer-backgrounding
+# keep renderer priority
+
+--disable-ipc-flooding-protection
+# a 30 Hz feed plus canvas draws exceeds the default 10/s/frame cap
+
+--disable-gpu
+--disable-software-rasterizer
+# 2D canvas only, Skia CPU raster, no SwiftShader cost (decision 3: 2D canvas, not WebGL)
+
+--force-device-scale-factor=1
+--force-color-profile=srgb
+# deterministic pixels into x264
+
+--disable-lcd-text
+# subpixel antialiasing becomes colour fringing after 4:2:0 subsampling
+
+--password-store=basic
+--use-mock-keychain
+# no gnome-keyring in the container
+
+--disable-features=Translate,MediaRouter,OptimizationHints,CalculateNativeWinOcclusion
+# fewer background subsystems; occlusion calculation is meaningless on Xvfb
+
+--remote-debugging-port=9222
+# loopback by default; needed for the P0 measurements and the CDP fallback watchdog

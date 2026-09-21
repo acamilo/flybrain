@@ -1,0 +1,16 @@
+# infra/config/node-exporter-default — pushed to
+# /etc/default/prometheus-node-exporter, read by Debian's
+# prometheus-node-exporter.service as $ARGS.
+#
+# docs/design/infra.md section 5 item 1: "prometheus-node-exporter in each fly
+# CT with --collector.textfile.directory=/var/lib/node_exporter/textfile,
+# listening on the CT address :9100". 02-base.sh installs the package, but
+# nothing set the flag, so the textfile collector was off and the watchdog's
+# fly_watchdog_*, the retention pruner's and fly-backup-stage's .prom files
+# would never have been scraped even once the directory existed. Found on the
+# P0 spike run 2.
+#
+# The listen address is left at the package default (:9100 on all
+# interfaces) deliberately: the container has no public route, and the metrics container's
+# Prometheus has to reach it across the LAN.
+ARGS="--collector.textfile.directory=/var/lib/node_exporter/textfile"

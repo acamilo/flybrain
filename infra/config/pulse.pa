@@ -1,0 +1,24 @@
+# infra/config/pulse.pa — pushed to /etc/fly/pulse.pa, loaded via
+# `pulseaudio -n --file=/etc/fly/pulse.pa` (pulse.service). No default
+# script (-n), so module-udev-detect, module-console-kit,
+# module-systemd-login and bluetooth never load — all of which fail
+# noisily in a container with no session. Deliberately NOT loading
+# module-suspend-on-idle: docs/design/infra.md is explicit that if the null
+# sink suspends during silence, ffmpeg's pulse input stalls and you get
+# audio gaps or a hard desync at the next sound. Verify with
+# `pactl list short sinks` showing `stream` RUNNING while Chromium plays,
+# and IDLE never becoming SUSPENDED (see docs/runbook.md and
+# infra/docs/p0-measurements.md).
+#
+# Every load-module line must be exactly one physical line. PulseAudio's .pa
+# parser has no line-continuation syntax: with a trailing backslash it read
+# this as `... channels=2 \` (failing to parse the module arguments) followed
+# by a bogus command `sink_properties=device.description=stream`, so the null
+# sink never loaded, `pactl list short sinks` was empty, pulse.service
+# crash-looped on "Failed to initialize daemon due to errors while executing
+# startup commands", and flycast crash-looped behind it because
+# `-f pulse -i stream.monitor` had no source. Found on the P0 spike — this is
+# the audio path WSL could not exercise. Do not re-wrap these lines.
+load-module module-null-sink sink_name=stream rate=48000 channels=2 sink_properties=device.description=stream
+set-default-sink stream
+load-module module-native-protocol-unix socket=/run/fly/pulse/native

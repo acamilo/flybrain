@@ -1,0 +1,15 @@
+# infra/units/fly-retention.timer — docs/design/infra.md section 3:
+# OnUnitActiveSec=1h. Hourly, not daily, on purpose: "a runaway recorder
+# must not get 24 hours of rope." OnBootSec=5min is an addition beyond the
+# design's own table, so retention gets a first pass shortly after boot
+# instead of waiting up to an hour for the first one.
+[Unit]
+Description=Prune old segments, highlights, and orphan checkpoints hourly
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Unit=fly-retention.service
+
+[Install]
+WantedBy=timers.target

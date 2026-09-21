@@ -1,0 +1,238 @@
+/**
+ * Theme contract (design A9), as revised by `docs/design/gameboy-theme.md`. Every colour, frame
+ * width and rhythm the panels use is one of these variables, so a theme is a block of values and
+ * nothing else.
+ *
+ * Hard rules encoded here, all from the audit of the old page and the encoder's behaviour:
+ *   - borders are 2 px minimum; x264 at 3000 kbps erases 1 px hairlines
+ *   - no radius at all: every panel is a Game Boy dialogue box, square-cornered, with a 4 px
+ *     outer frame and a 2 px inner line, and no shadow of any kind
+ *   - one accent per theme, plus one warm secondary
+ *   - no blur() and no box-shadow on anything that animates
+ *   - text floors: body/ticker >= 24, labels 30-36, hero >= 72, in 1080p authoring pixels.
+ *     `?res=720` scales the whole stage by 0.6667, which lands them on 16 / 20-24 / 48, and that
+ *     is what the downscale tests measure. The operator's 2026-09-16 pass took 10% off body and label
+ *     (27/33-39 -> 24/30-36) once the VT323 split gave the rail room to spare; the hero and the
+ *     wordmark are untouched, and `tests/e2e/legibility.spec.ts`'s 0.31 downscale check is the
+ *     guard — any panel that fails it at the smaller size keeps the old one, named below.
+ */
+
+:root {
+  /* Rhythm. --u is the 4 px grid the whole layout is a multiple of. */
+  --u: 4px;
+
+  /**
+   * Square corners, and the dialogue box's double frame.
+   *
+   * `--radius` survives as a token rather than being deleted because Tailwind's `rounded-panel`
+   * and the shadcn `Card` both read it; it is 0 everywhere and a theme may not set it otherwise.
+   * `--border-w` is the outer frame and `--border-inner-w` the line inside it.
+   */
+  --radius: 0px;
+  --border-w: 4px;
+  --border-inner-w: 2px;
+
+  /* Type scale in 1080p authoring pixels. Nothing renders below --fs-body. */
+  --fs-body: 24px;
+  --fs-label: 30px;
+  --fs-label-lg: 36px;
+  --fs-hero: 72px;
+  --fs-wordmark: 27px;
+  /* The button row's glyphs (UP, DN, A, ST, …): at the body floor, the smallest this may be. */
+  --fs-glyph: 24px;
+
+  /**
+   * Three faces now, not two: Silkscreen split off `--font-body` into a dedicated label face, and
+   * VT323 — which used to be a shelved candidate, its `@font-face` declared but unused — is now
+   * the running-text face. `docs/design/gameboy-theme.md`'s Silkscreen pick (2026-09-15) stood
+   * for exactly one release: the pairing here is the operator's 2026-09-16 revision, after the sign-off
+   * mockup showed Silkscreen everywhere costing the page width it could not afford (deviations
+   * 8-10 below, mostly written the same day).
+   *
+   * **`--font-label` (Silkscreen)** is the chip and title face: panel titles (RUNG, HERE FOR,
+   * BRAIN, CIRCUITS, EVENTS, CHAT, RETINA), tab titles, the button row's glyphs, the mode chip,
+   * the sugar chip, and the circuit bar row labels (DRIVE, A / B, MENU, DOPAMINE, TASTE, LEGS).
+   * All of it is short, uppercase, chosen from a closed vocabulary — exactly the text Silkscreen's
+   * boxy weight reads well as at a glance, and none of it is long enough to run into Silkscreen's
+   * width tax.
+   *
+   * **`--font-text` (VT323)** is everywhere prose or a name from an open vocabulary lands: the
+   * current and next rung name, the ladder tab's 38 rung names and its stats column, the events
+   * ticker's lines, chat's names and lines, and the clock's day word. VT323 is monospaced and
+   * 0.4 em a character against Silkscreen's 0.73 em proportional average — 1.8x narrower — which
+   * is what undoes most of deviations 8 and 10 below: text that used to need an ellipsis at the
+   * Silkscreen width now has room to spare at the same 27 px floor.
+   *
+   * **`--font-pixel` (Press Start 2P)** keeps exactly two jobs, unchanged: `.num`, because it is
+   * the one face on the page with `tnum`-equivalent behaviour (every character is one em, so a
+   * digit changing costs no reflow), and the wordmark, which is `docs/design/gameboy-theme.md`'s
+   * own hero treatment and was never Silkscreen's to begin with.
+   *
+   * `--font-body` survives as an alias to `--font-text` rather than being deleted: Tailwind's
+   * `--font-sans`/`--font-mono` (`src/theme/rail.css`) read it, and a handful of comments in this
+   * file predate the split and still say "the body face" meaning whichever text isn't a label —
+   * that is `--font-text` now. Nothing in `src/theme/panels.css` or `src/theme/rail.css` reads
+   * `--font-body` directly any more; every rule that needs a specific face names it.
+   *
+   * All four OFL faces stay declared in `src/index.css` regardless of which two are live, because
+   * an unused `@font-face` costs nothing and it is what makes the next pick a token edit rather
+   * than a commit that touches every component.
+   */
+  --font-label: 'Silkscreen', 'Silkscreen Fallback', ui-monospace, monospace;
+  --font-text: 'VT323', 'VT323 Fallback', ui-monospace, monospace;
+  --font-body: var(--font-text);
+
+  /**
+   * The face for digits that change, and the reason it is a token of its own.
+   *
+   * The design asks for tabular digits "everywhere numbers change" and notes that monospace makes
+   * it automatic. VT323 *is* monospaced, but its digits are not lerped at 30 Hz through the same
+   * element the run-of-text sits in — the readouts are still their own spans, still styled with
+   * `.num` — so this stays Press Start 2P rather than following `--font-text`: the two faces have
+   * different cap-heights and ascent/descent, and swapping `.num` mid-line under a label written
+   * in `--font-label` would set the digits and the word beside them on two different baselines.
+   * The one monospaced face on the page carries the changing numbers: the rung count, HERE FOR,
+   * the Hz, the try count and the run clock, all of which `src/motion/readouts.ts` rewrites at up
+   * to 30 Hz and every one of which would otherwise breathe sideways each time a digit's width
+   * changed under a proportional face.
+   */
+  --font-num: var(--font-pixel);
+  --font-pixel: 'Press Start 2P', 'Press Start 2P Fallback', monospace;
+
+  /* Durations. The afterglow window is 250 ms after the falling edge (design A3). */
+  --afterglow-ms: 250ms;
+  --bar-ms: 120ms;
+  --peak-hold-ms: 600ms;
+
+  /**
+   * The stepped timing function for pixel elements.
+   *
+   * `docs/design/gameboy-theme.md`: "easing on pixel elements snaps to 4 px steps … so movement
+   * reads as sprite motion rather than smooth interpolation, except for particles and the fly,
+   * which stay smooth". CSS cannot quantise by distance, so the CSS half of that rule quantises
+   * *time* into the same number of steps a 4 px grid would give the move — eight, for the 24 to
+   * 36 px travel every transition using this token makes. The JS half is `stepped` and
+   * `quantizePixels` in `src/motion/lerp.ts`, which quantise the value itself.
+   */
+  --ease-pixel: steps(8, end);
+  --pixel-step: 4px;
+
+  /**
+   * Defaults are T1's; each theme block below overrides the palette wholesale.
+   *
+   * Two derived frame tokens rather than a hard-coded pair, so T2 and T3 inherit the dialogue-box
+   * structure in their own colours: the outer frame is the palette's light step (which is also the
+   * ink) and the inner line is its mid step.
+   */
+  --frame: var(--ink-1);
+  --frame-inner: var(--bezel);
+
+  --bg-0: #0b0e12;
+  --bg-1: #1e232a;
+  --bg-2: #1e232a;
+  --panel: #1e232a;
+  --bezel: #4a5460;
+  --ink-0: #c9d1c8;
+  --ink-1: #c9d1c8;
+  --ink-2: #4a5460;
+  --accent: #f0a72e;
+  --accent-warm: #ff7a3c;
+  --sensory: #4fc3f7;
+  --motor: #f0a72e;
+  --dopamine: #f472a8;
+  --ok: #58d68d;
+  --warn: #ffc14d;
+  --alarm: #ff5a4d;
+  --grid: #131820;
+  --texture-opacity: 0.045;
+  --scanline-opacity: 0;
+}
+
+/**
+ * T1 Instrument, in the DMG's four tones.
+ *
+ * `docs/design/gameboy-theme.md`: "Keep T1's amber accent and near-black ground, but shade
+ * everything else on four steps, in the spirit of the DMG's four-tone LCD: ground #0b0e12, dark
+ * #1e232a, mid #4a5460, light #c9d1c8, plus amber #f0a72e and the two role colours (dopamine
+ * pink, taste cyan) unchanged for the bars."
+ *
+ * So the four steps own every ground, every frame and every ink: the ground is the stage, dark is
+ * every panel, mid is the quiet ink and the inner frame line and the internal dividers, light is
+ * the ink and the outer frame. There is no fifth grey — `--bg-1`, `--bg-2` and `--panel` are the
+ * same dark step, which is what makes the frame rather than a fill say where a panel is.
+ *
+ * What is deliberately *not* on the four steps is the handful of colours that each mean one thing:
+ * the amber accent, the two role colours the document names, and `--ok` / `--warn` / `--alarm`,
+ * which carry the bot-line green, the HERE FOR warmth and the stale-feed red. Those are signals,
+ * not chrome, and shading them would cost the page the only distinction it has between "a person
+ * typed this" and "the bridge did" — so they are unchanged from the theme as it shipped.
+ */
+:root[data-theme='t1'] {
+  --bg-0: #0b0e12;
+  --bg-1: #1e232a;
+  --bg-2: #1e232a;
+  --panel: #1e232a;
+  --bezel: #4a5460;
+  --ink-0: #c9d1c8;
+  --ink-1: #c9d1c8;
+  --ink-2: #4a5460;
+  --accent: #f0a72e;
+  --accent-warm: #ff7a3c;
+  --sensory: #4fc3f7;
+  /* The motor tint is the accent: amber is already this palette's warm channel. */
+  --motor: #f0a72e;
+  --dopamine: #f472a8;
+  --ok: #58d68d;
+  --warn: #ffc14d;
+  --alarm: #ff5a4d;
+  /* The stage's grid wash: one step off the ground, so it reads as texture and not as a table. */
+  --grid: #131820;
+  --texture-opacity: 0.045;
+  --scanline-opacity: 0;
+}
+
+/* -- T2 Phosphor: olive-charcoal, green phosphor primary, amber secondary, 6% scanlines ----- */
+:root[data-theme='t2'] {
+  --bg-0: #080b07;
+  --bg-1: #10160f;
+  --bg-2: #182016;
+  --panel: #131a12;
+  --bezel: #2b3727;
+  --ink-0: #e9f6e1;
+  --ink-1: #b4c9a9;
+  --ink-2: #7d9172;
+  --accent: #7ee787;
+  --accent-warm: #ffc14d;
+  --sensory: #63d2ff;
+  --motor: #ffc14d;
+  --dopamine: #ff87b2;
+  --ok: #7ee787;
+  --warn: #ffc14d;
+  --alarm: #ff6f5e;
+  --grid: #1d271b;
+  --texture-opacity: 0.06;
+  --scanline-opacity: 0.06;
+}
+
+/* -- T3 Field lab: lighter neutral cards on near-black, white ink, cyan/amber pair ----------- */
+:root[data-theme='t3'] {
+  --bg-0: #04060a;
+  --bg-1: #0c1017;
+  --bg-2: #151a23;
+  --panel: #1e242e;
+  --bezel: #3a4350;
+  --ink-0: #ffffff;
+  --ink-1: #d2d9e3;
+  --ink-2: #9ba5b3;
+  --accent: #38bdf8;
+  --accent-warm: #fbbf24;
+  --sensory: #38bdf8;
+  --motor: #fbbf24;
+  --dopamine: #f472b6;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --alarm: #f87171;
+  --grid: #222a36;
+  --texture-opacity: 0.02;
+  --scanline-opacity: 0;
+}

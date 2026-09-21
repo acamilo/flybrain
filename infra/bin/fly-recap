@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# infra/bin/fly-recap — fly-recap.service, run daily at 04:20 by
+# fly-recap.timer. Cuts yesterday's highlight reel from the rolling
+# MPEG-TS recording. docs/design/infra.md section 3 ("fly-recap reads
+# .../events.jsonl for yesterday...").
+#
+# Inputs this script depends on that are not yet nailed down by a binding
+# schema doc (flysim does not exist yet — see the deviation note in the
+# final report): events.jsonl is assumed to hold one FeedEvent
+# (docs/feed-protocol.md) per line plus a top-level "wallMs" epoch-ms
+# field; segments.csv is assumed to be ffmpeg's own `segment_list_type=csv`
+# output (filename,start_time,end_time, in seconds relative to
+# flycast-start). If the real shapes differ once flysim ships, this script
+# is the one place to update.
+set -euo pipefail
+
+: "${FLY_STATE_DIR:=/srv/fly/state}"
+: "${FLY_MEDIA_DIR:=/srv/fly/media}"
+: "${HIGHLIGHT_DIR:=${FLY_MEDIA_DIR}/highlights}"
+: "${TZ_AUDIENCE:=America/New_York}"
+: "${CLIP_SECONDS:=12}"      # per-event clip length; 2s GOP means 2s cut granularity
+: "${OUTRO_REENCODE_SECONDS:=20}"
+
+log() { echo "fly-recap: $*" >&2; }
+die() { echo "fly-recap: FATAL: $*" >&2; exit 1; }
+
+need_cmd() { command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
+need_cmd jq
+need_cmd ffmpeg
+need_cmd date
+
+events_file="${FLY_STATE_DIR}/events.jsonl"
+segments_csv="${FLY_STATE_DIR}/segments.csv"
+start_file="${FLY_STATE_DIR}/flycast-start"
+
+[ -f "$events_file" ] || { log "no events.jsonl yet, nothing to do"; exit 0; }
+[ -f "$segments_csv" ] || { log "no segments.csv yet, nothing to do"; exit 0; }
+[ -f "$start_file" ] || { log "no flycast-start marker yet, nothing to do"; exit 0; }
+
+flycast_start_epoch="$(cat "$start_file")"
+
+# "Yesterday" is computed in the audience's timezone (America/New_York)
+# per docs/design/infra.md section 3, even though every event/filename
+# timestamp on disk is UTC — the documented off-by-one trap.
+yesterday_start_epoch="$(TZ="$TZ_AUDIENCE" date -d 'yesterday 00:00:00' +%s)"
+yesterday_end_epoch="$(TZ="$TZ_AUDIENCE" date -d 'today 00:00:00' +%s)"
+yesterday_label="$(TZ="$TZ_AUDIENCE" date -d @"$yesterday_start_epoch" +%Y%m%d)"
+
+out="${HIGHLIGHT_DIR}/${yesterday_label}.mp4"
+if [ -f "$out" ]; then
+    log "already have ${out}, nothing to do (idempotent re-run)"
+    exit 0
+fi
+
+mkdir -p "$HIGHLIGHT_DIR"
+workdir="$(mktemp -d "/tmp/fly-recap.XXXXXX")"
+trap 'rm -rf "$workdir"' EXIT
+
+# Milestone rank-ups, badges, first-visit areas, and sugar redemptions.
+# "deaths" are folded in for game adapters that emit them (Pokemon does
+# not; the platformer will) via a rewardKind of "death" if one is ever
+# added — jq below tolerates its absence.
+selected="$workdir/events.jsonl"
+jq -c --argjson lo "$((yesterday_start_epoch * 1000))" --argjson hi "$((yesterday_end_epoch * 1000))" '
+    select(.wallMs >= $lo and .wallMs < $hi) |
+    select(
+        .kind == "milestone" or
+        .kind == "sugar" or
+        (.kind == "reward" and (.rewardKind == "badge" or .rewardKind == "area" or .rewardKind == "death"))
+    )
+' "$events_file" > "$selected" || true
+
+count="$(wc -l < "$selected" | tr -d ' ')"
+if [ "${count:-0}" -eq 0 ]; then
+    log "no recap-worthy events for ${yesterday_label}, skipping"
+    exit 0
+fi
+log "${count} candidate events for ${yesterday_label}"
+
+# segments.csv: filename,start_time,end_time (seconds relative to
+# flycast-start). Sorted ascending by start_time.
+clip_list="$workdir/concat.txt"
+: > "$clip_list"
+clip_i=0
+
+while IFS= read -r event_wall_ms; do
+    event_epoch=$(( event_wall_ms / 1000 ))
+    rel_from_start=$(( event_epoch - flycast_start_epoch ))
+    [ "$rel_from_start" -lt 0 ] && continue
+
+    # Find the segment whose [start,end) window contains this offset.
+    seg_line="$(awk -F, -v t="$rel_from_start" '$2 <= t && t < $3 {print; exit}' "$segments_csv" || true)"
+    [ -z "$seg_line" ] && continue
+
+    seg_file="$(echo "$seg_line" | cut -d, -f1)"
+    seg_start="$(echo "$seg_line" | cut -d, -f2)"
+    [ -f "$seg_file" ] || continue
+
+    in_segment_offset=$(( rel_from_start - ${seg_start%.*} ))
+    [ "$in_segment_offset" -lt 0 ] && in_segment_offset=0
+
+    clip_i=$((clip_i + 1))
+    clip_out="$workdir/clip-$(printf '%03d' "$clip_i").ts"
+    if ffmpeg -nostdin -loglevel error -y \
+        -ss "$in_segment_offset" -i "$seg_file" -t "$CLIP_SECONDS" \
+        -c copy "$clip_out" 2>/dev/null; then
+        echo "file '$clip_out'" >> "$clip_list"
+    fi
+done < <(jq -r '.wallMs' "$selected")
+
+clip_count="$(wc -l < "$clip_list" | tr -d ' ')"
+if [ "${clip_count:-0}" -eq 0 ]; then
+    log "no clips could be cut from segments on disk (likely already pruned by retention), skipping"
+    exit 0
+fi
+log "cut ${clip_count} clips"
+
+concat_out="$workdir/concat.ts"
+ffmpeg -nostdin -loglevel warning -y -f concat -safe 0 -i "$clip_list" -c copy "$concat_out"
+
+# Re-encode only the final few seconds for a clean ending (a copy-concat of
+# .ts clips can leave a rough final GOP at the point ffmpeg's live recorder
+# was still writing when we cut). Cheap relative to a full re-encode.
+duration="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$concat_out" 2>/dev/null || echo 0)"
+duration_int="${duration%.*}"
+tail_start=$(( duration_int > OUTRO_REENCODE_SECONDS ? duration_int - OUTRO_REENCODE_SECONDS : 0 ))
+
+if [ "$tail_start" -gt 0 ]; then
+    head_out="$workdir/head.ts"
+    tail_out="$workdir/tail.mp4"
+    ffmpeg -nostdin -loglevel warning -y -i "$concat_out" -t "$tail_start" -c copy "$head_out"
+    ffmpeg -nostdin -loglevel warning -y -ss "$tail_start" -i "$concat_out" \
+        -c:v libx264 -preset veryfast -c:a aac -b:a 160k "$tail_out"
+    reencoded_list="$workdir/final.txt"
+    printf "file '%s'\nfile '%s'\n" "$head_out" "$tail_out" > "$reencoded_list"
+    ffmpeg -nostdin -loglevel warning -y -f concat -safe 0 -i "$reencoded_list" \
+        -c:v libx264 -preset veryfast -c:a aac -b:a 160k "$out.tmp.mp4"
+else
+    ffmpeg -nostdin -loglevel warning -y -i "$concat_out" \
+        -c:v libx264 -preset veryfast -c:a aac -b:a 160k "$out.tmp.mp4"
+fi
+
+mv -f "$out.tmp.mp4" "$out"
+log "wrote ${out}"

@@ -1,0 +1,15 @@
+# infra/units/xvfb.service — pushed to /etc/systemd/system/xvfb.service.
+# docs/design/infra.md section 3.
+[Unit]
+Description=Xvfb :99 for the fly stage
+After=network.target
+
+[Service]
+Type=simple
+User=fly
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp -noreset -dpi 96 +extension RANDR -extension GLX
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=fly.target

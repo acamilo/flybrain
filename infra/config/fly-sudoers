@@ -1,0 +1,18 @@
+# infra/config/fly-sudoers — pushed to /etc/sudoers.d/fly-watchdog, mode
+# 0440, validated with `visudo -c -f` before install.
+#
+# fly-watchdog.service runs as User=fly (docs/design/infra.md section 3:
+# "all app units User=fly"), but its remediation is `systemctl restart
+# <unit>` and, on the 5-consecutive-failure escalation, a container
+# reboot. This is the minimum NOPASSWD surface for exactly what
+# bin/fly-watchdog's checks actually restart (flysim, flystage, flycast,
+# mediamtx, flypush), plus reboot. No `systemctl stop`, no
+# `enable`/`disable`, no arbitrary unit name, and no units this script
+# does not itself restart (xvfb, pulse, flystage-web are never touched by
+# fly-watchdog's checks, so they are not granted here).
+fly ALL=(root) NOPASSWD: /usr/bin/systemctl restart flysim.service
+fly ALL=(root) NOPASSWD: /usr/bin/systemctl restart flystage.service
+fly ALL=(root) NOPASSWD: /usr/bin/systemctl restart flycast.service
+fly ALL=(root) NOPASSWD: /usr/bin/systemctl restart mediamtx.service
+fly ALL=(root) NOPASSWD: /usr/bin/systemctl restart flypush.service
+fly ALL=(root) NOPASSWD: /usr/sbin/reboot

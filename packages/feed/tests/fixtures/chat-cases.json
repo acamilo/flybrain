@@ -1,0 +1,291 @@
+{
+  "$comment": [
+    "Shared sanitizer cases for BOTH implementations of the chat text rules:",
+    "  - packages/feed/src/chat.ts          (tests/chat.test.ts)",
+    "  - services/flysim/.../src/chat.rs    (tests/chat.rs)",
+    "Neither suite has hostile cases of its own that the other lacks, so the two sanitizers",
+    "cannot drift: a rule changed in one language fails here in both. `expected` is the cleaned",
+    "line, or null when the line must be refused, in which case `reason` is the rejection reason",
+    "(also the label of flysim's fly_chat_rejected_total{reason} metric).",
+    "A string field may instead be { \"repeat\": { \"unit\": \"a\", \"count\": 5000 } }, which both",
+    "loaders expand to `unit` repeated `count` times \u2014 long spam cases stay readable."
+  ],
+  "maxTextLength": 200,
+  "cases": [
+    {
+      "name": "an ordinary chat line survives unchanged",
+      "input": "go left! the ledge is right there",
+      "expected": "go left! the ledge is right there"
+    },
+    {
+      "name": "leading, trailing and repeated spaces collapse",
+      "input": "   the   fly   is   stuck   ",
+      "expected": "the fly is stuck"
+    },
+    {
+      "name": "tabs and newlines become single spaces rather than rejecting the line",
+      "input": "hi\tthere\nfriend\r\nagain",
+      "expected": "hi there friend again"
+    },
+    {
+      "name": "non-ASCII letters are allowed",
+      "input": "\u03a9 \u96e8\u5bae \u043f\u0440\u0438\u0432\u0435\u0442",
+      "expected": "\u03a9 \u96e8\u5bae \u043f\u0440\u0438\u0432\u0435\u0442"
+    },
+    {
+      "name": "NFC normalization: a combining acute folds into the precomposed letter",
+      "input": "nai\u0308ve",
+      "expected": "na\u00efve"
+    },
+    {
+      "name": "NBSP and ideographic space fold to an ordinary space",
+      "input": "hello\u00a0world\u3000again",
+      "expected": "hello world again"
+    },
+    {
+      "name": "allowed punctuation passes through",
+      "input": "a_b [ok] {x} 50% #1 a+b c=d e@f; wow!? \"quote\" 'tick' (yes) ~nice~ ,-./:",
+      "expected": "a_b [ok] {x} 50% #1 a+b c=d e@f; wow!? \"quote\" 'tick' (yes) ~nice~ ,-./:"
+    },
+    {
+      "name": "digits and a decimal number are not mistaken for a host name",
+      "input": "route 1 took 3.14 minutes, e.g. this one",
+      "expected": "route 1 took 3.14 minutes, e.g. this one"
+    },
+    {
+      "name": "a bridge template reply passes (these are posted with bot: true)",
+      "input": "Sugar from fly_fan_42! The fly gets a brief PAM reward pulse.",
+      "expected": "Sugar from fly_fan_42! The fly gets a brief PAM reward pulse."
+    },
+    {
+      "name": "exactly the length cap is accepted",
+      "input": {
+        "repeat": {
+          "unit": "a",
+          "count": 200
+        }
+      },
+      "expected": {
+        "repeat": {
+          "unit": "a",
+          "count": 200
+        }
+      }
+    },
+    {
+      "name": "one code point over the cap is refused",
+      "input": {
+        "repeat": {
+          "unit": "a",
+          "count": 201
+        }
+      },
+      "expected": null,
+      "reason": "too_long"
+    },
+    {
+      "name": "5000-character spam is refused rather than truncated",
+      "input": {
+        "repeat": {
+          "unit": "spam ",
+          "count": 1000
+        }
+      },
+      "expected": null,
+      "reason": "too_long"
+    },
+    {
+      "name": "a NUL byte is a control character",
+      "input": "hi\u0000there",
+      "expected": null,
+      "reason": "control"
+    },
+    {
+      "name": "a bell is a control character",
+      "input": "wake up\u0007",
+      "expected": null,
+      "reason": "control"
+    },
+    {
+      "name": "an ANSI escape sequence is a control character",
+      "input": "\u001b[31mred\u001b[0m",
+      "expected": null,
+      "reason": "control"
+    },
+    {
+      "name": "a zero-width space is not a space",
+      "input": "he\u200bllo",
+      "expected": null,
+      "reason": "charset"
+    },
+    {
+      "name": "a zero-width joiner is refused",
+      "input": "a\u200db",
+      "expected": null,
+      "reason": "charset"
+    },
+    {
+      "name": "a right-to-left override is refused",
+      "input": "\u202egnippot ma I",
+      "expected": null,
+      "reason": "charset"
+    },
+    {
+      "name": "a left-to-right mark is refused",
+      "input": "hi\u200ethere",
+      "expected": null,
+      "reason": "charset"
+    },
+    {
+      "name": "a byte order mark is refused (it is not White_Space)",
+      "input": "\ufeffhello",
+      "expected": null,
+      "reason": "charset"
+    },
+    {
+      "name": "combining marks (zalgo) are refused",
+      "input": "h\u0301\u0301\u0301\u0301i",
+      "expected": null,
+      "reason": "charset"
+    },
+    {
+      "name": "emoji are refused for now",
+      "input": "nice fly \ud83e\udeb0",
+      "expected": null,
+      "reason": "charset"
+    },
+    {
+      "name": "markup characters are refused",
+      "input": "<script>alert(1)</script>",
+      "expected": null,
+      "reason": "charset"
+    },
+    {
+      "name": "backticks are refused",
+      "input": "`rm -rf /`",
+      "expected": null,
+      "reason": "charset"
+    },
+    {
+      "name": "pipes are refused",
+      "input": "cat x | sh",
+      "expected": null,
+      "reason": "charset"
+    },
+    {
+      "name": "a dollar sign is refused (shell-shaped, and no price belongs on screen)",
+      "input": "only $5",
+      "expected": null,
+      "reason": "charset"
+    },
+    {
+      "name": "an empty message is refused",
+      "input": "",
+      "expected": null,
+      "reason": "empty"
+    },
+    {
+      "name": "whitespace-only is refused",
+      "input": "   \t  \u00a0 ",
+      "expected": null,
+      "reason": "empty"
+    },
+    {
+      "name": "a scheme is a URL",
+      "input": "watch this https://evil.example/pwn",
+      "expected": null,
+      "reason": "url"
+    },
+    {
+      "name": "a scheme-relative host is a URL",
+      "input": "go to //evil.test now",
+      "expected": null,
+      "reason": "url"
+    },
+    {
+      "name": "www. anywhere is a URL",
+      "input": "see www.evil.tv for more",
+      "expected": null,
+      "reason": "url"
+    },
+    {
+      "name": "a TLD-like token is a URL",
+      "input": "join discord.gg/abcd",
+      "expected": null,
+      "reason": "url"
+    },
+    {
+      "name": "a two-letter TLD is a URL",
+      "input": "bit.ly",
+      "expected": null,
+      "reason": "url"
+    },
+    {
+      "name": "case does not hide a URL",
+      "input": "HTTPS://EVIL.EXAMPLE",
+      "expected": null,
+      "reason": "url"
+    },
+    {
+      "name": "the URL rule is deliberately over-eager: a dotted word is refused",
+      "input": "MR.MIME used splash",
+      "expected": null,
+      "reason": "url"
+    },
+    {
+      "name": "control characters are checked before the character set",
+      "input": "\u0000\ud83e\udeb0",
+      "expected": null,
+      "reason": "control"
+    },
+    {
+      "name": "the character set is checked before the length cap",
+      "input": {
+        "repeat": {
+          "unit": "\ud83e\udeb0",
+          "count": 500
+        }
+      },
+      "expected": null,
+      "reason": "charset"
+    },
+    {
+      "name": "the length cap is checked before the URL rule",
+      "input": {
+        "repeat": {
+          "unit": "bit.ly ",
+          "count": 100
+        }
+      },
+      "expected": null,
+      "reason": "too_long"
+    },
+    {
+      "name": "typographic punctuation a phone keyboard produces is allowed",
+      "input": "it\u2019s stuck \u2014 again\u2026 \u201cright there\u201d",
+      "expected": "it\u2019s stuck \u2014 again\u2026 \u201cright there\u201d"
+    },
+    {
+      "name": "a bridge template reply with an em dash passes",
+      "input": "No hand-written strategy, no lookahead search \u2014 just the fly.",
+      "expected": "No hand-written strategy, no lookahead search \u2014 just the fly."
+    },
+    {
+      "name": "CJK stops and brackets are allowed",
+      "input": "\u5de6\u3078\u884c\u3051\u3001\u4eca\u3059\u3050\uff01",
+      "expected": "\u5de6\u3078\u884c\u3051\u3001\u4eca\u3059\u3050\uff01"
+    },
+    {
+      "name": "a mathematical symbol is not punctuation",
+      "input": "5 \u00d7 5",
+      "expected": null,
+      "reason": "charset"
+    },
+    {
+      "name": "a currency symbol is refused like the ASCII dollar",
+      "input": "only \u20ac5",
+      "expected": null,
+      "reason": "charset"
+    }
+  ]
+}

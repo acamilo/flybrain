@@ -1,0 +1,305 @@
+/**
+ * The keyframes, in one file (`docs/design/animation.md`: "one CSS file for keyframes, so the
+ * catalogue above stays reviewable").
+ *
+ * Two rules run through all of it:
+ *
+ *   - **compositor-only.** `transform` and `opacity`, nothing else. No `filter: blur`, no
+ *     `box-shadow` on a moving element, no width/height/top/left: the capture host rasterises in
+ *     software on an 8 vCPU VM with no GPU, and a layout animation on the broadcast's critical
+ *     path is a dropped frame every time it runs.
+ *   - **a static end state.** Every animation is `forwards`-safe and ends where the element
+ *     belongs, because "reduced motion is not a viewer concern here (it is a broadcast), but every
+ *     animation still has a static end state so a frozen frame reads correctly".
+ *
+ * Durations come from `src/motion/rail-motion.ts` and `src/motion/moments.ts`; the numbers are
+ * repeated here because CSS cannot import them, and the two files name each other so a change is
+ * findable from either side.
+ */
+
+/* -- Arrivals ---------------------------------------------------------------------------------- */
+
+/** Out-expo: fast in, soft settle. The design's easing for every arrival. */
+@keyframes slide-up {
+  from {
+    transform: translateY(14px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+@keyframes slide-in-left {
+  from {
+    transform: translateX(-36px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+/**
+ * The macro cells' own arrival: 18 px from the right, where the rail's rows come 36 from the left.
+ *
+ * Both numbers are forced. The strip's left edge is x = 480, which is the no-content zone's right
+ * edge (`src/lib/geometry.ts`), and its lower cells are inside the zone's vertical band — so a
+ * slide *from the left* puts their text in the zone for the length of the deal. Clipped by the
+ * cell, but a box in the zone all the same, and `tests/e2e/structure.spec.ts` is right to measure
+ * boxes rather than paint: it caught exactly that, once, as a flake that depended on how far the
+ * deal had got when the test looked. 18 rather than 36 because a strip cell is 179 px where a rail
+ * row is 356: the same tenth of the box it arrives in.
+ */
+@keyframes deal-in-right {
+  from {
+    transform: translateX(18px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+/** The badge count's 1.15x bounce. */
+@keyframes count-bounce {
+  0% {
+    transform: none;
+  }
+  45% {
+    transform: scale(1.15);
+  }
+  100% {
+    transform: none;
+  }
+}
+
+/** Two pulses, then the rung stays filled (the fill itself is lerped by the paint loop). */
+@keyframes rung-pulse {
+  0% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scaleY(1.6);
+    opacity: 0.55;
+  }
+  100% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+/** A single 600 ms pulse on a number that just crossed a threshold. */
+@keyframes value-pulse {
+  0% {
+    transform: none;
+  }
+  35% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: none;
+  }
+}
+
+/** Amber flash on a reward value: 120 ms up, 600 ms down. */
+@keyframes value-flash {
+  0% {
+    color: var(--ink-2);
+  }
+  16% {
+    color: var(--accent);
+  }
+  100% {
+    color: var(--ink-2);
+  }
+}
+
+/** "DAY N" crosses the title strip once. */
+@keyframes day-across {
+  0% {
+    transform: translateX(-30%);
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  88% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(120%);
+    opacity: 0;
+  }
+}
+
+/** The mode chip's 200 ms vertical roll. */
+@keyframes chip-roll {
+  from {
+    transform: translateY(-70%);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+/* -- The rail's moment overlays ----------------------------------------------------------------- */
+
+/**
+ * The rail border flash.
+ *
+ * An outline rather than a fill, and `opacity` rather than `border-color`, so the flash never
+ * changes what is readable underneath it. 120 ms up, 600 ms down: the attribute goes on for the
+ * up leg only and the transition duration does the rest.
+ */
+.rail-flash {
+  pointer-events: none;
+  border: var(--border-w) solid var(--accent);
+  border-radius: var(--radius);
+  opacity: 0;
+  transition: opacity 600ms linear;
+}
+
+.rail-flash[data-rail-flash='1'] {
+  opacity: 0.9;
+  transition-duration: 120ms;
+}
+
+/**
+ * The caption band: over the top of the tab slot, in from the left.
+ *
+ * `--ease-pixel` rather than the out-expo cubic bezier it entered with: the band is a pixel
+ * element, and `docs/design/gameboy-theme.md` puts every one of those on the stepped easing so it
+ * arrives like a sprite sliding in rather than gliding. The band travels 36 px, so eight steps is
+ * the 4 px grid the document asks for, to within half a pixel. The end state is unchanged, which
+ * is what the frozen-frame rule needs.
+ *
+ * A dialogue box like the panels: square, double-framed, amber outside and the palette's mid step
+ * inside (`::after`), and no shadow.
+ */
+.moment-caption {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 0 24px;
+  background: color-mix(in srgb, var(--bg-0) 92%, transparent);
+  border: var(--border-w) solid var(--accent);
+  border-radius: var(--radius);
+  animation: slide-in-left 320ms var(--ease-pixel) both;
+}
+
+.moment-caption::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: var(--border-inner-w) solid var(--frame-inner);
+}
+
+/** The particle layer. Transparent, never interactive, and above the panels it is aimed at. */
+.particles {
+  pointer-events: none;
+}
+
+/** The day-rollover slide, across the title strip. */
+.day-slide {
+  pointer-events: none;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  visibility: hidden;
+}
+
+.day-slide[data-day-slide='1'] {
+  visibility: visible;
+}
+
+.day-slide[data-day-slide='1'] > span {
+  animation: day-across 2000ms linear both;
+}
+
+/* -- Panel-level motion ------------------------------------------------------------------------ */
+
+/** A new ticker row arrives; its value flashes once. */
+.ticker-row {
+  animation: slide-up 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.ticker-row__value {
+  animation: value-flash 720ms linear both;
+}
+
+/** A new chat line arrives. */
+.chat-line {
+  animation: slide-up 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/** The rung the fly just reached pulses twice, in steps: the spine is a pixel element. */
+.ladder-rung[data-pulse='1'] {
+  animation: rung-pulse 600ms var(--ease-pixel) 2;
+}
+
+/** HERE FOR crossing 1 h, 3 h, 6 h. */
+[data-here-for][data-pulse='1'] {
+  animation: value-pulse 600ms ease-out both;
+}
+
+/** The badge count ticking up. */
+[data-readout='counters'][data-bounce='1'] {
+  display: inline-block;
+  animation: count-bounce 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/** The mode chip, on a mode change. Keyed by React on the mode itself. */
+.mode-chip {
+  display: inline-block;
+  animation: chip-roll 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/**
+ * The macro palette, re-dealt on a scene change.
+ *
+ * `docs/design/macros.md` section 6: "Scene changes re-deal the cells with the same halfway-arcade
+ * motion the rest of the rail uses." So it is the rail's own 240 ms arrival, on the stepped easing
+ * the Game Boy pass gives every pixel element, staggered 25 ms a *grid row* (`--deal`, set per
+ * cell by `src/panels/MacroPalette.tsx` and `src/panels/tabs/MacrosTab.tsx`) so the cells land as
+ * a deal rather than as a block and the columns of a row land together. 25 rather than the rail's
+ * 40: the board is eleven rows deep, and at 40 its deal would close at 680 ms, inside the 800 ms
+ * the visual tests and the mockups settle for but not by enough to trust a still. At 25 it closes
+ * at 490. React keys the cells on the scene, so the animation runs once per change and leaves a
+ * static end state — which is what makes a held screenshot of a scene change reproducible.
+ *
+ * It is the cell's *contents* that slide, not the cell box, and that is load-bearing rather than
+ * cosmetic: the box carries the lit and outcome pulses below, and a CSS animation restarts
+ * whenever the declared animation changes — so a deal on the box would replay the whole arrival
+ * every time a macro ended and the more specific rule stopped matching.
+ */
+.macro-cell > span {
+  animation: deal-in-right 240ms var(--ease-pixel) var(--deal, 0ms) both;
+}
+
+/*
+ * The DESCRIBE card has no arrival of its own.
+ *
+ * It had one — a 240 ms stepped slide staggered 40 ms, keyed on the `data-current` flip of the
+ * eight-card cycle. The cycle is gone (one dense card, the operator 2026-09-17) and with it the attribute,
+ * and an animation on a card that only ever mounts once would play at page load and never again.
+ * The pane's own crossfade is the arrival now, which is what every other tab gets.
+ */
+
+/** The chosen cell, the instant it lights. One pulse, on the same envelope as a crossing. */
+.macro-cell[data-live='1'] {
+  animation: value-pulse 300ms ease-out both;
+}
+
+/** And once its outcome lands. Colour comes from `panels.css`; this is the beat. */
+.macro-cell[data-outcome]:not([data-outcome='']) {
+  animation: value-pulse 300ms ease-out both;
+}

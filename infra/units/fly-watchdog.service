@@ -1,0 +1,13 @@
+# infra/units/fly-watchdog.service — triggered by fly-watchdog.timer.
+# Checks 8 (encoder backend, docs/design/gpu.md) and 9 (capture freeze,
+# infra/docs/capture-freeze.md) are additions to infra.md section 3's seven.
+# Runs as User=fly (docs/design/infra.md section 3: "all app units
+# User=fly"); its restart/reboot remediation goes through the narrow
+# NOPASSWD sudoers surface in config/fly-sudoers.
+[Unit]
+Description=fly-watchdog: the nine health checks and escalation
+
+[Service]
+Type=oneshot
+User=fly
+ExecStart=/opt/fly/bin/fly-watchdog

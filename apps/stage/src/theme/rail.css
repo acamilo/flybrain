@@ -1,0 +1,953 @@
+/**
+ * Rail layout v2's own panels: the tab slot and its four panes, the progress cluster, the events
+ * ticker and the chat panel.
+ *
+ * Split out of `panels.css` rather than added to it because it is a whole layout rather than a
+ * handful of widgets, and because the parts `panels.css` still owns — the circuit bars, the
+ * milestone spine, the button row, the retina canvas — are shared with it unchanged. Two rules
+ * from that file run through this one too: anything that moves 30 times a second moves with
+ * `transform` or `opacity`, and nothing that animates carries a `filter` or a `box-shadow`.
+ *
+ * Every fixed size here is measured against `src/lib/geometry.ts`: the slot is 420 with a 48 px
+ * strip and a 4 px frame, so the pane is 1004x368, which is also the brain map's backing store.
+ */
+
+/* -- The tab slot ----------------------------------------------------------------------------- */
+
+/**
+ * The slot's own body: no padding, because the tab strip has to sit on the panel's top edge and
+ * the pane has to be exactly `LAYOUT.tabContent` — which is the size the brain map's base bitmap
+ * is rasterised at, so padding here would mean a rescale on every frame.
+ *
+ * Written as `.panel__body.tab-slot` rather than `.tab-slot`: the base `.panel__body` rule lives
+ * in `src/index.css`, which is imported *after* this file, so a single-class selector loses the
+ * cascade to it and the pane silently comes out the wrong size. Two classes, and the geometry is
+ * the geometry. Same for the other three body overrides below.
+ */
+.panel__body.tab-slot {
+  padding: 0;
+  gap: 0;
+}
+
+/**
+ * The tab strip, as joined boxes.
+ *
+ * `docs/design/gameboy-theme.md`: "Tab strip drawn as boxes joined to the slot frame; the active
+ * tab's bottom border opens into the content like a folder tab."
+ *
+ * The strip's bottom edge *is* the slot's inner frame line, so it is drawn here at
+ * `--border-inner-w` and the panel's own `::after` runs behind it. The tabs sit on that line, each
+ * a box with the same 2 px line, joined to its neighbour by a negative margin so two adjacent
+ * boxes share one edge rather than drawing two. The active tab paints its bottom edge in the
+ * panel's own colour and overhangs the line by exactly its width, which is what opens it into the
+ * pane.
+ */
+.tab-strip {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  padding: 0 12px;
+  border-bottom: var(--border-inner-w) solid var(--frame-inner);
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 100%;
+  padding: 0 14px;
+  margin-right: calc(-1 * var(--border-inner-w));
+  border: var(--border-inner-w) solid var(--frame-inner);
+  border-bottom: 0;
+  background: var(--bg-0);
+}
+
+/**
+ * The open tab.
+ *
+ * `margin-bottom` of minus the line width pushes the box down over the strip's bottom border, and
+ * its own background covers that run of it — a folder tab opening into the slot, drawn with two
+ * declarations and no extra element.
+ */
+.tab[data-active='1'] {
+  background: var(--panel);
+  margin-bottom: calc(-1 * var(--border-inner-w));
+  padding-bottom: var(--border-inner-w);
+  z-index: 1;
+}
+
+.tab__label {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  /* A tab title, the same face as `.panel-title` (`--font-label`, Silkscreen). */
+  font-family: var(--font-label);
+  color: var(--ink-2);
+  transition: color 300ms var(--ease-pixel);
+}
+
+.tab[data-active='1'] .tab__label {
+  color: var(--ink-0);
+}
+
+/** The pixel cursor marks the open tab, and takes no space on the ones it does not mark. */
+.tab .cursor {
+  visibility: hidden;
+  color: var(--accent);
+}
+
+.tab[data-active='1'] .cursor {
+  visibility: visible;
+}
+
+/**
+ * The underline slides rather than jumps: one `translateX` on one element, which is the cheapest
+ * "which tab is this" indicator there is and the only moving part of the strip.
+ *
+ * Stepped rather than eased, so the slide arrives like a sprite (`docs/design/gameboy-theme.md`,
+ * Motion). The step *count* is written by `src/motion/director.ts` rather than taken from
+ * `--ease-pixel`: a cycle moves the underline 180 to 470 px depending on which pair of tabs it is
+ * between, and one constant count cannot be 4 px for all of them. The token here is the fallback
+ * for a first paint that has not moved yet.
+ *
+ * It sits *under* the open tab's own bottom edge, on the strip's inner line, so the two read as one
+ * joined frame.
+ */
+.tab-underline {
+  position: absolute;
+  bottom: calc(-1 * var(--border-inner-w));
+  left: 0;
+  height: var(--border-inner-w);
+  width: 0;
+  background: var(--accent);
+  transform: translateX(0);
+  transition:
+    transform 300ms var(--ease-pixel),
+    width 300ms var(--ease-pixel);
+}
+
+.tab-panes {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/**
+ * All four panes are mounted and stacked; the paint loop owns their opacity and visibility.
+ *
+ * `visibility: hidden` on the ones that are neither entering nor leaving takes them out of paint
+ * entirely, which is what makes three mounted panes cost about what one does — and they stay
+ * mounted because the connectome's base bitmap is a worker's 139,255-point raster that must not be
+ * thrown away and rebuilt on every tab cycle, twenty times an hour, for ever.
+ */
+.tab-pane {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* -- SENSES ----------------------------------------------------------------------------------- */
+
+.senses {
+  display: flex;
+  height: 100%;
+  gap: 4px;
+}
+
+.senses__cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 6px 8px;
+}
+
+.senses__cell--circuits {
+  flex: 1 1 auto;
+  border-left: var(--border-inner-w) solid var(--frame-inner);
+}
+
+.senses__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/**
+ * The spike count's backstop.
+ *
+ * It fits: 181 px of head against 135 for a five-figure count and 162 for a six. A seventh digit
+ * would need 189 — the count is neurons out of 139,255, so that is every neuron in the brain
+ * firing between two snapshots, which the simulation does not do. If it ever does, this ellipsises
+ * instead of pushing the panel 8 px wider, because a broadcast frame that reflows is worse than
+ * one that abbreviates.
+ */
+.senses__spikes {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.senses__groups {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 0;
+}
+
+/*
+ * The group name's column: `CIRCUIT_NAME_WIDTH`, 200.
+ *
+ * Layout v1 measured "dopamine" as nine characters of 33 px Inter — 168 px, which a 150 px column
+ * would have truncated to "DOPAM…". VT323's 0.4 em advance made the same word 119 px and the
+ * column briefly went to 150; Silkscreen puts it back at 196, so the column is 200 again and the
+ * 50 px goes back to the name from the bar. See `src/lib/geometry.ts`.
+ *
+ * These row labels (DRIVE, A / B, MENU, DOPAMINE, TASTE, LEGS) are `--font-label` under the
+ * 2026-09-16 pairing, same as the bar chart it sits beside is not: a closed, six-word vocabulary
+ * is exactly `.panel-title`'s job, so this column's width is unchanged from the Silkscreen-only
+ * measurement above. `--font-body`'s default flipped to `--font-text` (VT323) with the pairing,
+ * so this needs the explicit face it used to get for free.
+ */
+.senses .circuit-name {
+  font-family: var(--font-label);
+  flex: 0 0 200px;
+}
+
+/**
+ * The MACROS row: one bar per macro channel the scene has bound
+ * (`docs/design/macros.md` section 12).
+ *
+ * Unlike the six fixed groups, this row's bars come and go with the scene, so each one carries its
+ * channel tag as a label — the same tag the strip's cell draws, which is how a viewer reads the row
+ * against the strip. The rows are 14 px against a group's 12 because of the label's line box, and
+ * that is the whole budget: six of them plus the five 2 px gaps is 94 px, which is what the groups
+ * column has spare over the six fixed groups (`src/lib/geometry.ts` has the measurement).
+ *
+ * The row renders nothing at all in raw mode, where no channel is bound.
+ */
+.circuit-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  /* No shrinking: the row is 14 px because that is what the column has (`src/lib/geometry.ts`),
+     and a squeezed bar under a 24 px label is the overflow this number was measured to avoid. */
+  flex: 0 0 auto;
+}
+
+/*
+ * Two columns of three, because six labelled rows in one column do not fit the groups column
+ * (`src/lib/geometry.ts` has the measurement), and a narrower name column to pay for the second.
+ */
+.circuit-group[data-group='macros'] .circuit-bars {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 2px 12px;
+}
+
+.senses .circuit-group[data-group='macros'] .circuit-name {
+  flex: 0 0 148px;
+}
+
+.circuit-group[data-group='macros'] .circuit-bar-row {
+  flex: 0 0 calc(50% - 6px);
+}
+
+/**
+ * The channel tag, and a measured deviation from the type pairing (README deviation 20).
+ *
+ * A closed vocabulary of 31 short tags is `--font-label`'s job, and this is `--font-text` anyway:
+ * the bars column is 210 px, and `MB·WARP` in Silkscreen at the 24 px floor is 137 of them, which
+ * would leave a 65 px track — a bar too short to read a rate off. VT323's 0.4 em advance puts the
+ * same eight characters at 77 px and the track back at 125.
+ */
+.circuit-bar-row__label {
+  flex: 0 0 auto;
+  font-family: var(--font-text);
+  font-size: var(--fs-body);
+  /* Overridden per row by the component, to the row's own height. */
+  line-height: 1;
+  color: var(--ink-2);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.circuit-bar-row .circuit-bar {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* -- CONNECTOME ------------------------------------------------------------------------------- */
+
+.connectome {
+  height: 100%;
+  background: var(--bg-0);
+}
+
+.connectome__canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* -- LADDER ----------------------------------------------------------------------------------- */
+
+.ladder {
+  display: flex;
+  height: 100%;
+  gap: 10px;
+  padding: 6px 6px;
+}
+
+.ladder__columns {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 6px;
+  min-width: 0;
+}
+
+/**
+ * One column of rungs.
+ *
+ * `grid`, not flow: thirteen rows of exactly 1fr is what puts 38 rungs in the pane at the 27 px
+ * type floor with nothing clipped and no scrollbar, and it does not depend on whatever line box
+ * the font happens to produce.
+ */
+.ladder__column {
+  display: grid;
+  /*
+   * `minmax(0, 1fr)`, not `1fr`: a bare `1fr` is `minmax(auto, 1fr)`, so a row cannot shrink
+   * below its content and thirteen rows of 27 px type quietly add up to more than the pane. With
+   * a zero floor the thirteen rows are exactly a thirteenth of the pane each and the type is the
+   * thing that has to fit, which is what the floor lint checks.
+   */
+  grid-template-rows: repeat(13, minmax(0, 1fr));
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ladder__rung {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-body);
+  line-height: 1;
+  color: var(--ink-2);
+}
+
+/* A square cell for a rung that is reached or not, square-cornered like everything else. */
+.ladder__mark {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--ink-2) 55%, var(--bg-0));
+}
+
+.ladder__index {
+  flex: 0 0 auto;
+  min-width: 2ch;
+  text-align: right;
+}
+
+/**
+ * The clipping box for one rung name. `--font-text` (VT323) at the 24 px floor fits every one of
+ * the Pokemon Red ladder's names inside `LADDER_COLUMNS`' width now that the dropped thumbnail
+ * gave the width back (`src/lib/geometry.ts`), so `text-overflow: ellipsis` here is a first-paint
+ * fallback only — `useLadderMarquee` (`src/panels/tabs/LadderTab.tsx`) measures the real box on
+ * mount and switches a name that still overflows to `[data-marquee='1']` below, which pans instead
+ * of hiding the tail.
+ */
+.ladder__label {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/**
+ * The marquee: a slow, stepped horizontal pan of just the name, never an ellipsis, because
+ * `docs/design/gameboy-theme.md`'s pixel cursor makes a rung's name the one thing on this pane a
+ * viewer is meant to be able to read in full.
+ *
+ * Fixed 15%/85% hold keyframes rather than percentages computed from `--marquee-duration`: CSS
+ * keyframe offsets cannot read a custom property, so the hold:travel ratio is an approximation
+ * that gets less generous (proportionally less hold, more travel) the further a name overflows —
+ * `--marquee-duration` (`marqueeCycleMs`, `src/lib/marquee.ts`) is what keeps the *pace* of travel
+ * itself constant (8 px per `--marquee-step-ms`) regardless. `steps()` reuses `--ease-pixel`
+ * itself, the same 8-step quantisation every other pixel-element transition on the page uses, so a
+ * name pans like sprite motion rather than sliding.
+ */
+.ladder__label[data-marquee='1'] {
+  text-overflow: clip;
+}
+
+.ladder__label[data-marquee='1'] > span {
+  display: inline-block;
+  animation: ladder-marquee var(--marquee-duration, 3000ms) var(--ease-pixel) infinite alternate;
+}
+
+@keyframes ladder-marquee {
+  0%,
+  15% {
+    transform: translateX(0);
+  }
+  85%,
+  100% {
+    transform: translateX(calc(-1 * var(--marquee-distance, 0px)));
+  }
+}
+
+.ladder__rung[data-state='reached'] {
+  color: var(--accent);
+}
+
+.ladder__rung[data-state='reached'] .ladder__mark {
+  background: var(--accent);
+}
+
+/**
+ * The rung the fly is on: the one row a viewer hunts for, so it is the brightest thing in the pane
+ * and the one the pixel cursor points at.
+ *
+ * The cursor replaces the mark rather than joining it — `docs/design/gameboy-theme.md`'s
+ * "Selection cursor '▶' … marks the current rung" — and it is the `.cursor` staircase from
+ * `src/index.css`, sized down to the row's 27 px line. Not `font-weight: 700`, which this theme
+ * has nowhere to go for: neither face has a bold.
+ */
+.ladder__rung[data-state='current'] {
+  color: var(--ink-0);
+}
+
+.ladder__rung[data-state='current'] .ladder__mark {
+  width: 8px;
+  height: 14px;
+  background: var(--accent);
+  clip-path: polygon(
+    0 0,
+    2px 0,
+    2px 2px,
+    4px 2px,
+    4px 4px,
+    6px 4px,
+    6px 6px,
+    8px 6px,
+    8px 8px,
+    6px 8px,
+    6px 10px,
+    4px 10px,
+    4px 12px,
+    2px 12px,
+    2px 14px,
+    0 14px
+  );
+}
+
+.ladder__stats {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 10px;
+  border-left: var(--border-inner-w) solid var(--frame-inner);
+}
+
+/**
+ * The readout half of a stats row, in `.num` (Press Start 2P) at one em per character. Most of
+ * these fit `LADDER_STATS_WIDTH`'s 130 px whole ("2/3", "14/36"); the widest ("41m04s ago", at the
+ * far end of an hour-plus run) does not, and ellipsises rather than pushing the column wider or
+ * overflowing into the rung columns beside it — the structural backstop every fixed-width number
+ * on this page gets.
+ */
+.ladder__line .num {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The label word never shrinks or ellipsises — it is the short, closed vocabulary half. */
+.ladder__line > span:first-child {
+  flex: 0 0 auto;
+}
+
+.ladder__line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+  /*
+   * 1, not the 1.25 `[data-role='body']` carries: the 144 px thumbnail plus five lines plus the
+   * stall bar is 371 px of a 358 px column at 1.05, so the leading is what gives way — the type
+   * size is the floor the lint enforces.
+   */
+  line-height: 1;
+}
+
+.ladder__line [data-role='body'],
+.ladder__stats [data-role='body'] {
+  line-height: 1;
+}
+
+/** The stall meter: 0 to 120 s without exploration, as one lerped bar, 12 px like the others. */
+.stall-bar {
+  height: 12px;
+  border-radius: 0;
+  background: var(--bg-0);
+  overflow: hidden;
+}
+
+.stall-bar__fill {
+  height: 100%;
+  background: var(--accent-warm);
+  transform: scaleX(0);
+  transform-origin: left center;
+}
+
+/* -- DESCRIBE --------------------------------------------------------------------------------- */
+
+/**
+ * The DESCRIBE pane: one dense card, filling the slot.
+ *
+ * The operator, 2026-09-17: "keep it to a densely packed card". So no stack of absolutely positioned
+ * cards, no cell row and no `data-current` — the pane holds a title and a paragraph, and the
+ * director has nothing left to paint here (`src/panels/tabs/DescribeTab.tsx`).
+ */
+.describe {
+  height: 100%;
+}
+
+/**
+ * The card: title and paragraph from the top edge.
+ *
+ * Not centred in the box. A paragraph floating in the middle of a 368 px pane is the
+ * airy-centred look this page does not have anywhere else, and the rest of the rail reads top-down
+ * from its panel title — so the card starts where a Game Boy dialogue box starts, at the top left.
+ */
+.describe__card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 26px 48px 24px;
+}
+
+/**
+ * The title, in the label face, amber — the only accent on the pane.
+ *
+ * Two selectors deep because `[data-role='label']` sets a colour of its own and `src/index.css`
+ * loads after this file: one class loses that cascade and the title comes out ink-white. No
+ * `text-transform`: the copy file carries its own caps, exactly as the doc's heading spells them,
+ * so what the pane renders is the reviewed string rather than a CSS transform of it.
+ */
+.describe__card .describe__title {
+  font-family: var(--font-label);
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  margin: 0;
+}
+
+/**
+ * The paragraph: VT323 at the body floor, across the pane.
+ *
+ * The full measure, not the 560 px column the eight-card version used. One card has to hold the
+ * whole explanation, and the paragraph at the 24 px floor sets in six lines across the pane's
+ * 908 px of content width — which fits the 368 px pane with room under it and needs no scrolling
+ * at 1920x1080. A narrower column would need ten lines and clip. `1.4` opens the leading past
+ * `[data-role='body']`'s 1.25 because this is the only prose on the page a viewer reads a
+ * paragraph of rather than a line of.
+ */
+.describe__text {
+  font-family: var(--font-text);
+  margin: 0;
+  color: var(--ink-0);
+  line-height: 1.4;
+}
+
+/* -- The progress cluster --------------------------------------------------------------------- */
+
+.panel__body.progress-cluster {
+  padding: 5px 12px;
+  gap: 3px;
+  justify-content: space-between;
+}
+
+/**
+ * Two rows, three columns: the rung line takes what is left after the two right-hand readouts,
+ * and the small labels sit directly over the numbers they name.
+ */
+.progress-cluster__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  /* 12, not 18: Silkscreen costs the rung line width everywhere, and a gap is the cheapest 12 px
+     on the row to give back — the two right-hand columns are right-aligned readouts with their
+     own labels over them, so they read as separate at 12 as well as at 18. */
+  column-gap: 12px;
+  row-gap: 2px;
+  align-items: baseline;
+}
+
+/**
+ * The two big readouts, and why they have a floor instead of just `auto`.
+ *
+ * They are Press Start 2P (`.num`), so their width is exactly the character count times 33 px —
+ * which means the column is rock-steady while digits change and moves only when the *count* of
+ * characters does: "9h05m" to "10h05m", or a Hz reading reaching three digits. That is the same
+ * behaviour any monospaced face gives and it is what tabular digits are for.
+ *
+ * The floors are the common case (5 characters for HERE FOR, 7 for the Hz), so the column cannot
+ * collapse to "0s" at boot and then jump 100 px wide a second later, which is the one reflow a
+ * viewer would actually catch.
+ */
+.cluster-readout {
+  display: inline-block;
+}
+
+.cluster-readout[data-readout='hereFor'] {
+  min-width: 5ch;
+}
+
+.cluster-readout[data-readout='hz'] {
+  /* Four characters, which is the number without its unit: "11.4", or "9.8" with a character to
+     spare. A three-digit whole-brain rate would make it five and grow the column once. */
+  min-width: 4ch;
+}
+
+/**
+ * The Hz readout: tabular digits, then the unit as a word.
+ *
+ * "Hz" is a unit suffix beside a 30 Hz-lerped number, the same role the run clock's "day" word
+ * plays beside its own ticking digits — both are `--font-text` under the 2026-09-16 pairing
+ * (`src/theme/tokens.css`), not the title face, and not `.num` either: the unit word itself never
+ * changes, only the number beside it does.
+ */
+.cluster-hz {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.cluster-hz__unit {
+  font-family: var(--font-text);
+}
+
+/**
+ * The cluster's three micro-labels — RUNG, HERE FOR, BRAIN — are `.panel-title` with no override
+ * here any more.
+ *
+ * They used to need one: through the Silkscreen-only pairing, `.panel-title` was Press Start 2P
+ * and this panel could not afford it — "here for" alone was 229 px of the cluster's 980, which
+ * left the rung line's headline ellipsising on most of the Pokemon Red ladder ("Boot scre…",
+ * measured). The 2026-09-16 pairing moves `.panel-title` itself to `--font-label` (Silkscreen),
+ * which is exactly the face this override used to reach for — so RUNG, HERE FOR and BRAIN now
+ * match RETINA, CIRCUITS, EVENTS and CHAT with no panel-specific rule, and the rung line's own
+ * width problem is solved on the other side, by moving the rung *name* to `--font-text` (VT323)
+ * instead (`.rung-line__name` below).
+ *
+ * Right-aligned, so each label sits over the number it names rather than at the left edge of a
+ * column the label itself widened.
+ */
+.progress-cluster__grid > :nth-child(2),
+.progress-cluster__grid > :nth-child(3),
+.progress-cluster__grid > :nth-child(5),
+.progress-cluster__grid > :nth-child(6) {
+  text-align: right;
+}
+
+/* The footer's counters are a single line each: no prose leading in a 144 px panel. */
+.progress-cluster__footer [data-role='body'] {
+  line-height: 1;
+}
+
+/**
+ * The rung line: `12/37  Mt. Moon  ▶ Cerulean City`, one line of `--font-text` (VT323).
+ *
+ * 27 px sits between the 24 px body floor and the 30 px label band (the 2026-09-16 10% pass)
+ * — deliberately not a `data-role`, because it is neither. It was 30 px in the Silkscreen-only
+ * pairing, sized the same way against the older 27/33 floors.
+ */
+.rung-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  /* Structural backstop: a service free-texting a 40-character rung name must ellipsise inside
+     this line, never paint over the HERE FOR readout beside it. */
+  overflow: hidden;
+  font-size: 27px;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-0);
+}
+
+.rung-line__count {
+  flex: 0 0 auto;
+  color: var(--ink-2);
+}
+
+/*
+ * Both rung names are `--font-text` (VT323) now, and the priority scheme this comment used to
+ * document — the current rung capped at 270 px of Press Start 2P, the next rung taking whatever
+ * was left, always ellipsised — no longer binds. VT323 is 0.4 em a character against Press Start
+ * 2P's 1 and Silkscreen's 0.73, so even the ladder's longest names ("Viridian Forest", "Cinnabar
+ * Island", "Silph Co. freed": 15 characters) are about 162 px at 27 px, and both together with the
+ * arrow and gaps come to roughly 350 px of the rung line's ~560-590 px column — comfortably inside
+ * it, measured against every name `pokemon-red.ts` lists.
+ *
+ * Each name still carries its own `overflow: hidden` and ellipsis as a structural backstop for a
+ * service that free-texts something longer than any name in this build's ladder, not because
+ * either one is expected to hit it. Natural width (`flex: 0 0 auto`) rather than a shrink or a
+ * priority split: with room for both, there is nothing left to arbitrate.
+ */
+.rung-line__name {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 380px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-text);
+  color: var(--accent);
+}
+
+.rung-line__next {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 380px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-1);
+}
+
+/** The drawn arrow between the two rung names: the cursor staircase, in the quiet ink. */
+.rung-line__arrow {
+  align-self: center;
+  color: var(--ink-2);
+}
+
+/**
+ * The footer: counters, try count, run clock, day, sugar chip — five items on one 980 px line.
+ *
+ * This was the tightest row in the Silkscreen-only pairing (about 1,060 px wanted in 980, with the
+ * counters span carrying `truncate` to take the shortfall). The counters and the clock/day words
+ * are `--font-text` (VT323) now — 0.4 em a character against Silkscreen's 0.73 — so "0/8 badges ·
+ * 214 places" measures well under its column and no longer needs the ellipsis. `ProgressCluster.tsx`
+ * no longer sets `truncate` on that span; `min-width: 0` on the footer stays, as the backstop for a
+ * feed-supplied sugar name long enough to still be tight.
+ */
+.progress-cluster__footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/*
+ * No negative margin between the clock and its day.
+ *
+ * Pulling them together by 6 px to save footer width read as one run of characters in the mockup —
+ * "TRY 1 00:01:32· DAY 1", with the try count touching the clock and the middot touching the
+ * digits. The 8 px gap is the same gap every other pair in this row gets, and the 6 px is not
+ * worth a footer that looks like a string concatenation bug.
+ */
+
+/** HERE FOR, warmer at each threshold: 1 h, 3 h, 6 h. */
+.here-for {
+  display: inline-block;
+  color: var(--ink-0);
+  transition: color 600ms linear;
+}
+
+.here-for[data-warm='1'] {
+  color: var(--warn);
+}
+
+.here-for[data-warm='2'] {
+  color: var(--accent-warm);
+}
+
+.here-for[data-warm='3'] {
+  color: var(--alarm);
+}
+
+/**
+ * The SUGAR chip: the cooldown ring and one line, in a cut-corner box like the other chips.
+ *
+ * It is a chip in the design's sense ("chips (buttons, mode)") and takes `--font-label`
+ * (Silkscreen) like the others — explicit here rather than left to `.chip-cut`'s own default, so
+ * the pick reads as deliberate beside the max-width cap below, which exists because of it: "SUGAR
+ * by <name>" carries a feed-supplied display name of up to sixteen characters, and Silkscreen's
+ * 0.73 em advance is wider than the 24 px floor's row has room for uncapped.
+ */
+.sugar-chip {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  /*
+   * Capped, because this is the one element in the cluster whose text a viewer chooses.
+   * `safeDisplayName` allows 25 characters, so "SUGAR by <name>" can be 34 characters — well over
+   * the ~265 px the chip naturally has in the footer at Silkscreen's width. Uncapped it pushed the
+   * other four readouts off the line; capped, a long name ellipsises and nothing else moves. The
+   * cap is 300 rather than the chip's natural 265 so "SUGAR READY" and a short name both sit whole.
+   */
+  max-width: 300px;
+  padding: 0 8px;
+  font-family: var(--font-label);
+  border-color: var(--frame-inner);
+}
+
+.sugar-chip [data-testid='sugar-last'] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* -- EVENTS ----------------------------------------------------------------------------------- */
+
+/** Three rows in 100 px, and no title: three lines of "+0.20 new area" say what they are. */
+.panel__body.events {
+  padding: 5px 12px;
+  gap: 0;
+}
+
+.events__rows {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 0;
+}
+
+.events__rows .ticker-row__value {
+  color: var(--ink-2);
+}
+
+/* -- CHAT ------------------------------------------------------------------------------------- */
+
+.panel__body.chat {
+  padding: 5px 12px;
+  gap: 2px;
+}
+
+/**
+ * The lines, newest at the bottom, clipped at the top.
+ *
+ * `overflow: hidden` rather than `auto`: the panel is a broadcast frame, so a scrollbar is not a
+ * control anybody can reach and would only ever be furniture. What it clips is the *slack* above
+ * the oldest row that still fits — the rows that do not fit whole are hidden by the measurement in
+ * `src/panels/ChatPanel.tsx`, not by this, so nothing is ever drawn cut in half.
+ *
+ * The gap is 2, which is the theme's gap between cells (`docs/design/gameboy-theme.md`) and also
+ * the arithmetic: a row is 26 px — a 24 px line box plus the 2 px the label face's taller metrics
+ * add to it — so the ring's seven short lines are 7 x 26 + 6 x 2 = 194 px in the 198 px the panel
+ * has under its title. At a 4 px gap they are 206 and the panel would drop the oldest line of a
+ * perfectly ordinary chat.
+ */
+.chat__lines {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: flex-end;
+  row-gap: 2px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/**
+ * One chat line: the name, then the text, wrapping onto as many rows as it needs.
+ *
+ * A block rather than layout v2's flex row, because wrapping is what a flex row cannot do: the
+ * name and the text are now one inline run, so the text flows under the name instead of being
+ * squeezed into what is left of a single line (and then ellipsised, which is what the operator was
+ * looking at). The hanging indent is the 16 px `padding-left` with a matching negative
+ * `text-indent`, so the name starts flush and every wrapped row sits inside it — a message reads
+ * as one message rather than as two entries.
+ *
+ * `overflow-wrap: break-word` is the backstop for the one string that has no break in it: the
+ * sanitizer allows 200 characters of unbroken punctuation, which at VT323's 0.4 em advance is
+ * 1920 px against the panel's 972 px measure. Breaking mid-word is ugly; a horizontal overflow on
+ * a fixed frame is a layout bug.
+ */
+.chat-line {
+  min-width: 0;
+  padding-left: 16px;
+  text-indent: -16px;
+  /*
+   * The row's own face and size, which a flex row did not need and an inline one does: the block's
+   * strut is what puts the baseline in every line box, so a row that inherited the page's default
+   * face set its wrapped rows to *that* face's ascent and pushed the last one's ink through the
+   * bottom of the panel. Naming the text face here is what keeps a wrapped row on the same 24 px
+   * rhythm as an unwrapped one.
+   */
+  font-family: var(--font-text);
+  font-size: var(--fs-body);
+  line-height: 1;
+  overflow-wrap: break-word;
+}
+
+/**
+ * A row that does not fit the panel whole (`src/panels/ChatPanel.tsx`).
+ *
+ * `visibility`, not `display: none`: the row keeps its box, so the measurement that hid it reads
+ * the same layout on the next commit and cannot oscillate.
+ */
+.chat-line[data-fits='0'] {
+  visibility: hidden;
+}
+
+/*
+ * The line box, not the font size, is what has to fit.
+ *
+ * `[data-role='body']` carries `line-height: 1.25` (`src/index.css`), which is right for prose and
+ * wrong for a fixed-height list: seven lines of 27 px text at 1.25 is 236 px in a 234 px body, so
+ * the panel clipped its oldest line. It is 1 rather than layout v1's 1.03 because the title above
+ * them is now Press Start 2P, which is a taller line box than Inter's was — and 1 clips nothing,
+ * because the body face's content box is exactly 1 em (0.8 ascent, 0.2 descent). Same arithmetic
+ * for the three ticker rows in 100 px. The type size is untouched — that is the floor the lint
+ * enforces — only the leading.
+ */
+.chat-line [data-role='body'],
+.events__rows [data-role='body'] {
+  line-height: 1;
+}
+
+/**
+ * The display name: the label face, in the accent, at the body size.
+ *
+ * the operator, 2026-09-17: "make name pop more." The face is the pop — Silkscreen against the text face's
+ * VT323, which is the same contrast the panel titles and the macro cells get from it, and it is
+ * boxy enough that the 0.31 downscale still reads it as a name rather than as ink
+ * (`tests/e2e/legibility.spec.ts`). The size is untouched at the 24 px floor: a bigger name would
+ * set the line box for every row in the panel and cost the seventh line, and the ask was contrast,
+ * not size. Silkscreen has one weight, so there is no `font-weight` to set; its stems are the
+ * weight.
+ *
+ * No ellipsis and no `max-width` any more. A name is at most 25 characters
+ * (`validateDisplayName`), the row wraps now, and the widest name simply takes its first row and
+ * lets the message follow underneath.
+ */
+.chat-line .chat-line__name {
+  font-family: var(--font-label);
+  letter-spacing: 0;
+  color: var(--accent);
+}
+
+.chat-line .chat-line__text {
+  color: var(--ink-0);
+}
+
+/* The bridge's own template replies, so a viewer tells the bot from a person at a glance. */
+.chat-line[data-bot='1'] .chat-line__name,
+.chat-line[data-bot='1'] .chat-line__text {
+  color: var(--ok);
+}

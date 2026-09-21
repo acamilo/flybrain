@@ -1,0 +1,16 @@
+# infra/units/fly.target — pushed to /etc/systemd/system/fly.target.
+#
+# The single verb for the whole demo: `systemctl start|stop fly.target`.
+# docs/design/infra.md section 3. flybridge is Wants=, never Requires=, so
+# chat can never stop the sim by failing to start.
+[Unit]
+Description=fly demo: brain, stage, capture, and push (flybrain/infra)
+After=network-online.target
+Wants=network-online.target xvfb.service pulse.service mediamtx.service \
+      flysim.service flystage-web.service flystage.service flycast.service \
+      flybridge.service
+Requires=xvfb.service pulse.service mediamtx.service flysim.service \
+         flystage-web.service flystage.service flycast.service
+
+[Install]
+WantedBy=multi-user.target

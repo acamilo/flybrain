@@ -1,0 +1,27 @@
+# /srv/fly/chat-deny.txt — the operator's chat deny list for flysim's on-screen
+# CHAT panel (docs/control-api.md, [chat] deny_list).
+#
+# One pattern per line. A pattern matches case-insensitively ANYWHERE in the
+# display name or in the already-sanitized message text, so "spoiler" also
+# blocks "SPOILERS!!" and the viewer "spoiler_king". Lines starting with # and
+# blank lines are ignored.
+#
+# This is the LAST filter, not the first. In front of it are Twitch AutoMod
+# (a held message never reaches flybridge at all), the bridge's own pass, and
+# flysim's sanitizer, which already refuses control characters, zero-width and
+# bidi characters, emoji, links and anything over 200 characters. Add a pattern
+# here for the things only a human knows: a slur AutoMod misses, a spoiler, a
+# brigading catchphrase.
+#
+# 05-deploy.sh installs this file ONCE and never overwrites it afterwards: the
+# live copy belongs to whoever is on shift. Edit it in place and then
+#
+#     systemctl kill -s HUP flysim
+#
+# which re-reads this file and does nothing else — no restart, no dropped
+# frames, no interruption to the stream. flysim also re-reads it once a minute
+# by itself, so a forgotten SIGHUP costs at most 60 seconds.
+#
+# Ships empty on purpose. An empty list is not a configuration error: it means
+# the sanitizer and AutoMod are the only filters, which is the correct starting
+# point for a channel that has never been brigaded.

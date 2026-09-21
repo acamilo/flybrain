@@ -1,0 +1,1032 @@
+#!/usr/bin/env bash
+# infra/bin/fly-watchdog — fly-watchdog.service, run every 60s by
+# fly-watchdog.timer. Runs inside the container as User=fly (restart
+# actions go through `sudo systemctl` — see the NOPASSWD sudoers note in
+# docs/runbook.md; this script never runs as root itself).
+#
+# Implements the seven checks in docs/design/infra.md section 3, in order,
+# plus an eighth (encoder backend) from docs/design/gpu.md section 5, a
+# ninth (capture freeze) from infra/docs/capture-freeze.md and a tenth (loop
+# suspected) from infra/docs/macros-traps.md,
+# each with its own remediation restarting only the failed unit -- except the
+# eighth and the tenth, which deliberately take no action at all -- plus the
+# per-unit consecutive-failure counters, escalation, and the two
+# notification channels (journal + node_exporter textfile) from that
+# section. See also docs/control-api.md (/healthz) and infra.md section 5
+# (the /metrics and /status.json shapes on the read-only listener).
+#
+# Ports (feed-protocol.md / control-api.md are the binding contracts,
+# superseding infra.md's own numbers): control API 127.0.0.1:7401,
+# feed 127.0.0.1:7400. flysim's separate read-only metrics/status listener
+# on :9101 is NOT superseded by those two docs and keeps infra.md's number.
+set -euo pipefail
+
+log_err() {
+    # Stable prefix per docs/design/infra.md section 3, so `journalctl
+    # -g fly-watchdog:` finds every escalation across every unit.
+    echo "fly-watchdog: $*" | systemd-cat -t fly-watchdog -p err
+}
+log_info() {
+    echo "fly-watchdog: $*" | systemd-cat -t fly-watchdog -p info
+}
+
+: "${FLY_CONTROL_URL:=http://127.0.0.1:7401}"
+: "${FLY_METRICS_URL:=http://127.0.0.1:9101}"
+: "${FLY_STATE_HOT:=/run/fly/state}"
+: "${FLY_MEDIA_DIR:=/srv/fly/media}"
+: "${MEDIAMTX_API:=http://127.0.0.1:9997}"
+: "${FLY_PROGRESS_FLYCAST:=/run/fly/flycast.progress}"
+: "${FLY_PROGRESS_FLYPUSH:=/run/fly/flypush.progress}"
+: "${WD_RUN_DIR:=/run/fly/wd}"           # tmpfs: consecutive-fail counters, cleared on reboot
+: "${WD_STATE_DIR:=/var/lib/fly/wd}"     # persistent: reboot-rate gate
+: "${TEXTFILE_DIR:=/var/lib/node_exporter/textfile}"
+: "${RETENTION_BIN:=/opt/fly/bin/fly-retention}"
+# Written by bin/flycast-launch, which is the only thing that knows which
+# encoder actually opened (docs/design/gpu.md section 5).
+: "${FLY_ENCODER_METRIC:=${TEXTFILE_DIR}/fly_encoder.prom}"
+: "${FLY_ENV_FILE:=/etc/fly/fly.env}"
+# --- check 9 (capture freeze) inputs, infra/docs/capture-freeze.md ---------
+: "${FLY_REC_DIR:=/srv/fly/media/rec}"       # flycast's 10-minute mpegts segments
+: "${FFMPEG:=/usr/bin/ffmpeg}"
+: "${WD_FREEZE_INTERVAL:=300}"               # probe every 5 minutes, not every pass
+: "${WD_FREEZE_SECONDS:=3}"                  # decode the last 3 s of the newest segment
+: "${WD_FREEZE_IDENTICAL:=80}"               # >= this many identical frames of ~90 is a freeze
+: "${WD_FREEZE_MIN_FRAMES:=60}"              # fewer decoded frames than this: inconclusive
+: "${WD_FREEZE_COOLDOWN:=1800}"              # never restart flycast for this more than once per 30 min
+: "${WD_FREEZE_SEGMENT_MAX_AGE:=120}"        # newest segment must be this fresh to be worth probing
+: "${FLYCAST_CPUSET_DROPIN:=/etc/systemd/system/flycast.service.d/cpuset.conf}"
+# --- check 10 (loop suspected) inputs, infra/docs/macros-traps.md ----------
+: "${FLY_STATE_DIR:=/srv/fly/state}"
+: "${FLY_EVENT_LOG:=${FLY_STATE_DIR}/events.jsonl}"
+: "${FLY_STATUS_URL:=${FLY_METRICS_URL}/status.json}"
+: "${WD_LOOP_INTERVAL:=300}"              # probe every 5 minutes, like check 9
+: "${WD_LOOP_WINDOW_MS:=600000}"          # 10 BRAIN minutes of macro events
+: "${WD_LOOP_TAIL_LINES:=20000}"          # lines of events.jsonl worth reading back
+: "${WD_LOOP_MAX_PERIOD:=8}"              # longest cycle to look for (trap_hunt's own cap)
+: "${WD_LOOP_MAX_DISTINCT:=4}"            # "a short macro sequence": at most this many names (4: the Viridian cycle had four)
+: "${WD_LOOP_MIN_REPEATS:=20}"            # ... repeating at least this many times
+: "${WD_LOOP_DOMINANCE_PCT:=95}"          # or one macro being this share of the window
+: "${WD_LOOP_MIN_EVENTS:=20}"             # floor under the dominance rule (see check 10)
+: "${WD_LOOP_REPORT:=${WD_RUN_DIR}/loop.json}"
+
+mkdir -p "$WD_RUN_DIR" "$WD_STATE_DIR"
+
+# The textfile directory is a notification channel, not a prerequisite. It is
+# root-owned ground (/var/lib/node_exporter) that this script, running as
+# `fly`, cannot create — and when it was in the `mkdir -p` line above, a
+# missing directory made `set -e` kill the whole pass at line one: no checks,
+# no restarts, no journal alarm, silently, every 60 s. Measured exactly that
+# way on the P0 spike run 2, where the directory did not exist at all.
+# `config/fly-tmpfiles.conf` creates it now; if it is still missing or
+# unwritable, carry on with the journal channel and say so once per pass.
+TEXTFILE_OK=1
+if ! { [ -d "$TEXTFILE_DIR" ] && [ -w "$TEXTFILE_DIR" ]; }; then
+    mkdir -p "$TEXTFILE_DIR" 2>/dev/null || true
+fi
+if ! { [ -d "$TEXTFILE_DIR" ] && [ -w "$TEXTFILE_DIR" ]; }; then
+    TEXTFILE_OK=0
+fi
+
+now() { date +%s; }
+
+# --- per-unit consecutive-failure bookkeeping -------------------------------
+# One line per failure (epoch seconds), appended on failure, truncated to
+# empty on success. This is the "consecutive" counter: any success resets
+# it, matching "three consecutive failures ... restarts the dependent
+# chain; five triggers a reboot".
+fails_file() { echo "${WD_RUN_DIR}/${1}.fails"; }
+
+record_ok() {
+    : > "$(fails_file "$1")"
+}
+
+record_fail() {
+    local unit="$1"
+    now >> "$(fails_file "$1")"
+    log_err "check failed: $unit"
+    inc_counter "restarts_total" "$unit"
+}
+
+fail_count() {
+    local f
+    f="$(fails_file "$1")"
+    [ -f "$f" ] && wc -l < "$f" | tr -d ' ' || echo 0
+}
+
+fails_within_minutes() {
+    # true if the current run of consecutive failures started within N
+    # minutes of now (guards against "3 failures over 3 days" ever reading
+    # as an escalation).
+    local unit="$1" minutes="$2" f first
+    f="$(fails_file "$unit")"
+    [ -s "$f" ] || return 1
+    first="$(head -n1 "$f")"
+    [ $(( $(now) - first )) -le $(( minutes * 60 )) ]
+}
+
+# --- textfile metrics --------------------------------------------------------
+# Accumulator files, one counter per metric-name+labelset, summed into the
+# .prom file on every run. Atomic write via tmp+rename, the node_exporter
+# textfile convention.
+inc_counter() {
+    local name="$1" unit="${2:-}" f
+    f="${WD_RUN_DIR}/counter.${name}.${unit}"
+    local v=0
+    [ -f "$f" ] && v="$(cat "$f")"
+    echo $(( v + 1 )) > "$f"
+}
+get_counter() {
+    local name="$1" unit="${2:-}" f
+    f="${WD_RUN_DIR}/counter.${name}.${unit}"
+    [ -f "$f" ] && cat "$f" || echo 0
+}
+
+write_textfile_metrics() {
+    if [ "$TEXTFILE_OK" -ne 1 ]; then
+        log_err "textfile directory ${TEXTFILE_DIR} missing or unwritable; journal is the only notification channel this pass"
+        return 0
+    fi
+    local tmp="${TEXTFILE_DIR}/fly_watchdog.prom.$$"
+    {
+        echo "# HELP fly_watchdog_restarts_total Restarts issued because that unit's own check failed (cascade restarts from another unit's escalation are counted only in fly_watchdog_escalations_total, not here)."
+        echo "# TYPE fly_watchdog_restarts_total counter"
+        for unit in flysim flystage flycast mediamtx flypush flystage-web; do
+            echo "fly_watchdog_restarts_total{unit=\"${unit}\"} $(get_counter restarts_total "$unit")"
+        done
+        # Check 7's own restart reason, kept as a separate labelset on the
+        # same metric family rather than folded into the flypush line above:
+        # a progress-stall restart (check 5) and an age-guard restart (check
+        # 7) are different failure modes and dashboards/alerts want to tell
+        # them apart.
+        echo "fly_watchdog_restarts_total{unit=\"flypush\",reason=\"age\"} $(get_counter restarts_total_age flypush)"
+        echo "# HELP fly_watchdog_escalations_total Chain restarts / reboots issued by fly-watchdog."
+        echo "# TYPE fly_watchdog_escalations_total counter"
+        echo "fly_watchdog_escalations_total $(get_counter escalations_total)"
+        echo "# HELP fly_watchdog_disk_critical 1 when /srv/fly/media is above the 95% guard."
+        echo "# TYPE fly_watchdog_disk_critical gauge"
+        echo "fly_watchdog_disk_critical $(cat "${WD_RUN_DIR}/disk_critical" 2>/dev/null || echo 0)"
+        echo "# HELP fly_watchdog_encoder_degraded 1 when flycast is running on a different video encoder than /etc/fly/fly.env asked for (i.e. the nvenc -> x264 fallback fired). -1 when the encoder state could not be read at all."
+        echo "# TYPE fly_watchdog_encoder_degraded gauge"
+        echo "fly_watchdog_encoder_degraded $(cat "${WD_RUN_DIR}/encoder_degraded" 2>/dev/null || echo -1)"
+        # Check 9 (infra/docs/capture-freeze.md). fly_capture_identical_frames
+        # is -1 until the first probe completes, the same "unknown, not
+        # broken" convention fly_watchdog_encoder_degraded uses; a value at or
+        # above 80 (of ~90) means the ENCODER OUTPUT is repeating frames,
+        # which is the frozen broadcast this check exists to see.
+        echo "# HELP fly_capture_freeze_restarts_total flycast restarts issued because the encoder output was repeating frames (capture freeze)."
+        echo "# TYPE fly_capture_freeze_restarts_total counter"
+        echo "fly_capture_freeze_restarts_total $(get_counter capture_freeze_restarts)"
+        echo "# HELP fly_capture_identical_frames Identical consecutive frames found in the last 3 s of the newest segment by the most recent freeze probe (of roughly 90). -1 before the first probe."
+        echo "# TYPE fly_capture_identical_frames gauge"
+        echo "fly_capture_identical_frames $(cat "${WD_RUN_DIR}/freeze.identical" 2>/dev/null || echo -1)"
+        # Check 10 (infra/docs/macros-traps.md). fly_loop_suspected is a
+        # report, not an alarm on a broken process: a 1 means the fly is very
+        # probably going in circles and a human or a review agent should look,
+        # and NOTHING in this script acts on it. The three window gauges read
+        # -1 until the first probe completes (the same "unknown, not broken"
+        # convention as fly_watchdog_encoder_degraded), while the flag itself
+        # starts at 0, because a 0/1 flag carrying -1 reads as a loop to every
+        # alert expression that would ever use it.
+        echo "# HELP fly_loop_suspected 1 when the last check-10 probe found a short macro cycle repeating with no growth in the exploration count. Report only: the watchdog never restarts or presses anything for this."
+        echo "# TYPE fly_loop_suspected gauge"
+        echo "fly_loop_suspected $(cat "${WD_RUN_DIR}/loop.suspected" 2>/dev/null || echo 0)"
+        echo "# HELP fly_loop_period Length in macro labels of the shortest repeating block found at the end of the window (0 when nothing repeats, -1 before the first probe)."
+        echo "# TYPE fly_loop_period gauge"
+        echo "fly_loop_period $(cat "${WD_RUN_DIR}/loop.period" 2>/dev/null || echo -1)"
+        echo "# HELP fly_loop_repeats How many times that block repeats (0 when nothing repeats, -1 before the first probe)."
+        echo "# TYPE fly_loop_repeats gauge"
+        echo "fly_loop_repeats $(cat "${WD_RUN_DIR}/loop.repeats" 2>/dev/null || echo -1)"
+        echo "# HELP fly_loop_distinct_macros Distinct macro names started in the window (-1 before the first probe)."
+        echo "# TYPE fly_loop_distinct_macros gauge"
+        echo "fly_loop_distinct_macros $(cat "${WD_RUN_DIR}/loop.distinct" 2>/dev/null || echo -1)"
+        echo "# HELP fly_places_delta Growth in game.uniqueLocations (the exploration count) since the previous check-10 probe. -1 when there is no previous probe to compare against."
+        echo "# TYPE fly_places_delta gauge"
+        echo "fly_places_delta $(cat "${WD_RUN_DIR}/loop.places_delta" 2>/dev/null || echo -1)"
+        # Section 13.1 (docs/design/macros.md), the operator on stream: "sometimes the
+        # macro buttons disappear and everything just hangs there". An empty
+        # pad is the doctrine working — nothing presses for the fly, so a scene
+        # with no button waits — and it looks exactly like a hang, so it is
+        # published and exported and NOTHING here acts on it. -1 before the
+        # first probe and for a service that does not publish game.padEmptyMs.
+        echo "# HELP fly_pad_empty_seconds Whole seconds the macro pad has had nothing on it in a playable scene, from game.padEmptyMs. 0 when something is bound or a macro is running; -1 before the first probe. Report only: the watchdog never restarts or presses anything for this."
+        echo "# TYPE fly_pad_empty_seconds gauge"
+        echo "fly_pad_empty_seconds $(cat "${WD_RUN_DIR}/loop.pad_empty_seconds" 2>/dev/null || echo -1)"
+        echo "# HELP fly_watchdog_last_run_seconds Unix time of the last completed watchdog pass."
+        echo "# TYPE fly_watchdog_last_run_seconds gauge"
+        echo "fly_watchdog_last_run_seconds $(now)"
+    } > "$tmp"
+    mv -f "$tmp" "${TEXTFILE_DIR}/fly_watchdog.prom"
+}
+
+# --- restart / escalation ----------------------------------------------------
+
+restart_unit() {
+    local unit="$1"
+    log_err "restarting ${unit}.service"
+    sudo /usr/bin/systemctl restart "${unit}.service" || log_err "restart of ${unit}.service FAILED"
+}
+
+# escalate UNIT CHAIN_UNIT... — called after record_fail. Applies the
+# three/five consecutive-failure rules from section 3.
+escalate() {
+    local unit="$1"
+    shift
+    local chain=("$@")
+
+    restart_unit "$unit"
+
+    if fails_within_minutes "$unit" 10 && [ "$(fail_count "$unit")" -ge 3 ]; then
+        log_err "${unit}: 3+ consecutive failures within 10m, restarting dependent chain: ${chain[*]:-<none>}"
+        inc_counter "escalations_total"
+        local dep
+        for dep in "${chain[@]:-}"; do
+            [ -n "$dep" ] && restart_unit "$dep"
+        done
+    fi
+
+    if [ "$(fail_count "$unit")" -ge 5 ]; then
+        maybe_reboot "$unit"
+    fi
+}
+
+maybe_reboot() {
+    local unit="$1"
+    local last_reboot_file="${WD_STATE_DIR}/last-reboot"
+    local history_file="${WD_STATE_DIR}/reboot-history"
+    local n
+    n="$(now)"
+
+    if [ -f "$last_reboot_file" ]; then
+        local last
+        last="$(cat "$last_reboot_file")"
+        if [ $(( n - last )) -lt 3600 ]; then
+            log_err "${unit}: 5+ consecutive failures, but last reboot was $(( (n - last) / 60 ))m ago (<60m gate); alarming only"
+            inc_counter "escalations_total"
+            return 0
+        fi
+    fi
+
+    touch "$history_file"
+    # Keep only reboot timestamps from the last 6 hours, then count them.
+    awk -v cutoff="$(( n - 21600 ))" '$1 >= cutoff' "$history_file" > "${history_file}.tmp" 2>/dev/null || true
+    mv -f "${history_file}.tmp" "$history_file" 2>/dev/null || true
+    local recent
+    recent="$(wc -l < "$history_file" 2>/dev/null | tr -d ' ')"
+    recent="${recent:-0}"
+
+    if [ "$recent" -ge 3 ]; then
+        log_err "${unit}: 5+ consecutive failures AND 3+ reboots in 6h — hard stop, alarming only, NOT rebooting (a reboot loop on a host that also runs another service's production workload is worse than a dead demo)"
+        inc_counter "escalations_total"
+        return 0
+    fi
+
+    log_err "${unit}: 5+ consecutive failures, rebooting (reboot #$(( recent + 1 )) in the last 6h)"
+    inc_counter "escalations_total"
+    echo "$n" >> "$history_file"
+    echo "$n" > "$last_reboot_file"
+    sudo /usr/sbin/reboot
+}
+
+is_active() {
+    systemctl is-active --quiet "$1"
+}
+is_enabled() {
+    systemctl is-enabled --quiet "$1" 2>/dev/null
+}
+
+# ============================================================================
+# Check 1: flysim — /healthz 200 and hot-state mtime age < 30s.
+# ============================================================================
+check_flysim() {
+    local ok=1
+    if ! curl -fsS -o /dev/null "${FLY_CONTROL_URL}/healthz"; then
+        ok=0
+    fi
+    if [ -e "$FLY_STATE_HOT" ]; then
+        local age
+        age=$(( $(now) - $(stat -c %Y "$FLY_STATE_HOT" 2>/dev/null || echo 0) ))
+        [ "$age" -ge 30 ] && ok=0
+    else
+        ok=0
+    fi
+    if [ "$ok" -eq 1 ]; then
+        record_ok flysim
+    else
+        record_fail flysim
+        escalate flysim flystage flycast
+    fi
+}
+
+# ============================================================================
+# Check 2: flystage — flysim's frames_sent_total / feed_clients from the
+# read-only metrics listener (infra.md section 5; not superseded by the
+# feed/control contracts). Flat frames counter across two passes, or zero
+# clients, means the page is dead/frozen even though Chromium is alive.
+# ============================================================================
+check_flystage() {
+    local metrics frames clients ok=1
+    metrics="$(curl -fsS "${FLY_METRICS_URL}/metrics" 2>/dev/null || true)"
+    if [ -z "$metrics" ]; then
+        ok=0
+    else
+        frames="$(echo "$metrics" | awk '/^fly_frames_sent_total/ {print $2; exit}')"
+        clients="$(echo "$metrics" | awk '/^fly_feed_clients/ {print $2; exit}')"
+        frames="${frames:-0}"
+        clients="${clients:-0}"
+
+        local prev_file="${WD_RUN_DIR}/flystage.prev_frames"
+        local prev=""
+        [ -f "$prev_file" ] && prev="$(cat "$prev_file")"
+        echo "$frames" > "$prev_file"
+
+        # clients cast to an integer comparison; awk numbers may carry a
+        # decimal point (Prometheus text format).
+        if [ "$(printf '%.0f' "$clients")" -eq 0 ] 2>/dev/null; then
+            ok=0
+        elif [ -n "$prev" ] && [ "$prev" = "$frames" ]; then
+            ok=0
+        fi
+    fi
+    if [ "$ok" -eq 1 ]; then
+        record_ok flystage
+    else
+        record_fail flystage
+        escalate flystage flycast
+    fi
+}
+
+# ============================================================================
+# Check 3: flycast — frame= in its progress file advancing across two
+# passes.
+# ============================================================================
+progress_frame() {
+    local f="$1"
+    [ -f "$f" ] || { echo ""; return; }
+    awk -F= '/^frame=/ {v=$2} END {print v}' "$f"
+}
+
+check_flycast() {
+    local frame ok=1
+    frame="$(progress_frame "$FLY_PROGRESS_FLYCAST")"
+    if [ -z "$frame" ]; then
+        ok=0
+    else
+        local prev_file="${WD_RUN_DIR}/flycast.prev_frame"
+        local prev=""
+        [ -f "$prev_file" ] && prev="$(cat "$prev_file")"
+        echo "$frame" > "$prev_file"
+        [ -n "$prev" ] && [ "$prev" = "$frame" ] && ok=0
+    fi
+    if [ "$ok" -eq 1 ]; then
+        record_ok flycast
+    else
+        record_fail flycast
+        escalate flycast
+    fi
+}
+
+# ============================================================================
+# Check 4: mediamtx — GET /v3/paths/get/live/fly shows ready:true and
+# bytesReceived advancing. Else restart mediamtx, then flycast.
+# ============================================================================
+check_mediamtx() {
+    local body ready bytes ok=1
+    body="$(curl -fsS "${MEDIAMTX_API}/v3/paths/get/live/fly" 2>/dev/null || true)"
+    if [ -z "$body" ]; then
+        ok=0
+    else
+        ready="$(echo "$body" | jq -r '.ready // false' 2>/dev/null || echo false)"
+        bytes="$(echo "$body" | jq -r '.bytesReceived // 0' 2>/dev/null || echo 0)"
+        if [ "$ready" != "true" ]; then
+            ok=0
+        else
+            local prev_file="${WD_RUN_DIR}/mediamtx.prev_bytes"
+            local prev=""
+            [ -f "$prev_file" ] && prev="$(cat "$prev_file")"
+            echo "$bytes" > "$prev_file"
+            [ -n "$prev" ] && [ "$prev" = "$bytes" ] && ok=0
+        fi
+    fi
+    if [ "$ok" -eq 1 ]; then
+        record_ok mediamtx
+    else
+        record_fail mediamtx
+        # Explicit two-step per section 3 point 4, distinct from the
+        # generic chain escalation: mediamtx then flycast, every time,
+        # not gated on the 3-consecutive-failure threshold, because a
+        # dead mediamtx always needs flycast bounced (it will be tee-ing
+        # into a closed RTMP publisher).
+        restart_unit mediamtx
+        restart_unit flycast
+    fi
+}
+
+# ============================================================================
+# Check 5: flypush — frame= in its own progress file advancing. Only runs
+# when flypush is enabled (PUSH_TARGET=twitch); local mode leaves it
+# disabled and this check is skipped, matching "Twitch-side liveness is
+# checked centrally [on the metrics container], not here, so two containers do not both
+# poll Helix."
+# ============================================================================
+check_flypush() {
+    is_enabled flypush.service || return 0
+
+    local frame ok=1
+    frame="$(progress_frame "$FLY_PROGRESS_FLYPUSH")"
+    if [ -z "$frame" ]; then
+        ok=0
+    else
+        local prev_file="${WD_RUN_DIR}/flypush.prev_frame"
+        local prev=""
+        [ -f "$prev_file" ] && prev="$(cat "$prev_file")"
+        echo "$frame" > "$prev_file"
+        [ -n "$prev" ] && [ "$prev" = "$frame" ] && ok=0
+    fi
+    if [ "$ok" -eq 1 ]; then
+        record_ok flypush
+    else
+        record_fail flypush
+        escalate flypush
+    fi
+}
+
+# ============================================================================
+# Check 6: disk guard. >85% triggers immediate prune; >95% drops the
+# recording leg while keeping the stream up, and raises the alarm metric.
+#
+# Known gap (documented, not silently dropped): flycast.service runs the
+# single fixed ffmpeg command from docs/design/infra.md section 3, which
+# has no "no-recording" mode. At 95% this check runs fly-retention in its
+# most aggressive pass and sets the alarm metric; it does NOT currently
+# reconfigure flycast to stop writing segments, because that needs a
+# second flycast command variant that is out of scope for this infra pass.
+# See docs/runbook.md "known gaps".
+# ============================================================================
+check_disk() {
+    local pct
+    pct="$(df --output=pcent "$FLY_MEDIA_DIR" 2>/dev/null | tail -n1 | tr -d '% ')"
+    pct="${pct:-0}"
+
+    if [ "$pct" -ge 95 ]; then
+        echo 1 > "${WD_RUN_DIR}/disk_critical"
+        log_err "disk guard: ${FLY_MEDIA_DIR} at ${pct}% (>=95%), forcing aggressive retention and alarming"
+        [ -x "$RETENTION_BIN" ] && "$RETENTION_BIN" --aggressive || true
+    elif [ "$pct" -ge 85 ]; then
+        echo 0 > "${WD_RUN_DIR}/disk_critical"
+        log_info "disk guard: ${FLY_MEDIA_DIR} at ${pct}% (>=85%), triggering retention"
+        [ -x "$RETENTION_BIN" ] && "$RETENTION_BIN" || true
+    else
+        echo 0 > "${WD_RUN_DIR}/disk_critical"
+    fi
+}
+
+# ============================================================================
+# Check 7: process age guard. flypush uptime above 24h forces a restart
+# even if the 23h timer misfired — the local belt for the 48h Twitch cap.
+# ============================================================================
+check_process_age() {
+    is_enabled flypush.service || return 0
+    is_active flypush.service || return 0
+
+    local started epoch age
+    started="$(systemctl show -p ActiveEnterTimestamp --value flypush.service 2>/dev/null)"
+    [ -n "$started" ] || return 0
+    epoch="$(date -d "$started" +%s 2>/dev/null || echo 0)"
+    [ "$epoch" -gt 0 ] || return 0
+    age=$(( $(now) - epoch ))
+    if [ "$age" -ge 86400 ]; then
+        log_err "process age guard: flypush has been up ${age}s (>=24h), forcing restart ahead of the 48h Twitch cap"
+        restart_unit flypush
+        # Not record_fail/escalate: this is not a failed health check, it is
+        # a scheduled preventative restart, so it gets its own counter
+        # (unit="flypush",reason="age" in write_textfile_metrics) rather
+        # than feeding the consecutive-failure/escalation machinery above.
+        inc_counter "restarts_total_age" "flypush"
+    fi
+}
+
+# ============================================================================
+# Check 8: encoder backend (docs/design/gpu.md section 5). Reads the
+# fly_encoder_backend series that bin/flycast-launch writes — it is the only
+# thing that knows which encoder actually opened — and compares it against
+# what /etc/fly/fly.env asked for.
+#
+# This check deliberately takes NO remediation. If FLY_ENCODER=nvenc and
+# flycast is on x264, the fallback did its job: the stream is up, at the
+# cost of about two cores. Restarting flycast to retry nvenc would flap the
+# stream every 60 s for as long as the GPU workload in the neighbouring container is holding the VRAM,
+# which is worse than a degraded encode. So it logs, exports a gauge, and
+# leaves the decision to a human with the runbook open.
+#
+# It does not duplicate fly_encoder_backend into this file's own .prom:
+# node_exporter refuses duplicate series across textfile collectors, and
+# flycast-launch's file is already scraped.
+# ============================================================================
+encoder_live_backend() {
+    [ -f "$FLY_ENCODER_METRIC" ] || return 0
+    awk '/^fly_encoder_backend\{/ && $NF == 1 {
+             if (match($0, /backend="[^"]+"/)) {
+                 print substr($0, RSTART + 9, RLENGTH - 10)
+                 exit
+             }
+         }' "$FLY_ENCODER_METRIC" 2>/dev/null || true
+}
+
+encoder_configured_backend() {
+    [ -f "$FLY_ENV_FILE" ] || return 0
+    awk -F= '/^FLY_ENCODER=/ { print $2; exit }' "$FLY_ENV_FILE" 2>/dev/null | tr -d ' \r' || true
+}
+
+check_encoder() {
+    local live want
+    live="$(encoder_live_backend)"
+    want="$(encoder_configured_backend)"
+
+    if [ -z "$live" ]; then
+        # No metric yet (flycast has never started, or the textfile dir is
+        # not writable). Unknown, not broken.
+        echo -1 > "${WD_RUN_DIR}/encoder_degraded"
+        return 0
+    fi
+    if [ -z "$want" ] || [ "$live" = "$want" ]; then
+        echo 0 > "${WD_RUN_DIR}/encoder_degraded"
+        return 0
+    fi
+
+    echo 1 > "${WD_RUN_DIR}/encoder_degraded"
+    log_err "encoder degraded: flycast is running '${live}' but /etc/fly/fly.env asks for '${want}' — the nvenc fallback fired." \
+            "Not restarting (that would flap the stream while the neighbouring GPU container holds the VRAM). See docs/runbook.md 'GPU driver version lockstep'" \
+            "and check: nvidia-smi --query-gpu=memory.used,utilization.encoder --format=csv"
+}
+
+# ============================================================================
+# Check 9: capture freeze (infra/docs/capture-freeze.md).
+#
+# The failure this catches is invisible to every check above. flycast's ffmpeg
+# can come up with its x11grab leg permanently starved: about one new picture
+# per second and 29 repeats, while the audio is perfect, `frame=` in the
+# progress file advances at exactly 30 fps (so check 3 is happy), dup/drop
+# stay at 0, and the page itself is fine (so check 2 is happy). Measured on
+# The release container on 2026-09-16: 3 h 50 min of frozen broadcast from the 06:35:52 UTC
+# container boot until a manual `systemctl restart flycast` at 10:26 UTC.
+# The ordering fix (flycast.service's After=flystage.service plus
+# bin/wait-for-stage) closes the window that was reproduced on the dev container; this
+# check is the belt, because the mechanism inside ffmpeg is NOT established
+# and nothing here proves the ordering gate closes every path into it.
+#
+# The instrument matters more than the threshold, and getting it wrong is how
+# this bug survived a morning: the count MUST come from the ENCODER OUTPUT
+# (the newest segment, which is the same bytes MediaMTX and Twitch get), never
+# from an independent x11grab of :99 — the display was updating normally the
+# whole time.
+#
+# Cost control: every 5 minutes (not every 60 s pass), 3 s of decode at
+# 320x240-ish cost, `nice -n 10`, and pinned with taskset to flycast's own
+# AllowedCPUs so the probe cannot touch flysim's cores. The deploy lesson
+# (docs/stream-mvp-plan.md, 2026-09-16) is that unpinned in-container work is
+# what pushes sim lag up.
+# ============================================================================
+
+# The cpus flycast itself is confined to (05-deploy.sh section 3b writes this
+# drop-in from CPUSET/RAYON_THREADS/ENCODER_CORES). Empty when no partition is
+# configured, in which case the probe runs unpinned — same no-op rule the
+# deploy uses.
+encoder_cpus() {
+    [ -f "$FLYCAST_CPUSET_DROPIN" ] || return 0
+    awk -F= '/^AllowedCPUs=/ { gsub(/[ \t\r]/, "", $2); print $2; exit }' "$FLYCAST_CPUSET_DROPIN" 2>/dev/null || true
+}
+
+newest_segment() {
+    [ -d "$FLY_REC_DIR" ] || return 0
+    # -printf '%T@ %p' then sort: no `ls` parsing, and it tolerates a
+    # directory with thousands of segments.
+    find "$FLY_REC_DIR" -maxdepth 1 -type f -name '*.ts' -printf '%T@ %p\n' 2>/dev/null \
+        | sort -nr | head -n1 | cut -d' ' -f2- || true
+}
+
+# freeze_probe SEGMENT — echoes "IDENTICAL TOTAL" for the last
+# WD_FREEZE_SECONDS of SEGMENT. IDENTICAL counts `Parsed_blackframe` report
+# lines (each carries `] frame:`); with tblend's difference output, a frame
+# that reads as black means it was identical to the one before it. TOTAL comes
+# from ffmpeg's own last stats line, so a short decode can be told apart from
+# a still picture.
+freeze_probe() {
+    local seg="$1" out identical total pin=() nice_pre=() cpus ffmpeg_bin="$FFMPEG"
+    if [ ! -x "$ffmpeg_bin" ]; then
+        ffmpeg_bin="$(command -v ffmpeg 2>/dev/null || true)"
+        [ -n "$ffmpeg_bin" ] || return 1
+    fi
+
+    cpus="$(encoder_cpus)"
+    [ -n "$cpus" ] && command -v taskset >/dev/null 2>&1 && pin=(taskset -c "$cpus")
+    command -v nice >/dev/null 2>&1 && nice_pre=(nice -n 10)
+    # A probe that hangs must not hold the watchdog pass open; a missing
+    # `timeout` just means no guard.
+    local guard=()
+    command -v timeout >/dev/null 2>&1 && guard=(timeout 60)
+
+    out="$("${pin[@]}" "${nice_pre[@]}" "${guard[@]}" "$ffmpeg_bin" -hide_banner -nostdin \
+            -sseof "-$(( WD_FREEZE_SECONDS + 1 ))" -i "$seg" -t "$WD_FREEZE_SECONDS" \
+            -vf "tblend=all_mode=difference,blackframe=amount=99.5:threshold=8" \
+            -an -f null - 2>&1)" || return 1
+
+    identical="$(printf '%s\n' "$out" | grep -c 'Parsed_blackframe.*] frame:' || true)"
+    total="$(printf '%s\n' "$out" | grep -oE 'frame= *[0-9]+' | tail -n1 | grep -oE '[0-9]+' || true)"
+    echo "${identical:-0} ${total:-0}"
+}
+
+check_capture_freeze() {
+    local last_file="${WD_RUN_DIR}/freeze.last_probe" last=0 n
+    n="$(now)"
+    [ -f "$last_file" ] && last="$(cat "$last_file" 2>/dev/null || echo 0)"
+    [ $(( n - ${last:-0} )) -ge "$WD_FREEZE_INTERVAL" ] || return 0
+
+    # Only meaningful while flycast is actually running and writing: a stopped
+    # encoder leaves a static tail on the last segment, and restarting flycast
+    # because the operator stopped it would be its own incident.
+    is_active flycast.service || return 0
+
+    local seg
+    seg="$(newest_segment)"
+    if [ -z "$seg" ]; then
+        return 0
+    fi
+    local age
+    age=$(( n - $(stat -c %Y "$seg" 2>/dev/null || echo 0) ))
+    if [ "$age" -gt "$WD_FREEZE_SEGMENT_MAX_AGE" ]; then
+        log_info "capture freeze probe: newest segment ${seg} is ${age}s old, not being written — skipping"
+        return 0
+    fi
+
+    echo "$n" > "$last_file"
+
+    local result identical total
+    if ! result="$(freeze_probe "$seg")"; then
+        log_err "capture freeze probe: ffmpeg probe of ${seg} failed — check 9 is blind this pass (is ffmpeg installed?)"
+        return 0
+    fi
+    read -r identical total <<< "$result"
+    echo "$identical" > "${WD_RUN_DIR}/freeze.identical"
+
+    # A short decode under-counts, which can only ever HIDE a freeze, never
+    # invent one — the safe direction for something that restarts a live
+    # broadcast. Say so and do not compare.
+    if [ "${total:-0}" -lt "$WD_FREEZE_MIN_FRAMES" ]; then
+        log_info "capture freeze probe: only ${total} frames decoded from ${seg} (identical ${identical}), below ${WD_FREEZE_MIN_FRAMES} — inconclusive, not counted"
+        return 0
+    fi
+
+    local run_file="${WD_RUN_DIR}/freeze.consecutive" run=0
+    [ -f "$run_file" ] && run="$(cat "$run_file" 2>/dev/null || echo 0)"
+    run="${run:-0}"
+
+    if [ "$identical" -lt "$WD_FREEZE_IDENTICAL" ]; then
+        [ "$run" -gt 0 ] && log_info "capture freeze probe: ${identical}/${total} identical frames in ${seg} — healthy, clearing the run of ${run}"
+        echo 0 > "$run_file"
+        return 0
+    fi
+
+    run=$(( run + 1 ))
+    echo "$run" > "$run_file"
+    log_err "capture freeze probe: ${identical} of ${total} frames in ${seg} are identical to the one before them (threshold ${WD_FREEZE_IDENTICAL}) — this is the encoder output, so the broadcast is frozen. Consecutive bad probes: ${run}."
+
+    # One bad probe is not enough: a legitimately still page (a long caption
+    # hold with the fly off) could read high once.
+    [ "$run" -ge 2 ] || return 0
+
+    local restart_file="${WD_RUN_DIR}/freeze.last_restart" last_restart=0
+    [ -f "$restart_file" ] && last_restart="$(cat "$restart_file" 2>/dev/null || echo 0)"
+    if [ $(( n - ${last_restart:-0} )) -lt "$WD_FREEZE_COOLDOWN" ]; then
+        log_err "capture freeze: still frozen, but flycast was already restarted for this $(( (n - last_restart) / 60 ))m ago (<$(( WD_FREEZE_COOLDOWN / 60 ))m gate) — alarming only. If it did not clear, the ordering gate did not help: read infra/docs/capture-freeze.md and check whether a pulse client attached during ffmpeg's first seconds."
+        return 0
+    fi
+
+    log_err "capture freeze: ${run} consecutive probes at or above ${WD_FREEZE_IDENTICAL} identical frames — restarting flycast ONCE (next restart for this reason no sooner than $(( WD_FREEZE_COOLDOWN / 60 ))m from now)"
+    echo "$n" > "$restart_file"
+    echo 0 > "$run_file"
+    inc_counter "capture_freeze_restarts"
+    restart_unit flycast
+}
+
+# ============================================================================
+# Check 10: loop suspected (infra/docs/macros-traps.md).
+#
+# The failure this reports is the one nothing else in this file can see. In
+# macros mode the fly can spend hours pressing a short cycle of macros that
+# each SUCCEED — `GO NPC, GO OUT, NEXT, GO FRONTIER` every ~3 brain seconds
+# was the live Viridian loop of 2026-09-17 — while standing on the same two
+# tiles. Every check above stays green throughout: the sim advances (check 1),
+# the page draws (check 2), the encoder encodes (checks 3, 4, 9). The
+# stuck-o-meter climbs and nothing acts on it, because the ratchet spends its
+# rollback budget and then refuses by contract (macros-traps.md row 22: "it is
+# why the macro layer must break its own loops, and why `trap_hunt` exists").
+#
+# THIS CHECK NEVER ACTS. It does not restart flysim, it does not press
+# anything, it does not touch the game, and it does not feed the
+# record_fail/escalate machinery. A loop is a behavioural judgement about a
+# live brain, and the remedy is a change to what a macro's target choice
+# considers — never a bounce, which would restore a checkpoint straight back
+# into the same loop with the stream interrupted for nothing. So it measures,
+# exports gauges, logs one line, and writes ${WD_LOOP_REPORT} for a human or a
+# review agent to pick up (infra/docs/runbook.md "loop suspected"). Deciding
+# is somebody else's job.
+#
+# The instrument is `examples/trap_hunt.rs`'s, narrowed to one window: the
+# `macro` start events of the last WD_LOOP_WINDOW_MS BRAIN milliseconds (brain
+# time, not wall time — a box running under 1.0x realtime would otherwise get
+# a shorter window than the thresholds were measured over), the distinct macro
+# names in it, and the shortest block up to WD_LOOP_MAX_PERIOD that repeats at
+# the end of the sequence. Start events only: a start is one decision, and
+# counting the `done` beside it would double every sequence and halve every
+# period. They are the same names trap_hunt prints, so its numbers and these
+# are comparable.
+#
+# The tile rule is what separates a loop from a legitimately repeating
+# explorer (macros-traps.md: `GO FRONTIER` x19 over 93 tiles is a walk longer
+# than the frame cap, not a trap), and the watchdog has no tile counter. The
+# coarser thing /status.json does publish is the exploration count — and NOTE
+# ITS NAME: the field is `game.uniqueLocations` (docs/feed-protocol.md), not
+# `places`, which is only what the metric here is called. No growth in it
+# across two probes AND a short repeating sequence is the flag; either alone
+# is not, which is deliberate: the false positive of a watchdog crying loop at
+# a fly that is simply walking a long way is how this report would get
+# ignored.
+#
+# Cost: one `tail`, one jq per pass at most every 5 minutes, and no decode.
+# ============================================================================
+
+# loop_status_fields — one fetch of /status.json, one parse. Echoes
+# uniqueLocations, map, milestone rank/label/next/sinceSeconds, macroMode and
+# padEmptyMs, in that order, separated by US (\037); an empty string when the
+# read-only listener does not answer or the body is not the JSON it should be.
+#
+# padEmptyMs is section 13.1's report-only reading of "the macro buttons
+# disappeared and everything hangs" (docs/design/macros.md). It is EMPTY, not
+# zero, when the service predates the field — which is the same "unknown, not
+# broken" convention the -1 gauges use, and why nothing here defaults it to 0.
+#
+# US and not a tab, here and in loop_analyze below, because `read` collapses
+# runs of IFS WHITESPACE — and a tab is IFS whitespace. With tabs, a null
+# `game.map` or a window with nothing repeating (an empty field either way)
+# silently shifts every field after it by one, which is how the sequence in
+# the journal line first came out as the twelve-name context tail.
+loop_status_fields() {
+    local body
+    body="$(curl -fsS --max-time 5 "$FLY_STATUS_URL" 2>/dev/null || true)"
+    [ -n "$body" ] || return 0
+    printf '%s' "$body" | jq -r '
+        [ (.game.uniqueLocations // ""),
+          (.game.map // ""),
+          (.milestone.rank // ""),
+          (.milestone.label // ""),
+          (.milestone.next // ""),
+          (.milestone.sinceSeconds // ""),
+          (.game.macroMode // "raw"),
+          (.game.padEmptyMs // "") ] | map(tostring) | join("\u001f")' 2>/dev/null || true
+}
+
+# loop_macro_stream — "<brainMs>\t<label>" for every `macro` event in the tail
+# of the event log, oldest first. `fromjson? // empty` drops a torn last line
+# (the writer is appending while this reads) instead of failing the pass.
+loop_macro_stream() {
+    [ -f "$FLY_EVENT_LOG" ] || return 0
+    tail -n "$WD_LOOP_TAIL_LINES" "$FLY_EVENT_LOG" 2>/dev/null \
+        | jq -r 'fromjson? // empty | select(.kind == "macro") | "\(.brainMs)\t\(.label)"' -R 2>/dev/null \
+        || true
+}
+
+# loop_analyze — reads that stream on stdin and echoes one tab-separated line:
+#
+#   total US distinct US topCount US period US repeats US windowFrom US
+#   windowTo US topName US block US tail
+#
+# `total` counts start events inside the window, `period`/`repeats` describe
+# the shortest repeating block at the END of the sequence (0/0 when nothing
+# repeats), `block` is that block comma-joined, and `tail` is the last 12
+# names for context. The window ends at the newest macro event's own brain
+# clock, not at `now`: brain time is the only clock the event log carries.
+loop_analyze() {
+    awk -F'\t' -v win="$WD_LOOP_WINDOW_MS" -v maxp="$WD_LOOP_MAX_PERIOD" '
+    { ms[NR] = $1 + 0; lbl[NR] = $2; n = NR }
+    END {
+        if (n == 0) { printf "0\0370\0370\0370\0370\0370\0370\037\037\037\n"; exit }
+        to = ms[n]; from = to - win
+        k = 0; distinct = 0; topn = 0; top = ""
+        for (i = 1; i <= n; i++) {
+            if (ms[i] < from) continue
+            if (lbl[i] !~ / start$/) continue
+            name = lbl[i]; sub(/ start$/, "", name)
+            seq[++k] = name
+            if (!(name in cnt)) { cnt[name] = 0; distinct++ }
+            cnt[name]++
+            if (cnt[name] > topn) { topn = cnt[name]; top = name }
+        }
+        period = 0; repeats = 0
+        for (p = 1; p <= maxp && p * 2 <= k; p++) {
+            r = 1
+            while ((r + 1) * p <= k) {
+                same = 1
+                for (j = 0; j < p; j++) {
+                    if (seq[k - j] != seq[k - r * p - j]) { same = 0; break }
+                }
+                if (!same) break
+                r++
+            }
+            if (r >= 2) { period = p; repeats = r; break }
+        }
+        block = ""
+        for (j = period; j >= 1; j--) block = block (block == "" ? "" : ", ") seq[k - j + 1]
+        tailstr = ""
+        start = k - 11; if (start < 1) start = 1
+        for (j = start; j <= k; j++) tailstr = tailstr (tailstr == "" ? "" : ", ") seq[j]
+        printf "%d\037%d\037%d\037%d\037%d\037%d\037%d\037%s\037%s\037%s\n", \
+            k, distinct, topn, period, repeats, from, to, top, block, tailstr
+    }'
+}
+
+check_loop() {
+    local last_file="${WD_RUN_DIR}/loop.last_probe" last=0 n
+    n="$(now)"
+    [ -f "$last_file" ] && last="$(cat "$last_file" 2>/dev/null || echo 0)"
+    [ $(( n - ${last:-0} )) -ge "$WD_LOOP_INTERVAL" ] || return 0
+
+    # A stopped sim leaves a frozen tail on the event log and a frozen
+    # exploration count, which is exactly the shape of a loop. Checks 1 and 3
+    # own "flysim is dead"; this one has nothing to say about it.
+    is_active flysim.service || return 0
+
+    if ! command -v jq >/dev/null 2>&1; then
+        log_err "loop probe: jq is not installed — check 10 is blind"
+        return 0
+    fi
+
+    echo "$n" > "$last_file"
+
+    local places map rank mlabel mnext since macro_mode pad_empty_ms
+    IFS=$'\037' read -r places map rank mlabel mnext since macro_mode pad_empty_ms \
+        <<< "$(loop_status_fields)"
+    # An exploration count that is not a plain integer is no count at all.
+    case "${places:-}" in ''|*[!0-9]*) places="" ;; esac
+
+    # Section 13.1: how long the pad has had nothing on it, in whole seconds.
+    # Report only — this check flags loops, and an empty pad is the opposite
+    # of a loop: it is the fly being offered nothing and correctly waiting.
+    # -1 for a service that does not publish the field, and the fractional
+    # part is dropped rather than rounded, so 999 ms reads 0 s.
+    local pad_empty_seconds=-1
+    case "${pad_empty_ms:-}" in
+        ''|*[!0-9.]*) ;;
+        *) pad_empty_seconds=$(( ${pad_empty_ms%%.*} / 1000 )) ;;
+    esac
+    echo "$pad_empty_seconds" > "${WD_RUN_DIR}/loop.pad_empty_seconds"
+
+    # (c) has the exploration count grown since the PREVIOUS probe. No
+    # previous reading (first probe after a boot) is "unknown", and unknown
+    # never flags: -1 on the gauge and treated as growth below. A restore that
+    # rewinds the count reads as a negative delta, which is not growth — the
+    # sequence rules still have to hold on their own for that to flag.
+    local prev_file="${WD_RUN_DIR}/loop.prev_places" prev="" delta=-1 delta_known=0
+    [ -f "$prev_file" ] && prev="$(cat "$prev_file" 2>/dev/null || true)"
+    case "${prev:-}" in ''|*[!0-9]*) prev="" ;; esac
+    if [ -n "$places" ]; then
+        echo "$places" > "$prev_file"
+        if [ -n "$prev" ]; then
+            delta=$(( places - prev ))
+            delta_known=1
+        fi
+    fi
+    echo "$delta" > "${WD_RUN_DIR}/loop.places_delta"
+
+    local analysis total distinct topn period repeats win_from win_to top block tailstr
+    analysis="$(loop_macro_stream | loop_analyze)"
+    IFS=$'\037' read -r total distinct topn period repeats win_from win_to top block tailstr <<< "$analysis"
+    total="${total:-0}"; distinct="${distinct:-0}"; topn="${topn:-0}"
+    period="${period:-0}"; repeats="${repeats:-0}"
+    echo "$distinct" > "${WD_RUN_DIR}/loop.distinct"
+    echo "$period" > "${WD_RUN_DIR}/loop.period"
+    echo "$repeats" > "${WD_RUN_DIR}/loop.repeats"
+
+    local prev_suspected=0
+    [ -f "${WD_RUN_DIR}/loop.suspected" ] && prev_suspected="$(cat "${WD_RUN_DIR}/loop.suspected" 2>/dev/null || echo 0)"
+    case "${prev_suspected:-}" in ''|*[!0-9]*) prev_suspected=0 ;; esac
+
+    # An empty window is not a loop: raw mode starts no macros at all, and
+    # "a window with no macro in it is not flagged — silence waits, and that
+    # is the doctrine working" (macros-traps.md, the trap hunt). Say nothing,
+    # clear any standing suspicion.
+    local grown=1
+    [ "$delta_known" -eq 1 ] && [ "$delta" -le 0 ] && grown=0
+
+    local suspected=0 reason=""
+    if [ "$total" -gt 0 ] && [ "$grown" -eq 0 ]; then
+        if [ "$distinct" -le "$WD_LOOP_MAX_DISTINCT" ] && [ "$repeats" -ge "$WD_LOOP_MIN_REPEATS" ]; then
+            suspected=1
+            reason="sequence"
+        elif [ "$total" -ge "$WD_LOOP_MIN_EVENTS" ] \
+             && [ $(( topn * 100 )) -ge $(( total * WD_LOOP_DOMINANCE_PCT )) ]; then
+            # One macro and almost nothing else. The floor under it is not in
+            # the spec but is load-bearing: two starts in ten brain minutes are
+            # 100% of a window and mean the fly is barely deciding at all,
+            # which is silence (above), not a loop.
+            suspected=1
+            reason="dominant"
+        fi
+    fi
+    echo "$suspected" > "${WD_RUN_DIR}/loop.suspected"
+
+    local dom_pct=0
+    [ "$total" -gt 0 ] && dom_pct=$(( topn * 100 / total ))
+    # The sequence a reader wants: the repeating block when there is one, the
+    # single dominant name when the dominance rule is what fired.
+    local shown="$block"
+    [ -z "$shown" ] && shown="$top"
+
+    # The report file, written on EVERY completed probe (a review agent polling
+    # it can tell "looked, clear" from "never looked"), atomically, via jq so
+    # every macro name is quoted properly.
+    local tmp="${WD_LOOP_REPORT}.$$"
+    if jq -n \
+        --argjson suspected "$suspected" \
+        --arg reason "$reason" \
+        --argjson at "$n" \
+        --arg atIso "$(date -u -d "@${n}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")" \
+        --arg sequence "$shown" \
+        --arg tail "$tailstr" \
+        --argjson period "$period" \
+        --argjson repeats "$repeats" \
+        --argjson distinct "$distinct" \
+        --argjson total "$total" \
+        --argjson windowFrom "${win_from:-0}" \
+        --argjson windowTo "${win_to:-0}" \
+        --argjson windowMs "$WD_LOOP_WINDOW_MS" \
+        --arg dominant "$top" \
+        --argjson dominantCount "$topn" \
+        --argjson dominantPct "$dom_pct" \
+        --arg places "${places:-}" \
+        --argjson placesDelta "$delta" \
+        --argjson placesDeltaKnown "$delta_known" \
+        --arg map "${map:-}" \
+        --arg rank "${rank:-}" \
+        --arg milestone "${mlabel:-}" \
+        --arg next "${mnext:-}" \
+        --arg sinceSeconds "${since:-}" \
+        --arg macroMode "${macro_mode:-}" \
+        --arg eventLog "$FLY_EVENT_LOG" '
+        {
+          suspected: $suspected,
+          reason: (if $reason == "" then null else $reason end),
+          at: $at, atIso: $atIso,
+          sequence: (if $sequence == "" then [] else ($sequence | split(", ")) end),
+          period: $period, repeats: $repeats,
+          distinctMacros: $distinct,
+          window: {
+            brainMsFrom: $windowFrom, brainMsTo: $windowTo, brainMs: $windowMs,
+            macroStarts: $total,
+            tail: (if $tail == "" then [] else ($tail | split(", ")) end)
+          },
+          dominant: { name: (if $dominant == "" then null else $dominant end),
+                      count: $dominantCount, pct: $dominantPct },
+          places: { uniqueLocations: (($places | tonumber?) // null),
+                    delta: (if $placesDeltaKnown == 1 then $placesDelta else null end) },
+          map: (($map | tonumber?) // null),
+          milestone: { rank: (($rank | tonumber?) // null),
+                       label: (if $milestone == "" then null else $milestone end),
+                       next: (if $next == "" then null else $next end),
+                       sinceSeconds: (($sinceSeconds | tonumber?) // null) },
+          macroMode: (if $macroMode == "" then null else $macroMode end),
+          eventLog: $eventLog,
+          action: "none"
+        }' > "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$WD_LOOP_REPORT"
+    else
+        rm -f "$tmp"
+        log_err "loop probe: could not write ${WD_LOOP_REPORT}"
+    fi
+
+    local mins=$(( WD_LOOP_WINDOW_MS / 60000 ))
+    if [ "$suspected" -eq 1 ]; then
+        if [ "$reason" = "sequence" ]; then
+            log_err "loop suspected: [${shown}] x${repeats} (period ${period}) in the last ${mins} brain minutes — ${total} macro starts, ${distinct} distinct name(s), exploration count ${places:-?} unchanged (delta ${delta}), rung ${rank:-?} '${mlabel:-?}' for ${since:-?}s. NOT acting: nothing restarted, nothing pressed, the game untouched — a loop is a macro target-choice bug and a bounce would only restore the same loop. Report: ${WD_LOOP_REPORT}; see infra/docs/runbook.md 'loop suspected'."
+        else
+            log_err "loop suspected: [${shown}] is ${dom_pct}% of ${total} macro starts in the last ${mins} brain minutes (${distinct} distinct name(s)), exploration count ${places:-?} unchanged (delta ${delta}), rung ${rank:-?} '${mlabel:-?}' for ${since:-?}s. NOT acting: nothing restarted, nothing pressed, the game untouched. Report: ${WD_LOOP_REPORT}; see infra/docs/runbook.md 'loop suspected'."
+        fi
+    elif [ "$prev_suspected" -eq 1 ]; then
+        log_info "loop cleared: ${total} macro starts over ${distinct} distinct name(s) in the last ${mins} brain minutes, longest repeat x${repeats} (period ${period}), exploration count ${places:-?} delta ${delta}. Nothing was ever done about the loop; if a fix went in, this is it landing."
+    fi
+}
+
+main() {
+    check_flysim
+    check_flystage
+    check_flycast
+    check_encoder
+    check_mediamtx
+    check_flypush
+    check_disk
+    check_process_age
+    check_capture_freeze
+    check_loop
+    write_textfile_metrics
+}
+
+main "$@"

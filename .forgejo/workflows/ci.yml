@@ -1,0 +1,201 @@
+# flybrain CI (Forgejo Actions). Identical in substance to .github/workflows/ci.yml.
+#
+# Forgejo runner notes (the only differences from the GitHub copy: this block, and one `uses:`):
+#   * `runs-on: ubuntu-latest` needs a runner registered with that label (the usual
+#     `ubuntu-latest:docker://...node:22-bookworm` mapping). A bare node image has no rustup and
+#     no shellcheck, which is why the Rust job installs its own toolchain and the lint job
+#     tolerates a failed install.
+#   * `actions/checkout`, `actions/setup-node` and `actions/cache` resolve through
+#     code.forgejo.org, so no github.com access is needed for `uses:`.
+#   * `cache: npm` and `actions/cache` need the runner's cache server enabled; without it these
+#     jobs still pass, just slower.
+#
+# Four jobs, in the order `make ci` / `npm run ci` runs them locally:
+#   node        npm ci + connectome checksum verify + npm test + npm run typecheck
+#   rust        cargo test --workspace --release  (services/flysim)
+#   infra-lint  infra/tests/lint.sh
+#   stage-e2e   Playwright against apps/stage — allowed to fail, see the job comment
+#
+# What this workflow deliberately does NOT need:
+#
+# * No ROM. Game Boy cartridges never enter the repo (`.gitignore` excludes `*.gb`), and every
+#   test that needs one is gated on `FLY_ROM`. `FLY_ROM` is left unset here, so those tests
+#   return early instead of failing: `crates/flybrain-gb/tests/rom.rs` goes through
+#   `skip_without_rom!` (prints "skipped: FLY_ROM is not set"), and
+#   `crates/flysim/tests/integration.rs` uses `let Some(rom) = rom_path() else { eprintln!(...);
+#   return; }`. Both are ordinary passes with a skip line on stderr.
+# * No GPU. The `cuda` feature of `flybrain-core`/`flysim` is off by default and `cudarc` is
+#   built with `dynamic-loading`, so a default build never links or opens libcuda.
+# * No secrets. Nothing here reads a token, a stream key or `pass`. `infra/06-secrets.sh` is
+#   linted, never executed.
+# * No network fetch of data. The FlyWire artifacts in `data/fafb-v783` are committed (11 MB
+#   total, largest `targets.binz` at 7.1 MB) and CC BY-NC 4.0 — see
+#   `data/fafb-v783/ATTRIBUTION.md`. Only the multi-GB *raw Codex exports* that
+#   `tools/build_flywire.py` reads are gitignored (`.tools/`), and nothing in CI rebuilds them.
+#   The `node` job verifies the committed copies against `tools/artifact-checksums.txt`.
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: node 22 (test + typecheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          # Keys off package-lock.json; this is the npm cache.
+          cache: npm
+
+      - name: Install workspace
+        run: npm ci
+
+      # The connectome is in git, so this is a verification and not a download. If it ever
+      # moves out of git, replace this step with `uv run python3 tools/build_flywire.py`
+      # (several GB of Codex exports) and gate `packages/brain/tests/dataset.test.ts` on the
+      # artifacts being present instead.
+      - name: Verify committed FlyWire artifacts
+        run: sha256sum -c ../../tools/artifact-checksums.txt
+        working-directory: data/fafb-v783
+
+      - name: npm test
+        run: npm test
+
+      - name: npm run typecheck
+        run: npm run typecheck
+
+  rust:
+    name: rust stable (cargo test --workspace --release)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/flysim
+    steps:
+      - uses: actions/checkout@v4
+
+      # No third-party toolchain action, so this file works unchanged on a Forgejo runner that
+      # cannot reach github.com for `uses:`. `--profile minimal` skips docs/clippy we do not run.
+      - name: Install stable Rust
+        working-directory: .
+        run: |
+          if command -v rustup >/dev/null 2>&1; then
+            rustup toolchain install stable --profile minimal
+            rustup default stable
+          else
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --default-toolchain stable --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          rustc --version
+          cargo --version
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            services/flysim/target
+          key: cargo-${{ runner.os }}-release-${{ hashFiles('services/flysim/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-release-
+
+      # `--release`, not the default debug profile, and that is load-bearing:
+      # `flysim::integration::the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_killed`
+      # asserts the feed's 30 Hz contract (it accepts 25.0..31.0 Hz), and a debug build of the sim
+      # loop only reaches ~9.5-10.4 Hz, so it fails on any box in debug. That is a known,
+      # pre-existing debug-profile artefact recorded throughout `infra/docs/macros-traps.md`, not
+      # a regression. Two independent reasons it cannot bite here: the release profile, and the
+      # fact that the test is also `FLY_ROM`-gated and therefore skips on this runner.
+      # If you ever need a debug run, exclude exactly that one test instead:
+      #   cargo test --workspace -- --skip the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_killed
+      # `[profile.release] debug = 1` in services/flysim/Cargo.toml keeps line tables, and the
+      # release profile is not allowed to reassociate floats, so bit-exactness with the
+      # TypeScript oracle still holds — the golden tests are meaningful in release.
+      - name: cargo test --workspace --release
+        run: cargo test --workspace --release
+
+  infra-lint:
+    name: infra/tests/lint.sh
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # lint.sh falls back to `bash -n` without shellcheck and skips the unit-file pass without
+      # systemd-analyze, so this is best-effort: install shellcheck if the image lacks it, but
+      # never fail the job over the installer. `sudo` is absent on some container runners.
+      - name: Install shellcheck (best effort)
+        run: |
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck --version
+            exit 0
+          fi
+          SUDO=''
+          if [ "$(id -u)" -ne 0 ]; then SUDO='sudo'; fi
+          $SUDO apt-get update && $SUDO apt-get install -y shellcheck || \
+            echo 'shellcheck unavailable; lint.sh will fall back to bash -n'
+
+      - name: infra/tests/lint.sh
+        run: infra/tests/lint.sh
+
+  stage-e2e:
+    # ALLOWED TO FAIL, on purpose. `apps/stage/playwright.config.ts` runs the real `vite build`
+    # output at 1920x1080 DPR 1 and compares screenshots at maxDiffPixelRatio 0.002. Two things
+    # make that flaky on a hosted runner and neither is a product bug:
+    #   * fonts — a runner's fontconfig is not the broadcast host's, so glyph rasterisation
+    #     differs by more than 0.2% of the frame even with `--disable-lcd-text`;
+    #   * timing — the suite drives a 30 Hz feed with a 90 s per-test timeout and a single
+    #     worker, and the shared-runner CPU budget is not the capture host's pinned cpuset.
+    # So this job reports and uploads its HTML report, but `continue-on-error` keeps a red
+    # screenshot diff from blocking a merge. the operator reviews stage frames as PNGs
+    # (`apps/stage/mockups/`), which is the real gate for how the page looks.
+    name: playwright apps/stage (allowed to fail)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install workspace
+        run: npm ci
+
+      # Chromium only: the config declares exactly one `chromium` project.
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+        working-directory: apps/stage
+
+      - name: playwright test
+        run: npm run test:e2e --workspace @flybrain/stage
+        env:
+          CI: '1'
+
+      # forgejo/upload-artifact, not actions/upload-artifact: a Forgejo runner does not speak
+      # the v4 GitHub artifact API. This is the only non-comment line that differs.
+      - uses: forgejo/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: |
+            apps/stage/playwright-report
+            apps/stage/test-results
+          retention-days: 7
+          if-no-files-found: ignore

@@ -1,0 +1,29 @@
+{
+  "name": "@flybrain/bridge",
+  "version": "0.1.0",
+  "description": "Twitch integration service (flybridge): chat commands, rate limits, Channel Points redemptions and health/metrics for the 24/7 fly stream, talking to flysim's localhost control API (docs/control-api.md).",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --external:@twurple/api --external:@twurple/auth --external:@twurple/eventsub-ws --external:@twurple/eventsub-base --external:@twurple/common --external:ws --external:bufferutil --external:utf-8-validate --outfile=dist/index.js",
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "test": "node --import tsx --test tests/**/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --pretty false"
+  },
+  "dependencies": {
+    "@flybrain/feed": "0.1.0",
+    "@twurple/api": "8.1.4",
+    "@twurple/auth": "8.1.4",
+    "@twurple/eventsub-ws": "8.1.4"
+  },
+  "devDependencies": {
+    "@types/node": "22.17.0",
+    "esbuild": "0.25.12",
+    "tsx": "4.20.3",
+    "typescript": "5.9.2"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "flybrain-workspace",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*", "apps/*", "services/*"],
+  "scripts": {
+    "test": "npm test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "ci:artifacts": "cd data/fafb-v783 && sha256sum -c ../../tools/artifact-checksums.txt",
+    "ci:rust": "cd services/flysim && cargo test --workspace --release",
+    "ci:lint": "infra/tests/lint.sh",
+    "ci:e2e": "npm run test:e2e --workspace @flybrain/stage",
+    "ci": "npm run ci:artifacts && npm test && npm run typecheck && npm run ci:rust && npm run ci:lint"
+  }
+}

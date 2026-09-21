@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# infra/bin/flypush — flypush.service's ExecStart.
+#
+# Copy-only remux from the local MediaMTX RTMP loopback to Twitch. Reads
+# the stream key from $CREDENTIALS_DIRECTORY/twitch-key (systemd
+# LoadCredentialEncrypted=twitch-key:/etc/fly/creds/twitch-key.cred), never
+# from a file this script writes and never echoed. docs/design/infra.md
+# section 3 ("flypush.service") and section 3's secrets note.
+#
+# Known, accepted, and documented residual exposure: ffmpeg takes the RTMP
+# URL (which embeds the key) as a command-line argument, so it is visible
+# in /proc/<pid>/cmdline for the lifetime of the process. There is no way
+# around that with ffmpeg's RTMP output. Containment is the rest of the
+# design: no sshd, one non-root service user, the key excluded from
+# backups, verify.sh grepping the journal and repo for the key prefix.
+set -euo pipefail
+
+: "${CREDENTIALS_DIRECTORY:?flypush must run under systemd with LoadCredentialEncrypted=twitch-key:... set}"
+: "${FLYPUSH_LOCAL_URL:=rtmp://127.0.0.1:1935/live/fly}"
+: "${FLYPUSH_INGEST_BASE:=rtmps://ingest.global-contribute.live-video.net/app}"
+: "${FLYPUSH_PROGRESS:=/run/fly/flypush.progress}"
+
+keyfile="${CREDENTIALS_DIRECTORY}/twitch-key"
+[ -r "$keyfile" ] || { echo "flypush: cannot read $keyfile" >&2; exit 1; }
+
+key="$(cat "$keyfile")"
+[ -n "$key" ] || { echo "flypush: twitch-key credential is empty" >&2; exit 1; }
+
+url="${FLYPUSH_INGEST_BASE}/${key}"
+
+# set -x must never be used here (repo-wide rule: the wrapper never runs
+# set -x, since bash -x would print $url, i.e. the key, to the journal).
+exec ffmpeg -nostdin -loglevel warning -nostats -rw_timeout 5000000 \
+    -i "$FLYPUSH_LOCAL_URL" -c copy -f flv \
+    -progress "$FLYPUSH_PROGRESS" "$url"

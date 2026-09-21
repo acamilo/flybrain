@@ -1,0 +1,39 @@
+# infra/units/flypush.service — pushed to /etc/systemd/system/flypush.service.
+# docs/design/infra.md section 3. Disabled in local test mode
+# (PUSH_TARGET=local); enabled by 06-secrets.sh + 07-enable.sh once a
+# stream key is installed. StartLimitIntervalSec=0 in [Unit] is
+# deliberate: "a multi-hour Twitch outage must not permanently defeat the
+# restart logic."
+[Unit]
+Description=flypush: copy-only remux to Twitch
+After=mediamtx.service flycast.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=fly
+LoadCredentialEncrypted=twitch-key:/etc/fly/creds/twitch-key.cred
+EnvironmentFile=/etc/fly/flypush.env
+ExecStart=/opt/fly/bin/flypush
+# The Twitch stream key is part of ffmpeg's output URL, so it is visible in this process's
+# argv (`systemctl status flypush`, `ps`). ProtectProc=invisible hides other users' processes
+# from this unit and ProcSubset=pid keeps /proc minimal; neither hides argv from root, so the
+# runbook rule stands: never paste `systemctl status flypush` output anywhere (found cutting
+# v0.1.3, 2026-09-16). Debt: pass the key through an ffmpeg config/pipe instead of argv.
+ProtectProc=invisible
+ProcSubset=pid
+Restart=always
+RestartSec=15
+# Same reason as flycast.service: bin/flypush execs ffmpeg, and ffmpeg exits
+# 255 on a handled signal, so the documented flip-back
+# (`systemctl disable --now flypush.service`) would otherwise always leave
+# this unit `failed`. Measured on the P0 spike run 2.
+SuccessExitStatus=255
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
+# Deliberately NOT WantedBy=fly.target — see infra/units/fly.target's
+# header. Enabled/disabled independently as the local-to-Twitch flip, so
+# it persists across reboots on its own once enabled, without fly.target
+# start/stop touching it.

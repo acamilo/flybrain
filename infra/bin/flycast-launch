@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+# infra/bin/flycast-launch — flycast.service's ExecStart.
+#
+#   flycast-launch                 # run (what systemd does)
+#   flycast-launch --print         # print the command for $FLY_ENCODER, run nothing
+#   flycast-launch --print nvenc   # print the nvenc command
+#   flycast-launch --print x264    # print the x264 command
+#
+# Why this exists as a script rather than an ExecStart= line: the encoder
+# block now has two variants selected by FLY_ENCODER, and
+# docs/design/gpu.md section 8 is explicit that `Environment=FLY_ENCODER=%i`
+# is the wrong shape for a non-templated unit. So the unit reads
+# /etc/fly/fly.env with EnvironmentFile= and this script assembles the
+# command, mirroring the flystage.service -> bin/flystage-launch pattern
+# already in this repo. Two side benefits: the two flag sets sit next to
+# each other where they can be reviewed against gpu.md section 4, and every
+# literal `%` in the strftime segment filename is a single `%` here instead
+# of the `%%` systemd's parser demands.
+#
+# Encoder selection and the one-shot fallback (gpu.md section 5): the top
+# risk in the GPU design is not the GPU, it is the neighbouring GPU container. the GPU workload in the neighbouring container runs video
+# models on this same card and can hold 6-7 GB of the 8 GB; if it is
+# mid-generation when flycast starts, NvEncOpenEncodeSessionEx fails for
+# lack of memory against a card that looks perfectly healthy, and without a
+# fallback flycast crash-loops and the stream goes black. So: if ffmpeg dies
+# within FLY_ENCODER_FALLBACK_SECONDS on nvenc with a session/init-shaped
+# error, this re-execs once on libx264 (about 2 cores, the path running
+# today) and records which backend is live in a node_exporter textfile
+# metric so the degradation is visible rather than mysterious. A later
+# failure, or a failure that is not session/init-shaped, is left to
+# systemd's Restart=always — a mid-stream crash three hours in is a
+# different bug and silently changing encoder would hide it.
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Inputs. Every default here reproduces what units/flycast.service used to
+# hardcode, so a container with no FLY_* set at all still gets today's
+# 1080p30 6000k CBR x264 command.
+# ---------------------------------------------------------------------------
+: "${FLY_ENCODER:=x264}"                    # nvenc | x264
+: "${FLY_NVENC_PRESET:=p4}"                 # p1 (fastest) .. p7 (best quality)
+: "${FLY_X264_PRESET:=veryfast}"
+: "${FLY_DISPLAY:=:99.0+0,0}"
+: "${FLY_VIDEO_SIZE:=1920x1080}"
+: "${FLY_FPS:=30}"
+: "${FLY_VIDEO_KBPS:=6000}"
+: "${FLY_AUDIO_KBPS:=160}"
+: "${FLY_RTMP_URL:=rtmp://127.0.0.1:1935/live/fly}"
+: "${FLY_REC_DIR:=/srv/fly/media/rec}"
+: "${FLY_SEGMENT_LIST:=/srv/fly/state/segments.csv}"
+: "${FLY_PROGRESS:=/run/fly/flycast.progress}"
+: "${FLY_ENCODER_FALLBACK_SECONDS:=15}"
+: "${TEXTFILE_DIR:=/var/lib/node_exporter/textfile}"
+: "${FFMPEG:=/usr/bin/ffmpeg}"
+
+BUFSIZE_KBPS=$(( FLY_VIDEO_KBPS * 2 ))
+GOP=$(( FLY_FPS * 2 ))                      # 2 s keyframes, Twitch's requirement
+
+# ---------------------------------------------------------------------------
+# Command assembly.
+#
+# The one change applied to BOTH encoders, and the reason it is here: the
+# p0 run accumulated roughly 4 dup and 4 drop per second. The hypothesis in
+# gpu.md section 7 item 13 is that x11grab's own grab clock jitters against
+# the output CFR grid, so nearly every frame lands slightly off-slot and
+# ffmpeg pays with a matched dup AND drop. Moving the rate decision into the
+# filter graph (`fps=30:round=near`) and replacing the trailing `-r 30` with
+# `-fps_mode:v cfr` (`-vsync` is the deprecated spelling) makes dup/drop
+# happen on a real gap rather than on sub-frame jitter. It is a CANDIDATE
+# fix, unproven, applied to both encoders so the measurement is not
+# confounded by the encoder swap — the x264 pacing was in the loop too.
+# Accept under 0.2 dup/s and 0.2 drop/s over 30 minutes.
+# ---------------------------------------------------------------------------
+
+common_input() {
+    printf '%s\n' \
+        "$FFMPEG" -nostdin -loglevel warning -nostats \
+        -thread_queue_size 1024 \
+        -f x11grab -draw_mouse 0 -framerate "$FLY_FPS" -video_size "$FLY_VIDEO_SIZE" -i "$FLY_DISPLAY" \
+        -thread_queue_size 1024 \
+        -f pulse -name flycast -sample_rate 48000 -channels 2 -i stream.monitor
+}
+
+# NVENC (gpu.md section 4). Notes worth keeping next to the flags:
+#   * p1..p7 + -tune hq|ll|ull|lossless is the current NVENC preset model;
+#     slow/medium/fast are deprecated aliases. p4 is the starting point and
+#     p6/p7 are expected to be affordable — NVENC is nearly free here, so
+#     the real win is quality at a fixed bitrate, not CPU.
+#   * -rc cbr sets NV_ENC_PARAMS_RC_CBR and ffmpeg turns on filler data for
+#     it, which is what -x264-params nal-hrd=cbr:filler=1 did on the x264
+#     path. UNVERIFIED for ffmpeg 7.1: confirm with
+#     `ffmpeg -h encoder=h264_nvenc` on the spike CT, and confirm the FLV
+#     output is HRD-conformant.
+#   * -no-scenecut is the NVENC equivalent of x264's -sc_threshold 0 and is
+#     only meaningful with lookahead on, hence -rc-lookahead 15.
+#   * -b_ref_mode middle is a free quality gain on Turing (B-frames as
+#     reference) at ~66 ms of extra encoder delay, irrelevant for Twitch.
+#     Drop it first if RTMP timestamps misbehave.
+#   * format=nv12 on the CPU, deliberately: there is no decode step to
+#     accelerate, x11grab delivers raw BGRA, and h264_nvenc uploads
+#     system-memory frames itself. hwupload_cuda,scale_cuda only RELOCATES
+#     the colour conversion at the price of a 249 MB/s PCIe upload. Measure
+#     swscale's cost before considering it.
+#   * 8-bit only. NVENC H.264 has no 4:2:0 10-bit.
+encoder_nvenc() {
+    printf '%s\n' \
+        -filter_complex "[0:v]fps=${FLY_FPS}:round=near,format=nv12[v];[1:a]aresample=async=1:min_hard_comp=0.100:first_pts=0[a]" \
+        -map "[v]" -map "[a]" \
+        -c:v h264_nvenc -preset "$FLY_NVENC_PRESET" -tune hq -profile:v high -level 4.1 \
+        -rc cbr -b:v "${FLY_VIDEO_KBPS}k" -maxrate "${FLY_VIDEO_KBPS}k" -bufsize "${BUFSIZE_KBPS}k" \
+        -g "$GOP" -keyint_min "$GOP" -no-scenecut 1 -rc-lookahead 15 \
+        -bf 2 -b_ref_mode middle -spatial-aq 1 -temporal-aq 1 \
+        -fps_mode:v cfr \
+        -c:a aac -b:a "${FLY_AUDIO_KBPS}k" -ar 48000 -ac 2
+}
+
+# libx264: unchanged from what flycast.service shipped, except for the
+# fps/-fps_mode change described above (which replaces the trailing -r 30).
+# This is both the GPU=0 path and the automatic fallback target. If NVENC
+# ever loses on quality, gpu.md's answer is NOT to come back here at
+# veryfast, it is x264 at faster/medium, which the cores NVENC freed now
+# allow — FLY_X264_PRESET is that knob.
+encoder_x264() {
+    printf '%s\n' \
+        -filter_complex "[0:v]fps=${FLY_FPS}:round=near,format=yuv420p[v];[1:a]aresample=async=1:min_hard_comp=0.100:first_pts=0[a]" \
+        -map "[v]" -map "[a]" \
+        -c:v libx264 -preset "$FLY_X264_PRESET" -profile:v high -level 4.1 \
+        -b:v "${FLY_VIDEO_KBPS}k" -minrate "${FLY_VIDEO_KBPS}k" -maxrate "${FLY_VIDEO_KBPS}k" -bufsize "${BUFSIZE_KBPS}k" \
+        -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 -bf 2 -x264-params "nal-hrd=cbr:filler=1" \
+        -fps_mode:v cfr \
+        -c:a aac -b:a "${FLY_AUDIO_KBPS}k" -ar 48000 -ac 2
+}
+
+# Output: one encode, tee'd to MediaMTX and to 10-minute local segments.
+# onfail=ignore on the FLV leg so a dead RTMP publisher cannot take the
+# recording down with it, and use_fifo so a slow leg cannot stall the
+# encoder.
+common_output() {
+    printf '%s\n' \
+        -progress "$FLY_PROGRESS" -stats_period 5 \
+        -f tee -use_fifo 1 \
+        -fifo_options "queue_size=120:drop_pkts_on_overflow=1:attempt_recovery=1:recovery_wait_time=1" \
+        "[f=flv:onfail=ignore]${FLY_RTMP_URL}|[f=segment:segment_format=mpegts:segment_time=600:strftime=1:reset_timestamps=1:segment_list=${FLY_SEGMENT_LIST}:segment_list_type=csv:segment_list_flags=+live:segment_list_size=0]${FLY_REC_DIR}/%Y%m%d-%H%M%S.ts"
+}
+
+build_cmd() {
+    local backend="$1"
+    CMD=()
+    mapfile -t -O "${#CMD[@]}" CMD < <(common_input)
+    case "$backend" in
+        nvenc) mapfile -t -O "${#CMD[@]}" CMD < <(encoder_nvenc) ;;
+        x264)  mapfile -t -O "${#CMD[@]}" CMD < <(encoder_x264) ;;
+        *)     echo "flycast-launch: FLY_ENCODER must be 'nvenc' or 'x264', got '$backend'" >&2; exit 2 ;;
+    esac
+    mapfile -t -O "${#CMD[@]}" CMD < <(common_output)
+}
+
+# ---------------------------------------------------------------------------
+# fly_encoder_backend: which encoder is actually live. Both label values are
+# always written, so a fallback does not leave a stale nvenc=1 series behind
+# forever. Best-effort by design — a read-only or missing textfile dir must
+# never stop the stream from starting.
+# ---------------------------------------------------------------------------
+write_backend_metric() {
+    local backend="$1" tmp
+    mkdir -p "$TEXTFILE_DIR" 2>/dev/null || { echo "flycast-launch: cannot create $TEXTFILE_DIR, skipping the backend metric" >&2; return 0; }
+    tmp="${TEXTFILE_DIR}/fly_encoder.prom.$$"
+    {
+        echo "# HELP fly_encoder_backend 1 for the video encoder flycast is actually running; 0 for the others. A 1 on x264 while FLY_ENCODER=nvenc means the automatic fallback fired."
+        echo "# TYPE fly_encoder_backend gauge"
+        echo "fly_encoder_backend{backend=\"nvenc\"} $([ "$backend" = nvenc ] && echo 1 || echo 0)"
+        echo "fly_encoder_backend{backend=\"x264\"} $([ "$backend" = x264 ] && echo 1 || echo 0)"
+        echo "# HELP fly_encoder_fallbacks_total 1 once the nvenc -> x264 fallback has fired in this flycast process."
+        echo "# TYPE fly_encoder_fallbacks_total counter"
+        echo "fly_encoder_fallbacks_total $([ "$backend" = x264 ] && [ "${FLY_ENCODER}" = nvenc ] && echo 1 || echo 0)"
+    } > "$tmp" 2>/dev/null && mv -f "$tmp" "${TEXTFILE_DIR}/fly_encoder.prom" 2>/dev/null \
+        || { rm -f "$tmp" 2>/dev/null || true; echo "flycast-launch: could not write ${TEXTFILE_DIR}/fly_encoder.prom" >&2; }
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# --print: assemble and show, run nothing. Used by the final report and by
+# anyone reviewing the flags against gpu.md section 4 without a GPU.
+# ---------------------------------------------------------------------------
+shellquote() {
+    local a
+    for a in "$@"; do
+        case "$a" in
+            ''|*[!A-Za-z0-9_@%+=:,./-]*) printf "'%s' " "${a//\'/\'\\\'\'}" ;;
+            *) printf '%s ' "$a" ;;
+        esac
+    done
+    printf '\n'
+}
+
+if [ "${1:-}" = --print ]; then
+    build_cmd "${2:-$FLY_ENCODER}"
+    shellquote "${CMD[@]}"
+    exit 0
+fi
+[ $# -eq 0 ] || { echo "usage: $0 [--print [nvenc|x264]]" >&2; exit 2; }
+
+# ---------------------------------------------------------------------------
+# Run.
+# ---------------------------------------------------------------------------
+exec_backend() {
+    local backend="$1"
+    build_cmd "$backend"
+    write_backend_metric "$backend"
+    echo "flycast-launch: exec ${backend}" >&2
+    exec "${CMD[@]}"
+}
+
+if [ "$FLY_ENCODER" != nvenc ]; then
+    exec_backend "$FLY_ENCODER"
+fi
+
+# nvenc, with the one-shot fallback. ffmpeg's stderr is teed so the journal
+# still gets it live (a 24/7 service with 15 s of hidden logs is not a
+# trade worth making) while a copy is available to classify the failure.
+build_cmd nvenc
+write_backend_metric nvenc
+ERRLOG="$(mktemp "${TMPDIR:-/tmp}/flycast-nvenc.XXXXXX")"
+STARTED="$(date +%s)"
+RC=0
+echo "flycast-launch: starting nvenc (preset ${FLY_NVENC_PRESET}); will fall back to x264 once if it dies within ${FLY_ENCODER_FALLBACK_SECONDS}s on a session/init error" >&2
+set +e
+"${CMD[@]}" 2>&1 | tee "$ERRLOG" >&2
+RC="${PIPESTATUS[0]}"
+set -e
+ELAPSED=$(( $(date +%s) - STARTED ))
+
+# The failure classes that mean "this card/driver cannot give us a session
+# right now", as opposed to "ffmpeg died for an unrelated reason". Kept
+# deliberately narrow: a bad flag name or a missing X display must NOT
+# silently become an x264 stream, because then the nvenc path is never
+# fixed. Tighten or widen this list from what the spike actually logs.
+NVENC_FATAL_RE='OpenEncodeSessionEx|No capable devices found|Cannot load libnvidia-encode|Cannot load libcuda|Driver/library version mismatch|No NVENC capable devices|nvenc.*not (found|available)|out of memory|OutOfMemory|InitializeEncoder failed|Cannot init CUDA|CUDA_ERROR|No such device'
+
+if [ "$RC" -ne 0 ] && [ "$ELAPSED" -lt "$FLY_ENCODER_FALLBACK_SECONDS" ] && grep -qEi "$NVENC_FATAL_RE" "$ERRLOG"; then
+    echo "flycast-launch: h264_nvenc failed after ${ELAPSED}s (rc=${RC}) with a session/init error — falling back to libx264 ONCE." >&2
+    echo "flycast-launch: the usual cause is VRAM pressure from the GPU workload in the neighbouring container (docs/design/gpu.md section 5) or a host driver/kernel-module mismatch (docs/runbook.md 'GPU driver version lockstep'). Watch fly_encoder_backend." >&2
+    grep -Ei "$NVENC_FATAL_RE" "$ERRLOG" | tail -5 >&2 || true
+    rm -f "$ERRLOG"
+    exec_backend x264
+fi
+
+rm -f "$ERRLOG"
+if [ "$RC" -ne 0 ]; then
+    echo "flycast-launch: ffmpeg exited rc=${RC} after ${ELAPSED}s; leaving the restart to systemd (no encoder change)" >&2
+fi
+exit "$RC"

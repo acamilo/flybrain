@@ -1,0 +1,19 @@
+# infra/units/pulse.service — pushed to /etc/systemd/system/pulse.service.
+# docs/design/infra.md section 3. No --system mode (upstream discourages
+# it), no logind/dbus dependency: a plain system unit running as `fly`
+# with an explicit PULSE_RUNTIME_PATH under /run/fly sidesteps the whole
+# "container has no session" problem.
+[Unit]
+Description=PulseAudio null sink "stream" for the fly demo
+After=network.target
+
+[Service]
+Type=simple
+User=fly
+Environment=XDG_RUNTIME_DIR=/run/fly PULSE_RUNTIME_PATH=/run/fly/pulse
+ExecStart=/usr/bin/pulseaudio -n --file=/etc/fly/pulse.pa --exit-idle-time=-1 --disallow-exit --log-target=journal
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=fly.target

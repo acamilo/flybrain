@@ -1,0 +1,13 @@
+# infra/units/fly-recap.timer — docs/design/infra.md section 3:
+# OnCalendar=*-*-* 04:20, Persistent=true, RandomizedDelaySec=10m.
+[Unit]
+Description=Cut yesterday's highlight reel daily at 04:20
+
+[Timer]
+OnCalendar=*-*-* 04:20
+Persistent=true
+RandomizedDelaySec=10m
+Unit=fly-recap.service
+
+[Install]
+WantedBy=timers.target

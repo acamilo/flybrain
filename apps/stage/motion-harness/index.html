@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>flystage · motion harness</title>
+    <!--
+      The motion harness: a dev-only page for judging one moment at a time.
+
+      Why it is a separate page and not a mode of the broadcast page: the effects have to be judged
+      *in isolation*, against placeholder rectangles, without a game canvas, a fly and a 30 Hz feed
+      moving underneath them. And because the rail panels are being rebuilt for layout v2 next door,
+      this page deliberately shares no CSS with them — everything it needs is in the <style> below.
+
+      Where it is served. This is `motion-harness/index.html` inside the app root, so `vite dev`
+      serves it at `/motion-harness/` with no config change, and `vite build` does not build it at
+      all (the build's only input is the app's own `index.html`). That is the whole "dev only"
+      mechanism: there is nothing to strip from the broadcast bundle because it was never in it.
+
+          npm run dev -w @flybrain/stage     # then http://127.0.0.1:5273/motion-harness/
+
+      Query parameters:
+          ?controls=0    hide the control bar and the region labels (what the screenshot tool uses)
+          ?moment=badge  fire that moment once the page is ready
+          ?manual=1      virtual clock: the page only advances when `window.__motion.seek()` says so
+    -->
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #05060a;
+        --panel: #0f131c;
+        --edge: #232b3a;
+        --ink: #c8d0dc;
+        --ink-dim: #6b7688;
+        --accent: #ffb020;
+        --dopamine: #f472a8;
+        --sensory: #4fc3f7;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        background: #000;
+        color: var(--ink);
+        font: 14px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+        overflow: hidden;
+      }
+
+      /* One authoring resolution, exactly as the broadcast page does it: 1920x1080, scaled down by
+         a single transform on one element when the window is smaller. Playwright shoots at
+         1920x1080, where the scale is 1 and nothing is resampled. */
+      #stage-fit {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: start center;
+      }
+
+      #stage {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        background: radial-gradient(1200px 700px at 70% 20%, #0b1018 0%, var(--bg) 70%);
+        transform-origin: top center;
+        overflow: hidden;
+      }
+
+      .region {
+        position: absolute;
+        border: 1px dashed var(--edge);
+        border-radius: 2px;
+        background: rgba(255, 255, 255, 0.012);
+      }
+
+      .region > b {
+        position: absolute;
+        left: 8px;
+        top: 6px;
+        font-size: 13px;
+        letter-spacing: 0.12em;
+        color: var(--ink-dim);
+        text-transform: uppercase;
+        font-weight: 500;
+      }
+
+      .region[data-lit='1'] {
+        border-color: color-mix(in srgb, var(--accent) 55%, var(--edge));
+        background: rgba(255, 176, 32, 0.045);
+      }
+
+      #particles {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      /* The caption band: enters from the left over the tab slot, per the catalogue's milestone row. */
+      #caption {
+        position: absolute;
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        padding: 0 28px;
+        background: linear-gradient(90deg, rgba(255, 176, 32, 0.22), rgba(255, 176, 32, 0.04));
+        border-left: 4px solid var(--accent);
+        will-change: transform, opacity;
+      }
+
+      #caption .kind {
+        font-size: 30px;
+        letter-spacing: 0.18em;
+        color: var(--accent);
+      }
+
+      #caption .label {
+        font-size: 30px;
+        color: #fff;
+      }
+
+      #caption .detail {
+        font-size: 24px;
+        color: var(--ink-dim);
+      }
+
+      /* The badge count, which bounces on out-back. */
+      #badge-count {
+        position: absolute;
+        font-size: 40px;
+        color: var(--accent);
+        will-change: transform;
+      }
+
+      /* The day strip, which slides across the title strip once. */
+      #day-slide {
+        position: absolute;
+        font-size: 26px;
+        letter-spacing: 0.3em;
+        color: var(--ink);
+        will-change: transform, opacity;
+      }
+
+      #controls {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        background: rgba(6, 8, 12, 0.92);
+        border-top: 1px solid var(--edge);
+        backdrop-filter: blur(2px);
+      }
+
+      button {
+        font: inherit;
+        color: var(--ink);
+        background: var(--panel);
+        border: 1px solid var(--edge);
+        border-radius: 3px;
+        padding: 7px 12px;
+        cursor: pointer;
+      }
+
+      button:hover {
+        border-color: var(--accent);
+        color: #fff;
+      }
+
+      button[data-kind='danger']:hover {
+        border-color: var(--dopamine);
+      }
+
+      #readout {
+        margin-left: auto;
+        display: flex;
+        gap: 18px;
+        color: var(--ink-dim);
+        white-space: pre;
+      }
+
+      #readout b {
+        color: var(--ink);
+        font-weight: 500;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/motion/harness.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,61 @@
+# infra/tests/de-pii-allow.txt — the mentions infra/tests/lint.sh's de-PII
+# guard (section 5) is allowed to find.
+#
+# Format, whitespace-separated:
+#
+#   <path> <pattern-name>  # reason
+#
+# <path> is a repo-relative path, a directory prefix ending in `/`, or a glob.
+# <pattern-name> is one of the guard's own names (host-proxmox, host-backup,
+# host-llm, operator-name, lan-address, container-id, host-root-path,
+# home-path, twitch-account, claim-log-name, forge-name, infra-repo-name,
+# mac-address, email-address, pass-entry-path), or `*` for every pattern.
+#
+# EVERY LINE NEEDS A REASON. The right fix is almost always to redact instead —
+# the rules and the per-file verdicts live in the operator's infra repo.
+# An entry here says "this string is not identifying", not "this is grandfathered".
+
+#
+# The literals in the comments below are spelled with one bracketed character, for
+# the same reason lint.sh spells its patterns that way: an allowlist that carried the
+# plaintext would be the leak it is meant to prevent.
+
+# --- chat-username fixtures -------------------------------------------------
+# Lowercase `"alex"` is the chat-username fixture the sanitizer, deny-list,
+# rate-limiter, ticker and store tests are written against; the de-PII sprint
+# leaves test fixture names alone. The guard's operator-name pattern is
+# case-sensitive precisely so capitalised `Al[e]x` in prose still fails, and
+# `al[e]x_camilo` (the real handle shape) was replaced with `fly_fan_42`. These
+# entries exist only for the few places a fixture is lowercase-with-a-boundary
+# that the case-sensitive pattern would still catch via another alternative.
+apps/stage/tests/unit/ operator-name    # lowercase chat-username fixtures
+services/flysim/crates/flysim/tests/ operator-name  # lowercase chat-username fixtures
+services/flysim/crates/flysim/src/chat.rs operator-name  # sanitizer unit-test fixtures in the same file
+services/flysim/crates/flysim/src/eventlog.rs operator-name  # ticker fixture in a doc example
+services/bridge/tests/ operator-name    # lowercase chat-username fixtures
+
+# --- container-side paths ---------------------------------------------------
+# `/ro[o]t/nvidia.run`, `/ro[o]t/virtualgl.deb` and `/ro[o]t/nv.run` are paths INSIDE
+# a container: root's home on a stock Debian guest, not an operator-chosen
+# location, and not specific to this network. Host-side staging paths are
+# parameterised instead (HOST_STAGE_DIR / `<host-stage>`).
+infra/02-base.sh host-root-path         # /ro[o]t/nvidia.run and /ro[o]t/virtualgl.deb are inside the guest
+docs/design/gpu.md host-root-path       # same two paths, plus /proc/<pid>/ro[o]t/... which is procfs, not /root
+
+# --- documentation examples -------------------------------------------------
+# A made-up MAC in a worked example of the compatibility string. Real MACs are
+# in the operator's infra repo.
+services/flysim/crates/flybrain-gb/src/compatibility.rs mac-address  # aa:bb:... placeholder in a doc example
+
+# --- upstream identifiers ---------------------------------------------------
+# Third-party addresses and handles: upstream projects, not this network.
+# (None currently; keep the section so the next one lands in the right place.)
+apps/stage/public/fonts/ email-address   # SIL OFL licence text from upstream font projects; not ours to edit
+infra/tests/lint.sh email-address        # `lint@ex[a]mple.invalid`, the git identity for the throwaway test repos
+# --- publish pack ------------------------------------------------------------
+NOTICE operator-name                     # the copyright holder's legal name, chosen by the operator 2026-09-17; change here if an entity is preferred
+LICENSES.md operator-name                # same copyright line, mirrored
+.forgejo/workflows/ci.yml forge-name     # the product name of the CI runner (F[o]rgejo Actions), not the operator's forge
+.github/workflows/ci.yml forge-name      # a comment naming the F[o]rgejo copy of this workflow
+infra/docs/secrets-history-scan.md forge-name  # names the two workflow files by path
+infra/tests/de-pii-allow.txt forge-name  # this file names the .f[o]rgejo/ workflow directory in the two entries above

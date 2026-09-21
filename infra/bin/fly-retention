@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# infra/bin/fly-retention — fly-retention.service, run hourly by
+# fly-retention.timer (also called directly by fly-watchdog's disk guard
+# at 85%/95%, see bin/fly-watchdog check_disk). docs/design/infra.md
+# section 3: "prune segments > 7 d, highlights > 90 d, checkpoints per
+# policy" and "Retention runs hourly rather than daily on purpose: a
+# runaway recorder must not get 24 hours of rope."
+#
+# Usage: fly-retention [--aggressive]
+#   --aggressive: called from the watchdog's 95% disk guard. Shrinks the
+#   segment retention window to 1 day for this pass only (nothing else
+#   changes) so a runaway recorder gets pruned immediately rather than
+#   waiting for the next scheduled hourly pass.
+set -euo pipefail
+
+: "${FLY_STATE_DIR:=/srv/fly/state}"
+: "${FLY_MEDIA_DIR:=/srv/fly/media}"
+: "${SEGMENT_RETENTION_DAYS:=7}"
+: "${HIGHLIGHT_RETENTION_DAYS:=90}"
+: "${TEXTFILE_DIR:=/var/lib/node_exporter/textfile}"
+
+AGGRESSIVE=0
+[ "${1:-}" = "--aggressive" ] && AGGRESSIVE=1
+
+log() { echo "fly-retention: $*" >&2; }
+
+retention_days="$SEGMENT_RETENTION_DAYS"
+[ "$AGGRESSIVE" -eq 1 ] && retention_days=1
+
+rec_dir="${FLY_MEDIA_DIR}/rec"
+highlight_dir="${FLY_MEDIA_DIR}/highlights"
+state_checkpoint_dir="$FLY_STATE_DIR"
+
+pruned_segments=0
+pruned_highlights=0
+pruned_checkpoints=0
+
+# --- segments ----------------------------------------------------------------
+if [ -d "$rec_dir" ]; then
+    while IFS= read -r -d '' f; do
+        rm -f "$f"
+        pruned_segments=$((pruned_segments + 1))
+    done < <(find "$rec_dir" -maxdepth 1 -type f -name '*.ts' -mtime "+${retention_days}" -print0)
+fi
+
+# Keep segments.csv in sync: drop rows whose file no longer exists. The
+# index growing unbounded is its own slow disk leak otherwise.
+segments_csv="${FLY_STATE_DIR}/segments.csv"
+if [ -f "$segments_csv" ]; then
+    tmp="${segments_csv}.tmp.$$"
+    awk -F, '{ if (system("test -f \"" $1 "\"") == 0) print }' "$segments_csv" > "$tmp" 2>/dev/null || cp "$segments_csv" "$tmp"
+    mv -f "$tmp" "$segments_csv"
+fi
+
+# --- highlights ----------------------------------------------------------
+if [ -d "$highlight_dir" ]; then
+    while IFS= read -r -d '' f; do
+        rm -f "$f"
+        pruned_highlights=$((pruned_highlights + 1))
+    done < <(find "$highlight_dir" -maxdepth 1 -type f -name '*.mp4' -mtime "+${HIGHLIGHT_RETENTION_DAYS}" -print0)
+fi
+
+# --- checkpoints ---------------------------------------------------------
+# Policy: never delete anything manifest.json references (latest, previous,
+# or any rank in archives — docs/design/flysim.md section 8: "Later
+# rotations never unlink archived generations"). This script only removes
+# generation files that are NOT referenced by manifest.json at all — the
+# unreferenced leftovers a crash-before-rename can produce
+# (docs/design/flysim.md section 8: "a crash before the manifest rename
+# leaves an unreferenced file that is never loaded"). flysim itself is
+# expected to clean its own obsolete generations after a successful
+# commit; this is strictly a safety-net pass, and it is conservative: any
+# file it cannot positively prove is unreferenced is left alone.
+manifest="${state_checkpoint_dir}/manifest.json"
+if [ -f "$manifest" ] && command -v jq >/dev/null 2>&1; then
+    referenced="$(jq -r '
+        [.latest, .previous, (.archives // {} | to_entries[] | .value)]
+        | map(select(. != null))
+        | map(tostring)
+        | .[]
+    ' "$manifest" 2>/dev/null || true)"
+
+    if [ -n "$referenced" ]; then
+        while IFS= read -r -d '' f; do
+            base="$(basename "$f")"
+            gen="$(echo "$base" | sed -n 's/^\([0-9]\+\)\.checkpoint$/\1/p')"
+            [ -z "$gen" ] && continue
+            if ! echo "$referenced" | grep -qx "$gen"; then
+                # mtime guard: never touch a checkpoint written in the last
+                # hour, in case it is mid-commit (write happens before the
+                # manifest rename, so a brand-new file can briefly look
+                # unreferenced).
+                if [ -z "$(find "$f" -mmin -60 2>/dev/null)" ]; then
+                    rm -f "$f"
+                    pruned_checkpoints=$((pruned_checkpoints + 1))
+                fi
+            fi
+        done < <(find "$state_checkpoint_dir" -maxdepth 1 -type f -name '*.checkpoint' -not -name 'milestone-*' -print0)
+    fi
+fi
+
+log "pruned: ${pruned_segments} segments, ${pruned_highlights} highlights, ${pruned_checkpoints} orphan checkpoints (aggressive=${AGGRESSIVE}, window=${retention_days}d)"
+
+if [ -d "$TEXTFILE_DIR" ]; then
+    tmp="${TEXTFILE_DIR}/fly_retention.prom.$$"
+    {
+        echo "# HELP fly_retention_pruned_total Files removed by the most recent fly-retention pass, by kind."
+        echo "# TYPE fly_retention_pruned_total gauge"
+        echo "fly_retention_pruned_total{kind=\"segment\"} ${pruned_segments}"
+        echo "fly_retention_pruned_total{kind=\"highlight\"} ${pruned_highlights}"
+        echo "fly_retention_pruned_total{kind=\"checkpoint\"} ${pruned_checkpoints}"
+        echo "# HELP fly_retention_last_run_seconds Unix time of the last completed retention pass."
+        echo "# TYPE fly_retention_last_run_seconds gauge"
+        echo "fly_retention_last_run_seconds $(date +%s)"
+    } > "$tmp"
+    mv -f "$tmp" "${TEXTFILE_DIR}/fly_retention.prom"
+fi

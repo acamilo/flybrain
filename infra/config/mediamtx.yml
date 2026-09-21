@@ -1,0 +1,21 @@
+# infra/config/mediamtx.yml — pushed verbatim to /etc/mediamtx.yml.
+#
+# Exactly the shape in docs/design/infra.md section 4. RTMP stays loopback
+# (flycast publishes, flypush pulls, both on 127.0.0.1); HLS and WebRTC are
+# LAN-reachable for local preview during P0/P1 test mode; API and metrics
+# stay loopback. Do not add an NPM proxy host for 8888/8889 — see
+# docs/runbook.md.
+rtmpAddress: 127.0.0.1:1935     # publish and pull are loopback only
+hls: yes                        # LAN preview lives here
+hlsAddress: :8888
+hlsVariant: mpegts               # VLC-friendly; fMP4 low-latency HLS is flaky in VLC
+hlsAlwaysRemux: yes              # HLS is ready with no reader, so probes need no fake viewer
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+api: yes
+apiAddress: 127.0.0.1:9997
+metrics: yes
+metricsAddress: 127.0.0.1:9998
+paths:
+  live/fly: { source: publisher }

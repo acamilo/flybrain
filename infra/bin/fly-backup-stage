@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# infra/bin/fly-backup-stage CTID NAME
+#
+# Runs on the Proxmox host, as root, from a daily cron entry (NOT inside the
+# container — "so the backup host credentials stay on the hypervisor and never
+# enter a guest, and the host root's pubkey is already authorized for
+# house@the backup host", docs/design/infra.md section 3). Mirrors
+# the backup script of another service on the host's shape and log style exactly.
+#
+# This script is committed here for review but is deployed by copying it
+# to <host-stage>/fly-backup/backup.sh on the host by hand (see infra/README.md's
+# host-side steps) — it is deliberately NOT invoked by provision.sh, which
+# never touches the host outside the target container.
+#
+# Never backs up: /etc/fly/creds, /var/lib/fly/bridge (refresh tokens),
+# /srv/fly/rom (ROM files never leave the container and never enter git).
+# Never backs up the rolling recordings either — 240 GB/week whose only
+# durable value is the highlights (docs/design/infra.md section 3).
+set -euo pipefail
+
+usage() { echo "usage: $0 CTID NAME" >&2; exit 2; }
+[ $# -eq 2 ] || usage
+CTID="$1"
+NAME="$2"
+
+: "${BACKUP_HOST:?set BACKUP_HOST (user@host) for the offsite copy — see infra/README.md}"
+: "${BACKUP_ROOT:=/media/backups}"
+: "${WORK_DIR:=${FLY_BACKUP_DIR:-$HOME/fly-backup}/work/${NAME}}"
+: "${LOG_FILE:=${FLY_BACKUP_DIR:-$HOME/fly-backup}/backup.log}"
+: "${TEXTFILE_DIR:=/var/lib/node_exporter/textfile}"
+
+log() {
+    printf '[%s] fly-backup-stage(%s): %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$NAME" "$*" | tee -a "$LOG_FILE" >&2
+}
+die() { log "FATAL: $*"; exit 1; }
+
+command -v pct >/dev/null 2>&1 || die "pct not found — this script must run on the host"
+[ -e /etc/pve/local ] || die "this script must run on the host (root), not in a container or on the worktree box"
+
+mkdir -p "$WORK_DIR" "$(dirname "$LOG_FILE")"
+DATE_TAG="$(date -u +%Y%m%d)"
+DEST="${BACKUP_ROOT}/${NAME}/${DATE_TAG}"
+
+log "start"
+
+# 1. Read the manifest first, BEFORE pulling anything, so we know which
+#    generations this backup targets even if a commit lands mid-run.
+manifest_json="$(pct exec "$CTID" -- cat /srv/fly/state/manifest.json 2>/dev/null || true)"
+if [ -z "$manifest_json" ]; then
+    log "no manifest.json in CT $CTID yet (never checkpointed), skipping this run"
+    exit 0
+fi
+
+latest="$(echo "$manifest_json" | jq -r '.latest // empty')"
+previous="$(echo "$manifest_json" | jq -r '.previous // empty')"
+
+# 2. Pull the generation files named by the manifest we just read, THEN
+#    pull the manifest itself LAST. A concurrent commit can only add a
+#    newer generation, so this snapshot is a valid earlier point in time
+#    and the server never has to stop (docs/design/infra.md section 3,
+#    matching the docs/streaming-plan.md section 4 ordering argument).
+for gen in "$latest" "$previous"; do
+    [ -z "$gen" ] && continue
+    fname="${gen}.checkpoint"
+    log "pulling checkpoint generation ${gen}"
+    pct pull "$CTID" "/srv/fly/state/${fname}" "${WORK_DIR}/${fname}" || log "WARNING: could not pull ${fname} (may have rotated already, non-fatal)"
+done
+
+log "pulling manifest.json (last, the commit point)"
+pct pull "$CTID" /srv/fly/state/manifest.json "${WORK_DIR}/manifest.json"
+
+# 3. events.jsonl and yesterday's highlight.
+log "pulling events.jsonl"
+pct pull "$CTID" /srv/fly/state/events.jsonl "${WORK_DIR}/events.jsonl" 2>/dev/null || log "no events.jsonl yet"
+
+yesterday_ny="$(TZ=America/New_York date -d 'yesterday 00:00:00' +%Y%m%d)"
+log "pulling yesterday's highlight (${yesterday_ny}.mp4) if it exists"
+pct pull "$CTID" "/srv/fly/media/highlights/${yesterday_ny}.mp4" "${WORK_DIR}/${yesterday_ny}.mp4" 2>/dev/null || log "no highlight for ${yesterday_ny} yet"
+
+# 4. md5 change detection, then dated copy to the backup host. Matches the
+#    neighbouring backup job's "unchanged, skip" convention.
+bytes_sent=0
+changed_any=0
+for f in "$WORK_DIR"/*; do
+    [ -f "$f" ] || continue
+    base="$(basename "$f")"
+    local_md5="$(md5sum "$f" | awk '{print $1}')"
+    remote_md5="$(ssh "$BACKUP_HOST" "md5sum '${DEST}/${base}' 2>/dev/null | awk '{print \$1}'" || true)"
+    if [ "$local_md5" = "$remote_md5" ]; then
+        log "unchanged, skip: ${base}"
+        continue
+    fi
+    changed_any=1
+    ssh "$BACKUP_HOST" "mkdir -p '${DEST}'"
+    scp -q "$f" "${BACKUP_HOST}:${DEST}/${base}"
+    bytes_sent=$((bytes_sent + $(stat -c %s "$f")))
+    log "copied: ${base}"
+done
+
+if [ "$changed_any" -eq 0 ]; then
+    log "nothing changed"
+fi
+
+# 5. textfile metrics, matching the existing collector convention
+#    (host + role labels).
+if [ -d "$TEXTFILE_DIR" ]; then
+    tmp="${TEXTFILE_DIR}/fly_backup_${NAME}.prom.$$"
+    {
+        echo "# HELP backup_last_success_seconds Unix time of the last successful fly backup."
+        echo "# TYPE backup_last_success_seconds gauge"
+        echo "backup_last_success_seconds{host=\"${NAME}\",role=\"stream\"} $(date +%s)"
+        echo "# HELP backup_bytes_total Bytes copied to the backup host in the most recent fly backup run."
+        echo "# TYPE backup_bytes_total gauge"
+        echo "backup_bytes_total{host=\"${NAME}\",role=\"stream\"} ${bytes_sent}"
+    } > "$tmp"
+    mv -f "$tmp" "${TEXTFILE_DIR}/fly_backup_${NAME}.prom"
+fi
+
+log "done"

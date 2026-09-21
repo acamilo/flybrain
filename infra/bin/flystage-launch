@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# infra/bin/flystage-launch — flystage.service's ExecStart.
+#
+# Reads config/chromium-flags (one flag per line, '#' comments and blank
+# lines stripped) and execs Chromium against the built stage page.
+# Pulled out of the unit file itself (rather than an inline `/bin/sh -c`
+# with escaped `tr "\n" " "`) so the flag-loading logic is plain,
+# testable shell instead of relying on systemd's own backslash-escaping
+# of Exec= lines. docs/design/infra.md section 3.
+set -euo pipefail
+
+# Flag profile (docs/design/gpu.md section 3). Three of them:
+#
+#   default  the MVP and production configuration: config/chromium-flags,
+#            --disable-gpu, 2D canvas on Skia's CPU raster, the paper fly.
+#   gpu      config/chromium-flags.gpu. SPIKE-ONLY and, measured, NOT
+#            sufficient on its own: on Xvfb it gets no GL at all. Kept because
+#            it is the browser half of option (d) and the thing `vgl` is the
+#            delta against. See that file's header.
+#   vgl      config/chromium-flags.vgl AND `vglrun -d egl0` around Chromium —
+#            VirtualGL's EGL back end, gpu.md section 3 option (d). Measured
+#            passing on the dev container (infra/docs/virtualgl-spike.md): hardware WebGL
+#            from the Quadro, the 3D fly at 30+ fps, 0.32 core cheaper than the
+#            paper fly, x11grab untouched. Needs VirtualGL installed in the
+#            container (02-base.sh, VIRTUALGL_VERSION) and GPU=1.
+#
+# An unknown profile is a hard error, not a silent fall back to the default: a
+# typo in FLY_CHROMIUM_PROFILE must not quietly broadcast with a flag set
+# nobody chose.
+#
+# Note for anyone overriding this from a systemd drop-in: you cannot. systemd
+# applies EnvironmentFile= after Environment=, so /etc/fly/fly.env's
+# FLY_CHROMIUM_PROFILE beats an `Environment=FLY_CHROMIUM_PROFILE=` in a
+# drop-in (caught the hard way during the spike). Set CHROMIUM_PROFILE in
+# infra/env/example.env and re-run 05-deploy.sh, or set CHROMIUM_FLAGS_FILE, which
+# fly.env does not write.
+: "${FLY_CHROMIUM_PROFILE:=default}"
+# Command prefix. Empty for every profile but `vgl`, so the exec line below is
+# the same one it always was when nothing is wrapping Chromium.
+launch_prefix=()
+case "$FLY_CHROMIUM_PROFILE" in
+    default) : "${CHROMIUM_FLAGS_FILE:=/etc/fly/chromium-flags}" ;;
+    gpu)     : "${CHROMIUM_FLAGS_FILE:=/etc/fly/chromium-flags.gpu}" ;;
+    vgl)
+        : "${CHROMIUM_FLAGS_FILE:=/etc/fly/chromium-flags.vgl}"
+        # -d egl0 is the EGL *device* back end, not a display: VirtualGL
+        # enumerates EGL devices itself and egl0 is the first one, which on
+        # The host is the Quadro RTX 4000 (`eglinfo -e`, then `eglinfo egl0 -B`,
+        # both from /opt/VirtualGL/bin — confirm after any driver change, since
+        # a second EGL device would renumber them; the Mesa llvmpipe device
+        # sorts after the NVIDIA one here).
+        [ -x /usr/bin/vglrun ] || {
+            echo "flystage-launch: FLY_CHROMIUM_PROFILE=vgl but /usr/bin/vglrun is missing." \
+                 "Install VirtualGL in this container (infra/02-base.sh with GPU=1 and VIRTUALGL_VERSION set)." >&2
+            exit 3
+        }
+        launch_prefix=(/usr/bin/vglrun -d "${VGL_DEVICE:-egl0}")
+        ;;
+    *)
+        echo "flystage-launch: FLY_CHROMIUM_PROFILE must be 'default', 'gpu' or 'vgl', got '$FLY_CHROMIUM_PROFILE'" >&2
+        exit 2
+        ;;
+esac
+# `?mode=live` is part of the default, not just of flystage.service's own
+# Environment=STAGE_URL: the page's mode parameter defaults to `player`, which
+# replays a fixture, so a bare http://127.0.0.1:7402/ broadcasts a recording
+# that is indistinguishable from a live stream. Neither path may silently do
+# that.
+: "${STAGE_URL:=http://127.0.0.1:7402/?mode=live}"
+
+[ -r "$CHROMIUM_FLAGS_FILE" ] || { echo "flystage-launch: cannot read $CHROMIUM_FLAGS_FILE" >&2; exit 1; }
+
+mapfile -t flags < <(grep -vE '^\s*(#.*)?$' "$CHROMIUM_FLAGS_FILE")
+
+exec "${launch_prefix[@]}" /usr/bin/chromium "${flags[@]}" "$STAGE_URL"

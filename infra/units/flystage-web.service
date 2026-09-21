@@ -1,0 +1,24 @@
+# infra/units/flystage-web.service — pushed to
+# /etc/systemd/system/flystage-web.service.
+#
+# Infra task clarification (not in docs/design/infra.md, which had the sim
+# itself serve the page): a tiny dependency-free static file server for
+# apps/stage's build output, kept as its own unit so flystage's Chromium
+# kiosk has something to load at http://127.0.0.1:7402/ that is
+# independent of flysim's control/feed ports. See
+# infra/config/serve.mjs and infra/config/serve.sh, deployed to
+# /opt/fly/current/stage/ by 05-deploy.sh.
+[Unit]
+Description=flystage-web: static file server for the built stage page
+After=network.target
+
+[Service]
+Type=simple
+User=fly
+ExecStart=/opt/fly/current/stage/serve.sh
+Restart=always
+RestartSec=2
+MemoryMax=256M
+
+[Install]
+WantedBy=fly.target

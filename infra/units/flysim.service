@@ -1,0 +1,98 @@
+# infra/units/flysim.service — pushed to /etc/systemd/system/flysim.service.
+# docs/design/infra.md section 3.
+#
+# Ports: feed-protocol.md and control-api.md are the BINDING contracts and
+# supersede infra.md's own port numbers (docs/design/infra.md's own
+# preamble: "where this document differs, the contracts win"). Feed is
+# ws://127.0.0.1:7400/feed, control is http://127.0.0.1:7401. The
+# read-only metrics/status listener on :9101 is NOT covered by either
+# contract doc, so it keeps infra.md section 5's own number.
+#
+# FLY_GAME and the other per-demo values come from /etc/fly/fly.env,
+# generated per container by 05-deploy.sh from env/<name>.env — this file
+# is identical across fly-pokemon and fly-platformer.
+[Unit]
+Description=flysim: the fly brain, emulator, and control/feed APIs
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+WatchdogSec=30
+# Fallback if the Rust side does not send sd_notify yet (docs/design/infra.md
+# section 3: "If the Rust side is not ready at P1, fall back to Type=exec
+# and let the external watchdog cover it on checkpoint freshness; add
+# Type=notify before P2."). Swap the two Type= lines, do not run both.
+# Type=exec
+
+User=fly
+EnvironmentFile=/etc/fly/fly.env
+Environment=FLY_FEED_BIND=127.0.0.1:7400
+Environment=FLY_CONTROL_BIND=127.0.0.1:7401
+Environment=FLY_METRICS_ADDR=0.0.0.0:9101
+Environment=FLY_STATE_HOT=/run/fly/state
+Environment=FLY_STATE=/srv/fly/state
+# RAYON_NUM_THREADS is NOT set here: it comes from /etc/fly/fly.env, which
+# 05-deploy.sh writes as ${RAYON_THREADS:-3} from the env file (systemd
+# expands %specifiers in Environment=, not ${VARS}, so an
+# `Environment=RAYON_NUM_THREADS=${RAYON_THREADS}` line would be a literal
+# string, not a value).
+#
+# The default is 3, not 4 or the 6 this file used to hardcode. Measured on
+# The host under the whole stack (P0 spike run 2, 2026-09-15,
+# infra/docs/p0-measurements.md):
+#
+#   * The neuron sweep is memory-bandwidth-bound, so what it wants is
+#     distinct PHYSICAL cores, not threads. In `examples/soak`: 3 threads on
+#     3 physical cores of one socket = 1.753x realtime; 4 threads across
+#     PVE's automatic 8-thread cpuset (which is really 6 physical cores plus
+#     2 SMT siblings) = 1.570x; 6 threads = 1.492x; 6 threads squeezed onto
+#     4 logical CPUs = 1.156x. More threads than physical cores is slower in
+#     every pairing measured, on both this host's sockets — whole physical
+#     cores matter more than socket locality (see docs/design/gpu.md's
+#     dated note).
+#   * At 6 it also starved the rest of the container: flysim alone burned
+#     4.09 of 8 cores, the container ran at 6.40, `fly_lag_seconds` grew
+#     without bound (31 s of lag 8 minutes in, realtime factor 0.82) and
+#     ffmpeg's x11grab missed ~4 frames a second in both directions. At 3,
+#     with the cpuset below, flysim uses 1.90 cores, the container 4.61,
+#     lag holds at 0 and the realtime factor sits at 0.99-1.00.
+#
+# Raise this only alongside the cpuset: the right value is the number of
+# distinct physical cores the container's cpuset actually owns, minus what
+# Chromium (1.4 cores at 1080p) and ffmpeg (1.2) need. docs/design/gpu.md
+# section 7 item 14 re-measures fly_lag_seconds with this plus the node-0
+# cpuset.
+ExecStart=/opt/fly/current/flysim
+Restart=always
+RestartSec=2
+# Nice=-5 and CPUWeight=400 are kept, but be clear about what they buy: with
+# the cpuset below they are not what fixes the pacing. Removing Nice was
+# measured (lag held at 0 either way) and so was leaving it in place; the
+# cpuset is the whole difference. Priority alone cannot help a
+# bandwidth-bound sweep that is fighting its own SMT siblings.
+Nice=-5
+CPUWeight=400
+# The encoder, the browser and the sim must not share physical cores.
+# AllowedCPUs is per-host and per-container (PVE picks the container's
+# cpuset at `pct create` time and it is NOT a set of whole cores — on this
+# host the dev container got 3,6,13,15,20,23,26,36, i.e. six physical cores with two
+# of them contributing both SMT siblings, spread across both NUMA nodes),
+# so it cannot be committed as a literal here. Read the container's own set
+# with `lscpu -e` inside it, then give flysim distinct physical cores on ONE
+# socket and hand every other unit the rest, via drop-ins:
+#
+#   /etc/systemd/system/flysim.service.d/cpuset.conf   -> AllowedCPUs=3,13,15
+#   /etc/systemd/system/{xvfb,flystage,flycast}.service.d/cpuset.conf
+#                                                      -> AllowedCPUs=6,20,26,36
+#
+# cgroup2 delegation in an unprivileged LXC does carry this: systemd inside
+# the container enables the cpuset controller itself and
+# cpuset.cpus.effective comes back exactly as asked (verified, P0 run 2).
+# See infra/README.md "Pin the cpuset" for the host-side half.
+MemoryMax=4G
+
+[Install]
+WantedBy=fly.target

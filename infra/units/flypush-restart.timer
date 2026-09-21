@@ -1,0 +1,18 @@
+# infra/units/flypush-restart.timer — the 48h-cap guard.
+# docs/design/infra.md section 3: OnUnitActiveSec=23h, RandomizedDelaySec=30m,
+# AccuracySec=1m. RandomizedDelaySec keeps the two channels from
+# reconnecting at the same instant.
+[Unit]
+Description=Restart flypush every ~23h (the 48h Twitch broadcast cap guard)
+
+[Timer]
+# OnActiveSec bootstraps the first firing when the timer is started after flypush is already
+# active: OnUnitActiveSec alone never arms in that case (seen live 2026-09-16).
+OnActiveSec=23h
+OnUnitActiveSec=23h
+RandomizedDelaySec=30m
+AccuracySec=1m
+Unit=flypush-restart.service
+
+[Install]
+WantedBy=timers.target

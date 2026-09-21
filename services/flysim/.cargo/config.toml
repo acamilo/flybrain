@@ -1,0 +1,8 @@
+# The deployment target is the host's Xeon E5-2660 v3 (Haswell), so the default profile targets
+# x86-64-v2 rather than the build host. Rust performs no floating-point contraction or
+# reassociation at any target-cpu level, so this does not affect bit-exactness.
+#
+# The bench opts into the build host instead:
+#   RUSTFLAGS="-C target-cpu=native" cargo run --release --example bench
+[build]
+rustflags = ["-C", "target-cpu=x86-64-v2"]

@@ -1,0 +1,59 @@
+[package]
+name = "flysim"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "The fly brain and its Game Boy, as a service: snapshot feed, control API, checkpoints."
+
+[lib]
+name = "flysim"
+path = "src/lib.rs"
+
+[[bin]]
+name = "flysim"
+path = "src/main.rs"
+
+[features]
+# The LIF tick on the GPU: a passthrough to `flybrain-core/cuda`, so a release build can carry
+# the backend without naming the inner crate on the command line
+# (`FLY_CARGO_FEATURES=cuda infra/build/build-flysim.sh`). Off by default.
+#
+# Compiling it in does not turn it on. The backend attaches only when `FLY_LIF_CUDA=1` is in
+# the process environment, and `cudarc` is built with `dynamic-loading`, so a CPU-only run of a
+# CUDA-capable binary never opens `libcuda` — `ldd` on it lists no CUDA library at all. The
+# compatibility string is unaffected, because the GPU tick is bit-exact with the CPU one
+# (`infra/docs/lif-cuda-spike.md`, `infra/docs/cuda-on-dev.md`).
+cuda = ["flybrain-core/cuda"]
+
+[dependencies]
+flybrain-core = { path = "../flybrain-core" }
+flybrain-gb = { path = "../flybrain-gb" }
+
+anyhow = "1.0"
+axum = { version = "0.8", features = ["ws"] }
+clap = { version = "4.5", features = ["derive"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "net",
+    "sync",
+    "time",
+    "signal",
+    "macros",
+] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+futures-util = "0.3"
+# `default-features = false` drops the remote-reference resolver (and with it reqwest and a
+# TLS stack): `packages/feed/src/schema.json` is self-contained, so nothing has to be fetched.
+jsonschema = { version = "0.36", default-features = false }
+tempfile = "3"
+tokio-tungstenite = "0.29"
+tower = { version = "0.5", features = ["util"] }

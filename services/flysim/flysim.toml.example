@@ -1,0 +1,140 @@
+# flysim.toml — every value here is the built-in default.
+#
+#   cargo run --release -p flysim -- --config flysim.toml
+#
+# The file is optional: `infra/units/flysim.service` starts the binary with no `--config` and
+# configures it entirely through the environment. The environment always wins over this file.
+# `flysim --check-config` prints the resolved configuration and exits.
+#
+# Nothing in this service is secret (docs/control-api.md: "No secrets live in this service or
+# its config"), so the resolved configuration is logged in full at startup. Twitch credentials
+# live in flybridge.
+
+[paths]
+# The cartridge. Never committed; staged to the container by hand.
+# env: FLY_ROM, FLYSIM_PATHS_ROM
+rom = "/srv/fly/rom/pokemon-red.gb"
+# The connectome: meta.json plus the .binz artifacts.
+# env: FLY_DATASET, FLYSIM_PATHS_DATASET
+dataset = "/srv/fly/data/fafb-v783"
+# Durable checkpoints, manifest.json and the event log.
+# env: FLY_STATE, FLYSIM_PATHS_SAVE_DIR
+save_dir = "/srv/fly/state"
+# tmpfs copy of the same store, written every `hot_seconds` for SSD endurance.
+# env: FLY_STATE_HOT, FLYSIM_PATHS_HOT_DIR
+hot_dir = "/run/fly/state"
+
+[loop]
+# Adapter id: "pokemon-red" or "platformer".
+# env: FLY_GAME, FLYSIM_LOOP_GAME
+game = "pokemon-red"
+# Target realtime factor: 0.25 to 8, or 0 for unthrottled (soak tests).
+# env: FLYSIM_LOOP_SPEED
+speed = 1.0
+# Neuron-sweep worker threads. 0 keeps the sweep sequential, which is the fastest setting
+# measured so far — see crates/flybrain-core/README.md, "Performance": propagation and
+# plasticity::observe are sequential by design, so parallelising the 20% that is the sweep
+# cannot beat rayon's per-tick fan-out cost.
+# env: RAYON_NUM_THREADS, FLYSIM_LOOP_THREADS
+threads = 0
+# Feed cadence while running, and while paused or booting (header only).
+# env: FLYSIM_LOOP_SNAPSHOT_HZ, FLYSIM_LOOP_IDLE_SNAPSHOT_HZ
+snapshot_hz = 30.0
+idle_snapshot_hz = 2.0
+# Durable commit interval, seconds. A ceiling on routine loss only: a commit also happens on
+# startup, on a rank-up, after a recovery, on pause, on POST /checkpoint and on shutdown.
+# env: FLYSIM_LOOP_CHECKPOINT_SECONDS
+checkpoint_seconds = 300.0
+# tmpfs commit interval, seconds. infra/bin/fly-watchdog alarms if hot_dir's mtime is 30 s old.
+# env: FLYSIM_LOOP_HOT_SECONDS
+hot_seconds = 5.0
+# Warm-up on a fresh start only, never after a restore.
+# env: FLYSIM_LOOP_WARMUP_MS
+warmup_ms = 2500
+# Durable generations kept besides the milestone archives (which are never rotated away).
+# env: FLYSIM_LOOP_KEEP_GENERATIONS
+keep_generations = 2
+
+[feed]
+# ws://127.0.0.1:7400/feed — docs/feed-protocol.md.
+# env: FLY_FEED_BIND, FLYSIM_FEED_BIND
+bind = "127.0.0.1:7400"
+# Audio attachment rate. 48 kHz is Web Audio's native rate on Linux, so the page never resamples.
+# env: FLYSIM_FEED_AUDIO_HZ
+audio_hz = 48000
+
+[control]
+# http://127.0.0.1:7401 — docs/control-api.md. Loopback only; there is no auth because nothing
+# outside the container can reach it.
+# env: FLY_CONTROL_BIND, FLYSIM_CONTROL_BIND
+bind = "127.0.0.1:7401"
+# Optional extra listener carrying only /metrics, /status, /status.json and /healthz.
+# infra/units/flysim.service sets FLY_METRICS_ADDR=0.0.0.0:9101 so the watchdog can scrape it.
+# env: FLY_METRICS_ADDR, FLYSIM_CONTROL_METRICS_BIND
+# metrics_bind = "0.0.0.0:9101"
+# POST /reward answers 403 while this is false. Present so that the later "who trains the fly"
+# work does not change the API.
+# env: FLYSIM_CONTROL_ALLOW_REWARD
+allow_reward = false
+# POST /stimulate: the sugar path. Default and maximum pulse length, and the global budget.
+# env: FLYSIM_CONTROL_SUGAR_DEFAULT_MS, FLYSIM_CONTROL_SUGAR_MAX_MS, FLYSIM_CONTROL_SUGAR_PER_MINUTE
+sugar_default_ms = 400.0
+sugar_max_ms = 1000.0
+sugar_per_minute = 6
+# SHA-256 the cartridge is expected to have. Only logged: the adapter decides whether semantic
+# rewards are on, and an unexpected cartridge runs with them off rather than failing to start.
+# env: FLY_ROM_SHA256
+# expect_rom_sha256 = ""
+
+[chat]
+# The persistent on-screen chat panel (docs/control-api.md, POST /chat). This is the kill switch:
+# false makes the endpoint answer 403 and the feed header omit `chat` entirely, which blanks the
+# panel without restarting anything else.
+# env: FLY_CHAT_ENABLED, FLYSIM_CHAT_ENABLED
+enabled = true
+# Lines carried in every snapshot header, 1 to 12 (the feed schema's own ceiling).
+# env: FLYSIM_CHAT_RING
+ring = 12
+# Operator-maintained deny list: one pattern per line, `#` comments, matched case-insensitively
+# anywhere in the display name or the sanitized text. Re-read on SIGHUP (`systemctl kill -s HUP
+# flysim`) and at most once a minute anyway. A missing file is an empty list and a warning, never
+# a startup failure. `FLYSIM_CHAT_DENY_LIST=none` runs with no deny list at all.
+# env: FLY_CHAT_DENY_LIST, FLYSIM_CHAT_DENY_LIST
+deny_list = "/srv/fly/chat-deny.txt"
+# Not configurable, and deliberately so: the admission limits are the contract's own numbers,
+# 1 accepted line per name per 2 s and 5 per second globally (crate::chat). The text rules are
+# not configurable either — packages/feed/src/chat.ts and crates/flysim/src/chat.rs are pinned to
+# each other by packages/feed/tests/fixtures/chat-cases.json.
+
+[macros]
+# What the fly's channels mean (docs/design/macros.md sections 1, 4 and 12).
+#
+#   "raw"      — the decoder's button mask goes to the emulator. The default, and unchanged
+#                behaviour to the byte.
+#   "macros"   — the scene's macros are buttons of their own. Every macro type has its own neuron
+#                population (macro_<type>: one per type, drawn from the mushroom body output
+#                neurons and the brain motor neurons) and its own channel in the readout's second
+#                exclusive group. The scene decides which of those channels exist and the decoder
+#                picks among exactly those, on the direction group's own hold, hysteresis and
+#                fatigue. The eight real buttons are decoded as ever; while a macro runs it owns
+#                the pad.
+#
+# "palette" and "plan" are the two modes section 12 replaced. They are still accepted and mean
+# "macros", with a warning, for one release.
+#
+# Raw stays the default until the measurement in section 7 says otherwise. There is no chat
+# command and no control-API call for this, on purpose: which mode a box runs in is a property of
+# the deployment. Only pokemon-red has macros; macros mode over any other game is refused at
+# startup rather than silently downgraded.
+# env: FLY_MACRO_MODE, FLYSIM_MACROS_MODE
+mode = "raw"
+
+[game.platformer]
+# SHA-256 of the one cartridge the platformer adapter enables semantic rewards for. Pokemon Red
+# needs no equivalent: its pin is a build constant in flybrain-gb. The platformer's is not, because
+# docs/design/platformer.md §8.5 records only the SHA-1 of the revision its RAM map describes, so
+# the hash has to come from the deployment. Unset leaves semantic rewards off, with
+# "SEMANTIC REWARDS OFF" on screen; a value that is not 64 hex digits is a config error.
+# env: FLY_ROM_PLATFORMER_SHA256, FLYSIM_GAME_PLATFORMER_ROM_SHA256
+# rom_sha256 = ""
+

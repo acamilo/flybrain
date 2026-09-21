@@ -1,0 +1,391 @@
+@import 'tailwindcss';
+@import './theme/tokens.css';
+@import './theme/panels.css';
+@import './theme/rail.css';
+@import './theme/motion.css';
+
+/**
+ * Self-hosted OFL faces. `font-display: block` with the default 3 s block period is deliberate:
+ * this page paints once and then broadcasts for weeks, so a flash of fallback text is worse than
+ * a late first paint, and `data-ready` gates the capture on `document.fonts.ready` anyway.
+ *
+ * Two faces are on the page (`docs/design/gameboy-theme.md`): Press Start 2P for titles, rung
+ * names, big numbers, tab labels and chips, and one pixel monospace for everything else. Inter
+ * and IBM Plex Mono are gone — the document drops them "from the page entirely" — and so are
+ * their files.
+ *
+ * All three of that document's body candidates are declared, because only the one `--font-body`
+ * names is ever fetched: an unused `@font-face` costs nothing, and having them all here is what
+ * makes the pick a one-line change in `src/theme/tokens.css` rather than a commit. They are
+ * subset to the same Latin repertoire as the Press Start 2P subset (`tools/font-compare.mts`
+ * documents how, and `mockups/gameboy-fonts.png` is the frame they were picked from).
+ *
+ * The `*-Fallback` faces carry `size-adjust` so that if a load ever fails the metrics still match
+ * and the grid does not reflow (design A4, risk 3). Against DejaVu Sans Mono's 0.602 em advance:
+ * VT323's is 0.4, hence 66%, with ascent/descent 0.8/0.2 em; Silkscreen's mean is 0.734, hence
+ * 122%, with 1.04/0.26. Silkscreen is proportional, so 122% matches its *average* line rather
+ * than every glyph — which is the best a single number can do, and is why the fallback is a
+ * safety net for a failed load and not a layout the page is designed against.
+ */
+@font-face {
+  font-family: 'Press Start 2P';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('/fonts/PressStart2P-Latin.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'VT323';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('/fonts/VT323-Latin.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Silkscreen';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('/fonts/Silkscreen-Latin.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Pixelify Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('/fonts/PixelifySans-Latin.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'VT323 Fallback';
+  src: local('DejaVu Sans Mono'), local('Courier New');
+  size-adjust: 66%;
+  ascent-override: 80%;
+  descent-override: 20%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: 'Silkscreen Fallback';
+  src: local('DejaVu Sans Mono'), local('Courier New');
+  size-adjust: 122%;
+  ascent-override: 104%;
+  descent-override: 26%;
+  line-gap-override: 0%;
+}
+
+@font-face {
+  font-family: 'Press Start 2P Fallback';
+  src: local('DejaVu Sans Mono'), local('Courier New');
+  size-adjust: 78%;
+  ascent-override: 100%;
+  descent-override: 25%;
+  line-gap-override: 0%;
+}
+
+/**
+ * Tailwind v4 CSS-first theme. Only the tokens the utilities need are mapped; the panels read the
+ * CSS variables directly, which keeps one source of truth for a theme swap at runtime.
+ *
+ * `--font-sans` and `--font-mono` are the same face now: there is no separate text face on the
+ * page at all, so a utility asking for either gets the body pick. `--font-mono` is a Tailwind name
+ * rather than a promise — Silkscreen is a pixel face, not a fixed-advance one, and `.num` is where
+ * the page gets fixed advances from.
+ */
+@theme {
+  --color-bg-0: var(--bg-0);
+  --color-bg-1: var(--bg-1);
+  --color-bg-2: var(--bg-2);
+  --color-panel: var(--panel);
+  --color-bezel: var(--bezel);
+  --color-ink-0: var(--ink-0);
+  --color-ink-1: var(--ink-1);
+  --color-ink-2: var(--ink-2);
+  --color-accent: var(--accent);
+  --color-accent-warm: var(--accent-warm);
+  --color-sensory: var(--sensory);
+  --color-motor: var(--motor);
+  --color-dopamine: var(--dopamine);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-alarm: var(--alarm);
+
+  --font-sans: var(--font-body);
+  --font-mono: var(--font-body);
+
+  --radius-panel: var(--radius);
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    /* No scrollbars, ever: the structural test asserts it (audit finding). */
+    overflow: hidden;
+    background: var(--bg-0);
+    color: var(--ink-0);
+    font-family: var(--font-body);
+    font-size: var(--fs-body);
+    /*
+     * No ligatures anywhere. A readout page has no use for them, and Pixelify Sans's f-l ligature
+     * renders as a capital A at the body floor ("silly fly" came out "silly Ay" in the candidate
+     * frame), which is the sort of thing that reaches air unnoticed.
+     *
+     * No `font-variation-settings` and no `cv05`: neither face is variable and neither has stylistic
+     * sets. No `tnum` either, but for a blunter reason — measured, Silkscreen carries no such
+     * feature, so asking for it here would read as a guarantee the page does not have. The
+     * guarantee lives on `.num` instead, which changes face rather than asking a face for a
+     * table it has not got.
+     */
+    font-variant-ligatures: none;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* The page is a broadcast surface: no selection, no caret, no focus rings in the frame. */
+  body {
+    user-select: none;
+    cursor: none;
+  }
+
+  canvas {
+    display: block;
+  }
+}
+
+/* -- The stage ------------------------------------------------------------------------------- */
+
+#stage {
+  position: relative;
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+  transform-origin: top left;
+  background-color: var(--bg-0);
+  /* A grid wash, flat colours only, so the encoder has something stable to chew on. */
+  background-image:
+    linear-gradient(to right, var(--grid) 0 1px, transparent 1px 100%),
+    linear-gradient(to bottom, var(--grid) 0 1px, transparent 1px 100%);
+  background-size: 48px 48px;
+}
+
+/*
+ * 1920x1080 is the authoring size and the broadcast size, so it needs no transform at all.
+ * `?res=720` is the 2/3 downscale for thumbnails and the downscale tests: 1920 x 0.6667 = 1280.
+ */
+:root[data-res='720'] #stage {
+  transform: scale(0.6667);
+}
+
+/* -- Panels: the Game Boy dialogue box ------------------------------------------------------- */
+
+/**
+ * `docs/design/gameboy-theme.md`: "Every panel is a Game Boy dialogue box: square corners, a 4 px
+ * outer border with a 2 px inner line (the double frame), no drop shadows, no rounded radius."
+ *
+ * The outer frame is a real `border`, so the panel's box arithmetic is unchanged (`box-sizing:
+ * border-box`, and `src/lib/geometry.ts`'s `BORDER_WIDTH` is the same 4). The inner line is
+ * `::after` at `inset: 0` of the padding box, which puts it immediately inside the frame and, being
+ * the last generated child, over the panel's own contents rather than under them — the DMG's text
+ * boxes draw their inner rule the same way round.
+ *
+ * `::before` is still the scanline wash, so the two do not collide.
+ */
+.panel {
+  position: absolute;
+  background: var(--panel);
+  border: var(--border-w) solid var(--frame);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: var(--border-inner-w) solid var(--frame-inner);
+}
+
+.panel__body {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 9px 12px;
+  gap: 6px;
+}
+
+/* Panel body texture / scanlines: never behind text, so it is a pseudo-element under content. */
+.panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--ink-0) 100%, transparent) 0 1px,
+    transparent 1px 3px
+  );
+  opacity: var(--scanline-opacity);
+}
+
+/**
+ * A panel title is a *title*, so it is `--font-label` (Silkscreen) — the 2026-09-16 pairing's
+ * chip and title face, not Press Start 2P: RUNG, HERE FOR, BRAIN, CIRCUITS, RETINA, EVENTS and
+ * CHAT are all short, uppercase and closed-vocabulary, which is exactly what Silkscreen's boxy
+ * weight suits and where it never runs into the width tax that moved everything else to VT323
+ * (`src/theme/tokens.css`).
+ *
+ * `font-weight` is gone from everything in the pixel faces: neither has a bold, so a 700 here is
+ * a synthetic smear, which at the body floor is the difference between a readable label and a
+ * blurred one. Where layout v1 used weight to mark something, this theme uses the accent colour
+ * or the pixel cursor.
+ *
+ * 1.05, not Silkscreen's own 1.30 em box: its *ink* is only 0.76 em (0.63 ascent, 0.13 descent,
+ * measured), so the fixed-height rows this sits above keep the leading they were tuned at and
+ * clip nothing — the extra 0.30 em of the declared box is side bearing, not ink.
+ */
+.panel-title {
+  font-family: var(--font-label);
+  font-size: var(--fs-body);
+  letter-spacing: 0.06em;
+  color: var(--ink-2);
+  text-transform: uppercase;
+  line-height: 1.05;
+  flex: 0 0 auto;
+}
+
+/* -- Type roles the text-size lint checks ---------------------------------------------------- */
+
+[data-role='body'] {
+  font-size: var(--fs-body);
+  color: var(--ink-1);
+  line-height: 1.25;
+}
+
+[data-role='label'] {
+  font-size: var(--fs-label);
+  color: var(--ink-0);
+  line-height: 1.15;
+}
+
+/*
+ * 1, not 1.1: the body face's *ink* is 0.76 em at the outside (Silkscreen, measured: 0.63 ascent,
+ * 0.13 descent), and the progress cluster is 144 px for four rows — the 4 px of leading this gives
+ * back is what keeps the panel from clipping its own footer. The face's declared box is 1.30 em,
+ * but that is side bearing and nothing is drawn in it.
+ */
+[data-role='label-lg'] {
+  font-size: var(--fs-label-lg);
+  color: var(--ink-0);
+  line-height: 1;
+}
+
+[data-role='hero'] {
+  font-family: var(--font-pixel);
+  font-size: var(--fs-hero);
+  color: var(--ink-0);
+  line-height: 1.3;
+}
+
+/*
+ * Digits that change, in the one monospaced face on the page.
+ *
+ * `docs/design/gameboy-theme.md`: "Tabular digits everywhere numbers change (monospace makes this
+ * automatic)." With Silkscreen as the body pick it is not automatic — the face is proportional and
+ * has no `tnum`, and every digit is 20/27 em except "1", which is 17 — so a run clock ticking at
+ * 1 Hz and a Hz readout lerped at 30 Hz would each shuffle 3 px sideways per "1" that came or
+ * went, and the two cluster readouts would drag the whole rung line with them.
+ *
+ * So `.num` is Press Start 2P (`--font-num`), which is exactly one em per character. That is the
+ * design's own face for "big numbers", and every element carrying this class is a number the
+ * paint loop rewrites: the rung count, HERE FOR, the Hz, the try count, the run clock.
+ *
+ * `font-variant-numeric` stays for the same reason the fallback stack does: it costs nothing and
+ * it is correct the moment `--font-num` points at a face that honours it.
+ */
+.num {
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+}
+
+/**
+ * Press Start 2P, for the two things that still carry it: `.num` above, and the wordmark
+ * (`src/panels/TitleStrip.tsx`). Needs a taller line box than 1.0 or a `truncate` ancestor clips
+ * its descenders.
+ */
+.pixel,
+[data-role='body'].pixel,
+[data-role='label'].pixel,
+[data-role='label-lg'].pixel {
+  font-family: var(--font-pixel);
+  letter-spacing: 0;
+  line-height: 1.3;
+}
+
+/**
+ * The `--font-label` counterpart to `.pixel`, for a chip or glyph that is not a `.panel-title` and
+ * not a chip built on `.chip-cut` (which sets the same face itself): today, only the fly strip's
+ * eight button-row glyphs (`src/panels/FlyStrip.tsx`). Silkscreen's ink box is short enough that it
+ * needs none of `.pixel`'s extra leading.
+ */
+.label-face {
+  font-family: var(--font-label);
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+/* -- Opaque backing plate for text that crosses the map (design A2) -------------------------- */
+
+.plate {
+  background: color-mix(in srgb, var(--bg-0) 88%, transparent);
+  border-radius: 0;
+  padding: 3px 9px;
+}
+
+/* -- The pixel cursor ------------------------------------------------------------------------ */
+
+/**
+ * The selection cursor, as a *drawn* triangle rather than a typed glyph.
+ *
+ * `docs/design/gameboy-theme.md` asks for "Selection cursor '▶' (as a small pixel triangle)" on
+ * the current rung and the active tab, and none of the three body candidates carries U+25B6 (nor
+ * U+2192, which is why the rung line's arrow is drawn from this same shape). A `clip-path`
+ * staircase is the honest way to get it: seven 2 px rows, so it is pixel art at the page's own
+ * resolution instead of a smooth vector triangle that the encoder would soften.
+ */
+.cursor {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 14px;
+  background: currentcolor;
+  clip-path: polygon(
+    0 0,
+    2px 0,
+    2px 2px,
+    4px 2px,
+    4px 4px,
+    6px 4px,
+    6px 6px,
+    8px 6px,
+    8px 8px,
+    6px 8px,
+    6px 10px,
+    4px 10px,
+    4px 12px,
+    2px 12px,
+    2px 14px,
+    0 14px
+  );
+}

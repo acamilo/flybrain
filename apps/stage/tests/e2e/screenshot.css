@@ -1,0 +1,19 @@
+/**
+ * Stylesheet injected into every screenshot assertion (`screenshots.spec.ts`).
+ *
+ * One rule, for one reason: `__STAGE_VERSION__` is `git describe --tags --always --dirty` at build
+ * time, so the title strip's version reads `v0.1.4-13-g6aea407` on one build and `-19-gbca0508`
+ * on the next. Silkscreen is proportional, so a different sha is a different *width*, and the
+ * chips beside it are right-aligned in the same flex row — so every commit moved two chips a few
+ * pixels sideways and invalidated all thirteen committed baselines. The next person to run the
+ * suite then saw thirteen failures whose only diff was in the title strip.
+ *
+ * `visibility: hidden` keeps the element in the layout and a fixed width keeps that layout the
+ * same for any sha, so the frame is identical across builds and a real regression anywhere in it
+ * still fails. The chip's own content is asserted by `structure.spec.ts`, which reads its text and
+ * checks the shape of it, so nothing is lost by taking it out of the picture.
+ */
+[data-testid='stage-version'] {
+  visibility: hidden;
+  width: 300px;
+}

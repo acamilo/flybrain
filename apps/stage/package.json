@@ -1,0 +1,48 @@
+{
+  "name": "@flybrain/stage",
+  "version": "0.1.1",
+  "description": "flystage: the fixed 1920x1080 broadcast page for the 24/7 stream of a simulated fly connectome playing a Game Boy game.",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json --noEmit --pretty false && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json --noEmit --pretty false",
+    "test": "node --import tsx --test tests/unit/*.test.ts",
+    "test:e2e": "playwright test",
+    "mockups": "tsx tools/mockup.mts",
+    "fonts": "tsx tools/font-compare.mts",
+    "record": "tsx tools/record-fixture.mts"
+  },
+  "dependencies": {
+    "@flybrain/brain": "*",
+    "@flybrain/feed": "*",
+    "@radix-ui/react-progress": "1.1.16",
+    "@radix-ui/react-separator": "1.1.15",
+    "@radix-ui/react-slot": "1.3.3",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "tailwind-merge": "3.6.0",
+    "three": "0.178.0",
+    "zustand": "5.0.15"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/node": "22.17.0",
+    "@types/three": "0.178.1",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@types/ws": "8.18.1",
+    "@vitejs/plugin-react": "5.2.0",
+    "tailwindcss": "4.3.3",
+    "tsx": "4.20.3",
+    "typescript": "5.9.2",
+    "vite": "7.3.6",
+    "ws": "8.21.3"
+  }
+}

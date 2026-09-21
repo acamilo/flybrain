@@ -1,0 +1,315 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://flybrain.dev/schema/feed-header-v1.json",
+  "title": "FeedHeader",
+  "description": "Header of one feed protocol v1 snapshot (docs/feed-protocol.md). Attachments are not part of this schema: they are raw bytes framed alongside the header, not JSON.",
+  "$ref": "#/$defs/FeedHeader",
+  "$defs": {
+    "FeedHeader": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "seq",
+        "wallMs",
+        "status",
+        "realtimeFactor",
+        "uptimeSeconds",
+        "runSeconds",
+        "brainMs",
+        "frame",
+        "buttons",
+        "rates",
+        "populationRate",
+        "spikeCount",
+        "learning",
+        "game",
+        "milestone",
+        "sugar",
+        "events",
+        "attachments"
+      ],
+      "properties": {
+        "protocol": { "const": 1 },
+        "seq": { "type": "integer", "minimum": 0 },
+        "wallMs": { "type": "integer", "minimum": 0 },
+        "status": { "$ref": "#/$defs/FeedStatus" },
+        "realtimeFactor": { "type": "number", "minimum": 0 },
+        "uptimeSeconds": { "type": "number", "minimum": 0 },
+        "runSeconds": { "type": "number", "minimum": 0 },
+        "brainMs": { "type": "number", "minimum": 0 },
+        "frame": { "type": "integer", "minimum": 0 },
+        "buttons": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "rates": { "$ref": "#/$defs/Rates" },
+        "populationRate": { "type": "number", "minimum": 0 },
+        "spikeCount": { "type": "integer", "minimum": 0 },
+        "learning": { "$ref": "#/$defs/FeedLearning" },
+        "game": { "$ref": "#/$defs/FeedGame" },
+        "milestone": { "$ref": "#/$defs/FeedMilestone" },
+        "sugar": { "$ref": "#/$defs/FeedSugar" },
+        "events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/FeedEvent" }
+        },
+        "chat": {
+          "description": "The accepted chat ring, oldest first. Optional: omitted entirely while flysim.toml's [chat] enabled = false (the kill switch), and bounded at 12 lines by the contract regardless of what [chat] ring is set to.",
+          "type": "array",
+          "maxItems": 12,
+          "items": { "$ref": "#/$defs/ChatLine" }
+        },
+        "attachments": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/AttachmentKind" }
+        }
+      }
+    },
+
+    "FeedStatus": {
+      "enum": ["booting", "running", "paused", "recovering", "error"]
+    },
+
+    "GameMode": {
+      "enum": ["BOOT", "OVERWORLD", "BATTLE", "TRANSITION", "DEMO", "SAFARI", "UNKNOWN"]
+    },
+
+    "RewardKind": {
+      "enum": ["story", "explore", "area", "pokedex", "trainer", "wildwin", "badge"]
+    },
+
+    "AttachmentKind": {
+      "enum": ["frame", "audio", "spikes"]
+    },
+
+    "FeedEventKind": {
+      "enum": [
+        "reward",
+        "sugar",
+        "milestone",
+        "recovery",
+        "checkpoint",
+        "viewer",
+        "system",
+        "macro"
+      ]
+    },
+
+    "Rates": {
+      "description": "Hz per tracked role: command_0..7, steer_left, steer_right, forward, backward, proboscis, reward_pam. An open map keyed by role name (docs/feed-protocol.md types `rates` as Record<string, number>); unrecognised role names are tolerated so the schema does not need to change when a new role is wired.",
+      "type": "object",
+      "additionalProperties": { "type": "number" }
+    },
+
+    "FeedLearning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "updates", "changed", "synapses", "signal"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "updates": { "type": "integer", "minimum": 0 },
+        "changed": { "type": "integer", "minimum": 0 },
+        "synapses": { "type": "integer", "minimum": 0 },
+        "signal": { "type": "number" }
+      }
+    },
+
+    "RewardCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["story", "explore", "area", "pokedex", "trainer", "wildwin", "badge"],
+      "properties": {
+        "story": { "type": "integer", "minimum": 0 },
+        "explore": { "type": "integer", "minimum": 0 },
+        "area": { "type": "integer", "minimum": 0 },
+        "pokedex": { "type": "integer", "minimum": 0 },
+        "trainer": { "type": "integer", "minimum": 0 },
+        "wildwin": { "type": "integer", "minimum": 0 },
+        "badge": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "FeedGame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "semanticRewards",
+        "map",
+        "badges",
+        "uniqueLocations",
+        "rewardTotal",
+        "rewardCounts"
+      ],
+      "properties": {
+        "mode": { "$ref": "#/$defs/GameMode" },
+        "semanticRewards": { "type": "boolean" },
+        "map": { "type": ["integer", "null"], "minimum": 0 },
+        "badges": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "uniqueLocations": { "type": "integer", "minimum": 0 },
+        "rewardTotal": { "type": "number" },
+        "rewardCounts": { "$ref": "#/$defs/RewardCounts" },
+        "scene": { "$ref": "#/$defs/FeedScene" },
+        "macroMode": { "$ref": "#/$defs/MacroMode" },
+        "palette": {
+          "description": "The macros the current scene binds, ascending by slot, macros whose preconditions fail omitted. Always empty in raw mode.",
+          "type": "array",
+          "maxItems": 31,
+          "items": { "$ref": "#/$defs/FeedPaletteSlot" }
+        },
+        "macro": {
+          "description": "The macro that owns the buttons, or null.",
+          "oneOf": [{ "$ref": "#/$defs/FeedMacro" }, { "type": "null" }]
+        },
+        "padEmptyMs": {
+          "description": "Brain milliseconds the macro pad has had nothing on it in a playable scene; 0 otherwise. Report only (docs/design/macros.md section 13.1).",
+          "type": "number",
+          "minimum": 0
+        },
+        "macroOutcome": {
+          "description": "The macro that finished most recently, kept until the next one starts, or null.",
+          "oneOf": [{ "$ref": "#/$defs/FeedMacroOutcome" }, { "type": "null" }]
+        }
+      }
+    },
+
+    "FeedScene": {
+      "description": "Which scene the macros are bound for (docs/design/macros.md section 2). A closed set; a game with no macros reports unknown.",
+      "enum": [
+        "title",
+        "overworld",
+        "dialog",
+        "menu",
+        "battle",
+        "battle-switch",
+        "shop",
+        "pc",
+        "unknown"
+      ]
+    },
+
+    "MacroMode": {
+      "description": "Whether the fly's channels press buttons only (raw), or buttons and the scene's macro channels (macros).",
+      "enum": ["raw", "macros"]
+    },
+
+    "MacroOutcome": {
+      "enum": ["done", "blocked", "timeout", "refused"]
+    },
+
+    "FeedPaletteSlot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slot", "name", "gloss", "channel"],
+      "properties": {
+        "slot": {
+          "description": "0..30, ascending: the macro type's own index (docs/design/macros.md section 14 gives a slot per type, so a cell never moves).",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30
+        },
+        "name": { "type": "string", "minLength": 1, "maxLength": 14 },
+        "gloss": {
+          "description": "Two or three words of what the macro does in this scene.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "channel": {
+          "description": "The macro type's channel tag (docs/design/macros.md section 12), e.g. MB\u00b7ATK.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10
+        }
+      }
+    },
+
+    "FeedMacro": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slot", "name", "sinceMs"],
+      "properties": {
+        "slot": { "type": "integer", "minimum": 0, "maximum": 30 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 14 },
+        "sinceMs": {
+          "description": "Brain milliseconds since the macro started.",
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+
+    "FeedMacroOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slot", "name", "outcome", "atMs"],
+      "properties": {
+        "slot": { "type": "integer", "minimum": 0, "maximum": 30 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 14 },
+        "outcome": { "$ref": "#/$defs/MacroOutcome" },
+        "atMs": {
+          "description": "The brain clock at which the macro finished.",
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+
+    "FeedMilestone": {
+      "type": "object",
+      "description": "Milestone ladder state. `total` is the ladder length and `rank` is 0..total-1; neither has a fixed upper bound, because the ladder belongs to the game adapter and Pokemon Red's alone went from 16 rungs to 38 (docs/design/ladder.md). `total` is optional so a producer that predates it stays valid, and a consumer that does not receive one falls back to its own idea of the ladder length.",
+      "additionalProperties": false,
+      "required": ["rank", "label", "next", "sinceSeconds", "attempts"],
+      "properties": {
+        "rank": { "type": "integer", "minimum": 0 },
+        "label": { "type": "string" },
+        "next": { "type": "string" },
+        "sinceSeconds": { "type": "number", "minimum": 0 },
+        "attempts": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 1 }
+      }
+    },
+
+    "FeedSugar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["active", "remainingMs", "cooldownMs", "lastBy", "todayCount"],
+      "properties": {
+        "active": { "type": "boolean" },
+        "remainingMs": { "type": "number", "minimum": 0 },
+        "cooldownMs": { "type": "number", "minimum": 0 },
+        "lastBy": { "type": ["string", "null"] },
+        "todayCount": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "FeedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "wallMs", "brainMs", "kind", "label"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 0 },
+        "wallMs": { "type": "integer", "minimum": 0 },
+        "brainMs": { "type": "number", "minimum": 0 },
+        "kind": { "$ref": "#/$defs/FeedEventKind" },
+        "label": { "type": "string" },
+        "value": { "type": "number" },
+        "rewardKind": { "$ref": "#/$defs/RewardKind" },
+        "by": { "type": "string" }
+      }
+    },
+
+    "ChatLine": {
+      "description": "One accepted chat line. `by` passed validateDisplayName and `text` passed sanitizeChatText (packages/feed/src/chat.ts, mirrored in services/flysim/crates/flysim/src/chat.rs), so the bounds here are the bounds those two functions enforce.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "wallMs", "by", "text"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 0 },
+        "wallMs": { "type": "integer", "minimum": 0 },
+        "by": { "type": "string", "minLength": 1, "maxLength": 25 },
+        "text": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "bot": { "type": "boolean" }
+      }
+    }
+  }
+}

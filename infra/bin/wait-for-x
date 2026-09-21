@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# infra/bin/wait-for-x DISPLAY TIMEOUT_SECONDS
+#
+# Poll until Xvfb on DISPLAY (e.g. ":99") accepts connections, or exit 1
+# after TIMEOUT_SECONDS. Used as flystage's ExecStartPre
+# (docs/design/infra.md section 3).
+set -euo pipefail
+
+usage() { echo "usage: $0 DISPLAY TIMEOUT_SECONDS" >&2; exit 2; }
+
+[ $# -eq 2 ] || usage
+display="$1"
+timeout="$2"
+
+case "$timeout" in
+    ''|*[!0-9]*) usage ;;
+esac
+
+deadline=$(( $(date +%s) + timeout ))
+while true; do
+    if DISPLAY="$display" xdpyinfo >/dev/null 2>&1; then
+        exit 0
+    fi
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        echo "wait-for-x: $display not ready after ${timeout}s" >&2
+        exit 1
+    fi
+    sleep 0.5
+done

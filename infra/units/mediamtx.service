@@ -1,0 +1,17 @@
+# infra/units/mediamtx.service — pushed to /etc/systemd/system/mediamtx.service.
+# docs/design/infra.md section 3 ("mediamtx.service local RTMP/HLS/WebRTC
+# ingest") and section 4 (config/mediamtx.yml).
+[Unit]
+Description=MediaMTX local RTMP/HLS/WebRTC ingest for the fly demo
+After=network.target
+
+[Service]
+Type=simple
+User=fly
+ExecStart=/usr/local/bin/mediamtx /etc/mediamtx.yml
+Restart=always
+RestartSec=2
+MemoryMax=512M
+
+[Install]
+WantedBy=fly.target

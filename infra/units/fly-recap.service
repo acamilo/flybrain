@@ -1,0 +1,15 @@
+# infra/units/fly-recap.service — triggered by fly-recap.timer.
+# docs/design/infra.md section 3: "Nice=19, IOSchedulingClass=idle,
+# CPUWeight=20 so it can never starve the live stream."
+[Unit]
+Description=Cut the daily highlight reel
+
+[Service]
+Type=oneshot
+User=fly
+Environment=FLY_STATE_DIR=/srv/fly/state
+Environment=FLY_MEDIA_DIR=/srv/fly/media
+ExecStart=/opt/fly/bin/fly-recap
+Nice=19
+IOSchedulingClass=idle
+CPUWeight=20

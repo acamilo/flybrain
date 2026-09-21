@@ -1,0 +1,35 @@
+[workspace]
+resolver = "3"
+members = ["crates/flybrain-core", "crates/flybrain-gb", "crates/flysim"]
+
+[workspace.package]
+version = "0.1.1"
+rust-version = "1.94"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+base64 = "0.22"
+cc = "1.4.2"
+flate2 = "1"
+cudarc = { version = "0.19.9", default-features = false, features = [
+    "std",
+    "driver",
+    "nvrtc",
+    "dynamic-loading",
+    "cuda-12080",
+] }
+indexmap = { version = "2", features = ["serde"] }
+libm = "0.2"
+ryu-js = "1"
+serde = { version = "1.0.229", features = ["derive"] }
+# `float_roundtrip` is not optional: without it serde_json's fast float parser can land 1 ulp off
+# the value `JSON.parse` produces, which is enough to break a golden comparison.
+serde_json = { version = "1.0.151", features = ["preserve_order", "float_roundtrip"] }
+sha2 = "0.10.9"
+
+# Bit-exactness with the TypeScript oracle is the whole point of this workspace, so the
+# release profile must not be allowed to reassociate or contract float arithmetic. Rust does
+# neither by default; these settings only pin the parts we do care about.
+[profile.release]
+debug = 1

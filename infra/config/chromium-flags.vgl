@@ -1,0 +1,138 @@
+# infra/config/chromium-flags.vgl — pushed to /etc/fly/chromium-flags.vgl,
+# selected by FLY_CHROMIUM_PROFILE=vgl in infra/bin/flystage-launch, which also
+# wraps Chromium in `vglrun -d egl0`. This is docs/design/gpu.md section 3
+# option (d), VirtualGL's EGL back end, and unlike the `gpu` profile it is
+# MEASURED AND PASSING — see infra/docs/virtualgl-spike.md for the run.
+#
+# What it is for, in one paragraph: NVIDIA's GL/EGL *X11* paths need a real X
+# server running the NVIDIA X driver, and we capture from Xvfb, so the `gpu`
+# profile on its own gets no GL at all. VirtualGL 3.x's EGL back end renders on
+# the card through the EGL *device* platform (no X server involved, no
+# /dev/nvidia-modeset needed) and blits the result into the 2D X server, which
+# may be Xvfb. x11grab, the pulse clock and the whole A/V timing are therefore
+# untouched: from ffmpeg's side nothing about the capture changed.
+#
+# Measured on the dev container fly-spike, 2026-09-16, against the `default` profile's
+# paper fly: WebGL "enabled" and GL_RENDERER
+# "ANGLE (NVIDIA Corporation, Quadro RTX 4000/PCIe/SSE2, OpenGL ES 3.2 NVIDIA
+# 580.76.05)", `__stage.fly()` mode webgl at 35-37 fps, rAF 59.99, and total
+# Chromium CPU 1.057 core against 1.379 on the paper fly — 0.322 core cheaper,
+# which is the bar gpu.md section 3 set ("at least 0.3 core BELOW").
+#
+# Requires, all three:
+#   1. GPU=1 passthrough plus the NVIDIA userspace in the container (02-base.sh).
+#      /dev/nvidia-modeset is NOT required and stays unbound — measured, and it
+#      corrects gpu.md section 1's note that an "EGL display" needs it. The EGL
+#      *device* platform needs only nvidia0/nvidiactl/uvm.
+#   2. VirtualGL 3.1+ installed in the container (02-base.sh, VIRTUALGL_VERSION).
+#   3. Xvfb with `-extension GLX`, which xvfb.service already passes. VirtualGL
+#      wants exactly that: the 2D X server must NOT serve GLX, the faker answers
+#      the app's GLX calls itself and blits pixels with XPutImage/XShm. The
+#      `Xlib: extension "GLX" missing on display ":99"` lines in the journal are
+#      that arrangement working as designed, not a fault.
+#
+# Everything below the marker is identical to config/chromium-flags.gpu, which
+# is in turn config/chromium-flags plus the GPU delta. The one difference from
+# .gpu is --disable-gpu-sandbox, and it is not optional — see its comment.
+
+# --- the GPU delta (gpu.md section 3) ---------------------------------------
+--use-gl=angle
+--use-angle=gl-egl
+--use-cmd-decoder=passthrough
+# ANGLE over EGL, passthrough command decoder: the EGL variant from Chromium's
+# own server-side-headless docs, and the combination measured working under
+# vglrun. Chromium reports back `(gl=egl-angle,angle=opengl)`, i.e. ANGLE's
+# OpenGL backend on an EGL surface, which is the path VirtualGL interposes.
+
+--disable-gpu-sandbox
+# REQUIRED, and the whole reason this file exists separately from
+# chromium-flags.gpu. VirtualGL's faker opens its own second X11 connection
+# from inside the process it is loaded into; Chromium's GPU-process sandbox
+# forbids that, and the measured failure is a crash loop, not a fallback:
+#   Xlib:  extension "GLX" missing on display ":99".
+#   [VGL] ERROR: in VirtualWin-- 77: Could not clone X display connection
+#   ERROR:...gpu_process_host.cc:1035] GPU process exited unexpectedly: exit_code=256
+# repeating about twice a second until Chromium gives up and reports
+# `(gl=disabled,angle=none)`.
+#
+# The security cost, stated plainly rather than buried: the GPU process loses
+# its namespace/layer-one sandbox while holding an ioctl handle on the host's
+# NVIDIA kernel module — a module with a history of privilege-escalation CVEs —
+# on a card that is shared with the GPU workload in the neighbouring container. What it does NOT lose,
+# measured on the running container: NoNewPrivs stays 1 and a seccomp-bpf
+# filter is still attached (Seccomp: 2), and the *renderer* sandbox, the one
+# that actually contains the page and anything a viewer can influence, is
+# completely untouched (two filters, unchanged from the default profile).
+# That trade is acceptable on a dev box. It is a deliberate decision for a 24/7
+# public stream and this file does not make it: the release envs keep
+# CHROMIUM_PROFILE unset, i.e. `default`.
+
+--ignore-gpu-blocklist
+# the Quadro on a software X server is blocklisted; this is the flag that makes
+# the configuration possible at all, and is also why a "success" here has to be
+# confirmed against chrome://gpu rather than assumed. Confirmed over CDP
+# (SystemInfo.getInfo — Page.navigate to chrome://gpu is not available in
+# kiosk): webgl/2d_canvas/gpu_compositing all "enabled", rasterization
+# "enabled_force", 9 driver bug workarounds active.
+
+--enable-gpu-rasterization
+--canvas-oop-rasterization
+--enable-zero-copy
+# raster and canvas on the GPU, out-of-process, without a CPU round trip.
+# These are what actually paid for the GPU: the page renderer went from 0.913
+# core to 0.629 while the GPU process stayed flat at 0.411 (0.449 before) even
+# though it now does real GL plus VirtualGL's 1920x1080 readback and blit.
+
+# --- identical to config/chromium-flags below this line ---------------------
+
+--kiosk
+--window-position=0,0
+--window-size=1920,1080
+# one window filling the root, no browser chrome in frame
+
+--user-data-dir=/var/lib/fly/chrome
+# writable profile outside a nologin home, survives restarts
+
+--no-first-run
+--no-default-browser-check
+--disable-search-engine-choice-screen
+# no first-run UI on stream
+
+--noerrdialogs
+--disable-session-crashed-bubble
+--disable-infobars
+--hide-scrollbars
+# nothing modal can appear over the broadcast
+
+--autoplay-policy=no-user-gesture-required
+# page-played audio has no click to wait for (decision 8: page plays audio, no --mute-audio)
+
+--disable-background-timer-throttling
+# Chromium throttles background timers to ~1 Hz
+
+--disable-backgrounding-occluded-windows
+# an occluded window must not be treated as background
+
+--disable-renderer-backgrounding
+# keep renderer priority
+
+--disable-ipc-flooding-protection
+# a 30 Hz feed plus canvas draws exceeds the default 10/s/frame cap
+
+--force-device-scale-factor=1
+--force-color-profile=srgb
+# deterministic pixels into the encoder
+
+--disable-lcd-text
+# subpixel antialiasing becomes colour fringing after 4:2:0 subsampling
+
+--password-store=basic
+--use-mock-keychain
+# no gnome-keyring in the container
+
+--disable-features=Translate,MediaRouter,OptimizationHints,CalculateNativeWinOcclusion
+# fewer background subsystems; occlusion calculation is meaningless on Xvfb
+
+--remote-debugging-port=9222
+# loopback by default; needed for the P0 measurements and the CDP fallback
+# watchdog — and for the chrome://gpu dump this profile's measurement requires

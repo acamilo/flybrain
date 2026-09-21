@@ -1,0 +1,38 @@
+[package]
+name = "flybrain-core"
+description = "Bit-exact Rust port of the flybrain neural core (dataset, LIF kernel, plasticity, readout, agent loop, checkpoint envelope)."
+version.workspace = true
+edition = "2021"
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# The LIF tick on the GPU, bit-exact with the CPU kernel. Uses the CUDA driver API through
+# `cudarc` with dynamic loading, so a build without a CUDA toolkit still works and a CPU-only run
+# never opens libcuda.
+cuda = ["dep:cudarc"]
+
+[dependencies]
+cudarc = { workspace = true, optional = true }
+flate2.workspace = true
+indexmap.workspace = true
+libm.workspace = true
+ryu-js.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+
+[[example]]
+name = "bench"
+
+[[example]]
+name = "cuda_exact"
+required-features = ["cuda"]
+
+[[example]]
+name = "cuda_bench"
+required-features = ["cuda"]

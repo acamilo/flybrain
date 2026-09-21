@@ -1,0 +1,112 @@
+# infra/units/flycast.service — pushed to /etc/systemd/system/flycast.service.
+# docs/design/infra.md section 3 ("flycast.service, encode once, local
+# sinks only"), now with docs/design/gpu.md sections 4, 5 and 8 applied.
+#
+# 2026-09-15: the ffmpeg command moved OUT of this file into
+# /opt/fly/bin/flycast-launch (infra/bin/flycast-launch). Two reasons, both
+# from gpu.md section 8: there are now two encoder variants selected by
+# FLY_ENCODER, and `Environment=FLY_ENCODER=%i` is the wrong shape for a
+# unit that is not templated — so FLY_ENCODER comes from
+# /etc/fly/fly.env (written per container by 05-deploy.sh from
+# the env file) via EnvironmentFile=, and the launcher assembles the command.
+# This mirrors flystage.service -> bin/flystage-launch, keeps the two flag
+# sets reviewable side by side, and removes the '%%' escaping this file
+# used to need for the strftime segment filename (the launcher is a shell
+# script, so a literal '%' is just a '%'). ExecStartPost still needs it.
+#
+# The launcher also owns the automatic one-shot nvenc -> x264 fallback and
+# the fly_encoder_backend metric: the shared card means the GPU workload in the neighbouring container can
+# deny us an NVENC session at any moment, and a crash-loop there would take
+# the stream black (gpu.md section 5).
+#
+# Resolution/bitrate: 1920x1080 at 6000 kbps CBR, which diverges from
+# docs/design/infra.md section 3's still-720p/3000k text (see
+# docs/streaming-plan.md section 3's dated note). -g/-keyint_min stay 60
+# (2 s keyframes at 30 fps, still Twitch's requirement). Those numbers now
+# live as defaults in bin/flycast-launch.
+[Unit]
+Description=flycast: encode once, tee to MediaMTX and local segments
+# 2026-09-16: flystage.service added to After= (NOT to Requires=), plus the
+# wait-for-stage ExecStartPre below. This is the fix for the capture freeze
+# measured on the release container and reproduced six times on the dev container
+# (infra/docs/capture-freeze.md): a PulseAudio client attaching to the null
+# sink during roughly the first one to three seconds of this ffmpeg's start
+# leaves its x11grab leg permanently starved — about one new picture per
+# second, 29 repeats, perfect audio, and ffmpeg reporting 0 dup / 0 drop /
+# 30 fps, for the whole life of the process. Chromium's audio stream at page
+# load is exactly such a client, and `Requires=xvfb.service` on both units
+# means an Xvfb restart co-starts flystage and flycast right into that
+# window (measured: 171 identical frames out of 180).
+#
+# After= only, deliberately. Requires=flystage.service would make a dead or
+# restarting page take the encoder (and therefore the broadcast and the
+# recording) down with it, which is the opposite of this repo's "the page is
+# display only so the fly survives browser and encoder restarts" rule. The
+# ordering plus the readiness wait is all that is needed: nothing here
+# depends on flystage SUCCEEDING, only on not racing it.
+After=xvfb.service pulse.service mediamtx.service flystage.service
+Requires=xvfb.service pulse.service
+
+[Service]
+Type=simple
+User=fly
+# ffmpeg's pulse input needs to be told where the server is, exactly as
+# flystage.service already tells Chromium. pulse.service puts the socket under
+# /run/fly (PULSE_RUNTIME_PATH), which is not a path libpulse looks in by
+# default, so without these two the `-f pulse -i stream.monitor` input fails
+# with "Error opening input: No such process" and flycast crash-loops with a
+# perfectly good null sink sitting right there. Found on the P0 spike.
+Environment=XDG_RUNTIME_DIR=/run/fly
+Environment=PULSE_SERVER=unix:/run/fly/pulse/native
+# FLY_ENCODER (nvenc|x264), FLY_NVENC_PRESET and the stream geometry come
+# from here. '-' prefix: a container provisioned before 05-deploy.sh wrote
+# the file still starts, on the launcher's own defaults (x264, 1080p30,
+# 6000k) — which is exactly the pre-GPU behaviour.
+EnvironmentFile=-/etc/fly/fly.env
+ExecStartPre=/opt/fly/bin/wait-for-x :99 30
+# The capture-freeze ordering gate (infra/docs/capture-freeze.md). Returns 0
+# only once the X display answers, a Chromium kiosk window is MAPPED on :99,
+# the pulse sink `stream` has at least one sink-input, and all three have held
+# for 5 s — i.e. the page's audio client is already attached and nothing is
+# mid-connect, so ffmpeg's first seconds see a static client set. After 120 s
+# it logs a warning and returns 0 anyway: a black-but-running stream beats no
+# stream, and a page that never comes up is flystage's failure to report.
+ExecStartPre=/opt/fly/bin/wait-for-stage 120
+# Both ExecStartPre waits are inside the start job, so the default
+# TimeoutStartSec=90s would kill the unit mid-wait (30 + 120 in the worst
+# case) and Restart=always would spin it. 180 s covers both with headroom.
+TimeoutStartSec=180
+ExecStart=/opt/fly/bin/flycast-launch
+ExecStartPost=/bin/sh -c 'date -u +%%s > /srv/fly/state/flycast-start'
+Restart=always
+RestartSec=5
+# ffmpeg exits 255 when it is stopped by a signal it handles, so without
+# this every deliberate `systemctl stop flycast` (and every
+# `systemctl stop fly.target`) left the unit in `failed (Result: exit-code)`
+# with ExecMainStatus=255 — an operator stopping the encoder on purpose
+# produced exactly the state fly-watchdog and verify.sh treat as an
+# incident. Measured on the P0 spike run 2. 255 is a clean stop here; a
+# crash of the encoder shows up as a nonzero exit that is not 255, or as the
+# progress file going stale, which is what fly-watchdog's check 3 actually
+# keys on.
+SuccessExitStatus=255
+# CPUWeight stays 100 for now. gpu.md section 7 measurement 14 wants it
+# LOWERED (nvenc barely needs CPU) as one of three simultaneous changes for
+# the fly_lag_seconds re-measurement — the other two, the cpuset and
+# RAYON_NUM_THREADS, are in flysim.service (P0 run 2 landed the cpuset and
+# dropped the default to 3, not 4 — see flysim.service and
+# docs/design/gpu.md). The number is left for that measurement to pick
+# rather than guessed here, because on the x264 fallback path flycast needs
+# roughly 2 cores and starving it would turn a degraded stream into a
+# broken one.
+CPUWeight=100
+# MemoryMax is unchanged at 512M, but WATCH IT on the nvenc path: a CUDA
+# context plus NVENC's pinned host-side staging buffers are charged to this
+# cgroup, and 512M was sized for a pure-CPU x264 ffmpeg. If flycast starts
+# getting OOM-killed within seconds of a successful NVENC session open,
+# this number is the cause, not the GPU. Recorded as a watch item on
+# infra/docs/p0-measurements.md GPU measurement 3.
+MemoryMax=512M
+
+[Install]
+WantedBy=fly.target

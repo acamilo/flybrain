@@ -1,0 +1,145 @@
+# infra/config/chromium-flags.gpu — pushed to /etc/fly/chromium-flags.gpu,
+# selected by FLY_CHROMIUM_PROFILE=gpu in infra/bin/flystage-launch.
+#
+# ============================================================================
+# SPIKE ONLY. NOT THE MVP CONFIGURATION. And, as of 2026-09-16, MEASURED
+# INSUFFICIENT ON ITS OWN — use config/chromium-flags.vgl instead.
+# ============================================================================
+#
+# 2026-09-16, VirtualGL spike on the dev container (infra/docs/virtualgl-spike.md). Both
+# halves of this file's own prediction below were confirmed, and the missing
+# piece was found:
+#   - this flag set alone on Xvfb gets no GL at all (not even SwiftShader:
+#     Chromium reports `(gl=disabled,angle=none)`), exactly as the paragraph
+#     below says;
+#   - under `vglrun -d egl0` it gets real GPU WebGL from the Quadro — but only
+#     with ONE more flag, --disable-gpu-sandbox, because VirtualGL opens its own
+#     second X11 connection inside the GPU process and the sandbox forbids it.
+#     Without it the GPU process crash-loops ([VGL] ERROR: in VirtualWin-- 77:
+#     Could not clone X display connection).
+#   - /dev/nvidia-modeset is NOT required after all — see the note in the
+#     passthrough paragraph further down.
+# config/chromium-flags.vgl is this file plus that flag, and it is what
+# FLY_CHROMIUM_PROFILE=vgl selects. This file is kept as the browser-only half,
+# and to keep the measurement's two sides separable.
+#
+# docs/design/gpu.md section 3's recommendation is the opposite of this file:
+# "Keep Xvfb and a CPU Chromium for the MVP. Use the GPU only for NVENC."
+# This file exists so the measurement that could overturn that decision can
+# be taken without editing the default profile, and for no other reason. The
+# default (config/chromium-flags, --disable-gpu) is what production runs.
+#
+# Why it is unproven, in one paragraph: NVIDIA's GL and EGL X11 paths need a
+# real X server running the NVIDIA X driver, and Xvfb is a software X server
+# with no DRI3 and no NVIDIA driver, so these flags are expected to fall back
+# to SwiftShader silently rather than fail loudly. Getting real GPU WebGL
+# while keeping -f x11grab (and therefore the existing A/V timing) needs
+# VirtualGL 3.x's EGL back end — `vglrun -d egl0 chromium ...` — whose
+# interposition maturity against a Chromium that prefers EGL is UNVERIFIED
+# here. So this flag set alone is NOT sufficient for option (d); it is the
+# browser half of it. gpu.md section 3 (a) and (d) have the full argument.
+#
+# Also note: /dev/nvidia-modeset is deliberately NOT in the passthrough
+# block that fly-nvidia-majors.sh writes, because the NVENC-only design does
+# not need it. An in-container Xorg or EGL display DOES. Add
+#   lxc.mount.entry: /dev/nvidia-modeset dev/nvidia-modeset none bind,optional,create=file
+# before expecting anything here to work.
+#
+# 2026-09-16: that last sentence is WRONG for the VirtualGL configuration, and
+# nothing was added. VirtualGL uses the EGL *device* platform
+# (EGL_EXT_platform_device, headless, off a /dev/nvidia0 handle), not an EGL
+# *display*, and it rendered on the Quadro with the dev container's passthrough block
+# exactly as it is. No host conf change, no container restart.
+#
+# The measurement this file is for, in this order (gpu.md section 3,
+# "The measurement that decides it"):
+#   1. FIRST take the baseline on the DEFAULT profile: three.js fly strip on
+#      SwiftShader, `pidstat -u 5 360` summed over every chromium process,
+#      plus the page's own fly-render ms/frame. If the fly costs under 0.5
+#      core at 30 fps and total Chromium stays under 1.0 core, STOP — the GPU
+#      is not needed for rendering and neither is the paper-fly fallback.
+#   2. Only if (1) fails, come here, and require ALL of: chrome://gpu dumped
+#      over CDP (not eyeballed) reading "Hardware accelerated" for BOTH WebGL
+#      and Canvas, GL_RENDERER containing "Quadro RTX 4000", the fly strip
+#      holding 30 fps, and total Chromium CPU at least 0.3 core BELOW (1).
+#      Anything less and the added fragility is not paid for.
+#
+# Everything below the marker is identical to config/chromium-flags. The
+# differences are exactly: --disable-gpu and --disable-software-rasterizer
+# are GONE, and the seven GPU flags from gpu.md section 3 are added.
+
+# --- the GPU delta (gpu.md section 3) ---------------------------------------
+--use-gl=angle
+--use-angle=gl-egl
+--use-cmd-decoder=passthrough
+# ANGLE over EGL, passthrough command decoder: the EGL variant from
+# Chromium's own server-side-headless docs. --use-angle=vulkan is the other
+# published choice and needs --enable-features=Vulkan
+# --disable-vulkan-surface; it is not used here because the NVIDIA Vulkan
+# ICD has no xlib presentation support on a non-NVIDIA X server.
+
+--ignore-gpu-blocklist
+# the Quadro on a software X server will be blocklisted; this is the flag
+# that makes the measurement possible at all, and is also why a "success"
+# here has to be confirmed against chrome://gpu rather than assumed
+
+--enable-gpu-rasterization
+--canvas-oop-rasterization
+--enable-zero-copy
+# raster and canvas on the GPU, out-of-process, without a CPU round trip.
+# These are the flags that would actually pay for the GPU process if the
+# stage page's 2D canvas work moved onto it.
+
+# --- identical to config/chromium-flags below this line ---------------------
+
+--kiosk
+--window-position=0,0
+--window-size=1920,1080
+# one window filling the root, no browser chrome in frame
+
+--user-data-dir=/var/lib/fly/chrome
+# writable profile outside a nologin home, survives restarts
+
+--no-first-run
+--no-default-browser-check
+--disable-search-engine-choice-screen
+# no first-run UI on stream
+
+--noerrdialogs
+--disable-session-crashed-bubble
+--disable-infobars
+--hide-scrollbars
+# nothing modal can appear over the broadcast
+
+--autoplay-policy=no-user-gesture-required
+# page-played audio has no click to wait for (decision 8: page plays audio, no --mute-audio)
+
+--disable-background-timer-throttling
+# Chromium throttles background timers to ~1 Hz
+
+--disable-backgrounding-occluded-windows
+# an occluded window must not be treated as background
+
+--disable-renderer-backgrounding
+# keep renderer priority
+
+--disable-ipc-flooding-protection
+# a 30 Hz feed plus canvas draws exceeds the default 10/s/frame cap
+
+--force-device-scale-factor=1
+--force-color-profile=srgb
+# deterministic pixels into the encoder
+
+--disable-lcd-text
+# subpixel antialiasing becomes colour fringing after 4:2:0 subsampling
+
+--password-store=basic
+--use-mock-keychain
+# no gnome-keyring in the container
+
+--disable-features=Translate,MediaRouter,OptimizationHints,CalculateNativeWinOcclusion
+# fewer background subsystems; occlusion calculation is meaningless on Xvfb
+
+--remote-debugging-port=9222
+# loopback by default; needed for the P0 measurements and the CDP fallback
+# watchdog — and for the chrome://gpu dump this profile's measurement requires

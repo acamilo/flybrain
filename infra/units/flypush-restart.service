@@ -1,0 +1,9 @@
+# infra/units/flypush-restart.service — triggered by flypush-restart.timer.
+# Runs as root (systemd's default; no User= needed here, unlike the app
+# units) since it only calls systemctl.
+[Unit]
+Description=Restart flypush.service (the 48h Twitch cap guard)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart flypush.service

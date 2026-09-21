@@ -1,0 +1,63 @@
+# infra/units/flystage.service — pushed to /etc/systemd/system/flystage.service.
+# docs/design/infra.md section 3, with the infra task's two clarifications:
+# health-wait against http://127.0.0.1:7401/healthz (control-api.md port,
+# superseding infra.md's own 7380), and the page URL is
+# http://127.0.0.1:7402/ (flystage-web.service's static server), not
+# flysim itself.
+#
+# flystage-web.service is added to After=/Requires= beyond the original
+# design list, since without it there is nothing at :7402 for Chromium to
+# load — see infra/units/flystage-web.service's own header.
+#
+# ExecStart is bin/flystage-launch (a small wrapper), not the design's own
+# inline `/bin/sh -c '... $(cat chromium-flags | tr "\n" " ") ...'`: the
+# wrapper does the same flag-loading job in plain, testable shell instead
+# of relying on systemd's own backslash-escaping of Exec= lines. See
+# infra/bin/flystage-launch's header and config/chromium-flags's header.
+[Unit]
+Description=flystage: Chromium kiosk rendering the stage page
+After=xvfb.service pulse.service flysim.service flystage-web.service
+Requires=xvfb.service pulse.service flystage-web.service
+
+[Service]
+Type=simple
+User=fly
+Environment=DISPLAY=:99
+Environment=PULSE_SERVER=unix:/run/fly/pulse/native
+# The page's `mode` parameter defaults to `player`, which replays a recorded
+# fixture (apps/stage/src/lib/query.ts: `params.get('mode') === 'live' ? 'live'
+# : 'player'`, and apps/stage/README.md "Player mode ... This is the default").
+# Without `?mode=live` the kiosk therefore broadcasts a canned recording that
+# looks exactly like a working stream — caught on the P0 spike. `theme` is left
+# off deliberately: T1 is the page's own default (docs/stream-mvp-plan.md,
+# "Decisions 2026-09-15"), so the URL does not restate it.
+Environment=STAGE_URL=http://127.0.0.1:7402/?mode=live
+# FLY_CHROMIUM_PROFILE (default|gpu|vgl) comes from here; 05-deploy.sh writes
+# it from CHROMIUM_PROFILE in the env file, defaulting to `default`. `gpu` is
+# spike-only and measured insufficient on Xvfb; `vgl` is the VirtualGL EGL
+# configuration that passed on the dev container and also makes bin/flystage-launch wrap
+# Chromium in `vglrun -d egl0` — see infra/config/chromium-flags.{gpu,vgl},
+# docs/design/gpu.md section 3 and infra/docs/virtualgl-spike.md. '-' prefix so
+# a container provisioned before the file existed still starts on the default
+# profile.
+#
+# This EnvironmentFile is also why a drop-in cannot override the profile:
+# systemd applies EnvironmentFile= after Environment=, so fly.env wins. Change
+# CHROMIUM_PROFILE in the env file and re-run 05-deploy.sh.
+EnvironmentFile=-/etc/fly/fly.env
+ExecStartPre=/opt/fly/bin/wait-for-x :99 30
+ExecStartPre=/opt/fly/bin/wait-for-health http://127.0.0.1:7401/healthz 120
+# Same latent bug the capture-freeze pass found in flycast.service (noticed
+# 2026-09-16, not measured live): these two waits are part of the start job,
+# and 30 + 120 s exceeds systemd's default TimeoutStartSec=90s, so a slow
+# flysim start would have this unit killed mid-wait and restarted in a loop
+# instead of waiting the documented 120 s. Not observed on the release container (flysim
+# answers /healthz well inside 90 s there), fixed anyway.
+TimeoutStartSec=180
+ExecStart=/opt/fly/bin/flystage-launch
+Restart=always
+RestartSec=5
+MemoryMax=3G
+
+[Install]
+WantedBy=fly.target

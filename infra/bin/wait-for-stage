@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+# infra/bin/wait-for-stage [TIMEOUT_SECONDS]
+#
+#   wait-for-stage            # wait up to 120 s, then return 0 anyway
+#   wait-for-stage 120        # what flycast.service's ExecStartPre runs
+#   wait-for-stage --once     # evaluate the three checks once and print them
+#
+# flycast.service's second ExecStartPre (after wait-for-x). It exists for one
+# measured reason, recorded in infra/docs/capture-freeze.md: when a NEW
+# PulseAudio client attaches to the `stream` null sink during roughly the first
+# one to three seconds of ffmpeg's start — which is exactly what Chromium's
+# audio stream does when flystage and flycast co-start behind
+# `Requires=xvfb.service` — the x11grab leg of that ffmpeg comes up
+# permanently starved: about one new picture per second, the other 29 frames
+# repeats, audio perfect, and ffmpeg's own counters reporting 0 dup / 0 drop /
+# 30 fps. It lasts for the life of the process. A client attaching at the same
+# instant as ffmpeg's start, or 8 s later, does not do it; a sink keep-alive
+# does NOT fix it. The exact ffmpeg-internal mechanism is not established, so
+# the fix here is purely an ORDERING one: do not start ffmpeg until the page's
+# audio client is already attached and the picture is already on the display,
+# and then hold still for a settle period so nothing is mid-connect.
+#
+# Readiness is all three of these, held continuously for the settle period
+# (default 5 s):
+#
+#   1. the X display answers                  (xdpyinfo, same probe as wait-for-x)
+#   2. a Chromium kiosk window is MAPPED on it (xwininfo -root -tree, then
+#      `Map State: IsViewable` and a window covering at least half the root)
+#   3. the pulse sink `stream` has at least one sink-input
+#      (pactl, as the `fly` user against PULSE_SERVER=unix:/run/fly/pulse/native)
+#
+# xwininfo comes from x11-utils and pactl from pulseaudio-utils, both already
+# in 02-base.sh's package list — nothing new is installed for this. xdotool is
+# NOT in that list and is not used, so the window probe is the one the image
+# already has.
+#
+# TIMEOUT: after TIMEOUT_SECONDS this script logs a WARNING and still exits 0,
+# so flycast starts regardless. A black-but-running stream is better than no
+# stream, and a page that never comes up is flystage's failure to report, not
+# a reason to leave the channel dark. The only nonzero exits are usage errors.
+#
+# NOTE for the caller: flycast.service therefore needs a TimeoutStartSec
+# larger than this timeout plus wait-for-x's — systemd's default 90 s would
+# kill the start job mid-wait. See units/flycast.service.
+set -euo pipefail
+
+usage() {
+    echo "usage: $0 [TIMEOUT_SECONDS] | $0 --once" >&2
+    exit 2
+}
+
+: "${FLY_STAGE_DISPLAY:=:99}"
+: "${FLY_STAGE_SINK:=stream}"
+: "${FLY_STAGE_SETTLE_SECONDS:=5}"
+: "${FLY_STAGE_POLL_SECONDS:=0.5}"
+# The kiosk window fills the root; anything smaller than half the root area is
+# not the page (a Chromium dialog, a stray override-redirect window).
+: "${FLY_STAGE_MIN_AREA_PCT:=50}"
+# Same values flycast.service/flystage.service set, repeated so the script is
+# runnable by hand as the fly user (`pct exec <ctid> -- runuser -u fly -- ...`).
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/fly}"
+export PULSE_SERVER="${PULSE_SERVER:-unix:/run/fly/pulse/native}"
+
+log() { echo "wait-for-stage: $*" >&2; }
+# log_once KEY MESSAGE... — for the "tool not installed" notes, which would
+# otherwise print on every 0.5 s poll for two minutes.
+WARNED=""
+log_once() {
+    local key="$1"
+    shift
+    case " $WARNED " in
+        *" $key "*) return 0 ;;
+    esac
+    WARNED="$WARNED $key"
+    log "$@"
+}
+
+ONCE=0
+TIMEOUT=120
+case "${1:-}" in
+    --once) ONCE=1; [ $# -eq 1 ] || usage ;;
+    '') ;;
+    *)
+        case "$1" in
+            ''|*[!0-9]*) usage ;;
+        esac
+        TIMEOUT="$1"
+        [ $# -eq 1 ] || usage
+        ;;
+esac
+
+ROOT_W=0
+ROOT_H=0
+
+# --- check 1: the X display answers -----------------------------------------
+# Also records the root geometry, which check 2 needs.
+check_x() {
+    local out dims
+    out="$(DISPLAY="$FLY_STAGE_DISPLAY" xdpyinfo 2>/dev/null)" || return 1
+    dims="$(printf '%s\n' "$out" | awk '/dimensions:/ {print $2; exit}')"
+    ROOT_W="${dims%%x*}"
+    ROOT_H="${dims##*x}"
+    case "${ROOT_W}${ROOT_H}" in
+        ''|*[!0-9]*) ROOT_W=0; ROOT_H=0 ;;
+    esac
+    [ "$ROOT_W" -gt 0 ] && [ "$ROOT_H" -gt 0 ]
+}
+
+# --- check 2: a Chromium kiosk window is mapped ------------------------------
+# Two passes, because there is no window manager on :99 and therefore no
+# _NET_* state to ask: first the WM_CLASS that Chromium sets ("chromium"
+# "Chromium"), then — for a profile that renames itself, e.g. under vglrun —
+# any child window whose geometry matches the root. Whatever the candidate,
+# it only counts if xwininfo says `Map State: IsViewable`; an unmapped or
+# withdrawn window is a Chromium that has not painted yet, which is precisely
+# the state this script exists to wait out.
+window_mapped() {
+    command -v xwininfo >/dev/null 2>&1 || { log_once xwininfo "xwininfo not installed, skipping the window check (install x11-utils)"; return 0; }
+
+    local tree ids id stats state w h
+    tree="$(DISPLAY="$FLY_STAGE_DISPLAY" xwininfo -root -tree 2>/dev/null)" || return 1
+
+    ids="$(printf '%s\n' "$tree" | grep -iE '\("(chromium|chrome)[^"]*"' | grep -oE '0x[0-9a-fA-F]+' || true)"
+    if [ -z "$ids" ]; then
+        ids="$(printf '%s\n' "$tree" | grep -E '[0-9]+x[0-9]+\+' | grep -oE '0x[0-9a-fA-F]+' || true)"
+    fi
+    [ -n "$ids" ] || return 1
+
+    for id in $ids; do
+        stats="$(DISPLAY="$FLY_STAGE_DISPLAY" xwininfo -id "$id" -stats 2>/dev/null)" || continue
+        state="$(printf '%s\n' "$stats" | awk -F': ' '/Map State:/ {print $2; exit}')"
+        [ "$state" = "IsViewable" ] || continue
+        w="$(printf '%s\n' "$stats" | awk '/^  Width:/ {print $2; exit}')"
+        h="$(printf '%s\n' "$stats" | awk '/^  Height:/ {print $2; exit}')"
+        case "${w}${h}" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        # Integer area comparison, no bc: (w*h*100) >= (rootw*rooth*pct).
+        if [ $(( w * h * 100 )) -ge $(( ROOT_W * ROOT_H * FLY_STAGE_MIN_AREA_PCT )) ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# --- check 3: the sink has at least one sink-input ---------------------------
+# `pactl list short sink-inputs` columns are: index, SINK index, client,
+# driver, format — so the second field is what ties an input to the `stream`
+# sink. If the sink name cannot be resolved (a pulse that is up but has not
+# finished loading pulse.pa), any sink-input counts; the point of the check is
+# "a client is attached", and this container has exactly one sink.
+sink_has_input() {
+    command -v pactl >/dev/null 2>&1 || { log_once pactl "pactl not installed, skipping the sink-input check (install pulseaudio-utils)"; return 0; }
+
+    local sinks inputs idx count
+    sinks="$(pactl list short sinks 2>/dev/null)" || return 1
+    inputs="$(pactl list short sink-inputs 2>/dev/null)" || return 1
+    [ -n "$inputs" ] || return 1
+
+    idx="$(printf '%s\n' "$sinks" | awk -v n="$FLY_STAGE_SINK" '$2 == n {print $1; exit}')"
+    if [ -n "$idx" ]; then
+        count="$(printf '%s\n' "$inputs" | awk -v s="$idx" '$2 == s {c++} END {print c+0}')"
+    else
+        count="$(printf '%s\n' "$inputs" | grep -c . || true)"
+    fi
+    [ "${count:-0}" -ge 1 ]
+}
+
+# --- one evaluation of all three --------------------------------------------
+# WHY is set to the first failing check, for the timeout warning: an operator
+# reading the journal after a 120 s wait needs to know whether the page never
+# painted or the page painted and never made a sound.
+WHY=""
+all_ready() {
+    WHY=""
+    if ! check_x; then WHY="X display $FLY_STAGE_DISPLAY does not answer"; return 1; fi
+    if ! window_mapped; then WHY="no mapped Chromium kiosk window on $FLY_STAGE_DISPLAY"; return 1; fi
+    if ! sink_has_input; then WHY="pulse sink '$FLY_STAGE_SINK' has no sink-input (the page is not playing audio yet)"; return 1; fi
+    return 0
+}
+
+if [ "$ONCE" -eq 1 ]; then
+    if all_ready; then
+        log "ready: X answers, a Chromium window is mapped, and '$FLY_STAGE_SINK' has a sink-input"
+        exit 0
+    fi
+    log "not ready: $WHY"
+    exit 1
+fi
+
+deadline=$(( $(date +%s) + TIMEOUT ))
+ok_since=0
+log "waiting up to ${TIMEOUT}s for the stage (X $FLY_STAGE_DISPLAY, a mapped Chromium window, a sink-input on '$FLY_STAGE_SINK'), settling ${FLY_STAGE_SETTLE_SECONDS}s"
+while true; do
+    if all_ready; then
+        [ "$ok_since" -eq 0 ] && ok_since="$(date +%s)"
+        held=$(( $(date +%s) - ok_since ))
+        if [ "$held" -ge "$FLY_STAGE_SETTLE_SECONDS" ]; then
+            log "stage ready and steady for ${held}s — starting the encoder"
+            exit 0
+        fi
+    elif [ "$ok_since" -ne 0 ]; then
+        # Something that was ready stopped being ready: the settle period
+        # starts over. This is the case the freeze cares about — a client
+        # connecting or reconnecting resets the clock instead of letting
+        # ffmpeg start into a moving target.
+        log "stage went un-ready again (${WHY}) — restarting the ${FLY_STAGE_SETTLE_SECONDS}s settle"
+        ok_since=0
+    fi
+
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        log "WARNING: stage not ready after ${TIMEOUT}s (${WHY:-settle period never completed}) — starting the encoder ANYWAY." \
+            "A black-but-running stream beats no stream; expect the capture-freeze window (infra/docs/capture-freeze.md)" \
+            "and check: systemctl status flystage, journalctl -u flystage, and fly-watchdog's fly_capture_identical_frames."
+        exit 0
+    fi
+    sleep "$FLY_STAGE_POLL_SECONDS"
+done

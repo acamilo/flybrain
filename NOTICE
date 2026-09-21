@@ -1,0 +1,93 @@
+flybrain
+Copyright 2026 Alex Camilo
+
+This product includes software developed as part of the flybrain project,
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Portions of this product are licensed separately. LICENSES.md records which
+paths fall under which terms; the attributions those terms require are below.
+
+--------------------------------------------------------------------------------
+FlyWire FAFB Codex v783 connectome artifacts  (data/fafb-v783/)
+--------------------------------------------------------------------------------
+
+This product includes artifacts derived from the FlyWire FAFB public Codex v783
+exports, used under the Creative Commons Attribution-NonCommercial 4.0
+International licence (CC BY-NC 4.0).
+
+  Source:  https://codex.flywire.ai/
+  Licence: https://creativecommons.org/licenses/by-nc/4.0/
+
+The artifacts are modified: connectivity is aggregated by directed neuron pair,
+assigned stable numeric indices, encoded as typed sparse arrays, and joined with
+classification, representative-coordinate, cell-type and optic-lobe column
+annotations. Functional role predicates and neural-model signs are project
+modelling choices. The full statement of source, modifications and required
+citations is data/fafb-v783/ATTRIBUTION.md, which accompanies these artifacts
+and must travel with any copy of them.
+
+  Dorkenwald et al., "Neuronal wiring diagram of an adult brain,"
+  Nature 634 (2024), https://doi.org/10.1038/s41586-024-07558-y
+
+  Schlegel et al., "Whole-brain annotation and multi-connectome cell typing,"
+  Nature 634 (2024), https://doi.org/10.1038/s41586-024-07686-5
+
+  Matsliah et al., "Neuronal parts list and wiring diagram for a visual system,"
+  Nature 634 (2024), https://doi.org/10.1038/s41586-024-07981-1
+
+No endorsement by FlyWire or the cited authors is implied. These artifacts, and
+anything derived from them, are under CC BY-NC 4.0; see LICENSES.md.
+
+--------------------------------------------------------------------------------
+binjgb  (services/flysim/vendor/binjgb/)
+--------------------------------------------------------------------------------
+
+This product includes the binjgb Game Boy emulator core, used under the MIT
+licence and vendored unmodified at revision
+c60e138da5a795ebb55e56b11b7e90024e41112c.
+
+  Copyright (c) 2016 Ben Smith
+  https://github.com/binji/binjgb
+
+The MIT licence text is services/flysim/vendor/binjgb/LICENSE and the vendoring
+is described in services/flysim/vendor/binjgb/PROVENANCE.md.
+
+--------------------------------------------------------------------------------
+pret/pokered symbol names and addresses
+--------------------------------------------------------------------------------
+
+services/flysim/crates/flybrain-gb/src/pokemon_red/symbols.rs reproduces RAM
+symbol names and numeric addresses extracted from the pret/pokered
+disassembly at revision 0cd19d3b877b7dc66d12c7050bed9a7f38154d4b.
+
+  https://github.com/pret/pokered
+
+That upstream project carries no licence statement of its own, which is stated
+here rather than assumed. Only names and addresses are reproduced: no assembly
+source, no game code and no game asset from the disassembly is present in this
+product, and no game ROM is distributed with it (see ROM-POLICY.md).
+
+--------------------------------------------------------------------------------
+Fonts  (apps/stage/public/fonts/)
+--------------------------------------------------------------------------------
+
+This product includes four typefaces used under the SIL Open Font License 1.1,
+each accompanied by its own licence text in the same directory:
+
+  Press Start 2P   OFL-PressStart2P.txt
+  Pixelify Sans    OFL-PixelifySans.txt
+  Silkscreen       OFL-Silkscreen.txt
+  VT323            OFL-VT323.txt
+
+The font files are unmodified subsets. They are not relicensed by this product.
+
+--------------------------------------------------------------------------------
+Build and runtime dependencies
+--------------------------------------------------------------------------------
+
+Dependencies resolved by npm and cargo are not redistributed in this source
+repository and keep their own licences. Two npm dependencies carry terms worth
+naming because they are not notice-only permissive:
+
+  lightningcss (and its linux-x64 binaries)  MPL-2.0, build-time, unmodified
+  caniuse-lite                               CC-BY-4.0, build-time data

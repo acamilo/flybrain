@@ -1,0 +1,175 @@
+# Contributing
+
+A simulated fly brain that plays Game Boy games on a 24/7 stream. Start with
+`docs/architecture-tour.md`: it walks every layer once, says why each is built the way it is, and
+points at the code. Then `docs/stream-mvp-plan.md` for what has been decided and what state it is in.
+
+There is no game in this repository. `ROM-POLICY.md` explains what that means and how to run
+everything without one — which is almost all of it.
+
+## Branches and worktrees
+
+Work happens on a branch, in its own git worktree, never on `main` directly.
+
+```sh
+git worktree add -b feat/my-change .claude/worktrees/feat-my-change main
+cd .claude/worktrees/feat-my-change
+```
+
+`.claude/worktrees/` is gitignored, so the checkouts never enter history. One branch per piece of
+work, named for what it does (`feat/`, `fix/`, `docs/`, `chore/`, `publish/`). Several can be in
+flight at once because each has its own tree; that is the point of using worktrees rather than
+switching branches in place.
+
+Merge into `main` with `--no-ff`, so a branch stays visible as a unit in the history:
+
+```sh
+git merge --no-ff feat/my-change
+git worktree remove .claude/worktrees/feat-my-change
+```
+
+Never rewrite published history on `main`.
+
+## The suites, before every merge
+
+All four, green, on the branch. Not a subset.
+
+```sh
+npm ci
+npm test                                    # TypeScript: brain, feed, stage units, bridge
+npm run typecheck                           # tsc across every workspace
+cd services/flysim && cargo test --workspace   # Rust: core, gb, service; ROM-gated tests skip
+bash infra/tests/lint.sh                    # shellcheck + systemd-analyze over infra/
+```
+
+Plus the stage's browser suite when anything visual changed:
+
+```sh
+cd apps/stage && npm run test:e2e           # Playwright: screenshot baselines per fixture and tab,
+                                            # text-size lint, phone-downscale legibility, structure
+npm run mockups                             # regenerate the review PNGs
+```
+
+Notes that save time:
+
+- The ROM-gated Rust tests skip with a printed line when `FLY_ROM` is unset. That is a normal green
+  run, not a hole. See `ROM-POLICY.md`.
+- The dataset tests read `data/fafb-v783`, which is committed; they need no download.
+- The Rust golden tests compare against `services/flysim/golden/*.flygold` at 0 ulp. If one fails
+  after a change to the Rust side, the Rust side is wrong — see the oracle rule below. Goldens are
+  regenerated from the TypeScript with `packages/brain/tools/golden.ts`, never edited by hand.
+- Screens are reviewed as PNGs under `apps/stage/mockups/`, not as prose descriptions. On-screen
+  copy is terse.
+
+## Commit messages
+
+Plain and factual. A short imperative subject with a scope prefix, a body when the change needs one,
+and nothing else.
+
+```
+feat(decoder): add blocked-direction cooldown
+
+Raises the habituation of a channel the sim loop has watched produce no
+movement for a whole hold. Does not name a position or an alternative.
+```
+
+**No attribution trailers of any kind.** No `Co-Authored-By`, no generated-with lines, no tool or
+model credits, no session links. This applies to every commit, including ones written by an agent.
+
+No secrets in a commit, ever — no stream keys, tokens, passwords or credentials. Nothing from a
+cartridge. Check the diff before committing, not after.
+
+## Licences and file headers
+
+The repository is not under a single licence. `LICENSES.md` at the root says which paths fall under
+which terms; the short version is Apache-2.0 for the code, CC BY 4.0 for the documentation,
+on-screen copy and stage assets, and CC BY-NC 4.0 — unchanged and not ours to relicense — for the
+FlyWire connectome artifacts in `data/fafb-v783/`.
+
+- **No per-file licence headers are required.** Do not add them to new files, and do not add them to
+  existing ones. `LICENSE`, `LICENSES.md` and `NOTICE` at the root carry the terms for the whole
+  tree; a header on every file is noise that then has to be kept accurate.
+- **`NOTICE` carries the attributions.** If you add third-party material — a vendored source, a
+  font, a dataset, anything you did not write — put its attribution in `NOTICE` and its row in
+  `LICENSES.md` in the same branch as the material, with its own licence text alongside it in the
+  tree. Material whose upstream licence you cannot establish does not go in; if it does go in,
+  `NOTICE` says so in plain words rather than guessing.
+- **Contributions are accepted under Apache-2.0.** By submitting a change you license it under the
+  Apache License 2.0, per section 5 of that licence. There is no separate CLA and none is planned.
+- **Anything derived from `data/fafb-v783/` is CC BY-NC 4.0, like the data.**
+  `services/flysim/golden/real.flygold` is the one such artifact in the tree today. If a change adds
+  another — a recorded run, a prerendered image, a checked-in trace — say so in the commit and add
+  it to section 3 of `LICENSES.md`. The four `.flyfeed` fixtures are generated by the fake simulator
+  and are deliberately not in that category; keep it that way.
+
+## The two binding contracts
+
+- `docs/feed-protocol.md` — the WebSocket snapshot format the service publishes and the page reads.
+- `docs/control-api.md` — the loopback HTTP API the bridge calls.
+
+These are binding. Where any other document, design note or comment disagrees with them, **the
+contracts win** and the other document is the thing that is wrong. Changing a contract is its own
+change, made deliberately, with both sides of it updated in the same branch and the reason written
+down. Both have a Rust implementation and a TypeScript implementation and a shared fixture that
+each must pass; a change that only satisfies one side is not done.
+
+One property of the control API is load-bearing: **there is no button endpoint.** Nothing outside
+the simulation can press a button, and a test asserts the route table contains no such route. Do not
+add one.
+
+## The oracle rule
+
+**`packages/brain` is the reference implementation.** Its semantics define what the neural core does:
+the LIF kernel, plasticity, the decoder, the agent loop, the checkpoint envelope.
+
+When the Rust port, the service, the page or anything else disagrees with it, **fix the other side.**
+Never adjust `packages/brain` to make another implementation's output match — that converts a bug
+into the specification. The verbatim prototype modules under `packages/brain/tests/legacy/` and the
+bit-exact oracle tests against them exist to make this rule enforceable, and so do the Rust goldens.
+
+The default-config version strings `lif-1ms-f64-v2` and `fly-kc-mbon-rstdp-v2` stay as they are.
+Checkpoints are keyed on them; changing one invalidates saved state on the release box.
+
+If the reference itself is genuinely wrong, that is a deliberate change to the reference with a new
+version string, regenerated goldens, and the reasoning recorded — not a quiet edit.
+
+## The honesty rule
+
+Nothing on the stream is scripted. This is not a style preference; it is the point of the project,
+and it constrains contributions.
+
+- **The buttons are always the fly's.** Nothing outside the simulation chooses, biases, defaults or
+  times a button press. There is no fallback press, no scripted objective, no nudge on a timeout.
+  A scene the fly ignores waits.
+- **Rewards are read out of memory after the fact.** A reward rule may observe what the game state
+  became and stimulate the modulatory pathway. It may not tell the fly where to go or what to press.
+  Every value is positive by design; there are no penalties.
+- **The readout is fixed, not learned**, and it knows nothing about maps, doors or goals.
+- **Failure is shown.** Stalls, rollbacks, unsupported cartridges and lag appear on screen with the
+  reason. They are not hidden and not smoothed over.
+- **What is real and what is scaffolding is documented.** `docs/limitations.md` is the honest list —
+  the reward modulator is synthetic, the retina is not fly optics, learning has not been shown to
+  improve play. `docs/rewards-learning.md` has its own "Honesty" section stating exactly what a
+  reward can and cannot move. If your change alters where that line falls, update those pages in the
+  same branch and say so plainly. If a claim has not been measured, write that it has not been
+  measured.
+
+A change that makes the demo look better by making it less true will be rejected, however small.
+
+## Where the documents are
+
+- `docs/architecture-tour.md` — read first; the whole system, layer by layer, with the reasons.
+- `docs/feed-protocol.md`, `docs/control-api.md` — the binding contracts.
+- `docs/stream-mvp-plan.md` — decisions and current status.
+- `docs/model.md`, `docs/plasticity.md`, `docs/readout.md`, `docs/rewards-learning.md`,
+  `docs/dataset-format.md`, `docs/verification.md` — the neural core, what it learns, how it decides,
+  what it is paid for, the data layout, and how all of it is checked.
+- `docs/limitations.md` — what this is not.
+- `docs/design/` — per-feature design notes (`flysim.md`, `stage-bridge.md`, `fly-avatar.md`,
+  `animation.md`, `ladder.md`, `macros.md`, `platformer.md`, `room-escape.md`, `gpu.md`, `infra.md`,
+  and others). Designs, not contracts: where one differs from a contract, the contract wins.
+- `infra/docs/` — the runbook, provisioning records, measurements and spike write-ups for the
+  machines that actually run it.
+- `docs/publish/` — notes prepared for publication, including how the licence decision was reached.
+- `LICENSE`, `LICENSES.md`, `NOTICE` — the terms, the path-by-path split, and the attributions.
+- `ROM-POLICY.md` — no game here, and how to run everything anyway.

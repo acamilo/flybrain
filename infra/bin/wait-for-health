@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# infra/bin/wait-for-health URL TIMEOUT_SECONDS
+#
+# Poll a health endpoint until it returns 2xx, or exit 1 after
+# TIMEOUT_SECONDS. Used as flystage's ExecStartPre against flysim's
+# http://127.0.0.1:7401/healthz (docs/control-api.md: "200 when the loop
+# advanced in the last 2 seconds, else 503").
+set -euo pipefail
+
+usage() { echo "usage: $0 URL TIMEOUT_SECONDS" >&2; exit 2; }
+
+[ $# -eq 2 ] || usage
+url="$1"
+timeout="$2"
+
+case "$timeout" in
+    ''|*[!0-9]*) usage ;;
+esac
+
+deadline=$(( $(date +%s) + timeout ))
+while true; do
+    code="$(curl -fsS -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)"
+    case "$code" in
+        2??) exit 0 ;;
+    esac
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+        echo "wait-for-health: $url not healthy after ${timeout}s (last code: ${code:-none})" >&2
+        exit 1
+    fi
+    sleep 0.5
+done

@@ -1,0 +1,661 @@
+/**
+ * Panel internals: the parts the paint loop mutates, and the parts that must not animate on the
+ * layout path.
+ *
+ * Two rules run through all of it, both from the audit and the encoder:
+ *   - anything that moves 30 times a second moves with `transform` or `opacity`, nothing else;
+ *   - no `filter: blur()` and no `box-shadow` on a moving element (brutal in Chromium's software
+ *     rasteriser, which is all an 8 vCPU VM with no GPU has).
+ *
+ * And one from `docs/design/gameboy-theme.md`: nothing in here has a radius, a gradient or a
+ * shadow. Every box is square-cornered, every bar has hard edges, and a chip's corners are *cut*
+ * rather than rounded.
+ */
+
+/* -- Game canvas ----------------------------------------------------------------------------- */
+
+/**
+ * The framebuffer at exactly 5x, and the one surface on the page that has no frame of its own.
+ *
+ * It used to carry `border: 2px solid var(--bezel)`, which — with `box-sizing: border-box` and
+ * `width: 100%` — quietly drew an 800x720 backing store into a 796x716 content box: a 0.995 scale
+ * under `image-rendering: pixelated`, which is exactly the row-thickness jitter the audit found at
+ * 2.62x and which this panel's own header says a border must not cause. So the border is gone and
+ * the canvas is a true 5x again; the dialogue-box frame around it is drawn by `.game-frame` below,
+ * as an overlay, so it costs the canvas no pixels of scale.
+ */
+.game-canvas {
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  background: var(--bg-0);
+  border: 0;
+  border-radius: 0;
+}
+
+/**
+ * The game's double frame, as an overlay.
+ *
+ * The game box is 800x720 and abuts the title strip with no gutter, so there is nowhere outside it
+ * to put a frame: it goes over the outermost 6 px of the image. That is the deliberate trade — the
+ * alternative is a fractional scale on the one surface that must stay pixel-exact — and 6 px of a
+ * 160x144 framebuffer at 5x is a little over one source pixel of its border region.
+ */
+.game-frame {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: var(--border-w) solid var(--frame);
+}
+
+.game-frame::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: var(--border-inner-w) solid var(--frame-inner);
+}
+
+/* -- Fly strip -------------------------------------------------------------------------------- */
+
+/**
+ * The 800x220 strip under the game: the fly's column on the left (its plain button row over its
+ * canvas) and the macro pad on the right (`docs/design/fly-avatar.md`, `docs/design/macros.md`
+ * sections 6 and 14). The strip's one frame is the frame they share, which is what makes them
+ * read as a single instrument rather than two panels.
+ *
+ * `flex-direction: row` since section 14's decided layout: the pad had to span the strip's full
+ * inner height and the strip's outer width was the only place to put two flex children at that
+ * height. `gap: 12px` is `FLY_PALETTE_GAP` (`src/lib/geometry.ts`); `align-items: stretch` is what
+ * makes the pad span the strip's inner height — the button row takes its 32 px at the top, the
+ * canvas row takes its 176 below, and the pad's box stretches to share their top edge.
+ */
+.fly-strip {
+  position: absolute;
+  overflow: hidden;
+  display: flex;
+  flex-direction: row;
+  /* `FLY_PALETTE_GAP` in `src/lib/geometry.ts`: the gap between the fly's column and the pad. */
+  gap: 12px;
+  align-items: stretch;
+  border: var(--border-w) solid var(--frame);
+  border-radius: 0;
+  background: var(--bg-1);
+}
+
+/**
+ * The fly's column: the button row, then the canvas. `GUTTER` is the gap between them.
+ *
+ * A column wrapper is what lets the pad beside it span the strip's full inner height: the strip
+ * itself stretches both flex children to its inner height, and the column owns the two stacked
+ * rows. Without it the canvas would stretch too, and the button row would no longer pin to the
+ * strip's top edge.
+ */
+.fly-strip__col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.fly-pane {
+  position: relative;
+  min-width: 0;
+  display: flex;
+}
+
+.fly-canvas {
+  display: block;
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* -- Macro palette ---------------------------------------------------------------------------- */
+
+/**
+ * The two macro grids: the pad under the game and the keyboard on the MACROS tab.
+ *
+ * `docs/design/macros.md` section 14. One rule set, two sizes: the pad is two columns of seven
+ * cells in the strip beside the fly (`src/panels/MacroPalette.tsx`), the keyboard is three columns
+ * of every macro type in the rail's slot (`src/panels/tabs/MacrosTab.tsx`), and the cell is the
+ * same component in both (`src/panels/MacroCell.tsx`). The templates and the cell sizes arrive as
+ * inline styles, because they are the layout's arithmetic (`src/lib/geometry.ts`) and not a theme
+ * decision.
+ *
+ * `grid-auto-flow: column` is the reading order: a grid fills down its first column and then down
+ * the next, so a pad reads as a list and not as a table whose rows mean something.
+ *
+ * The pad has no frame of its own — the operator asked for one frame shared with the fly — and no
+ * gaps at its edges beyond `MACRO_PALETTE_PAD`, so its bottom cells land on the fly canvas's
+ * baseline. The cells are filled boxes separated by 2 px, the same treatment as the rung spine
+ * (`docs/design/gameboy-theme.md`: "The spine is a row of square cells with 2 px gaps"), because a
+ * 22.857 px cell cannot carry a 2 px frame *and* 24 px type.
+ */
+.macro-grid {
+  display: grid;
+  grid-auto-flow: column;
+  overflow: hidden;
+  background: var(--bg-1);
+}
+
+/** The keyboard fills the tab pane, which draws its own ground. */
+.macros-tab {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+}
+
+.macro-cell {
+  display: flex;
+  align-items: center;
+  /* 2 px, not the 8 this row had as one column of six: a pad cell is 179 px and spends
+     2 + 85 + 2 + 87 + 2 of them (`src/lib/geometry.ts`), so the gap is the only place the four
+     it needed could come from. The keyboard's 332 px cells have 145 px of slack either way. */
+  gap: 2px;
+  padding: 0 2px;
+  overflow: hidden;
+  position: relative;
+  background: color-mix(in srgb, var(--bezel) 22%, var(--bg-1));
+  color: var(--ink-0);
+  transition:
+    background-color var(--afterglow-ms) linear,
+    color var(--afterglow-ms) linear;
+}
+
+/**
+ * A macro that is not on the pad: invisible on the pad, dim on the keyboard.
+ *
+ * The two grids want opposite things from one state, and `docs/design/macros.md` section 14 says
+ * so: the keyboard draws "bound cells lit, unbound dim", because a button this scene has taken
+ * away is what that tab is for; the pad draws only what is on it, so its spare cells are empty
+ * boxes holding the geometry — no ground, no ink, no em dash standing in for an action that does
+ * not exist. The boxes stay in both, because the strip's geometry is asserted to the pixel
+ * (`src/lib/geometry.ts`, `tests/e2e/structure.spec.ts`) and a scene with three macros must not
+ * move the fly.
+ */
+.macro-palette .macro-cell[data-bound='0'] {
+  background: transparent;
+  color: transparent;
+}
+
+.macros-tab .macro-cell[data-bound='0'] {
+  background: color-mix(in srgb, var(--bezel) 10%, var(--bg-1));
+  color: var(--ink-2);
+}
+
+.macros-tab .macro-cell[data-bound='0'] .macro-cell__glyph {
+  color: var(--ink-2);
+  background: color-mix(in srgb, var(--bg-0) 35%, transparent);
+}
+
+/**
+ * The channel tag, e.g. `MB·GOAL`: the cell's glyph (`docs/design/macros.md` section 12).
+ *
+ * Left-aligned rather than centred, because it is eight characters at its longest and a centred
+ * short tag would leave the column reading as two different columns down the grid.
+ *
+ * VT323 (`--font-text`) rather than Silkscreen (`--font-label`), and that is section 14's second
+ * column paid for in type: Silkscreen's 0.75 em advance makes this tag 135 px and VT323's 0.4 em
+ * makes it 77, and a 179 px cell holds the tag *and* a name at the 24 px floor only at the second
+ * number (`src/lib/geometry.ts` has the arithmetic). Both are pixel faces at the same size on the
+ * same 8 px grid; what changes is the width.
+ */
+.macro-cell__glyph {
+  flex: 0 0 auto;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  font-family: var(--font-text);
+  font-size: var(--fs-glyph);
+  line-height: 1;
+  color: var(--ink-2);
+  background: color-mix(in srgb, var(--bg-0) 60%, transparent);
+}
+
+.macro-cell[data-bound='0'] .macro-cell__glyph {
+  background: transparent;
+}
+
+/**
+ * The name, in VT323 at the body floor, in an 87 px column it may grow out of.
+ *
+ * 87 is nine characters, which is what the pad's 179 px cell has left once the tag chip has taken
+ * its 85 — and what `src/lib/macro-names.ts` caps the pad's names at. The keyboard's cells are
+ * 332, so the contract's longest name (`BUY ANTIDOTE`, 116 px) grows into their slack instead of
+ * ellipsising; the column is a `min-width` set by the component for exactly that. Ellipsis is the
+ * structural backstop only, and `tests/e2e/macros.spec.ts` fails if either grid reaches it.
+ */
+.macro-cell__name {
+  flex: 0 0 auto;
+  font-family: var(--font-text);
+  font-size: var(--fs-body);
+  line-height: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/**
+ * The chosen cell, while its macro runs.
+ *
+ * The accent goes on the *glyph chip* and the row keeps a light wash, rather than the other way
+ * round. The operator, 2026-09-16, watching the release box: the lit cell hid the macro's name. It was
+ * `--ink-0` on 30% accent, which measures 5.4:1 and reads as pale green-grey type on a muddy
+ * amber-grey ground -- legible by the number, gone at the phone downscale, and the one row a
+ * viewer most needs to read. The chip inverts instead: the page's own accent behind the page's
+ * darkest ink, 9.5:1, which is an unmistakable "this one is running" at any size, while the name
+ * stays the brightest ink on a ground dark enough to carry it (7.4:1).
+ *
+ * Every value is a theme token, so the three themes keep their own palettes and none of this is a
+ * colour invented here -- and it is the button row's own idiom for a pressed key, two panels to
+ * the left, which is why it reads as "pressed" without a caption.
+ */
+.macro-cell[data-live='1'] {
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-1));
+  color: var(--ink-0);
+}
+
+.macro-cell[data-live='1'] .macro-cell__glyph {
+  background: var(--accent);
+  color: var(--bg-0);
+}
+
+/**
+ * The outcome word, for a beat after the macro ends.
+ *
+ * It replaces the name rather than sitting beside it: the channel tag took the row's spare width
+ * (`src/lib/geometry.ts`), so "BLOCKED" in Silkscreen at the body floor fits only where the name
+ * was. Written by the paint loop (`paintPalette` in `src/App.tsx`), which also flips the attribute
+ * that hides the name.
+ */
+.macro-cell__outcome {
+  display: none;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-text);
+  font-size: var(--fs-body);
+  line-height: 1;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.macro-cell[data-outcome]:not([data-outcome='']) .macro-cell__name {
+  display: none;
+}
+
+.macro-cell[data-outcome]:not([data-outcome='']) .macro-cell__outcome {
+  display: block;
+}
+
+/**
+ * The three outcome states, on the lit cell's own arrangement: the status colour on the chip,
+ * a 10% wash on the row, and the outcome word in the status colour on that wash.
+ *
+ * Same fix as the lit row and the same reason. The old washes (28%, 26%, 24%) put `DONE` in
+ * `--ok` on a ground that was mostly `--ok`, which is the "text colour equals the highlight"
+ * The operator saw: 10% keeps every word above 4.5:1 against its own row (`ok` 7.0, `warn` 7.9,
+ * `alarm` 4.8) and the chip carries the colour the row is about.
+ */
+.macro-cell[data-outcome='done'] {
+  background: color-mix(in srgb, var(--ok) 10%, var(--bg-1));
+}
+
+.macro-cell[data-outcome='done'] .macro-cell__glyph {
+  background: var(--ok);
+  color: var(--bg-0);
+}
+
+.macro-cell[data-outcome='done'] .macro-cell__outcome {
+  color: var(--ok);
+}
+
+.macro-cell[data-outcome='blocked'],
+.macro-cell[data-outcome='timeout'] {
+  background: color-mix(in srgb, var(--warn) 10%, var(--bg-1));
+}
+
+.macro-cell[data-outcome='blocked'] .macro-cell__glyph,
+.macro-cell[data-outcome='timeout'] .macro-cell__glyph {
+  background: var(--warn);
+  color: var(--bg-0);
+}
+
+.macro-cell[data-outcome='blocked'] .macro-cell__outcome,
+.macro-cell[data-outcome='timeout'] .macro-cell__outcome {
+  color: var(--warn);
+}
+
+.macro-cell[data-outcome='refused'] {
+  background: color-mix(in srgb, var(--alarm) 10%, var(--bg-1));
+}
+
+.macro-cell[data-outcome='refused'] .macro-cell__glyph {
+  background: var(--alarm);
+  color: var(--bg-0);
+}
+
+.macro-cell[data-outcome='refused'] .macro-cell__outcome {
+  color: var(--alarm);
+}
+
+/** Raw mode: one dim cell says RAW, and the palette's own box holds the geometry. */
+.macro-cell[data-raw='1'] .macro-cell__name {
+  color: var(--ink-2);
+}
+
+/** The strip's name fills the cell; the tab's sits in its own column beside the chip. */
+.macro-palette .macro-cell__name {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* -- Button row --------------------------------------------------------------------------------- */
+
+/**
+ * Eight indicator cells, 32 px tall.
+ *
+ * A single 2 px frame rather than the panels' double one: the cell is 32 px and the glyph inside it
+ * is 27 px of Press Start 2P, so a 4 px frame plus a 2 px line would leave the glyph 20 px to sit
+ * in. Square corners, and the cut-corner treatment is reserved for the chips that are chips.
+ */
+.button-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: var(--border-inner-w) solid var(--frame-inner);
+  border-radius: 0;
+  background: var(--bg-1);
+  color: var(--ink-2);
+  /* Only opacity and background-color transition: both stay off the layout path. */
+  transition:
+    background-color var(--afterglow-ms) linear,
+    color var(--afterglow-ms) linear,
+    border-color var(--afterglow-ms) linear;
+}
+
+.button-cell[data-glow='1'] {
+  background: color-mix(in srgb, var(--accent) 35%, var(--bg-1));
+  border-color: var(--accent);
+  color: var(--ink-0);
+}
+
+.button-cell[data-down='1'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-0);
+}
+
+/* -- Chips ------------------------------------------------------------------------------------ */
+
+/**
+ * `docs/design/gameboy-theme.md`: "Chips (buttons, mode) are boxes with the same double frame,
+ * 4 px corner cut instead of radius."
+ *
+ * The cut is a `clip-path` octagon rather than a radius, so the corner is one 4 px diagonal step.
+ * It clips the frame too, which is the point: a rounded border would be a curve, and this is a
+ * bevel. `.chip-cut` carries the outer line and its `::after` the inner one, the same way round as
+ * `.panel`, and both are clipped by the same polygon.
+ *
+ * 2 px + 2 px rather than the panels' 4 + 2: a chip sits in a 40 px title strip around 24 px type,
+ * and a 6 px frame does not fit in the 13 px that leaves. Chips are `--font-label` (Silkscreen),
+ * the same face as a panel title: `docs/design/gameboy-theme.md` lists "button chips" with the
+ * titles, and the mode chip and the sugar chip are both short, closed-vocabulary text.
+ */
+.chip-cut {
+  position: relative;
+  font-family: var(--font-label);
+  line-height: 1;
+  /*
+   * Width and style only. The colour is left to whoever uses the class — the `Badge` variants each
+   * set one, and `.sugar-chip` sets its own — because `.chip-cut` is an unlayered rule and would
+   * otherwise beat Tailwind's layered `border-accent` and flatten every variant to one colour.
+   */
+  border-width: var(--border-inner-w);
+  border-style: solid;
+  border-radius: 0;
+  clip-path: polygon(
+    4px 0,
+    calc(100% - 4px) 0,
+    100% 4px,
+    100% calc(100% - 4px),
+    calc(100% - 4px) 100%,
+    4px 100%,
+    0 calc(100% - 4px),
+    0 4px
+  );
+}
+
+.chip-cut::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: var(--border-inner-w) solid var(--frame-inner);
+}
+
+/* -- Named circuits --------------------------------------------------------------------------- */
+
+.circuit-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 0;
+}
+
+.circuit-name {
+  flex: 0 0 195px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1;
+}
+
+.circuit-bars {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+/**
+ * A chunky bar: 12 px tall, hard edges, no gradient, no radius.
+ *
+ * The fill is quantised to 8 px cells rather than drawn continuously — `docs/design/gameboy-theme.md`,
+ * "filled in 8 px steps (quantized)" — which `src/App.tsx` does on the value side, because CSS
+ * cannot round a `scaleX` to a pixel grid. The transition timing is `--ease-pixel`, so what little
+ * movement is left between two quantised fills arrives in steps as well.
+ */
+.circuit-bar {
+  position: relative;
+  height: 12px;
+  background: var(--bg-0);
+  border-radius: 0;
+  overflow: hidden;
+}
+
+.circuit-bar__fill {
+  position: absolute;
+  inset: 0;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform var(--bar-ms) var(--ease-pixel);
+  border-radius: 0;
+}
+
+/* Peak hold: a 4 px tick the paint loop slides with translateX. */
+.circuit-bar__peak {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 4px;
+  background: var(--ink-0);
+  transform: translateX(0);
+  transition: transform var(--bar-ms) var(--ease-pixel);
+}
+
+/*
+ * Decision threshold: a faint 2 px tick at the decoder's own score threshold (docs/readout.md),
+ * positioned against a running median standing in for the real calibration baseline. Rendered
+ * only on the `press` and `menu` groups, which are the only ones with a fixed threshold. Moves
+ * slowly (the median crawls), but stays on the compositor-only transform path like the other bar
+ * elements.
+ */
+.circuit-bar__threshold {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: var(--ink-2);
+  opacity: 0.6;
+  transform: translateX(0);
+  transition: transform var(--bar-ms) var(--ease-pixel);
+}
+
+/* -- Ticker ----------------------------------------------------------------------------------- */
+
+/* Three rows have to fit 160 px of panel, so the row box is the line box and nothing else. */
+.ticker-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  line-height: 1.05;
+}
+
+.ticker-row [data-role='label'] {
+  line-height: 1.05;
+}
+
+/* A square cell, not a dot: the tier is the size and the colour, and nothing here is round. */
+.ticker-row__dot {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 0;
+  background: var(--ink-2);
+}
+
+.ticker-row__label {
+  min-width: 0;
+}
+
+.ticker-row[data-tier='notable'] .ticker-row__dot {
+  background: var(--accent-warm);
+}
+
+.ticker-row[data-tier='moment'] .ticker-row__dot {
+  background: var(--accent);
+  width: 20px;
+  height: 20px;
+}
+
+/* Amber, not bold: neither face on the page has a bold, and a synthetic one smears at 27 px. */
+.ticker-row[data-tier='moment'] .ticker-row__label {
+  color: var(--accent);
+}
+
+.ticker-row[data-tier='system'] .ticker-row__label {
+  color: var(--ink-2);
+}
+
+/* -- Milestone ladder ------------------------------------------------------------------------- */
+
+/**
+ * The ladder runs across the panel, not down it.
+ *
+ * A2 asks for a vertical 16-step spine. Measured, a vertical spine gives each rung 2.4 px, which
+ * is 0.75 px at the 0.31 downscale the legibility test checks — gone. Across the progress
+ * cluster's full width, 38 segments are wide enough to survive it. Same information, same
+ * ratchet, legible on a phone.
+ *
+ * `docs/design/gameboy-theme.md`: "The spine is a row of square cells with 2 px gaps." So the gap
+ * no longer scales with the count (`48 / rungs`, which gave 1.25 px at 38 rungs and 3 px at 16):
+ * it is the grid's own 2 px at every length, which is one more sub-pixel gap closed at the phone
+ * downscale and one less number to explain. At 38 rungs that spends 74 px of the spine's 980 on
+ * gaps and leaves each cell 23.8 px; at 16 it is 30 px of gaps and 59 px cells. Every number here
+ * is measured by `tests/e2e/ladder.spec.ts` against the real build.
+ *
+ * The cells are 16 px tall — four of the grid's 4 px — which keeps the fill's three steps whole
+ * pixels (8 / 12 / 16) and clears the spec's 15 px floor.
+ */
+.ladder-spine {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  height: 16px;
+  width: 100%;
+}
+
+.ladder-rung {
+  flex: 1 1 0;
+  border-radius: 0;
+  /* Unreached rungs have to read against the panel, not disappear into it. */
+  background: color-mix(in srgb, var(--ink-2) 55%, var(--bg-0));
+  /*
+   * The lerped half of the spine fill (`docs/design/animation.md`, addendum: "every displayed
+   * number and bar is lerped ... spine fill"), quantised to the pixel grid.
+   *
+   * `--fill-scale` is written per rung by the paint loop (`src/motion/readouts.ts`) as one of
+   * 0.5 / 0.75 / 1, so a rung grows into the spine in three whole-pixel steps (8, 12, 16 px of the
+   * 16 px cell) over about 300 ms rather than sweeping smoothly — the sprite motion
+   * `docs/design/gameboy-theme.md` asks for. It defaults to 1, so a rung rendered without it is
+   * laid out exactly as before (the e2e ladder spec builds its own). `scaleY` only, on the
+   * compositor, and the widths that spec measures are untouched.
+   */
+  transform-origin: center bottom;
+  transform: scaleY(var(--fill-scale, 1));
+}
+
+.ladder-rung[data-state='reached'] {
+  background: var(--accent);
+}
+
+.ladder-rung[data-state='current'] {
+  background: var(--ink-0);
+  /* The marker a viewer hunts for. It still shares the row evenly, so a 16-rung spine is
+     unchanged, but it never shrinks past 20 px however long the ladder gets. */
+  min-width: 20px;
+}
+
+/* -- Stuck-o-meter ---------------------------------------------------------------------------- */
+
+.panel.is-stuck {
+  border-color: var(--alarm);
+}
+
+/* -- Stale feed banner ------------------------------------------------------------------------ */
+
+.stale-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--alarm);
+  color: var(--bg-0);
+  border-radius: 0;
+}
+
+/* -- Retina raster ---------------------------------------------------------------------------- */
+
+/*
+ * No border and no radius. The raster is one dot per L1 column at an exact backing-store size, and
+ * `box-sizing: border-box` would shrink the content box under it — the same fractional-scale trap
+ * the game canvas just came out of. Its frame is the SENSES cell's divider and the slot's own.
+ */
+.retina-canvas {
+  border: 0;
+  border-radius: 0;
+  background: var(--bg-0);
+}
+
+/* -- Hero numbers ----------------------------------------------------------------------------- */
+
+/* A wrapped 72 px hero number reads as a broken panel, so heroes never wrap. */
+[data-role='hero'] {
+  white-space: nowrap;
+}

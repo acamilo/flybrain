@@ -1,0 +1,13 @@
+# infra/units/fly-retention.service — triggered by fly-retention.timer
+# (also invoked directly by fly-watchdog's disk guard, see bin/fly-watchdog).
+[Unit]
+Description=Prune old segments, highlights, and orphan checkpoints
+
+[Service]
+Type=oneshot
+User=fly
+Environment=FLY_STATE_DIR=/srv/fly/state
+Environment=FLY_MEDIA_DIR=/srv/fly/media
+ExecStart=/opt/fly/bin/fly-retention
+Nice=15
+IOSchedulingClass=idle

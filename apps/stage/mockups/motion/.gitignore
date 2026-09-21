@@ -1,0 +1,14 @@
+# The 42 individual frames (`<moment>-<t>.png`, six per moment at 1920x1080) are build output, not
+# review material: what a human reads is the committed contact sheet per moment, and the frames
+# regenerate in about twenty seconds with
+#
+#     cd apps/stage && npx tsx tools/motion-strip.mts
+#
+# A run is ~12 MB, which is not something the repo should carry again on every animation tweak. The
+# sheets themselves (`<moment>-sheet.png`, 38-66 KB each) are committed and are not ignored.
+*-0.png
+*-100.png
+*-300.png
+*-600.png
+*-1200.png
+*-9500.png
