@@ -725,3 +725,14 @@ is flat and lowest once the workers leave it.
 
 Two flaky bus tests predating this work assert timing rather than contract and are being
 rewritten separately.
+- 2026-09-22 (v0.4.7, loop review, auto): row 54 in Pewter and on Route 3. The player's coordinates
+  change at the END of a sixteen-frame step, so the whole-map grid refused every moving frame and
+  walks fell back to the window; a landing tile went unrecorded for fifteen frames and stayed a
+  frontier; an errand aimed at a door underfoot settled where it stood; the errand ledger was
+  session state and re-armed on restore. Fixed: the walk anchor is measured from the screen
+  neighbourhood, landing tiles retire, errands arrive inside facing the counter, the errand ledger
+  persists. Route 3's north edge is a survey item (table says west+east). From the Pewter checkpoint
+  the fly wins the Boulder Badge at 10.78 brain minutes. The hunt's flagged windows did not fall
+  (73/73) because 82% of the fixed run is battle time; Fable shipped it on the same judgement as
+  v0.4.6 and started row 50 (MOVE n blocked on an unresponsive move list). The on-screen chat ring
+  now survives a sim restart (sidecar in the hot dir, never in the checkpoint).
