@@ -214,7 +214,40 @@ struct Trace {
     font_corners_no_border: u64,
     font_no_corners: u64,
     corners_no_font: u64,
+    /// Frames spent in each battle sub-state, by [`battle_sub_state`]'s name.
+    ///
+    /// The scene histogram says "battle" and a battle has five sub-states with five different
+    /// pads (`docs/design/macros.md` section 12.6, 13.1), so a loop inside one of them is
+    /// invisible above. This is what names it.
+    battle_frames: BTreeMap<&'static str, u64>,
+    /// Macro starts by battle sub-state: which button the fly pressed on which of the five pads.
+    battle_starts: BTreeMap<(&'static str, &'static str), u64>,
+    /// Every macro channel that was bound in each battle sub-state, over the whole run.
+    ///
+    /// The pad's composition, measured rather than read off the table: "which sub-state offers
+    /// `BACK`" is a question about the build under test and not about the document.
+    battle_pads: BTreeMap<&'static str, BTreeSet<String>>,
     wall_seconds: f64,
+}
+
+/// Which sub-state of a battle this frame is, or `None` when no battle is running.
+///
+/// The five the pad is dealt by: the top-level menu, the move list, the party list, the bag, the
+/// forced switch, and the frames between turns where no list is accepting input.
+fn battle_sub_state(emulator: &mut flybrain_gb::Emulator) -> Option<&'static str> {
+    use flybrain_gb::pokemon_red::macros::state::BattleMenu;
+    let battle = flybrain_gb::pokemon_red::state::battle(emulator)?;
+    if battle.forced_switch {
+        return Some("forced switch");
+    }
+    Some(match battle.menu {
+        BattleMenu::Main { .. } => "main menu",
+        BattleMenu::Moves { cursor: Some(_), .. } => "move list",
+        BattleMenu::Moves { cursor: None, .. } => "move list, no cursor",
+        BattleMenu::Party { .. } => "party list",
+        BattleMenu::Bag { .. } => "bag",
+        BattleMenu::None => "between turns",
+    })
 }
 
 /// The macro that owns the buttons, with where it began and the ground it has covered since.
@@ -350,6 +383,9 @@ fn run(
         font_corners_no_border: 0,
         font_no_corners: 0,
         corners_no_font: 0,
+        battle_frames: BTreeMap::new(),
+        battle_starts: BTreeMap::new(),
+        battle_pads: BTreeMap::new(),
         wall_seconds: 0.0,
     };
 
@@ -406,6 +442,14 @@ fn run(
         let dialog_map = (layer_scene == "dialog" || layer_scene == "unknown")
             .then(|| flybrain_gb::pokemon_red::state::player(&mut emulator).map(|p| p.map))
             .flatten();
+        let battle_sub = battle_sub_state(&mut emulator);
+        if let Some(sub) = battle_sub {
+            *trace.battle_frames.entry(sub).or_insert(0) += 1;
+            let pad = trace.battle_pads.entry(sub).or_default();
+            for channel in bound.as_deref().unwrap_or_default() {
+                pad.insert(channel.clone());
+            }
+        }
         if let Some(layer) = macros.as_mut() {
             let ledger = AdapterLedger(&adapter);
             let decision = layer.decide(&active, mask, ms, &mut emulator, &ledger);
@@ -418,6 +462,9 @@ fn run(
                         // minutes is a fact about one conversation, and this is what says which.
                         if let Some(map) = dialog_map {
                             *trace.dialog_macros.entry((event.name, map)).or_insert(0) += 1;
+                        }
+                        if let Some(sub) = battle_sub {
+                            *trace.battle_starts.entry((event.name, sub)).or_insert(0) += 1;
                         }
                         running = Some(Running {
                             name: event.name,
@@ -801,6 +848,31 @@ fn main() {
         }
     }
 
+    if !trace.battle_frames.is_empty() {
+        println!("\n| battle sub-state | frames | pad |");
+        println!("| --- | ---: | --- |");
+        for (sub, frames) in &trace.battle_frames {
+            let pad = trace
+                .battle_pads
+                .get(sub)
+                .map(|set| {
+                    set.iter()
+                        .map(|c| c.strip_prefix("macro_").unwrap_or(c).to_string())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default();
+            println!("| {sub} | {frames} | {pad} |");
+        }
+        println!("\n| macro start | battle sub-state | n |");
+        println!("| --- | --- | ---: |");
+        let mut rows: Vec<((&str, &str), u64)> =
+            trace.battle_starts.iter().map(|(key, n)| (*key, *n)).collect();
+        rows.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        for ((name, sub), n) in rows {
+            println!("| {name} | {sub} | {n} |");
+        }
+    }
     println!("\n| scene | frames | longest run | run began (brain min) |");
     println!("| --- | ---: | ---: | ---: |");
     for (scene, frames) in &trace.scenes {
