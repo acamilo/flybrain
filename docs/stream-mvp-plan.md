@@ -615,3 +615,9 @@ then purge; then the stale-doc pass.
   the party already held. Fixed: BACK only where a list is open; THROW BALL skips held species.
   Trap hunt: tiles 216 -> 286, listless BACK 175 -> 0, dialog frames 23,548 -> 0. Ethos check
   held. Row 41 named: a nurse box answered YES 474 times on one tile.
+- 2026-09-22 (for v0.4.3): map-aware walks merged (section 15): the whole loaded map is decoded
+  into a walkability grid from the map and tileset data (read-only, ROM bank reads over the
+  cartridge image), A* plans over the map, the frontier is the nearest unstood tile anywhere,
+  the window reader is the fallback. Verified against real presses on two maps. Trap hunt: 286 ->
+  489 tiles, timeouts 6 -> 1; flagged windows rose 61 -> 70, all battle windows (the battle pad
+  review in flight).
