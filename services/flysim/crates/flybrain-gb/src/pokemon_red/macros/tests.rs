@@ -115,6 +115,11 @@ struct World {
     areas: BTreeSet<(Amenity, u8)>,
     /// Tiles the cartridge pushes the fly off (`infra/docs/macros-traps.md` row 37).
     pushes: BTreeSet<Tile>,
+    /// Maps a `GO FRONTIER` has proved it cannot reach the frontier of (section 12.14).
+    ///
+    /// Written by [`drive`] from the machine, exactly as `PokemonPalette` writes it in the sim
+    /// loop, so a test sees the ledger the next decision would see.
+    exhausted: BTreeSet<u8>,
     visited: BTreeSet<ExitId>,
     /// Tiles of this map the run has stood on, for `GO FRONTIER` and the plan's "untalked" test.
     stood: BTreeSet<Tile>,
@@ -164,6 +169,13 @@ struct World {
     /// A frame at which the cartridge heals the party, which is what a Pokémon Center does while
     /// its text box is open (`docs/design/macros.md` section 13).
     heal_at: Option<u32>,
+    /// Whether a text box is drawn on a scene that is not [`Scene::Dialog`]
+    /// ([`MacroState::text_open`]).
+    ///
+    /// `Dialog` *is* an open box, so the reading is true there by construction; the field is for
+    /// `Unknown`, which holds both a screen with words on it -- the Pokedex, the trainer card,
+    /// OPTION -- and a frame of the overworld the cartridge is driving (section 12.13).
+    box_open: bool,
     /// Whether the two-option YES/NO box is the thing on screen ([`MacroState::yes_no_prompt`]).
     ///
     /// A field rather than a shape of the `list`, because on the cartridge it is a *drawn box*
@@ -225,6 +237,7 @@ impl World {
             counters: BTreeSet::new(),
             areas: BTreeSet::new(),
             pushes: BTreeSet::new(),
+            exhausted: BTreeSet::new(),
             stock: Vec::new(),
             visited: BTreeSet::new(),
             stood: BTreeSet::new(),
@@ -243,6 +256,7 @@ impl World {
             pending: None,
             switch: None,
             heal_at: None,
+            box_open: false,
             prompt: false,
             scripted: false,
             scripted_at: None,
@@ -658,6 +672,17 @@ impl MacroState for World {
         self.scripted
     }
 
+    /// `wFontLoaded` is set for every dialogue box, which is what `Dialog` is; on `Unknown` the
+    /// fixture has to say, because that is the reading that tells a screen from a scripted
+    /// overworld frame (section 12.13).
+    fn text_open(&mut self) -> bool {
+        self.scene == Scene::Dialog || self.box_open
+    }
+
+    fn frontier_exhausted(&mut self) -> bool {
+        self.exhausted.contains(&self.map)
+    }
+
     /// A drawn box is what the reading rests on, so a prompt cannot be open with no box open:
     /// `pokemon_red::state::yes_no_prompt` gates on `wFontLoaded` before it looks at the tiles.
     fn yes_no_prompt(&mut self) -> bool {
@@ -758,6 +783,9 @@ fn drive(
         while let Some((map, target)) = machine.take_blocked() {
             world.targets.record_blocked(map, target);
         }
+        if let Some(map) = machine.take_exhausted() {
+            world.exhausted.insert(map);
+        }
         return Err(refused);
     }
     // A walk's cap is its plan's, so the bound here is the ceiling on any macro plus slack.
@@ -778,6 +806,9 @@ fn drive(
     // in the sim loop and this line's here.
     while let Some((map, target)) = machine.take_blocked() {
         world.targets.record_blocked(map, target);
+    }
+    if let Some(map) = machine.take_exhausted() {
+        world.exhausted.insert(map);
     }
     if let Some((map, target, closer)) = machine.take_timeout() {
         world.targets.record_timeout(map, target, closer);
@@ -990,10 +1021,29 @@ fn the_dialog_row_is_next_yes_and_no() {
 #[test]
 fn an_unknown_scene_is_dialog_with_advance_only() {
     let mut world = World::room();
+    world.box_open = true;
     let palette = Palette::for_scene(Scene::Unknown, &mut world);
     // Row 9 of `infra/docs/macros-traps.md`, closed by section 13.1: B is what leaves the Pokédex,
-    // the trainer card and OPTION, and all three read `Unknown`.
+    // the trainer card and OPTION, and all three read `Unknown` with a box drawn.
     assert_eq!(names(&palette), ["NEXT", "BACK"]);
+}
+
+#[test]
+fn an_unknown_frame_with_no_box_on_it_deals_nothing() {
+    // Section 12.13, the rung-10 Pewter loop. The other half of `Unknown` is the overworld with
+    // the cartridge driving -- a warp in flight, a push-back, the museum guide walking the fly in
+    // -- where `scene::detect` falls through because the buttons are not reaching the player.
+    // There is no box to advance and no screen to leave, so `NEXT` and `BACK` are an A and a B
+    // pressed into somebody else's script: they change nothing and they complete where the fly
+    // stands, which is section 12.2's trap. The pad is empty and the fly waits.
+    let mut world = World::room();
+    world.scripted = true;
+    assert!(!world.text_open());
+    let palette = Palette::for_scene(Scene::Unknown, &mut world);
+    assert_eq!(palette.bound(), 0, "an A and a B into a script are not buttons");
+    // And the moment the cartridge draws something, both are back.
+    world.box_open = true;
+    assert_eq!(names(&Palette::for_scene(Scene::Unknown, &mut world)), ["NEXT", "BACK"]);
 }
 
 #[test]
@@ -2525,6 +2575,7 @@ fn a_forced_switch_plans_one_entry_and_the_other_scenes_plan_their_one_move() {
     ] {
         let mut world = World::room();
         world.scene = scene;
+        world.box_open = scene == Scene::Unknown;
         assert_eq!(plan(&mut world), entries, "{}", scene.label());
     }
 
@@ -3139,6 +3190,10 @@ fn no_playable_scene_deals_an_empty_pad() {
     ] {
         let mut world = World::room();
         world.scene = scene;
+        // `Unknown` is dealt on what is drawn (section 12.13): a screen with words on it has
+        // `NEXT` and `BACK`, and a scripted overworld frame is the one deliberate empty pad,
+        // which `an_unknown_frame_with_no_box_on_it_deals_nothing` is about.
+        world.box_open = scene == Scene::Unknown;
         world.battle = matches!(scene, Scene::Battle { .. })
             .then_some((BattleKind::Wild, false, false));
         assert!(
@@ -3152,6 +3207,109 @@ fn no_playable_scene_deals_an_empty_pad() {
     let mut title = World::room();
     title.scene = Scene::Title;
     assert_eq!(plan::plan_for(Scene::Title, &mut title).bound(), 0);
+}
+
+#[test]
+fn the_badges_rung_resolves_to_the_person_standing_in_the_gym() {
+    // Rung 11 is BOULDER BADGE and `docs/design/ladder.md` gives its place as a *person* in the
+    // Pewter gym (12.5's `PlaceKind`). What the rung-10 loop needed was the two halves of that
+    // working together: the road into map `0x36` (`geography`, the museum rows and the gym's
+    // own), and, once inside, the objective naming somebody to walk to rather than a map to be
+    // on. This is the second half, on the map the rung is earned on.
+    let mut world = World::room();
+    world.map = maps::PEWTER_GYM;
+    // Both of Pewter's errands discharged. Section 13 puts an unvisited mart or centre *ahead*
+    // of the rung's place, and the gym is inside Pewter's area like everything else in the town,
+    // so until they are paid the objective is a building and not the leader. That is the errand
+    // working, and it is why the ROM run below spends its first minutes in the town's shops.
+    world.areas.insert((Amenity::Mart, maps::PEWTER_CITY));
+    world.areas.insert((Amenity::Center, maps::PEWTER_CITY));
+    world.npcs = vec![Npc { slot: 1, picture: 0x05, x: 4, y: 2, facing: Facing::Down }];
+    world.objective = Some(Objective {
+        map: maps::PEWTER_GYM,
+        tile: None,
+        warp: None,
+        edge: None,
+        target: Some(PlaceKind::Person),
+    });
+    let targets = super::palette::objective_targets(&mut world);
+    assert_eq!(targets.len(), 1, "the person the rung names: {targets:?}");
+    assert_eq!(targets[0].0, Tile::new(4, 2));
+    // And the walk aims at standing beside them and turning to face them, which is `GO NPC`'s own
+    // arrival and all `GO OBJECTIVE` ever promises: the press is `TALK`'s and the fly's.
+    let goals: Vec<Tile> = objective_goals(&mut world).into_iter().map(|aim| aim.tile).collect();
+    assert!(goals.contains(&Tile::new(4, 3)), "a tile beside them: {goals:?}");
+    assert!(goals.iter().all(|tile| tile.distance(Tile::new(4, 2)) == 1), "{goals:?}");
+    // The room the rung is in is not left while the thing that earns it is standing in it (12.5).
+    assert!(ways(&mut world, Way::Exit).is_empty(), "the gym's door is not a candidate yet");
+    // Talked to, and the objective has nothing left here: the button leaves the pad and the ways
+    // out come back, which is what carries the run on to the next rung.
+    world.talked.insert(targets[0].1);
+    assert!(super::palette::objective_targets(&mut world).is_empty());
+    assert!(objective_goals(&mut world).is_empty());
+}
+
+#[test]
+fn a_frontier_no_walk_can_reach_takes_go_frontier_off_the_pad_and_keeps_it_off() {
+    // Section 12.14, the rung-10 museum. The sealed pocket below is map `0x34` in miniature: the
+    // unstood ground is real and it is fenced off, so `GO FRONTIER` refuses `no route` and writes
+    // every tile it could not reach to the blocked ledger -- which is a *window*. Before this the
+    // window lapsed after ten brain minutes and all of it was a candidate again: 1,235 starts in
+    // 47 minutes over two museum floors and a town. The mark has no window.
+    let mut world = World::room();
+    for y in 0..8 {
+        for x in 0..8 {
+            world.stood.insert(Tile::new(x, y));
+        }
+    }
+    world.stood.remove(&Tile::new(7, 7));
+    world.walls.insert(Tile::new(6, 7));
+    world.walls.insert(Tile::new(6, 6));
+    world.walls.insert(Tile::new(7, 5));
+    world.player = Tile::new(0, 0);
+    assert!(!super::palette::frontier_aims(&mut world).is_empty(), "the pocket is a frontier");
+    assert!(precondition(MacroKind::GoFrontier, &mut world), "so the button is on the pad");
+
+    let refused = run(&mut world, MacroKind::GoFrontier).expect_err("the pocket is sealed");
+    assert_eq!(refused.reason, Refusal::NoRoute);
+    assert!(world.exhausted.contains(&world.map), "the map is marked: {:?}", world.exhausted);
+    assert!(super::palette::frontier_aims(&mut world).is_empty(), "nothing left to aim at");
+    assert!(!precondition(MacroKind::GoFrontier, &mut world), "and the button is off the pad");
+
+    // Ten brain minutes later the blocked window has lapsed and every tile of the pocket is a
+    // candidate again -- and the button is still off the pad, because the ground has not moved.
+    world.targets.clock(11.0 * 60_000.0);
+    assert!(!world.targets.blocked(world.map, TargetKey::Tile(Tile::new(7, 6))));
+    assert!(
+        super::palette::frontier_aims(&mut world).is_empty(),
+        "the mark is not a window"
+    );
+    // A map the fly walks to instead is untouched: the mark is one map's.
+    world.map = 0x35;
+    assert!(!super::palette::frontier_aims(&mut world).is_empty(), "another map is its own");
+}
+
+#[test]
+fn a_frontier_mark_is_the_stood_ledgers_to_clear() {
+    // The two halves of the rule as the types have them: the stood ledger answers "this is
+    // ground the run had not stood on", which is the only event that can change which tiles the
+    // fly can reach, and that answer is what clears the map's mark.
+    let mut stood = super::cartridge::Stood::default();
+    assert!(stood.record(2, Tile::new(4, 4)), "the first time is new ground");
+    assert!(!stood.record(2, Tile::new(4, 4)), "the second time is not");
+    assert!(stood.record(0x34, Tile::new(4, 4)), "and a tile is a tile of one map");
+
+    use super::cartridge::FrontierLedger;
+    let mut frontiers = super::cartridge::Frontiers::default();
+    assert!(!frontiers.frontier_exhausted(0x34));
+    frontiers.record(0x34);
+    frontiers.record(0x34);
+    assert!(frontiers.frontier_exhausted(0x34), "idempotent");
+    assert!(!frontiers.frontier_exhausted(0x35), "and one map's");
+    assert_eq!(frontiers.len(), 1);
+    frontiers.clear(0x34);
+    assert!(!frontiers.frontier_exhausted(0x34));
+    assert!(frontiers.is_empty());
 }
 
 #[test]
@@ -4087,6 +4245,9 @@ fn no_playable_scene_and_no_sub_state_deals_an_empty_pad() {
     ] {
         let mut world = World::room();
         world.scene = scene;
+        // See the sweep in `no_playable_scene_deals_an_empty_pad`: `Unknown` with nothing drawn
+        // on it is the overworld being driven by the cartridge, and its pad is empty by design.
+        world.box_open = scene == Scene::Unknown;
         world.mons.clear();
         worst(&mut world);
     }

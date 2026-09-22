@@ -1080,6 +1080,98 @@ while a prompt is readable, and `TALK` is on no pad at a rested nurse.
 The decoder, the reward catalog, the adapter version, the roles and the compatibility string are
 untouched.
 
+### 12.13 `UNKNOWN` is two states, and one of them has nothing to press (2026-09-22, rung 10, five and a half hours)
+
+Live on v0.4.5, rank 10, the fly inside the Pewter museum with rung 11's BOULDER BADGE two doors
+away: since the 11:30 restart the macro starts were `GO FRONTIER` **1,235**, `BACK` **678**,
+`GO OBJECTIVE` 267, `GO OUT` 242, `YES` 169, and the previous review had already named the shape --
+`BACK` pressed 189 times "in a text box" on map `0x02`, surrounded by `GO OBJECTIVE` and
+`GO FRONTIER`. `infra/docs/macros-traps.md` has the reproduction; three things were wrong and all
+three are here, and the first of them is not a text box at all.
+
+- **`BACK` was dealt by `Scene::Unknown`, on frames with nothing drawn.** `BACK` is on no overworld
+  pad and on no dialog pad, so every one of those presses came from `Unknown` — and `Unknown` holds
+  two states under one name. One is a screen this crate cannot name: the Pokédex, the trainer card,
+  OPTION, where A and B are what leave it and 13.1 put them there on purpose. The other is a frame
+  of the **overworld** where the buttons are not reaching the player — a warp in flight, a scripted
+  push-back, the museum guide walking the fly through the door — which `scene::detect` calls
+  `Unknown` because its overworld branch needs `controllable`. On the second, `NEXT` and `BACK` are
+  an A and a B pressed into somebody else's script: they change nothing, they complete where the fly
+  stands, and that is 12.2's trap with no box to advance. So the pad is dealt on **whether a box is
+  drawn** (`wFontLoaded`, the reading `text_box` already makes), and a scripted overworld frame is an
+  empty pad the fly waits out. Nothing else can wait it out: the cartridge gives the buttons back by
+  itself, which is the difference between this and every other empty pad 13.1 enumerates.
+
+### 12.14 A frontier no walk can reach is a fact about the map (2026-09-22, the same run)
+
+The museum's ground floor is 98 walkable tiles, **62** of them reachable from the door and **39**
+never stood on — and almost all of those 39 are behind the admission desk. `GO FRONTIER` aims at
+ground the run has not stood on, the route search cannot reach any of it, so the macro refuses
+`no route`, presses nothing and writes every goal to the blocked ledger (12.1). That ledger is a
+**ten brain minute window**: it lapsed, all of it was a candidate again, and the refusal happened
+again, once per hold, for hours.
+
+A window is the right shape for a target somebody is standing in front of and the wrong shape for
+ground the map has fenced off. So the refusal is remembered **per map** instead, with no window,
+beside the pushed-tile ledger of row 37 — and it is *cleared* by the one event that can change the
+answer: the fly standing somewhere on that map it has not stood on before, because a door opened, a
+script carried it through, or somebody moved out of a doorway. Re-entering the map clears nothing;
+that was the loop the window made. Session state like every other ledger, never checkpointed.
+
+### 12.15 The ratchet's stall window cannot see a fly walking a road it has already covered
+
+Two "Stuck" rollbacks fired on this rung inside half an hour, attempts 0 → 2, each one putting the
+fly back where it had started. Both were the ratchet working exactly to contract: its stall window
+is restarted by *exploration* — `progress.unique_locations`, ground the run has never stood on
+(`docs/design/ladder.md`, and row 22) — and 120 brain seconds of safe overworld samples without one
+new tile is a stall by definition. Entering a map for the first time already counts, because a new
+map is a map's worth of tiles nobody has stood on; **re-entering** one does not, and two museum
+floors and a covered town are exactly that.
+
+What is plainly progress and is not ground: **being nearer the objective than this run has ever
+been**, counted in hops over the same map graph `GO OBJECTIVE` walks (`geography::hops`). The macro
+layer answers it, the sim loop passes it to the ratchet beside the coverage figure, and the ratchet
+treats it exactly as it treats a rise in coverage — it restarts the window and does nothing else: no
+budget spent, no snapshot taken, no trigger skipped. It can fire at most once per step of the road,
+and nothing in the macro layer reads it back: no macro is ranked by it and no button is bound on it.
+
+The checkpointed ratchet state does not move. The signal is a level on one sample, not a counter, so
+there is nothing to serialise and nothing to drift across a restore.
+
+### 12.16 What is still in the way of the badge, measured rather than fixed
+
+With 12.13, 12.14 and the museum's two rows on the map graph, the ROM-gated run from the live
+checkpoint reaches the gym's own interior on **15 macros** — against never, in five and a half live
+hours. Two things it then does are worth naming, because neither is a bug and both cost the rung:
+
+- **the town's errands come first, and they are session state.** Section 13 puts an unvisited mart
+  or Pokémon Center ahead of the rung's place for every map in that area, and the gym is in Pewter's
+  area like everything else. The ledger does not survive a restart, so the 11:30 restart re-armed
+  both errands and `GO OBJECTIVE` aimed at them before the leader. They are paid once and the run
+  goes on; the cost is minutes, not hours.
+- **`GO FRONTIER` is still most of the run** — 1,247 starts in 55 brain minutes, 649 of them in
+  Pewter City itself. There the frontier is genuinely reachable, one tile at a time, because the
+  whole-map grid is refused on a walking fly (below) and the windowed frontier is the nearest
+  unstood tile on screen. It is covering ground rather than standing still, which is why it is a
+  residual and not a trap.
+
+**The trap hunt does not improve.** Distinct tiles 193 -> 175 and flagged windows 59 -> 69, with
+`BACK` in a text box 295 -> 0 and battle frames 6,948 -> 20,894. What the old cycle is replaced by
+is a new one on the same five tiles -- `GO FRONTIER`, `GO HEAL`, `GO ROUTE`, x42, for seven and a
+half brain minutes -- and then four brain minutes inside one battle, which the hunt's tile rule
+flags as hard as it flags a stall. `infra/docs/macros-traps.md` has both arms whole and row 54 is
+the next brief. The ethos check's "the trap hunt improves" does not hold for this branch; the
+ROM-gated run does, and both are reported rather than one of them.
+
+**The whole-map grid is refused while the fly is moving.** `pokemon_red::state::map_grid` checks its
+decode against the screen buffer over the fly's own tile and its four neighbours, and on a frame
+mid-step the two are a tile apart: `wYCoord` is the tile being walked *to* while the background is
+still scrolling. Measured on Pewter City from the rung-10 checkpoint: standing still it decodes on
+**118 of 120** frames, and the frame the survey caught disagreed on three tiles by exactly one row
+in the direction of travel. A walk planned on such a frame is planned over the ten-by-nine window of
+section 15's "before". Naming it needs a WRAM reading of "a step is in progress" that this crate's
+reviewed symbol list does not carry, so it is reported here and by the probes rather than guessed at.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")
@@ -1210,6 +1302,7 @@ measured where it cannot.
 | a restore, before the first `observe` | not a cause: the loop calls `observe` once at the end of boot and once after a ratchet recovery, so the first frame is decided on a real palette |
 | the title screen, and raw mode | not an empty pad by contract: the readout's boot variant applies and no palette is dealt |
 | a scene the detector cannot name | `Unknown` deals `NEXT` and `BACK`; a screen neither press leaves (the naming screen, row 14) is a genuine stall and still needs START, which is a contract change |
+| an `Unknown` frame that is the **overworld with the cartridge driving** -- a warp in flight, a scripted push-back, a guide walking the fly through a door | **empty on purpose** (12.13). There is no box to advance and no screen to leave, so an A or a B press is a press into somebody else's script: it changes nothing and completes where the fly stands. This is the one empty pad that ends itself -- the cartridge gives the buttons back within a few frames -- and `game.padEmptyMs` reports it like any other |
 | the fly's own turn where the seam cannot read the battler, now that `NEXT` is off that row (12.10) | **fixed**: `MOVE 1` is bound over the top-level menu whatever `wBattleMon*` reads as, because FIGHT is one of that menu's four entries and always opens |
 
 And because "closed where a macro can close it" is not "closed":

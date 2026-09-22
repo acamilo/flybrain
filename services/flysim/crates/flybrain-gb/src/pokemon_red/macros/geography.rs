@@ -112,6 +112,14 @@ const LINKS: &[(u8, u8)] = &[
     (maps::VIRIDIAN_FOREST_NORTH_GATE, maps::ROUTE_2),
     (maps::VIRIDIAN_FOREST_NORTH_GATE, maps::VIRIDIAN_FOREST),
     (maps::PEWTER_GYM, maps::PEWTER_CITY),
+    // The museum, both floors. It is on the graph for the same reason the gym is: the rung-10
+    // loop of 2026-09-22 spent its hours on these two maps with `GO OBJECTIVE` off the pad
+    // entirely, because a map with no row here has no neighbours, so `next_hop` answers nothing
+    // and `area_of` answers nothing -- no road to the gym from indoors, and no errand either.
+    // Both rows are the cartridge's own warp table, surveyed from the rung-10 checkpoint: Pewter
+    // City names `$34` at (14, 7) and (19, 5), and `$34` names `$35` at (7, 7).
+    (maps::PEWTER_MUSEUM_1F, maps::PEWTER_CITY),
+    (maps::PEWTER_MUSEUM_2F, maps::PEWTER_MUSEUM_1F),
     (maps::PEWTER_MART, maps::PEWTER_CITY),
     (maps::PEWTER_POKECENTER, maps::PEWTER_CITY),
     (maps::MT_MOON_1F, maps::ROUTE_3),
@@ -327,6 +335,39 @@ pub fn next_hop(from: Region, to: u8) -> Option<u8> {
             if seen.insert(next) {
                 first.insert(next, hop);
                 queue.push_back(next);
+            }
+        }
+    }
+    None
+}
+
+/// How many hops the shortest known route from `from` to the map `to` takes, or `None` when none
+/// is known.
+///
+/// [`next_hop`]'s own breadth-first walk, counting instead of naming: `Some(0)` when the fly is
+/// already on `to`, `Some(1)` for a door out of this map into it, and `None` for a map the table
+/// cannot route to -- which is the same "nothing is guessed" [`next_hop`] answers with.
+///
+/// What it is *for* is the ratchet (`docs/design/ladder.md`, the 2026-09-17 progress rule): the
+/// stall window is reset by exploration, and a fly crossing a town it has already covered to
+/// reach the rung's own door earns no new ground while it does it. "Nearer the objective than
+/// this run has ever been" is the other thing that is plainly progress, and it is this number
+/// falling. Nothing about the *choice* reads it: no macro is ranked by it and no button is bound
+/// on it.
+pub fn hops(from: Region, to: u8) -> Option<u32> {
+    if from.map == to {
+        return Some(0);
+    }
+    let mut seen: HashSet<Region> = HashSet::from([from]);
+    let mut queue: VecDeque<(Region, u32)> = VecDeque::new();
+    queue.push_back((from, 0));
+    while let Some((region, depth)) = queue.pop_front() {
+        if region.map == to {
+            return Some(depth);
+        }
+        for next in region_neighbours(region) {
+            if seen.insert(next) {
+                queue.push_back((next, depth + 1));
             }
         }
     }
@@ -549,6 +590,68 @@ mod tests {
             next_hop(region_at(maps::ROUTE_2, 11), maps::VIRIDIAN_CITY),
             Some(maps::VIRIDIAN_FOREST_NORTH_GATE)
         );
+    }
+
+    #[test]
+    fn the_museums_two_floors_know_the_road_to_the_gym() {
+        // The rung-10 loop of 2026-09-22: five and a half hours on `PEWTER_CITY` with the
+        // objective two doors away, and inside the museum `GO OBJECTIVE` was off the pad because
+        // the map had no row here at all. Both floors, because the fly spent the run on both.
+        let at = |map: u8| Region::whole(map);
+        assert_eq!(
+            next_hop(at(maps::PEWTER_MUSEUM_1F), maps::PEWTER_GYM),
+            Some(maps::PEWTER_CITY),
+            "the way to the gym from the museum's ground floor is out of its front door"
+        );
+        assert_eq!(
+            next_hop(at(maps::PEWTER_MUSEUM_2F), maps::PEWTER_GYM),
+            Some(maps::PEWTER_MUSEUM_1F),
+            "and from the upper floor it is the staircase"
+        );
+        assert_eq!(next_hop(at(maps::PEWTER_CITY), maps::PEWTER_GYM), Some(maps::PEWTER_GYM));
+        // The other direction, which is what `GO OBJECTIVE` asks when the errand is the museum's
+        // own town: the museum is one hop from Pewter City and two from its upper floor.
+        assert_eq!(
+            next_hop(at(maps::PEWTER_CITY), maps::PEWTER_MUSEUM_2F),
+            Some(maps::PEWTER_MUSEUM_1F)
+        );
+        // And the area, which is what puts the town's errands on the pad indoors. The upper
+        // floor has no area, exactly as `REDS_HOUSE_2F` has none: a floor with no front door of
+        // its own is not "in" anywhere, so it offers no errand -- and the road out is still the
+        // staircase above, which is what the fly needs there.
+        assert_eq!(area_of(maps::PEWTER_MUSEUM_1F), Some(maps::PEWTER_CITY));
+        assert_eq!(area_of(maps::PEWTER_MUSEUM_2F), None);
+        // The museum is neither a mart nor a centre, so it is nobody's errand.
+        assert_eq!(amenity_at(maps::PEWTER_MUSEUM_1F), None);
+        assert_eq!(amenity_at(maps::PEWTER_MUSEUM_2F), None);
+    }
+
+    #[test]
+    fn the_hop_count_is_the_road_measured_rather_than_named() {
+        let at = |map: u8| Region::whole(map);
+        assert_eq!(hops(at(maps::PEWTER_CITY), maps::PEWTER_CITY), Some(0), "already there");
+        assert_eq!(hops(at(maps::PEWTER_CITY), maps::PEWTER_GYM), Some(1), "one door");
+        assert_eq!(hops(at(maps::PEWTER_MUSEUM_1F), maps::PEWTER_GYM), Some(2));
+        assert_eq!(hops(at(maps::PEWTER_MUSEUM_2F), maps::PEWTER_GYM), Some(3));
+        // The count agrees with the hop by hop answer, which is the thing it has to: walking the
+        // road one `next_hop` at a time takes exactly this many steps.
+        let mut here = at(maps::PEWTER_MUSEUM_2F);
+        let mut steps = 0;
+        while let Some(hop) = next_hop(here, maps::PEWTER_GYM) {
+            here = Region::whole(hop);
+            steps += 1;
+            assert!(steps < 10, "the road to the gym does not wander");
+        }
+        assert_eq!(here.map, maps::PEWTER_GYM);
+        assert_eq!(steps, 3);
+        // A split map is measured from the piece the fly is standing in, exactly as `next_hop` is.
+        assert_eq!(hops(region_at(maps::ROUTE_2, 11), maps::PEWTER_CITY), Some(1));
+        // Five from the south half, because the belt of trees between the halves needs CUT and
+        // the road is the forest: the south gate, the forest, the north gate, Route 2's north
+        // half, Pewter.
+        assert_eq!(hops(region_at(maps::ROUTE_2, 43), maps::PEWTER_CITY), Some(5));
+        // And nothing is guessed.
+        assert_eq!(hops(at(maps::PALLET_TOWN), 0xf0), None);
     }
 
     #[test]

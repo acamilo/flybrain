@@ -500,6 +500,15 @@ impl MacroLayer {
     /// The sim loop passes this to [`flybrain_core::decoder::PopulationDecoder::decode_bound`] on
     /// the same frame, which is why it is the layer's to answer: the bindings are what the last
     /// `observe` dealt, and nothing else in the loop knows them.
+    /// Whether this frame saw the fly nearer its objective than the run has managed before.
+    ///
+    /// Straight through from the palette ([`MacroPalette::nearer_the_objective`]), for the
+    /// ratchet's stall window and for nothing else: the macro layer neither reads it back nor
+    /// presses anything because of it.
+    pub fn nearer_the_objective(&self) -> bool {
+        self.palette.nearer_the_objective()
+    }
+
     pub fn bound_channels(&self) -> Vec<String> {
         self.bindings
             .iter()
