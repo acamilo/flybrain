@@ -34,7 +34,7 @@ use super::palette::{
     facing_target, listing, move_index, move_list, nurse_prompt, objective_goals, party_rested,
     potion_slot,
     precondition,
-    shop_screen, throw_slot, untalked_objects, untalked_people, ways,
+    shop_screen, stock_index, throw_slot, untalked_objects, untalked_people, ways,
 };
 use super::path::{self, Route, Way};
 use super::state::{Facing, Scene, ShopScreen};
@@ -2098,10 +2098,11 @@ fn approach(state: &mut dyn MacroState, targets: &[(Tile, TalkTarget)]) -> Vec<G
 ///
 /// One script over all four of section 13's purchases, which differ only in which item id they are
 /// pointed at -- exactly as `GO NPC` and `GO ITEM` differ only in which half of the object data
-/// they read. The item's **position in the stock list is its cursor index** in the buy list
-/// (`docs/design/macros-wram.md`, `wItemList`), so the navigation is a cursor read and never a
-/// count of presses; an item the counter does not stock has no index and the script refuses before
-/// anything is pressed.
+/// they read. The item's position in the stock list is its cursor index in the buy list *while the
+/// list is not scrolled* (`docs/design/macros-wram.md`, `wItemList`), so the navigation is a
+/// cursor read and never a count of presses; an item the counter does not stock, or one past the
+/// rows the cursor can reach, has no index and the script refuses before anything is pressed
+/// ([`super::palette::stock_index`], row 55).
 ///
 /// Quantity one, always: the prompt opens on one and this macro presses A at it. "Buy ONE unit"
 /// is section 13's own word, and a quantity the fly did not choose is not one this crate types.
@@ -2109,8 +2110,7 @@ fn approach(state: &mut dyn MacroState, targets: &[(Tile, TalkTarget)]) -> Vec<G
 /// Which screen the mart is on is read from agent A's `ShopScreen` rather than assumed, so the
 /// script works both from a freshly opened counter and from the buy list.
 fn shop_plan(state: &mut dyn MacroState, want: u8) -> Option<Vec<Step>> {
-    let index = state.shop_stock().iter().position(|stocked| *stocked == want)?;
-    let index = u8::try_from(index).ok()?;
+    let index = stock_index(state, want)?;
     let mut steps = Vec::new();
     if shop_screen(state)? == ShopScreen::BuySellQuit {
         // BUY is the counter menu's first entry.

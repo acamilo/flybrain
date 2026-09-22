@@ -246,6 +246,26 @@ struct Run {
     blocked: std::collections::BTreeMap<&'static str, u32>,
     /// `NAME@scene/sub-state` for every macro that reported `blocked`: *where* it gave up.
     blocked_where: std::collections::BTreeSet<String>,
+    /// The longest run of `blocked` finishes of one macro on a frame nothing changed, and the
+    /// macro it was.
+    ///
+    /// Row 55's own shape (`infra/docs/macros-traps.md`): `BUY ANTIDOTE start` / `BUY ANTIDOTE
+    /// blocked` every 0.8 s for ten brain minutes in the Pewter mart, **747 repeats** of a
+    /// sequence of one -- and the survey found the macro giving up on its *first frame*, with no
+    /// button pressed and no byte changed, because the step's target was above the cursor's max.
+    /// A purchase has no walk target, so nothing reached the blocked ledger either.
+    ///
+    /// "Nothing changed" is the tuple a loop is measured by: the map, the tile, the money and the
+    /// scene. One or two repeats are a rotation landing on the same button twice; a chain of them
+    /// with the world identical is the trap, whatever the macro.
+    /// Kept per scene as well as overall, because the two are different rows: the battle scene's
+    /// own chain is row 50 (`MOVE n` reports `blocked` with the move list drawn but not accepting
+    /// input) and belongs to that review, not to this one.
+    worst_blocked_streak: u32,
+    worst_blocked_streak_name: Option<&'static str>,
+    worst_blocked_streak_by_scene: std::collections::BTreeMap<&'static str, (u32, &'static str)>,
+    blocked_streak: u32,
+    blocked_streak_key: Option<(&'static str, u32, u8, u8, u32, &'static str)>,
     /// Macros started while the fly was still on the map it resumed on.
     macros_on_the_first_map: u32,
     /// How many times each macro started while the fly was still on that map, by name.
@@ -408,6 +428,11 @@ impl Run {
             empty_overworld_pads: std::collections::BTreeSet::new(),
             blocked: std::collections::BTreeMap::new(),
             blocked_where: std::collections::BTreeSet::new(),
+            worst_blocked_streak: 0,
+            worst_blocked_streak_name: None,
+            worst_blocked_streak_by_scene: std::collections::BTreeMap::new(),
+            blocked_streak: 0,
+            blocked_streak_key: None,
             macros_on_the_first_map: 0,
             started_on_the_first_map: std::collections::BTreeMap::new(),
             longest_menu_back_alternation: 0,
@@ -520,6 +545,11 @@ impl Run {
             empty_overworld_pads: std::collections::BTreeSet::new(),
             blocked: std::collections::BTreeMap::new(),
             blocked_where: std::collections::BTreeSet::new(),
+            worst_blocked_streak: 0,
+            worst_blocked_streak_name: None,
+            worst_blocked_streak_by_scene: std::collections::BTreeMap::new(),
+            blocked_streak: 0,
+            blocked_streak_key: None,
             macros_on_the_first_map: 0,
             started_on_the_first_map: std::collections::BTreeMap::new(),
             longest_menu_back_alternation: 0,
@@ -824,6 +854,25 @@ impl Run {
                 "{name}@{}/{sub}/list={list:#04x}",
                 self.layer.scene_name()
             ));
+            // Row 55: a macro that gives up on a frame nothing changed will give up again on the
+            // next hold, for ever, because nothing about the refusal is recorded anywhere.
+            let (x, y) = self.tile();
+            let key = (name, self.map(), x, y, self.money(), self.layer.scene_name());
+            if self.blocked_streak_key == Some(key) {
+                self.blocked_streak += 1;
+            } else {
+                self.blocked_streak = 1;
+                self.blocked_streak_key = Some(key);
+            }
+            if self.blocked_streak > self.worst_blocked_streak {
+                self.worst_blocked_streak = self.blocked_streak;
+                self.worst_blocked_streak_name = Some(name);
+            }
+            let scene = self.layer.scene_name();
+            let worst = self.worst_blocked_streak_by_scene.entry(scene).or_insert((0, name));
+            if self.blocked_streak > worst.0 {
+                *worst = (self.blocked_streak, name);
+            }
         }
         let in_battle_now = self.in_battle() != 0;
         let on_a_battle_pad = self.battle_pad();
@@ -2373,6 +2422,110 @@ fn pewter_checkpoint() -> Option<flysim::store::Checkpoint> {
         flysim::store::load(std::path::Path::new(&path))
             .expect("the checkpoint should be a FLYSIM01 envelope")
     })
+}
+
+/// The rung-11 mart checkpoint, or `None` to skip.
+///
+/// Its own variable, like every other checkpoint test here: one envelope cannot be on two maps.
+fn mart_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_MART_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// From inside the Pewter mart: the fly gets out of the shop scene, and no macro gives up over and
+/// over on a frame nothing changed.
+///
+/// **What was live** (2026-09-22 19:02 UTC, minutes after v0.4.7): map `0x38`, scene `shop`, and
+/// the watchdog's `loop.json` reading `sequence: [BUY ANTIDOTE], period 1, repeats 747,
+/// distinctMacros 1` over ten brain minutes -- `BUY ANTIDOTE start` then `BUY ANTIDOTE blocked`
+/// every 0.8 s, and nothing else starting at all.
+///
+/// **The mechanism, surveyed on the cartridge from this checkpoint** (`examples/scene_probe.rs`
+/// `FLY_PROBE_CATCH=shop`, `infra/docs/macros-traps.md` row 55):
+///
+/// - the screen is the clerk's **"Here you are! Thank you!"** box, waiting for a press, and
+///   `wListMenuID` still reads `PRICEDITEMLISTMENU` because the mart prints its own text without
+///   going through `DisplayTextIDInit` -- so `state::shop` called it the buy list;
+/// - the cursor bytes left on that frame are a **two-option box's**: `max` 1;
+/// - the counter stocks seven items and ANTIDOTE is its **fourth**, so the purchase script's
+///   first step aimed the cursor at index 3 in a list reporting a max of 1 and returned `Blocked`
+///   **on its own first frame, with no button pressed** -- three of three attempts, zero frames;
+/// - a purchase has no walk target, so the blocked ledger earned **nothing** and the button was
+///   dealt again on the next hold, for ever;
+/// - and the money was **104**, which is why `BUY ANTIDOTE` was the only purchase bound at all.
+///
+/// The claims, none of them about which button the fly presses:
+///
+/// - the fly **leaves the shop scene** -- a purchase that completes or a way out of the counter --
+///   inside twenty brain minutes;
+/// - **no macro reports `blocked` more than three times in a row on a frame nothing changed**
+///   (the same map, tile, wallet and scene), against 747 live;
+/// - the shop pad is never empty while the fly is in the mart, because a scene with nothing
+///   sensible waits and this one has `CONFIRM` and `LEAVE`.
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_MART_CHECKPOINT=.local/checkpoints/release-rank11-mart.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture
+/// ```
+#[test]
+fn the_fly_leaves_the_pewter_mart_counter_from_the_rung_eleven_checkpoint() {
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = mart_checkpoint() else {
+        eprintln!("skipped: no FLY_MART_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert_eq!(run.map(), PEWTER_MART, "the checkpoint is the mart the stream looped in");
+    assert_eq!(run.layer.scene_name(), "shop", "and the counter is open on it");
+
+    let mut left_the_counter = None;
+    let mut empty_shop_pads = 0u32;
+    for frame in 0..72_000u32 {
+        run.frame();
+        if run.layer.scene_name() == "shop" && run.layer.bound_channels().is_empty() {
+            empty_shop_pads += 1;
+        }
+        if left_the_counter.is_none() && run.layer.scene_name() != "shop" {
+            left_the_counter = Some(frame);
+        }
+    }
+    let money = run.money();
+    eprintln!(
+        "from the mart counter in {:.1} brain minutes: route {:?}, macros {:?}, blocked {:?}, \
+         the longest chain of one macro blocked on an unchanged frame {} ({:?}), money {money}",
+        run.ms / 60_000.0,
+        run.route,
+        run.started,
+        run.blocked,
+        run.worst_blocked_streak,
+        run.worst_blocked_streak_name,
+    );
+    eprintln!("the longest such chain per scene: {:?}", run.worst_blocked_streak_by_scene);
+    assert!(
+        left_the_counter.is_some(),
+        "the fly never left the shop scene (pad {:?}, macros {:?}, blocked {:?})",
+        run.layer.bound_channels(),
+        run.started,
+        run.blocked
+    );
+    // Scoped to the shop, because the *battle* scene has a chain of its own and it is row 50's
+    // (`MOVE n` blocked with the move list drawn but not accepting input), reviewed on its own
+    // branch. Reported rather than smoothed: the number is in the line above.
+    let (shop_streak, shop_macro) =
+        run.worst_blocked_streak_by_scene.get("shop").copied().unwrap_or((0, "none"));
+    assert!(
+        shop_streak <= 3,
+        "{shop_streak} finishes of `{shop_macro}` in a row reported blocked in the shop with the \
+         map, the tile, the wallet and the scene all unchanged: {:?}",
+        run.blocked_where
+    );
+    assert_eq!(
+        empty_shop_pads, 0,
+        "the shop dealt an empty pad on {empty_shop_pads} frames"
+    );
 }
 
 /// The rung-11 Pewter checkpoint, or `None` to skip.

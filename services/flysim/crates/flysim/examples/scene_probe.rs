@@ -931,6 +931,277 @@ fn accept_survey(
     println!("```");
 }
 
+/// The screen as text, for a survey that has to read what the cartridge actually drew.
+///
+/// Red's charmap: `$80`-`$99` are `A`-`Z`, `$a0`-`$b9` are `a`-`z`, `$f6`-`$ff` are `0`-`9`, and
+/// `$7f` is a space. Everything else prints as `.`, which is enough to tell a clerk's text box
+/// from an item list.
+fn screen_text(gb: &mut Emulator) -> Vec<String> {
+    (0..18u16)
+        .map(|y| {
+            (0..20u16)
+                .map(|x| match gb.read8(ram::wTileMap + y * 20 + x) {
+                    0x7f => ' ',
+                    byte @ 0x80..=0x99 => (b'A' + (byte - 0x80)) as char,
+                    byte @ 0xa0..=0xb9 => (b'a' + (byte - 0xa0)) as char,
+                    byte @ 0xf6..=0xff => (b'0' + (byte - 0xf6)) as char,
+                    0xe7 => '!',
+                    0xe8 => '?',
+                    0xf3 => '$',
+                    _ => '.',
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Every byte the mart's reading rests on, as one line.
+///
+/// The raw half is read first, because the seam borrows the emulator: `wListMenuID` and
+/// `wTextBoxID` are the two bytes [`state::shop`] decides on, and `wCurrentMenuItem` /
+/// `wMaxMenuItem` are the cursor a purchase navigates by.
+fn counter_line(gb: &mut Emulator, adapter: &PokemonRedReward) -> String {
+    use flybrain_gb::pokemon_red::macros::cartridge::MacroState;
+    let raw = format!(
+        "list={:#04x} textbox={:#04x} cur={} max={} font={:#04x} watched={:#04x} \
+         top=({},{}) joy={:#04x}",
+        gb.read8(ram::wListMenuID),
+        gb.read8(ram::wTextBoxID),
+        gb.read8(ram::wCurrentMenuItem),
+        gb.read8(ram::wMaxMenuItem),
+        gb.read8(ram::wFontLoaded),
+        gb.read8(ram::wMenuWatchedKeys),
+        gb.read8(ram::wTopMenuItemY),
+        gb.read8(ram::wTopMenuItemX),
+        gb.read8(ram::wJoyIgnore),
+    );
+    let text = flybrain_gb::pokemon_red::state::text_box(gb);
+    let yes_no = flybrain_gb::pokemon_red::state::yes_no_prompt(gb);
+    let ledger = AdapterLedger(adapter);
+    let mut poke = flybrain_gb::pokemon_red::state::PokeState::with_ledger(gb, &ledger);
+    let state: &mut dyn MacroState = &mut poke;
+    format!(
+        "{:?} shop={:?} box(open={} waiting={}) yes_no={} money={} | {raw}",
+        state.scene(),
+        state.shop().map(|shop| (shop.screen, shop.cursor.current, shop.cursor.max)),
+        text.open,
+        text.waiting,
+        yes_no,
+        state.money()
+    )
+}
+
+/// Row 55's counter survey: what the mart's seam reads, what the pad offers, and what a real
+/// `BUY …` does frame by frame.
+///
+/// `FLY_PROBE_CATCH=shop`. The live loop was `BUY ANTIDOTE start` / `BUY ANTIDOTE blocked` every
+/// 0.8 s for ten brain minutes in the Pewter mart, with nothing else starting, so the three
+/// questions are which reading puts the button on the pad, which step of the script gives up, and
+/// what the counter's own cursor reports while it does. All three are printed rather than
+/// reasoned about: the script navigates by reading the cursor, so the cursor is the evidence.
+///
+/// `FLY_PROBE_SHOP_ITEM` names the item by its `BUY …` button (`antidote` by default) so the same
+/// survey can be pointed at whichever purchase the loop is on.
+fn shop_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64) {
+    use flybrain_gb::pokemon_red::macros::cartridge::MacroState;
+    use flybrain_gb::pokemon_red::macros::palette;
+    use flybrain_gb::pokemon_red::macros::{MacroKind, MacroMachine, Palette};
+    use flybrain_gb::pokemon_red::state::PokeState;
+
+    let want = std::env::var("FLY_PROBE_SHOP_ITEM").unwrap_or_else(|_| "antidote".to_string());
+    let wanted = match want.as_str() {
+        "potion" => MacroKind::BuyPotion,
+        "ball" => MacroKind::BuyBall,
+        "repel" => MacroKind::BuyRepel,
+        _ => MacroKind::BuyAntidote,
+    };
+
+    println!("\n## The counter as the seam reads it, sixty frames with nothing pressed\n");
+    let mut last = String::new();
+    for frame in 0..60 {
+        let line = counter_line(gb, adapter);
+        if line != last {
+            println!("- frame {frame:3}: {line}");
+            last = line;
+        }
+        gb.set_buttons(flybrain_gb::buttons::NONE);
+        gb.run_frame().expect("a frame should complete");
+        *ms += MS_PER_FRAME;
+        adapter.sample(gb, *ms);
+    }
+
+    println!("\n## Every button the shop scene deals, and the halves of each precondition\n");
+    {
+        let ledger = AdapterLedger(adapter);
+        let mut poke = PokeState::with_ledger(gb, &ledger);
+        let state: &mut dyn MacroState = &mut poke;
+        let scene = state.scene();
+        let palette = Palette::for_scene(scene, state);
+        let names: Vec<&str> = palette.slots.iter().flatten().map(|spec| spec.name).collect();
+        println!("- scene `{scene:?}`, the pad: {names:?}");
+        println!("- `shop_screen` = {:?}", palette::shop_screen(state));
+        println!("- `listing` = {:?}", palette::listing(state));
+        println!("- `inside_mart` = {}", palette::inside_mart(state));
+        for kind in [
+            MacroKind::BuyPotion,
+            MacroKind::BuyBall,
+            MacroKind::BuyAntidote,
+            MacroKind::BuyRepel,
+        ] {
+            let purchase = kind.purchase();
+            let stocked = purchase.map(|(id, _)| state.shop_stock().iter().position(|s| *s == id));
+            let rich = purchase.map(|(_, cost)| state.money() >= cost);
+            println!(
+                "- {:<12} item {:?}, its index in the stock {stocked:?}, money allows {rich:?}, \
+                 precondition {}",
+                kind.name(),
+                purchase,
+                palette::precondition(kind, state),
+            );
+        }
+    }
+
+    println!("\n## `{}`, frame by frame, three times over\n", wanted.name());
+    for attempt in 1..=3 {
+        let slot = {
+            let ledger = AdapterLedger(adapter);
+            let mut poke = PokeState::with_ledger(gb, &ledger);
+            let state: &mut dyn MacroState = &mut poke;
+            let scene = state.scene();
+            let palette = Palette::for_scene(scene, state);
+            palette.slot(flybrain_gb::pokemon_red::macros::MacroId(wanted.slot())).map(|_| {
+                (palette, flybrain_gb::pokemon_red::macros::MacroId(wanted.slot()))
+            })
+        };
+        let Some((palette, slot)) = slot else {
+            println!("- attempt {attempt}: the button is not on the pad, so nothing is pressed.");
+            return;
+        };
+        let mut machine = MacroMachine::new(SEED);
+        let started = {
+            let ledger = AdapterLedger(adapter);
+            let mut poke = PokeState::with_ledger(gb, &ledger);
+            machine.start(&palette, slot, &mut poke)
+        };
+        println!("\n### Attempt {attempt}: `start` = {started:?}");
+        println!("- frame   0: {}", counter_line(gb, adapter));
+        let mut frame = 0u32;
+        loop {
+            let mask = {
+                let ledger = AdapterLedger(adapter);
+                let mut poke = PokeState::with_ledger(gb, &ledger);
+                machine.step(&mut poke)
+            };
+            let Some(mask) = mask else { break };
+            gb.set_buttons(mask);
+            gb.run_frame().expect("a frame should complete");
+            *ms += MS_PER_FRAME;
+            adapter.sample(gb, *ms);
+            frame += 1;
+            let line = counter_line(gb, adapter);
+            if line != last || frame.is_multiple_of(20) {
+                println!("- frame {frame:3}: mask {mask:#06x}  {line}");
+                last = line;
+            }
+            if frame > 700 {
+                println!("- (over seven hundred frames, which the cap forbids)");
+                break;
+            }
+        }
+        println!("- outcome after {frame} frames: {:?}", machine.outcome());
+        let mut entries = Vec::new();
+        while let Some(entry) = machine.take_blocked() {
+            entries.push(entry);
+        }
+        println!("- the blocked ledger entries it earned: {entries:?}");
+    }
+
+    println!("\n## What an A press at the counter really opens, pulsed by hand\n");
+    let pulse = |gb: &mut Emulator, adapter: &mut PokemonRedReward, mask: u8, ms: &mut f64| {
+        for phase in 0..16 {
+            gb.set_buttons(if phase < 8 { mask } else { 0 });
+            gb.run_frame().expect("a frame should complete");
+            *ms += MS_PER_FRAME;
+            adapter.sample(gb, *ms);
+        }
+    };
+    for step in 1..=40 {
+        pulse(gb, adapter, flybrain_gb::buttons::A, ms);
+        println!("- A pulse {step:2}: {}", counter_line(gb, adapter));
+    }
+    println!("\n## And backing out of whatever that left, with B\n");
+    for step in 1..=10 {
+        pulse(gb, adapter, flybrain_gb::buttons::B, ms);
+        println!("- B pulse {step:2}: {}", counter_line(gb, adapter));
+    }
+    println!("\n## The live buy list: BUY chosen from the counter menu, then read\n");
+    // Get to the BUY / SELL / QUIT menu -- the one screen in the mart whose cursor is accepting
+    // input with no dialogue box drawn -- put the cursor on BUY, confirm, and read what opens.
+    // This is the list `shop_plan` navigates, and what `wMaxMenuItem` reports on it is the whole
+    // question row 55 turns on.
+    for _ in 0..40 {
+        let menu = {
+            let text = flybrain_gb::pokemon_red::state::text_box(gb);
+            !text.waiting && gb.read8(ram::wMaxMenuItem) == 2 && gb.read8(ram::wTopMenuItemY) == 4
+        };
+        if menu {
+            break;
+        }
+        pulse(gb, adapter, flybrain_gb::buttons::A, ms);
+    }
+    println!("- at the counter menu: {}", counter_line(gb, adapter));
+    for row in screen_text(gb) {
+        println!("      |{row}|");
+    }
+    for _ in 0..4 {
+        if gb.read8(ram::wCurrentMenuItem) == 0 {
+            break;
+        }
+        pulse(gb, adapter, flybrain_gb::buttons::UP, ms);
+    }
+    println!("- cursor on BUY: {}", counter_line(gb, adapter));
+    pulse(gb, adapter, flybrain_gb::buttons::A, ms);
+    let mut seen = String::new();
+    for frame in 0..90 {
+        let line = counter_line(gb, adapter);
+        if line != seen {
+            println!("- {frame:3} frames after confirming BUY: {line}");
+            for row in screen_text(gb) {
+                println!("      |{row}|");
+            }
+            seen = line;
+        }
+        gb.set_buttons(flybrain_gb::buttons::NONE);
+        gb.run_frame().expect("a frame should complete");
+        *ms += MS_PER_FRAME;
+        adapter.sample(gb, *ms);
+    }
+    println!("\n### Walking that list down, one pulse at a time\n");
+    for step in 1..=9 {
+        pulse(gb, adapter, flybrain_gb::buttons::DOWN, ms);
+        println!("- DOWN {step}: {}", counter_line(gb, adapter));
+        for row in screen_text(gb) {
+            println!("      |{row}|");
+        }
+    }
+
+    println!("\n## The counter reopened from the overworld: every screen the mart draws\n");
+    // Out of the counter, face the clerk again and press A: the one sequence that shows what
+    // `wMaxMenuItem` really reports on the BUY / SELL / QUIT menu and on the *live* buy list,
+    // which is the question the fix turns on.
+    for step in 1..=30 {
+        pulse(gb, adapter, flybrain_gb::buttons::A, ms);
+        let line = counter_line(gb, adapter);
+        println!("- A pulse {step:2}: {line}");
+        if step % 10 == 0 {
+            for down in 1..=3 {
+                pulse(gb, adapter, flybrain_gb::buttons::DOWN, ms);
+                println!("  - DOWN {down}: {}", counter_line(gb, adapter));
+            }
+        }
+    }
+}
+
 fn main() {
     let Some(path) = std::env::var_os("FLY_ROM") else {
         println!("FLY_ROM is not set, so there is nothing to probe.");
@@ -996,6 +1267,13 @@ fn main() {
             &channels,
             hold_ms,
         );
+        return;
+    }
+
+    // Row 55's counter survey: what the mart's seam reads while a `BUY ...` runs, and what an A
+    // press at the counter really opens.
+    if std::env::var("FLY_PROBE_CATCH").is_ok_and(|value| value == "shop") {
+        shop_survey(&mut gb, &mut adapter, &mut ms);
         return;
     }
 

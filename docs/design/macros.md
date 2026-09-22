@@ -1262,6 +1262,48 @@ finding out which half is the whole fix.
 The decoder, the reward catalog, the adapter version, the roles and the compatibility string are
 untouched.
 
+### 12.19 A mart's counter is four screens, and one of them is the clerk talking (2026-09-22, row 55)
+
+Minutes after v0.4.7 went live the watchdog flagged the narrowest loop yet: map `0x38`, scene
+`shop`, `sequence: [BUY ANTIDOTE], period 1, repeats 747, distinctMacros 1` over ten brain
+minutes, with `BUY ANTIDOTE start` then `BUY ANTIDOTE blocked` every 0.8 s and **nothing else
+starting at all**. Surveyed from the live checkpoint with a new probe mode
+(`FLY_PROBE_CATCH=shop` in `examples/scene_probe.rs`); the bytes are in
+`docs/design/macros-wram.md` section 7.1.
+
+- **`wListMenuID` says the counter is open, not which of its screens is up.** The mart prints its
+  own text from inside `DisplayPokemartDialogue_`, which never calls the routine that clears that
+  byte, so it holds `PRICEDITEMLISTMENU` for the **whole visit**. The frame the stream sat on was
+  the clerk's "Here you are! Thank you!" box waiting for a press, and the seam called it the buy
+  list; the cursor bytes on it belong to a two-option box (`max` 1). So which screen is up is now
+  read from the figure the game draws -- the construction the dialogue box's `waiting` test and the
+  YES/NO prompt already use. The clerk talking is `ShopScreen::Talking`, it reports **no listing at
+  all**, and no purchase starts on it: a scene whose menu is not open offers what actually opens it,
+  which here is `CONFIRM` and `LEAVE`, and both are already on the shop's pad.
+- **A mart's buy list scrolls, so an item's position in the stock is its cursor index only for the
+  first three entries.** Walked one pulse at a time on the live list, the cursor went `0, 1, 2` and
+  then stopped moving while the window scrolled under it. The offset that names the scrolled
+  position is not a pinned address, so the fourth item of a counter and after have no index this
+  seam can aim at. Pewter's counter carries seven items and its ANTIDOTE is the **fourth**:
+  `BUY ANTIDOTE` aimed a cursor step at index 3 in a list reporting a max of 1 and returned
+  `Blocked` **on its own first frame, having pressed nothing** -- three of three attempts, zero
+  frames. A macro that cannot run is not on the pad, so the four purchases are bound on the rows
+  the cursor can reach, and Viridian's four-item counter is why this went unseen: its ANTIDOTE is
+  index 1.
+- **A purchase has no target, so a blocked purchase records nothing.** Section 12.1's ledger is
+  keyed by what a walk set out for and a press sets out for nothing, so the button was dealt again
+  on the very next hold, for ever -- row 6's shape in a scene with no walk in it. The fix is the
+  precondition rather than a new ledger: the question the ledger would have answered is a fact about
+  the counter, and the pad can ask it before the fly presses.
+
+The loop was also **the fly's own choice landing on the one button it could afford**: the wallet
+read 104, so of Pewter's stock only the Antidote was under it, and `BUY ANTIDOTE` was the only
+purchase bound. Nothing about the choice changes here. What changes is that the button is not
+offered, and the two presses that leave a counter are.
+
+Nothing here changes which button the fly presses. The decoder, the reward catalog, the adapter
+version and the compatibility string are untouched.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")
