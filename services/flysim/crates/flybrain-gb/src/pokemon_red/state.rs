@@ -1019,6 +1019,11 @@ fn screen_anchor(
 ///
 /// A step that has begun always finishes -- the cartridge owns the animation and no press stops it
 /// -- so the tile the screen has already centred on is ground this run has covered.
+///
+/// It answers `None` on a mid-step frame whose neighbourhood is the same tile id in every
+/// direction, because [`ANCHORS`] tries the standing anchor first and an open field agrees under
+/// it. That is the safe way round: the grid served is still the right one, and the tile is
+/// recorded on the frame the step lands, as it was before.
 pub fn step_destination(memory: &mut dyn MemoryReader, grid: &MapGrid) -> Option<(u8, u8)> {
     let player = player(memory)?;
     let (dx, dy) = screen_anchor(memory, grid, player.x, player.y).ok()?;
