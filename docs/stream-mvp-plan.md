@@ -607,3 +607,6 @@ fixes (report in the coordinator session's scratchpad; 188 items), the floated e
 list. The loop watcher schedule is stopped; the in-box watchdog check 10 keeps reporting.
 Next release order: merge shops (after its stall fix), tag, deploy; merge the ratchet fix;
 then purge; then the stale-doc pass.
+- 2026-09-22 02:22 UTC (v0.4.1): first release cut from the public repository (fresh history at
+  v0.4.0); the DESCRIBE card carries the repository URL. Deployed to the release container with a
+  flysim and flystage restart, checkpoint carried over at rank 9, lag 0, encoder output clean.
