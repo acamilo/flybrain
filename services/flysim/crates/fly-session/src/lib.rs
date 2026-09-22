@@ -34,6 +34,7 @@ pub mod media;
 pub mod metrics;
 pub mod phase;
 pub mod rpc;
+pub mod state;
 pub mod task;
 pub mod worker;
 

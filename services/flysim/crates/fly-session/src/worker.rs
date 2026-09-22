@@ -597,7 +597,17 @@ async fn execute<E: WorkerEndpoint>(
 fn classify_default(method: &str) -> Option<OpClass> {
     match method {
         "Agent.Prepare" | "Agent.Commit" | "Environment.Advance" => Some(OpClass::StepMutation),
-        "Agent.Initialize" | "Environment.Initialize" => Some(OpClass::Lifecycle),
+        // `ipc-v1` section 5 retains lifecycle *and capture* replies until
+        // `Worker.Acknowledge`. The restore methods join them: their replies carry a
+        // once-only token and, for an environment, the restored observation's artifact, and a
+        // duplicate domain request must replay that reply rather than stage or activate a
+        // second time. They are not step mutations -- they carry no committed step of their
+        // own and are not keyed by one.
+        "Agent.Initialize"
+        | "Environment.Initialize"
+        | "State.Capture"
+        | "State.StageRestore"
+        | "State.ActivateRestore" => Some(OpClass::Lifecycle),
         "Worker.Hello" | "Worker.Status" | "Worker.Acknowledge" | "Worker.Shutdown" => {
             Some(OpClass::ReadOnly)
         }

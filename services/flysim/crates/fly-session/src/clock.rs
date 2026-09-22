@@ -29,6 +29,30 @@ impl TickAccumulator {
         })
     }
 
+    /// The exact accumulator a capture recorded.
+    ///
+    /// The remainder is restored, never rounded or reset: a resumed agent that started its
+    /// first interval from zero would drift away from the run it is supposed to continue.
+    pub fn restored(
+        tick_duration: RationalNs,
+        remainder: RationalNs,
+        executed_ticks: u64,
+        warmup_offset: u64,
+    ) -> Result<TickAccumulator, String> {
+        let mut accumulator = TickAccumulator::new(tick_duration)?;
+        remainder.validate().map_err(|e| e.0)?;
+        if remainder >= tick_duration {
+            return Err("a captured remainder is not below one model tick".to_owned());
+        }
+        if warmup_offset > executed_ticks {
+            return Err("a captured warm-up offset exceeds the executed tick count".to_owned());
+        }
+        accumulator.remainder = remainder;
+        accumulator.executed_ticks = executed_ticks;
+        accumulator.warmup_offset = warmup_offset;
+        Ok(accumulator)
+    }
+
     pub fn tick_duration(&self) -> RationalNs {
         self.tick_duration
     }
