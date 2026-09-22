@@ -49,6 +49,33 @@ WANTED = {
     # not bank 0, so this is the read the memory seam grew a bank for.
     'wTilesetBank': 'the ROM bank the blockset lives in',
     'wTilesetBlocksPtr': 'blocks to tiles, 16 bytes per block',
+    # The catch reward (`docs/rewards-learning.md`, `docs/design/macros-wram.md`
+    # section 10). ram/wram.asm's own comment is "0 if no mon was captured":
+    # ItemUseBall zeroes it before every throw and writes wEnemyMonSpecies into it
+    # only on the branch that keeps the caught Pokemon, and UseBagItem zeroes it
+    # again on the way out of the battle. It is the cartridge's own answer to "was
+    # this one caught", and the only signal that needs no second rule to tell a
+    # catch apart from a gift, a trade or an evolution.
+    'wCapturedMonSpecies': 'the species a ball just caught, 0 for none',
+}
+
+
+#: Constants the decomp defines through its `const` enumeration rather than with a
+#: plain `EQU`, so `constants()` cannot evaluate their expressions. They matter here
+#: because `NUM_TMS + NUM_HMS` is the size of `wMonHLearnset`, and that one
+#: declaration is what kills the cursor on its way through the battle engine's
+#: scratch bytes -- the region `wCapturedMonSpecies` lives in.
+#:
+#: Each is *counted* from the decomp rather than written out by hand, which is the
+#: same rule the rest of this tool follows. `DEF NUM_HMS EQU const_value - HM01` is
+#: by construction the number of `add_hm` definitions after `HM01`, and
+#: `item_constants.asm`'s own `ASSERT NUM_TMS == const_value - TM01` ties `NUM_TMS`
+#: to the number of `add_tm` definitions -- so `NUM_TMS` is counted *and* compared
+#: against the literal the same file declares, and a decomp that moved one without
+#: the other stops the run instead of producing an address.
+COUNTED = {
+    'NUM_HMS': ('constants/item_constants.asm', r'^\s*add_hm\s+\w+'),
+    'NUM_TMS': ('constants/item_constants.asm', r'^\s*add_tm\s+\w+'),
 }
 
 
@@ -68,6 +95,10 @@ def constants(root: Path) -> dict[str, int]:
     BLOCK_WIDTH`). A name whose expression never becomes evaluable is simply left
     out, which kills the cursor at any declaration that uses it.
     """
+    counted = {
+        name: len(re.findall(pattern, (root / path).read_text(), re.M))
+        for name, (path, pattern) in COUNTED.items()
+    }
     pending: dict[str, str] = {}
     sources = sorted((root / 'constants').glob('*.asm')) + sorted(
         (root / 'constants').glob('*.inc')
@@ -77,7 +108,7 @@ def constants(root: Path) -> dict[str, int]:
             r'^\s*(?:DEF|def)\s+(\w+)\s+(?:EQU|equ)\s+([^;\n]+)', path.read_text(), re.M
         ):
             pending.setdefault(name, value.strip())
-    out: dict[str, int] = {}
+    out: dict[str, int] = dict(counted)
     while pending:
         progressed = False
         for name in list(pending):
@@ -89,6 +120,12 @@ def constants(root: Path) -> dict[str, int]:
             progressed = True
         if not progressed:
             break
+    for name, value in counted.items():
+        if out.get(name, value) != value:
+            raise SystemExit(
+                f'{name}: the decomp declares {out[name]} and defines {value} of them'
+            )
+        out[name] = value
     return out
 
 
@@ -367,11 +404,17 @@ def main() -> None:
         raise SystemExit('the walk disagrees with symbols.rs; nothing emitted')
     print(f'{checked} of {len(table)} pinned addresses re-derived from wram.asm, no disagreement')
 
-    missing = [name for name in WANTED if name not in resolved]
+    # A name this tool has already emitted is pinned, so the walk meets it as an
+    # anchor rather than resolving it: it was re-derived all the same, and the
+    # comparison above is what says so.
+    missing = [name for name in WANTED if name not in resolved and name not in table]
     if missing:
         raise SystemExit(f'unanchored, so not resolved: {", ".join(missing)}')
     for name in WANTED:
-        print(f'{name} = ${resolved[name]:04x}  ({WANTED[name]})')
+        if name in resolved:
+            print(f'{name} = ${resolved[name]:04x}  ({WANTED[name]})')
+        else:
+            print(f'{name} = ${table[name]:04x}  (already pinned; {WANTED[name]})')
 
     if not args.emit:
         return
