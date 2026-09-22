@@ -16,7 +16,7 @@ use common::{at, count, fly_a, fly_b, mode_fixture, within};
 use fly_session::agent::AgentFaults;
 use fly_session::coordinator::{DispatchOrder, Injections};
 use fly_session::environment::EnvironmentFaults;
-use fly_session::harness::{ExecutionMode, HarnessConfig, Via};
+use fly_session::harness::{AgentSpec, ExecutionMode, HarnessConfig, Via};
 use fly_session::launcher::{ReapOutcome, ThreadBudget};
 use fly_session::ResolutionEnd;
 use fly_session::phase::Phase;
@@ -114,15 +114,19 @@ async fn a_slow_participant_is_resolved_rather_than_failed(mode: ExecutionMode) 
     config.environment_faults =
         EnvironmentFaults { advance_delay_ms: 500, ..EnvironmentFaults::default() };
     let mut f = mode_fixture(mode, config).await;
+    // Bootstrap first, at ordinary deadlines: its lifecycle calls are not what this test is
+    // about, and squeezing them through the probe below only tests the machine's luck.
+    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     // A probe well inside both delays, and a resolution budget well outside them: the point is
-    // a call that expires and an operation that is nevertheless fine.
+    // a call that expires and an operation that is nevertheless fine. The guard is out of
+    // reach so the budget is the only bound in play, and the budget is far above what the
+    // delays need, so neither ends this resolution -- the answer does.
     f.harness.coordinator.deadlines = fly_session::Deadlines {
         probe: Duration::from_millis(120),
-        resolve: Duration::from_secs(20),
-        resolve_attempts: 4096,
+        resolve: Duration::from_secs(15),
+        resolve_attempts: u32::MAX,
         boot: Duration::from_secs(30),
     };
-    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     let reports = within("run", f.harness.coordinator.run(2))
         .await
         .expect("a slow participant is resolved, not failed");
@@ -174,26 +178,44 @@ async fn a_slow_participant_is_resolved_rather_than_failed(mode: ExecutionMode) 
     f.shutdown().await;
 }
 
+/// One agent, one port, and a participant that will not answer this side of the test's own
+/// timeout. The composition for the bound tests: one participant means one possible name in
+/// the failure, so which agent is blamed is not a race.
+fn one_silent_agent(mode: ExecutionMode) -> HarnessConfig {
+    HarnessConfig {
+        agents: vec![AgentSpec {
+            // Ten minutes. The suite's own `within` gives up at twenty seconds, so if the step
+            // returns at all, a bound ended it and not the participant. That is a claim about
+            // the code rather than about how fast this machine happens to be.
+            faults: AgentFaults { prepare_delay_ms: 600_000, ..AgentFaults::default() },
+            ..AgentSpec::new("fly-a", "p1", 7)
+        }],
+        mode,
+        ..HarnessConfig::default()
+    }
+}
+
 /// The resolution has two bounds, and which one ended it is never left to be guessed.
 ///
-/// `resolve` is the working limit at the default values -- the attempt guard is over sixteen
-/// seconds of pauses against an eight-second budget -- so an unresponsive participant runs the
-/// budget out. Setting the guard low instead ends the same resolution the other way, and the
-/// failure says so both in `last_resolution` and in its own message.
+/// Both halves are arranged so the bound under test is the only one that *can* fire: the
+/// other is set orders of magnitude out of reach, so no amount of scheduling delay flips them.
+/// The claim is the contract's -- a resolution ends by budget or by guard, records which, and
+/// names it in the failure -- and nothing here is timed.
+///
+/// The deadlines are installed after `bootstrap`, deliberately. Bootstrap makes lifecycle
+/// calls of its own, and squeezing them through a fifty-millisecond probe tests the harness's
+/// luck rather than the resolution.
 async fn a_resolution_says_which_of_its_two_bounds_ended_it(mode: ExecutionMode) {
-    // The budget is what ends it at ordinary settings: a generous attempt guard, a short
-    // budget, and a participant far slower than either.
-    let mut config = two_agents(mode);
-    config.agents[1].faults = AgentFaults { prepare_delay_ms: 30_000, ..AgentFaults::default() };
-    let mut f = mode_fixture(mode, config).await;
+    // Half one: the budget fires, because the guard cannot. `u32::MAX` attempts at the two
+    // millisecond pause is over ninety days; the budget is a fifth of a second.
+    let mut f = mode_fixture(mode, one_silent_agent(mode)).await;
+    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     f.harness.coordinator.deadlines = fly_session::Deadlines {
         probe: Duration::from_millis(50),
-        resolve: Duration::from_millis(300),
-        resolve_attempts: 8192,
+        resolve: Duration::from_millis(200),
+        resolve_attempts: u32::MAX,
         boot: Duration::from_secs(30),
     };
-    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
-    let started = Instant::now();
     let failure = within("step", f.harness.coordinator.step())
         .await
         .expect_err("a participant that never answers exhausts the resolution");
@@ -202,36 +224,37 @@ async fn a_resolution_says_which_of_its_two_bounds_ended_it(mode: ExecutionMode)
         failure.error.message.contains("resolution budget"),
         "the message names the bound that fired: {failure}"
     );
-    assert_eq!(failure.participant.as_deref(), Some(fly_b().as_str()));
-    assert_eq!(failure.error.mutation, MutationCertainty::Unknown);
     assert!(
-        started.elapsed() < Duration::from_secs(20),
-        "the budget, not the 30-second participant, is what ended it"
+        f.harness.coordinator.last_resolution_attempts < u32::MAX,
+        "the budget ended it with attempts still in hand, which is what makes it the budget"
     );
+    assert_eq!(failure.participant.as_deref(), Some(fly_a().as_str()));
+    assert_eq!(failure.error.mutation, MutationCertainty::Unknown);
     assert!(f.harness.coordinator.is_fenced());
     f.shutdown().await;
 
-    // The guard is what ends it when it is set below the budget: three attempts against a
-    // budget the participant could never reach anyway.
-    let mut config = two_agents(mode);
-    config.agents[1].faults = AgentFaults { prepare_delay_ms: 30_000, ..AgentFaults::default() };
-    let mut f = mode_fixture(mode, config).await;
+    // Half two: the guard fires, because the budget cannot. Three attempts against an hour.
+    let mut f = mode_fixture(mode, one_silent_agent(mode)).await;
+    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     f.harness.coordinator.deadlines = fly_session::Deadlines {
         probe: Duration::from_millis(50),
-        resolve: Duration::from_secs(600),
+        resolve: Duration::from_secs(3_600),
         resolve_attempts: 3,
         boot: Duration::from_secs(30),
     };
-    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     let failure = within("step", f.harness.coordinator.step())
         .await
         .expect_err("three attempts are not enough to resolve a silent participant");
     assert_eq!(f.harness.coordinator.last_resolution, Some(ResolutionEnd::AttemptsExhausted));
     assert!(
-        failure.error.message.contains("attempt guard") && failure.error.message.contains("3 attempts"),
+        failure.error.message.contains("attempt guard")
+            && failure.error.message.contains("3 attempts"),
         "the message names the bound that fired and its size: {failure}"
     );
-    assert_eq!(failure.participant.as_deref(), Some(fly_b().as_str()));
+    // Counted, not timed: the guard was spent exactly, and the hour never came near.
+    assert_eq!(f.harness.coordinator.last_resolution_attempts, 3);
+    assert_eq!(failure.participant.as_deref(), Some(fly_a().as_str()));
+    assert_eq!(failure.error.mutation, MutationCertainty::Unknown);
     f.shutdown().await;
 }
 

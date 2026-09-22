@@ -290,6 +290,8 @@ pub struct Coordinator {
     pub resolutions: u64,
     /// How the last resolution ended, so a test or a supervisor can tell which bound fired.
     pub last_resolution: Option<ResolutionEnd>,
+    /// How many attempts the last resolution spent. Counted, not inferred from the clock.
+    pub last_resolution_attempts: u32,
     /// The caller-side failure-detection budgets of `ipc-v1` section 6.
     pub deadlines: Deadlines,
     /// Per-method and critical-path latency samples. Local synthetic timings, never a
@@ -357,6 +359,7 @@ impl Coordinator {
             in_progress_replies: 0,
             resolutions: 0,
             last_resolution: None,
+            last_resolution_attempts: 0,
             deadlines: Deadlines::default(),
             metrics: Metrics::default(),
             blame: None,
@@ -840,14 +843,15 @@ impl Coordinator {
             let reply = self
                 .call(&worker, "Worker.Acknowledge", None, object(params.to_json()), &[], &[])
                 .await?;
-            let result: AcknowledgeResult =
+            // The reply lists what this call released, which is not always everything it
+            // asked about: `ipc-v1` section 5 says "Already released/unknown IDs are
+            // ignored", and the contract type already holds the list to a subset of the
+            // request. A second Acknowledge therefore answers with an empty list by design --
+            // and the section 6 resolution produces exactly that second Acknowledge whenever
+            // the first one's reply was slow. Demanding the whole list back turned a safe,
+            // contract-sanctioned retry into a failed epoch.
+            let _: AcknowledgeResult =
                 reply.parse().map_err(|e| self.fail_now(e, "acknowledge"))?;
-            if result.acknowledged.len() != ids.len() {
-                return Err(self.fail_now(
-                    DomainError::invalid("a worker did not acknowledge every lifecycle reply"),
-                    "acknowledge",
-                ));
-            }
         }
         self.audit.push("acknowledge.lifecycle".to_owned());
         Ok(())
@@ -1147,11 +1151,14 @@ impl Coordinator {
         // The budget is the working limit and the attempt count is a guard; whichever runs
         // out is recorded, so "it gave up" is never an unexplained number.
         let mut end = ResolutionEnd::AttemptsExhausted;
+        let mut spent = 0u32;
         for _ in 0..attempts {
             if started.elapsed() >= budget {
                 end = ResolutionEnd::BudgetExpired;
                 break;
             }
+            spent += 1;
+            self.last_resolution_attempts = spent;
             let outcome = call_owned(
                 self.bus.clone(),
                 worker.clone(),
