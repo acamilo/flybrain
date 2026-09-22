@@ -748,3 +748,29 @@ rewritten separately.
   inside one commit), so the run restarted from rung 8, VIRIDIAN CITY, with
   `fly-reset-to-milestone 8`; the v5 checkpoint migrated to v6 as designed. The previous state is
   archived beside the store.
+
+## 2026-09-22 - session framework: what landed and what stopped
+
+The session framework slices from docs/design/session-framework/implementation.md were built
+in ordered waves, each on its own branch with an independent review before merge.
+
+Landed on main: CONTRACT-01, BUS-01 through BUS-03, SESSION-01, SESSION-02, MEDIA-01,
+STATE-01 and PUBLISH-01. Together they give the repo an executable session contract with a
+TypeScript oracle, a conforming bus with a written conformance table, a lockstep session that
+runs in process, on threads or as one process per fly, native frame and audio observations
+with spectator isolation, a coherent all-participant checkpoint with group restore and a
+liftable fence, and an internal publication boundary with committed snapshots over the same
+bus. Every contract silence met on the way was closed by a dated amendment in the affected
+document rather than by convention; none touched doctrine.
+
+Also landed: the bus test suite asserts guarantees rather than the machine's timing, and a
+coordinator defect found through one of those flakes is fixed, where a lifecycle
+acknowledgement that legitimately releases nothing was treated as a fault.
+
+Stopped: AGENT-01 and ENV-01 are blocked on FOUNDATION-02 and RUNTIME-01 from the MaleCNS
+backlog, which do not exist yet. The profile contract and the environment boundary are
+decisions for the operator, so the swarm stopped here. DOLPHIN-01 was never in scope.
+
+Measured on the development box, not capacity claims: bus RPC near one millisecond at the
+median; a two-fly transition near 10 to 12 ms at the median in every execution mode; about
+5.7 MiB per participant process when split.

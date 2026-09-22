@@ -160,6 +160,10 @@ delayed rendering retains its handle. Distinguish AssetRef from transient Artifa
 
 **Depends on:** SESSION-02, MEDIA-01 and the profile/identity foundation in the broader backlog.
 
+**2026-09-22:** blocked. The profile/identity foundation is FOUNDATION-02
+(`feat/brain-profile-contract`) in the [MaleCNS backlog](../malecns-modular-implementation.md),
+which has not been built. Not started.
+
 **Implement:** adapter over existing LIF, plasticity, retina and fixed readout primitives;
 reference-first composition/goldens; independently seeded agent state and shared immutable data.
 Avoid using the old whole-frame `tick` wrapper if it changes the specified phase ordering.
@@ -171,6 +175,10 @@ dispatch order and varying worker count preserves results. Keep 64-role limits e
 ### ENV-01 — Game Boy compatibility environment
 
 **Depends on:** AGENT-01 and environment/task extraction in the broader backlog.
+
+**2026-09-22:** blocked. AGENT-01 is blocked, and environment/task extraction is
+RUNTIME-01 (`refactor/environment-task-boundary`) in the same backlog, which has not been
+built. Not started.
 
 **Implement:** binjgb environment, task-local memory inspector and identity/existing action
 adapter. Keep `legacy-gameboy-v1` separately routed with exact old ordering/hash semantics.
