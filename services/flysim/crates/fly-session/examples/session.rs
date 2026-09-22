@@ -7,6 +7,7 @@
 //! Two fake agents, one counter arena, one coordinator, one router. Nothing here needs a ROM,
 //! a dataset, a GPU or a network.
 
+use fly_session::types::*;
 use fly_session::harness::{HarnessConfig, SessionHarness, Via};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
@@ -22,6 +23,7 @@ async fn main() {
 
         for (k, transition) in harness.coordinator.trace.transitions.iter().enumerate() {
             let ticks: Vec<String> = transition
+                .behaviour
                 .agents
                 .iter()
                 .map(|a| format!("{}={} ticks", a.agent_id, a.ticks_advanced))
@@ -29,9 +31,9 @@ async fn main() {
             println!(
                 "step {k}: {}  batch={} boundary={} events={}",
                 ticks.join(" "),
-                transition.batch_id,
-                transition.acknowledged_boundary,
-                transition.task_event_ids.len()
+                transition.behaviour.batch_id,
+                transition.behaviour.acknowledged_boundary,
+                transition.behaviour.event_ids.len()
             );
         }
         let progress = harness.coordinator.task_progress();

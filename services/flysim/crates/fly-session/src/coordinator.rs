@@ -17,15 +17,9 @@ use crate::clock::Pacing;
 use crate::phase::{Phase, PhaseMachine};
 use crate::rpc::{self, DomainReply, Serials, WorkerRef};
 use crate::task::{ActionExecutor, Task};
-use crate::types::{
-    AgentCommitResult, AgentInitializeParams, AgentInitializeResult, AgentOutcome, AssetRef,
-    CommitParams, Digest, DomainError, EnvironmentDescriptor, EnvironmentInitializeParams,
-    EnvironmentInitializeResult, EpisodeRequest, ErrorCode, HelloParams, HelloResult, Id, Mutation,
-    PortBinding, PortControl, PrepareParams, PreparedDecision, RationalNs, RequestId, Role, Scope,
-    SensoryInput, StatusResult, StepResult, Stimulus, TypedValue, U64, WorldObservation,
-    contract_digest, controls_digest,
-};
-use crate::types::{AgentTransitionTrace, TraceLog, TransitionTrace, ViewProvenance};
+// `crate::types` is this crate's facade over the shared `fly-session-types` crate; the
+// glob keeps the contract's own names in sight instead of restating them.
+use crate::types::*;
 
 /// The order the coordinator dispatches and awaits its per-agent phases in.
 ///
@@ -128,12 +122,12 @@ pub struct AgentSlot {
     pub profile: AssetRef,
     pub seed: i32,
     pub tick_duration: RationalNs,
-    pub warmup_ticks: U64,
+    pub warmup_ticks: u64,
     pub committed_step: u64,
     context: TypedValue,
     context_digest: Digest,
     prepared: Option<PreparedDecision>,
-    prepare_request: Option<RequestId>,
+    prepare_request: Option<DomainRequestId>,
 }
 
 impl AgentSlot {
@@ -150,11 +144,12 @@ impl AgentSlot {
             port_id,
             profile,
             seed,
-            tick_duration: RationalNs::zero(),
-            warmup_ticks: U64(0),
+            tick_duration: RationalNs::ZERO,
+            warmup_ticks: 0,
             committed_step: 0,
-            context: TypedValue::new(crate::task::context_schema(), Map::new()),
-            context_digest: Digest::of(b""),
+            context: TypedValue::new(crate::task::context_schema(), Value::Object(Map::new()))
+                .expect("an empty context object is a valid typed value"),
+            context_digest: digest_of_bytes(b""),
             prepared: None,
             prepare_request: None,
         }
@@ -193,7 +188,7 @@ pub struct Coordinator {
     /// Set by whoever asks for a normal pause, possibly while a transition is in flight.
     pause: std::sync::Arc<std::sync::atomic::AtomicBool>,
     episode: Option<EpisodeRequest>,
-    lifecycle_acks: Vec<(WorkerRef, Id)>,
+    lifecycle_acks: Vec<(WorkerRef, DomainRequestId)>,
     stats: Stats,
     /// The ordered actions this session took, for the ordering assertions.
     pub audit: Vec<String>,
@@ -203,6 +198,9 @@ pub struct Coordinator {
     pub injection_log: Vec<InjectionOutcome>,
     /// How many times an exact duplicate met IN_PROGRESS while resolving an uncertain call.
     pub in_progress_replies: u64,
+    started: std::time::Instant,
+    last_advance_request: Option<DomainRequestId>,
+    last_commit_requests: Vec<TraceRequest>,
 }
 
 impl Coordinator {
@@ -248,6 +246,9 @@ impl Coordinator {
             injections: Injections::default(),
             injection_log: Vec::new(),
             in_progress_replies: 0,
+            started: std::time::Instant::now(),
+            last_advance_request: None,
+            last_commit_requests: Vec::new(),
         }
     }
 
@@ -324,7 +325,7 @@ impl Coordinator {
     }
 
     fn scope(&self, step: u64) -> Scope {
-        Scope::new(&self.session_id, &self.epoch, step)
+        scope_at(&self.session_id, &self.epoch, step)
     }
 
     fn transition(&mut self, next: Phase) -> Outcome<()> {
@@ -388,7 +389,7 @@ impl Coordinator {
             supported_majors: vec![1],
         };
         let reply = self
-            .call(&worker, "Worker.Hello", None, &params, &[], &[])
+            .call(&worker, "Worker.Hello", None, object(params.to_json()), &[], &[])
             .await?;
         let result: HelloResult = reply.parse().map_err(|e| self.fail_now(e, "hello"))?;
         if result.contract_digest != contract_digest() {
@@ -409,7 +410,7 @@ impl Coordinator {
                 "hello",
             ));
         }
-        let required = Id::lit(required);
+        let required = id(required);
         if !result.capabilities.contains(&required) {
             return Err(self.fail_now(
                 DomainError::before(
@@ -447,7 +448,7 @@ impl Coordinator {
                 let error = DomainError::new(
                     ErrorCode::BackendFailure,
                     format!("declaring {name}: {}", e.message),
-                    Mutation::None,
+                    MutationCertainty::None,
                 );
                 self.fail_now(error, "declare-topic")
             })?;
@@ -471,7 +472,7 @@ impl Coordinator {
                 "counter-arena-setup-v1",
             ),
             episode_id: self.episode_id.clone(),
-            port_bindings: bindings,
+            port_bindings: bindings.iter().map(PortBinding::pair).collect(),
         };
         let worker = self.environment.clone();
         let scope = self.scope(0);
@@ -480,7 +481,7 @@ impl Coordinator {
                 &worker,
                 "Environment.Initialize",
                 Some(scope),
-                &params,
+                object(params.to_json()),
                 &[],
                 &["view.arena".to_owned()],
             )
@@ -493,9 +494,9 @@ impl Coordinator {
             .map_err(|e| self.fail_now(DomainError::invalid(e), "environment-descriptor"))?;
         result
             .observation
-            .validate(&result.descriptor)
+            .validate_against(&result.descriptor)
             .map_err(|e| self.fail_now(DomainError::invalid(e), "observation-0"))?;
-        if result.observation.boundary.0 != 0 || !result.observation.world_time.is_zero() {
+        if result.observation.boundary != 0 || !result.observation.world_time.is_zero() {
             return Err(self.fail_now(
                 DomainError::invalid("boundary 0 must have world time zero"),
                 "observation-0",
@@ -518,7 +519,7 @@ impl Coordinator {
         self.views = reply.artifacts;
         self.descriptor = Some(result.descriptor);
         self.observation = Some(result.observation);
-        self.lifecycle_acks.push((worker, reply.request_id.id()));
+        self.lifecycle_acks.push((worker, reply.request_id.clone()));
         self.audit.push("environment.initialize".to_owned());
         Ok(())
     }
@@ -535,7 +536,7 @@ impl Coordinator {
             .bootstrap(&observation.inspection, &bindings)
             .map_err(|e| self.fail_now(e, "task-bootstrap"))?;
         for event in &bootstrap.events {
-            if event.source_step.0 != 0 {
+            if event.source_step != 0 {
                 return Err(self.fail_now(
                     DomainError::invalid("a bootstrap event has source step 0"),
                     "task-bootstrap",
@@ -577,12 +578,12 @@ impl Coordinator {
         let reply = {
             let refs: Vec<(&str, &flybus::Artifact)> =
                 attachments.iter().map(|(n, a)| (n.as_str(), a)).collect();
-            self.call(&slot_worker, "Agent.Initialize", Some(scope), &params, &refs, &[])
+            self.call(&slot_worker, "Agent.Initialize", Some(scope), object(params.to_json()), &refs, &[])
                 .await?
         };
         let result: AgentInitializeResult =
             reply.parse().map_err(|e| self.fail_now(e, "agent-initialize"))?;
-        if result.committed_step.0 != 0 {
+        if result.committed_step != 0 {
             return Err(self.fail_now(
                 DomainError::invalid("Agent.Initialize must establish committed step 0"),
                 "agent-initialize",
@@ -613,7 +614,7 @@ impl Coordinator {
         self.agents[index].tick_duration = result.tick_duration;
         self.agents[index].warmup_ticks = result.warmup_ticks;
         self.agents[index].committed_step = 0;
-        self.lifecycle_acks.push((slot_worker, reply.request_id.id()));
+        self.lifecycle_acks.push((slot_worker, reply.request_id.clone()));
         let agent_id = self.agents[index].agent_id.clone();
         self.audit.push(format!("agent.initialize:{agent_id}"));
         Ok(())
@@ -625,7 +626,7 @@ impl Coordinator {
     /// cache. It is not a bus `delivery.consumed`, which the SDK did when we dropped the
     /// replies.
     async fn acknowledge_lifecycle(&mut self) -> Outcome<()> {
-        let mut by_worker: BTreeMap<String, (WorkerRef, Vec<Id>)> = BTreeMap::new();
+        let mut by_worker: BTreeMap<String, (WorkerRef, Vec<DomainRequestId>)> = BTreeMap::new();
         for (worker, request_id) in std::mem::take(&mut self.lifecycle_acks) {
             by_worker
                 .entry(worker.service.clone())
@@ -634,11 +635,11 @@ impl Coordinator {
                 .push(request_id);
         }
         for (worker, ids) in by_worker.into_values() {
-            let params = crate::types::AcknowledgeParams { request_ids: ids.clone() };
+            let params = AcknowledgeParams { request_ids: ids.clone() };
             let reply = self
-                .call(&worker, "Worker.Acknowledge", None, &params, &[], &[])
+                .call(&worker, "Worker.Acknowledge", None, object(params.to_json()), &[], &[])
                 .await?;
-            let result: crate::types::AcknowledgeResult =
+            let result: AcknowledgeResult =
                 reply.parse().map_err(|e| self.fail_now(e, "acknowledge"))?;
             if result.acknowledged.len() != ids.len() {
                 return Err(self.fail_now(
@@ -654,25 +655,20 @@ impl Coordinator {
     /// Queries one worker's status without waiting for its current mutation.
     pub async fn status(&mut self, worker: &WorkerRef) -> Outcome<StatusResult> {
         let reply = self
-            .call(worker, "Worker.Status", None, &json!({}), &[], &[])
+            .call(worker, "Worker.Status", None, Map::new(), &[], &[])
             .await?;
         reply.parse().map_err(|e| self.fail_now(e, "status"))
     }
 
     /// Asks one worker to stop. Only the configured supervisor may do this.
     pub async fn shutdown(&mut self, worker: &WorkerRef, reason: &str) -> Outcome<()> {
-        let params = crate::types::ShutdownParams { reason: Id::lit(reason) };
+        let params = ShutdownParams { reason: id(reason) };
         let reply = self
-            .call(worker, "Worker.Shutdown", None, &params, &[], &[])
+            .call(worker, "Worker.Shutdown", None, object(params.to_json()), &[], &[])
             .await?;
-        let result: crate::types::ShutdownResult =
-            reply.parse().map_err(|e| self.fail_now(e, "shutdown"))?;
-        if !result.stopping {
-            return Err(self.fail_now(
-                DomainError::invalid("a responsive worker reports stopping:true"),
-                "shutdown",
-            ));
-        }
+        // A responsive worker reports `stopping: true`, which is the only shape the contract
+        // type reads at all.
+        let _: ShutdownResult = reply.parse().map_err(|e| self.fail_now(e, "shutdown"))?;
         Ok(())
     }
 
@@ -707,7 +703,7 @@ struct Job {
     scope: Option<Scope>,
     params: Map<String, Value>,
     attachments: Vec<(String, flybus::Artifact)>,
-    request_id: RequestId,
+    request_id: DomainRequestId,
 }
 
 /// Issues one domain call with owned arguments, so it can run in its own task.
@@ -719,7 +715,7 @@ async fn call_owned(
     scope: Option<Scope>,
     params: Map<String, Value>,
     attachments: Vec<(String, flybus::Artifact)>,
-    request_id: RequestId,
+    request_id: DomainRequestId,
     want: Vec<String>,
 ) -> Result<DomainReply, DomainError> {
     let refs: Vec<(&str, &flybus::Artifact)> =
@@ -728,21 +724,17 @@ async fn call_owned(
 }
 
 impl Coordinator {
-    /// Serializes `params`, takes the next request serial for this worker, calls, and checks
+    /// Takes the next request serial for this worker, calls, and checks
     /// the reply's identity and echoed scope.
-    async fn call<P: serde::Serialize>(
+    async fn call(
         &mut self,
         worker: &WorkerRef,
         method: &'static str,
         scope: Option<Scope>,
-        params: &P,
+        params: Map<String, Value>,
         attachments: &[(&str, &flybus::Artifact)],
         want: &[String],
     ) -> Outcome<DomainReply> {
-        let params = match serde_json::to_value(params).expect("params serialize") {
-            Value::Object(m) => m,
-            _ => Map::new(),
-        };
         let request_id = self.serials.next(&worker.service);
         let owned: Vec<(String, flybus::Artifact)> = attachments
             .iter()
@@ -782,10 +774,10 @@ impl Coordinator {
         method: &'static str,
     ) -> Outcome<()> {
         let (worker_id, incarnation, echoed) = match &reply.outcome {
-            crate::types::SessionRpcOutcome::Success(s) => {
+            SessionRpcOutcome::Success(s) => {
                 (&s.worker_id, &s.incarnation_id, &s.scope)
             }
-            crate::types::SessionRpcOutcome::Failure(f) => {
+            SessionRpcOutcome::Failure(f) => {
                 (&f.worker_id, &f.incarnation_id, &f.scope)
             }
         };
@@ -812,7 +804,7 @@ impl Coordinator {
                 method,
             ));
         }
-        if *reply.outcome.request_id() != reply.request_id.id() {
+        if *reply.outcome.request_id() != reply.request_id {
             return Err(self.fail_now(
                 DomainError::before(
                     ErrorCode::IdentityMismatch,
@@ -835,7 +827,7 @@ impl Coordinator {
         scope: Option<Scope>,
         params: Map<String, Value>,
         attachments: Vec<(String, flybus::Artifact)>,
-        request_id: RequestId,
+        request_id: DomainRequestId,
         want: &[String],
     ) -> Outcome<DomainReply> {
         // The original may still be running, which answers IN_PROGRESS for this bus call and
@@ -849,7 +841,7 @@ impl Coordinator {
                 scope.clone(),
                 params.clone(),
                 attachments.clone(),
-                request_id,
+                request_id.clone(),
                 want.to_vec(),
             )
             .await;
@@ -872,7 +864,7 @@ impl Coordinator {
             DomainError::new(
                 ErrorCode::BackendFailure,
                 "the uncertain operation never resolved",
-                Mutation::Unknown,
+                MutationCertainty::Unknown,
             ),
             method,
         ))
@@ -888,8 +880,8 @@ impl Coordinator {
         scope: Option<Scope>,
         params: Map<String, Value>,
         attachments: Vec<(String, flybus::Artifact)>,
-        request_id: RequestId,
-        expected: Option<&Map<String, Value>>,
+        request_id: DomainRequestId,
+        expected: Option<&Value>,
         what: &str,
     ) {
         let reply = call_owned(
@@ -936,7 +928,7 @@ impl Coordinator {
         method: &'static str,
         scope: Option<Scope>,
         params: Value,
-    ) -> Result<Map<String, Value>, DomainError> {
+    ) -> Result<Value, DomainError> {
         let params = match params {
             Value::Object(m) => m,
             _ => Map::new(),
@@ -959,7 +951,7 @@ impl Coordinator {
     /// The sensory input one agent is permitted to consume at `boundary`.
     fn sensory_input(&self, observation: &WorldObservation, boundary: u64) -> SensoryInput {
         SensoryInput {
-            boundary: U64(boundary),
+            boundary,
             views: observation.sensory_views.clone(),
             // This profile senses pixels only, so structured input stays null rather than
             // smuggling inspection data into the neural path.
@@ -1137,8 +1129,6 @@ impl Coordinator {
             self.agents[index].context_digest = context.digest();
             self.agents[index].context = context;
             self.agents[index].committed_step = k + 1;
-            self.agents[index].prepared = None;
-            self.agents[index].prepare_request = None;
         }
         // The previous boundary's handles are no longer needed; the new ones take over.
         self.views = new_views;
@@ -1153,7 +1143,6 @@ impl Coordinator {
             .collect();
         self.record_trace(
             k,
-            &descriptor,
             &prepared,
             &commits,
             &controls,
@@ -1162,6 +1151,12 @@ impl Coordinator {
             &outcomes,
             &event_ids,
         );
+        // The prepared decisions and their request ids are needed by the trace, so they are
+        // released only after it has been recorded.
+        for slot in &mut self.agents {
+            slot.prepared = None;
+            slot.prepare_request = None;
+        }
         self.publish_events(k + 1, &evaluation.events).await?;
         self.publish_snapshot(k + 1, &decisions, &controls, &event_ids).await?;
 
@@ -1195,7 +1190,7 @@ impl Coordinator {
     }
 
     fn batch_id(&self, k: u64) -> Id {
-        Id::parse(&format!("batch-{}-{k}", self.epoch)).expect("epoch and step make an Id")
+        parse_id(&format!("batch-{}-{k}", self.epoch)).expect("epoch and step make an Id")
     }
 
     /// Phase A. Every agent sees the same environment interval and the same world boundary.
@@ -1219,14 +1214,19 @@ impl Coordinator {
                 // No audience input exists in the first synthetic composition.
                 pre_step_stimulations: Vec::<Stimulus>::new(),
             };
-            let params = match serde_json::to_value(&params).expect("params serialize") {
+            let params = match params.to_json() {
                 Value::Object(m) => m,
                 _ => Map::new(),
             };
             let request_id = self.serials.next(&slot.worker.service);
-            self.agents[index].prepare_request = Some(request_id);
+            self.agents[index].prepare_request = Some(request_id.clone());
             let slot = &self.agents[index];
-            bodies.push((slot.agent_id.clone(), slot.worker.clone(), params.clone(), request_id));
+            bodies.push((
+                slot.agent_id.clone(),
+                slot.worker.clone(),
+                params.clone(),
+                request_id.clone(),
+            ));
             jobs.push(Job {
                 agent_id: slot.agent_id.clone(),
                 worker: slot.worker.clone(),
@@ -1298,10 +1298,7 @@ impl Coordinator {
             let expected = prepared
                 .iter()
                 .find(|(id, _)| *id == target)
-                .map(|(_, decision)| match serde_json::to_value(decision).expect("serializes") {
-                    Value::Object(m) => m,
-                    _ => Map::new(),
-                });
+                .map(|(_, decision)| decision.to_json());
             if let Some((agent_id, worker, params, request_id)) =
                 bodies.into_iter().find(|(id, _, _, _)| *id == target)
             {
@@ -1412,16 +1409,17 @@ impl Coordinator {
         controls: &[PortControl],
     ) -> Outcome<StepResult> {
         let scope = self.scope(k);
-        let params = crate::types::AdvanceParams {
+        let params = AdvanceParams {
             batch_id: batch_id.clone(),
             controls: controls.to_vec(),
         };
-        let params = match serde_json::to_value(&params).expect("params serialize") {
+        let params = match params.to_json() {
             Value::Object(m) => m,
             _ => Map::new(),
         };
         let worker = self.environment.clone();
         let request_id = self.serials.next(&worker.service);
+        self.last_advance_request = Some(request_id.clone());
         let want = vec!["view.arena".to_owned()];
         self.audit.push(format!("advance:{k}"));
 
@@ -1436,12 +1434,14 @@ impl Coordinator {
                     &worker.service,
                     Some(&worker.bus_incarnation),
                     "Environment.Advance",
-                    crate::types::SessionRpcRequest::new(
-                        &request_id,
-                        Some(scope.clone()),
-                        params.clone(),
-                    )
-                    .to_payload(),
+                    object(
+                        SessionRpcRequest {
+                            request_id: request_id.clone(),
+                            scope: Some(scope.clone()),
+                            params: Value::Object(params.clone()),
+                        }
+                        .to_json(),
+                    ),
                     &[],
                 )
                 .await
@@ -1449,25 +1449,37 @@ impl Coordinator {
                     let error = DomainError::new(
                         ErrorCode::BackendFailure,
                         format!("Environment.Advance: bus {:?}", e.code),
-                        Mutation::Unknown,
+                        MutationCertainty::Unknown,
                     );
                     self.fail_now(error, "advance")
                 })?;
-            let state = pending.cancel().await.ok();
-            drop(pending);
-            self.injection_log.push(InjectionOutcome {
-                what: "lost-advance-result".to_owned(),
-                code: None,
-                identical: state == Some(flybus::CancelState::ExecutionUnknown)
-                    || state == Some(flybus::CancelState::Completed),
-            });
-            // A status probe first, exactly as the uncertain-call procedure says.
-            let status = self.status(&worker).await?;
+            // The loss has to happen *after* the world stepped, so the injection waits for
+            // the worker to report the operation before abandoning the call. A status probe
+            // is exactly what the uncertain-call procedure does first anyway.
+            let mut knows = false;
+            for _ in 0..500u32 {
+                let status = self.status(&worker).await?;
+                knows = status.last_batch_id.as_ref() == Some(batch_id)
+                    || status.active_request_id.as_ref() == Some(&request_id)
+                    || status.last_completed_request_id.as_ref() == Some(&request_id);
+                if knows {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
             self.injection_log.push(InjectionOutcome {
                 what: "status-after-loss".to_owned(),
                 code: None,
-                identical: status.last_batch_id.as_ref() == Some(batch_id)
-                    || status.active_request_id.as_ref() == Some(&request_id.id()),
+                identical: knows,
+            });
+            let state = pending.cancel().await.ok();
+            drop(pending);
+            // Cancellation after dispatch cannot undo the work: the execution outcome is
+            // uncertain, which is the case this injects.
+            self.injection_log.push(InjectionOutcome {
+                what: "lost-advance-result".to_owned(),
+                code: None,
+                identical: state != Some(flybus::CancelState::CancelledBeforeDispatch),
             });
             self.resolve(
                 &worker,
@@ -1475,7 +1487,7 @@ impl Coordinator {
                 Some(scope.clone()),
                 params.clone(),
                 Vec::new(),
-                request_id,
+                request_id.clone(),
                 &want,
             )
             .await?
@@ -1487,7 +1499,7 @@ impl Coordinator {
                 Some(scope.clone()),
                 params.clone(),
                 Vec::new(),
-                request_id,
+                request_id.clone(),
                 want.clone(),
             )
             .await;
@@ -1517,22 +1529,16 @@ impl Coordinator {
             {
                 button.down = !button.down;
             }
-            let altered_params = match serde_json::to_value(&crate::types::AdvanceParams {
-                batch_id: batch_id.clone(),
-                controls: altered,
-            })
-            .expect("params serialize")
-            {
-                Value::Object(m) => m,
-                _ => Map::new(),
-            };
+            let altered_params = object(
+                AdvanceParams { batch_id: batch_id.clone(), controls: altered }.to_json(),
+            );
             self.probe_duplicate(
                 &worker,
                 "Environment.Advance",
                 Some(scope.clone()),
                 altered_params,
                 Vec::new(),
-                request_id,
+                request_id.clone(),
                 None,
                 "altered-advance-controls",
             )
@@ -1554,7 +1560,7 @@ impl Coordinator {
                     Some(scope.clone()),
                     params.clone(),
                     Vec::new(),
-                    request_id,
+                    request_id.clone(),
                     &want,
                 )
                 .await?;
@@ -1591,7 +1597,7 @@ impl Coordinator {
                 "step-result",
             ));
         }
-        if result.applied_from_step.0 != k || result.next_step.0 != k + 1 {
+        if result.applied_from_step != k || result.next_step != k + 1 {
             return Err(self.fail_now(
                 DomainError::before(
                     ErrorCode::IdentityMismatch,
@@ -1609,7 +1615,7 @@ impl Coordinator {
                 "step-result",
             ));
         }
-        if result.observation.boundary.0 != k + 1 {
+        if result.observation.boundary != k + 1 {
             return Err(self.fail_now(
                 DomainError::before(ErrorCode::IdentityMismatch, "the observation is not k+1"),
                 "step-result",
@@ -1643,22 +1649,59 @@ impl Coordinator {
             ));
         }
         // A missing required sensory input is never silently replaced by an older frame.
-        if let Err(e) = result.observation.validate(descriptor) {
+        // The contract's validator checks the views that are present against their
+        // descriptors; requiring each declared view to be there at all is the coordinator's
+        // Phase C check, so it is made here.
+        for view in &descriptor.views {
+            let want = required_produced_step(view, result.observation.boundary);
+            let got = result
+                .observation
+                .sensory_views
+                .iter()
+                .find(|given| given.view_id == view.view_id);
+            match got {
+                Some(given) if given.produced_step == want => {}
+                Some(_) => {
+                    return Err(self.fail_now(
+                        DomainError::new(
+                            ErrorCode::BufferInvalid,
+                            format!(
+                                "view {} did not come from the boundary its declared delay requires",
+                                view.view_id
+                            ),
+                            MutationCertainty::Unknown,
+                        ),
+                        "step-result",
+                    ));
+                }
+                None => {
+                    return Err(self.fail_now(
+                        DomainError::new(
+                            ErrorCode::BufferInvalid,
+                            format!("required sensory view {} is missing", view.view_id),
+                            MutationCertainty::Unknown,
+                        ),
+                        "step-result",
+                    ));
+                }
+            }
+        }
+        if let Err(e) = result.observation.validate_against(descriptor) {
             return Err(self.fail_now(
-                DomainError::new(ErrorCode::BufferInvalid, e, Mutation::Unknown),
+                DomainError::new(ErrorCode::BufferInvalid, e, MutationCertainty::Unknown),
                 "step-result",
             ));
         }
         for view in &result.observation.sensory_views {
             let name = format!("view.{}", view.view_id);
             match self.pending_views.get(&name) {
-                Some(artifact) if artifact.reference() == &view.pixels.0 => {}
+                Some(artifact) if artifact.reference() == &view.pixels => {}
                 _ => {
                     return Err(self.fail_now(
                         DomainError::new(
                             ErrorCode::BufferInvalid,
                             format!("required view {} arrived without a live owned handle", view.view_id),
-                            Mutation::Unknown,
+                            MutationCertainty::Unknown,
                         ),
                         "step-result",
                     ));
@@ -1686,25 +1729,30 @@ impl Coordinator {
             let agent_id = self.agents[index].agent_id.clone();
             let prepared_request = self.agents[index]
                 .prepare_request
-                .expect("every agent prepared")
-                .id();
+                .clone()
+                .expect("every agent prepared");
             let outcome = outcomes.get(&agent_id).cloned().unwrap_or_default();
             let next_context = next_contexts.get(&agent_id).cloned().expect("checked");
             let params = CommitParams {
                 agent_id: agent_id.clone(),
-                prepared_request_id: prepared_request,
+                prepared_request_id: prepared_request.clone(),
                 next_input: self.sensory_input(observation, k + 1),
                 next_decision_context: next_context,
                 rewards: outcome.rewards.clone(),
                 task_stimulations: outcome.stimulations.clone(),
             };
-            let params = match serde_json::to_value(&params).expect("params serialize") {
+            let params = match params.to_json() {
                 Value::Object(m) => m,
                 _ => Map::new(),
             };
             let request_id = self.serials.next(&self.agents[index].worker.service);
             let worker = self.agents[index].worker.clone();
-            bodies.push((agent_id.clone(), worker.clone(), params.clone(), request_id));
+            bodies.push((
+                agent_id.clone(),
+                worker.clone(),
+                params.clone(),
+                request_id.clone(),
+            ));
             jobs.push(Job {
                 agent_id,
                 worker,
@@ -1715,6 +1763,13 @@ impl Coordinator {
                 request_id,
             });
         }
+        self.last_commit_requests = bodies
+            .iter()
+            .map(|(agent_id, _, _, request_id)| TraceRequest {
+                agent_id: agent_id.clone(),
+                request_id: request_id.clone(),
+            })
+            .collect();
         let results = self.run_jobs(jobs, self.dispatch).await;
         let mut commits = Vec::new();
         let mut first_failure = None;
@@ -1733,7 +1788,7 @@ impl Coordinator {
                         Ok(result) => result,
                         Err(e) => return Err(self.fail_now(e, method)),
                     };
-                    if result.committed_step.0 != k + 1 {
+                    if result.committed_step != k + 1 {
                         return Err(self.fail_now(
                             DomainError::before(
                                 ErrorCode::IdentityMismatch,
@@ -1786,10 +1841,7 @@ impl Coordinator {
             let expected = commits
                 .iter()
                 .find(|(id, _)| *id == target)
-                .map(|(_, result)| match serde_json::to_value(result).expect("serializes") {
-                    Value::Object(m) => m,
-                    _ => Map::new(),
-                });
+                .map(|(_, result)| result.to_json());
             if let Some((_, worker, params, request_id)) =
                 bodies.into_iter().find(|(id, _, _, _)| *id == target)
             {
@@ -1811,11 +1863,15 @@ impl Coordinator {
     }
 
     /// Records the `step-v1` section 8 trace for this transition.
+    /// Records the `step-v1` section 8 trace for this transition.
+    ///
+    /// Behaviour and operational metadata are separated by the contract type: the behaviour is
+    /// what a reordered run must reproduce exactly, and the request ids, batch correlation and
+    /// wall time are recorded beside it rather than inside it.
     #[allow(clippy::too_many_arguments)]
     fn record_trace(
         &mut self,
         k: u64,
-        _descriptor: &EnvironmentDescriptor,
         prepared: &[(Id, PreparedDecision)],
         commits: &[(Id, AgentCommitResult)],
         controls: &[PortControl],
@@ -1825,15 +1881,16 @@ impl Coordinator {
         event_ids: &[Id],
     ) {
         let mut agents = Vec::new();
+        let mut outcome_ids = Vec::new();
+        let mut prepare_request_ids = Vec::new();
         for (agent_id, decision) in prepared {
             let slot = self.agent(agent_id).expect("configured");
             let committed = commits
                 .iter()
                 .find(|(id, _)| id == agent_id)
                 .map(|(_, result)| result.committed_step)
-                .unwrap_or(U64(0));
-            let outcome = outcomes.get(agent_id).cloned().unwrap_or_default();
-            agents.push(AgentTransitionTrace {
+                .unwrap_or(0);
+            agents.push(TraceAgent {
                 agent_id: agent_id.clone(),
                 profile_digest: slot.profile.digest.clone(),
                 ticks_advanced: decision.ticks_advanced,
@@ -1841,43 +1898,53 @@ impl Coordinator {
                 remainder: decision.remainder,
                 decision_digest: decision.decision.digest(),
                 committed_step: committed,
-                rewards: outcome.rewards,
-                stimulations: outcome.stimulations,
-                prepare_request_id: slot
-                    .prepare_request
-                    .map(|r| r.id())
-                    .unwrap_or_else(|| Id::lit("req-0")),
-                commit_request_id: Id::parse(&format!(
-                    "req-{}",
-                    self.serials.highest(&slot.worker.service)
-                ))
-                .expect("a serial is an Id"),
             });
+            if let Some(request_id) = slot.prepare_request.clone() {
+                prepare_request_ids.push(TraceRequest { agent_id: agent_id.clone(), request_id });
+            }
+            // Outcome ids in task order: the reward events this agent was routed.
+            if let Some(outcome) = outcomes.get(agent_id) {
+                for reward in &outcome.rewards {
+                    outcome_ids.push(reward.event_id.clone());
+                }
+            }
         }
-        let observation_boundaries = result
+        let mut observation_boundaries: Vec<TraceObservation> = result
             .observation
             .sensory_views
             .iter()
-            .map(|view| ViewProvenance {
+            .map(|view| TraceObservation {
                 view_id: view.view_id.clone(),
                 produced_step: view.produced_step,
             })
             .collect();
-        self.trace.transition(TransitionTrace {
+        observation_boundaries.sort_by(|a, b| a.view_id.cmp(&b.view_id));
+        let behaviour = TraceBehaviour {
             scope: self.scope(k),
             agents,
-            controls_digest: controls_digest(controls),
+            batch_id: batch_id.clone(),
+            control_digest: controls_digest(controls),
             acknowledged_boundary: result.next_step,
             observation_boundaries,
-            task_event_ids: event_ids.to_vec(),
-            published_boundary: U64(k + 1),
-            batch_id: batch_id.clone(),
-            advance_request_id: Id::parse(&format!(
-                "req-{}",
-                self.serials.highest(&self.environment.service)
-            ))
-            .expect("a serial is an Id"),
-        });
+            outcome_ids,
+            event_ids: event_ids.to_vec(),
+            published_boundary: k + 1,
+        };
+        let operational = TraceOperational {
+            // Wall time is for pacing, health and presentation only.
+            wall_time_ns: u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+            prepare_request_ids,
+            advance_request_id: self
+                .last_advance_request
+                .clone()
+                .unwrap_or_else(|| DomainRequestId::from_serial(0)),
+            commit_request_ids: self.last_commit_requests.clone(),
+            // SESSION-01 does not record transport correlation ids; a safe retry changes them
+            // and nothing in the behaviour above.
+            bus_call_ids: Vec::new(),
+            delivery_ids: Vec::new(),
+        };
+        self.trace.transition(TransitionTrace { behaviour, operational });
     }
 
     // -----------------------------------------------------------------------------------
@@ -1899,7 +1966,7 @@ impl Coordinator {
                 let error = DomainError::new(
                     ErrorCode::BackendFailure,
                     format!("publishing {topic}: {}", e.message),
-                    Mutation::None,
+                    MutationCertainty::None,
                 );
                 Err(self.fail_now(error, "publish"))
             }
@@ -1916,7 +1983,7 @@ impl Coordinator {
                     "agentId": slot.agent_id.as_str(),
                     "portId": slot.port_id.as_str(),
                     "profileDigest": slot.profile.digest.as_str(),
-                    "tickDuration": serde_json::to_value(slot.tick_duration).expect("rational"),
+                    "tickDuration": slot.tick_duration.to_json(),
                     "warmupTicks": slot.warmup_ticks.to_string(),
                 })
             })
@@ -1926,8 +1993,8 @@ impl Coordinator {
             "revision": "1",
             "compositionDigest": self.composition_digest().as_str(),
             "schedulerId": "lockstep-v1",
-            "environment": serde_json::to_value(&descriptor).expect("descriptor"),
-            "taskSchema": serde_json::to_value(self.task.schema()).expect("schema"),
+            "environment": descriptor.to_json(),
+            "taskSchema": self.task.schema().to_json(),
             "agents": agents,
         });
         let topic = self.topics.descriptor.clone();
@@ -1952,10 +2019,10 @@ impl Coordinator {
                 slot.agent_id, slot.port_id, slot.profile.digest
             ));
         }
-        Digest::of(text.as_bytes())
+        digest_of_bytes(text.as_bytes())
     }
 
-    async fn publish_events(&mut self, source_step: u64, events: &[crate::types::TaskEvent]) -> Outcome<()> {
+    async fn publish_events(&mut self, source_step: u64, events: &[TaskEvent]) -> Outcome<()> {
         if events.is_empty() {
             return Ok(());
         }
@@ -1963,7 +2030,7 @@ impl Coordinator {
             "sessionId": self.session_id.as_str(),
             "epoch": self.epoch.as_str(),
             "sourceStep": source_step.to_string(),
-            "events": serde_json::to_value(events).expect("events"),
+            "events": Value::Array(events.iter().map(DomainType::to_json).collect()),
         });
         let topic = self.topics.events.clone();
         self.publish(&topic, match payload {
@@ -1999,12 +2066,12 @@ impl Coordinator {
                 let control = controls
                     .iter()
                     .find(|c| c.port_id == slot.port_id)
-                    .map(|c| serde_json::to_value(c).expect("control"));
+                    .map(|c| c.to_json());
                 json!({
                     "agentId": slot.agent_id.as_str(),
                     "selectedDecision": decisions
                         .get(&slot.agent_id)
-                        .map(|d| serde_json::to_value(d).expect("decision")),
+                        .map(|d| d.to_json()),
                     "appliedControls": control,
                     "committedStep": slot.committed_step.to_string(),
                 })
@@ -2013,14 +2080,14 @@ impl Coordinator {
         let payload = json!({
             "descriptorRevision": "1",
             "publisherIncarnation": self.bus.info().connection_id.clone(),
-            "scope": serde_json::to_value(self.scope(boundary)).expect("scope"),
+            "scope": self.scope(boundary).to_json(),
             "episodeId": self.episode_id.as_str(),
             "sequence": self.stats.publications.to_string(),
-            "worldTime": serde_json::to_value(observation.world_time).expect("rational"),
+            "worldTime": observation.world_time.to_json(),
             "agents": agents,
-            "progress": serde_json::to_value(self.task.progress()).expect("progress"),
+            "progress": self.task.progress().to_json(),
             "media": json!({
-                "views": serde_json::to_value(&observation.broadcast_views).expect("views"),
+                "views": Value::Array(observation.broadcast_views.iter().map(DomainType::to_json).collect()),
                 "audio": [],
             }),
             "eventIds": event_ids.iter().map(Id::as_str).collect::<Vec<_>>(),

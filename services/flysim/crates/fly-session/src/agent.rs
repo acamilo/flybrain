@@ -14,12 +14,9 @@ use serde_json::Value;
 use crate::clock::TickAccumulator;
 use crate::dedup::OpClass;
 use crate::task::{context_schema, decision_schema};
-use crate::types::{
-    AgentCommitResult, AgentInitializeParams, AgentInitializeResult, AgentTelemetry, AssetRef,
-    AxisValue, ButtonState, CommitParams, Digest, DomainError, DomainResult, ErrorCode, Id,
-    LearningTelemetry, MAX_EVENT_ARRAY, Mutation, PrepareParams, PreparedDecision, RateSample,
-    RationalNs, Role, Scope, SensoryInput, Stimulus, TypedValue, U64, WorkerState,
-};
+// `crate::types` is this crate's facade over the shared `fly-session-types` crate; the
+// glob keeps the contract's own names in sight instead of restating them.
+use crate::types::*;
 use crate::worker::{BoxFuture, HandlerCtx, HandlerReply, StatusCell, WorkerEndpoint};
 
 /// The fake numerical model: a seeded stream and a count of everything that mutated it.
@@ -114,8 +111,8 @@ impl FakeModel {
     /// names a neuron or a drive value.
     fn stimulate(&mut self, stimulus: &Stimulus) {
         let kind = u64::from_le_bytes({
-            let d = Digest::of(stimulus.kind_id.as_str().as_bytes());
-            let bytes = d.as_str().as_bytes();
+            let d = digest_of_bytes(stimulus.kind_id.as_bytes());
+            let bytes = d.as_bytes();
             let mut out = [0u8; 8];
             out.copy_from_slice(&bytes[..8]);
             out
@@ -170,16 +167,16 @@ impl FakeModel {
     fn telemetry(&self) -> AgentTelemetry {
         let draw = self.state >> 29;
         AgentTelemetry {
-            brain_ticks: U64(self.ticks),
+            brain_ticks: self.ticks,
             population_rate_hz: (draw % 1000) as f64 / 10.0,
             rates: vec![
-                RateSample { role_id: Id::lit("kc"), hz: (draw % 700) as f64 / 10.0 },
-                RateSample { role_id: Id::lit("mbon"), hz: (draw % 310) as f64 / 10.0 },
+                RateSample { role_id: id("kc"), hz: (draw % 700) as f64 / 10.0 },
+                RateSample { role_id: id("mbon"), hz: (draw % 310) as f64 / 10.0 },
             ],
             learning: LearningTelemetry {
                 enabled: self.learning_enabled,
-                updates: U64(self.learning_updates),
-                changed: U64(self.learning_changed),
+                updates: self.learning_updates,
+                changed: self.learning_changed,
                 signal: self.last_signal,
             },
         }
@@ -228,7 +225,7 @@ pub struct FakeAgentWorker {
     model: FakeModel,
     context: Option<TypedValue>,
     context_digest: Option<Digest>,
-    prepared: Option<(Id, PreparedDecision)>,
+    prepared: Option<(DomainRequestId, PreparedDecision)>,
 }
 
 impl FakeAgentWorker {
@@ -281,7 +278,7 @@ impl FakeAgentWorker {
         for view in &input.views {
             let name = format!("view.{}", view.view_id);
             let artifact = ctx.artifact(&name)?;
-            if artifact.reference() != &view.pixels.0 {
+            if artifact.reference() != &view.pixels {
                 return Err(DomainError::before(
                     ErrorCode::BufferInvalid,
                     format!("attachment {name} is not the artifact the payload names"),
@@ -293,7 +290,7 @@ impl FakeAgentWorker {
                     format!("view {} could not be read: {}", view.view_id, e.message),
                 )
             })?;
-            if bytes.len() as u64 != view.pixels.0.byte_length {
+            if bytes.len() as u64 != view.pixels.byte_length {
                 return Err(DomainError::before(
                     ErrorCode::BufferInvalid,
                     format!("view {} is the wrong length", view.view_id),
@@ -330,18 +327,15 @@ impl FakeAgentWorker {
 
     fn decision(&self, available: &[String]) -> TypedValue {
         let (inc, dec, bias) = self.model.readout(available);
-        let intent = crate::types::ControllerIntent {
+        let intent = ControllerIntent {
             buttons: vec![
-                ButtonState { id: Id::lit("inc"), down: inc },
-                ButtonState { id: Id::lit("dec"), down: dec },
+                ButtonState { id: id("inc"), down: inc },
+                ButtonState { id: id("dec"), down: dec },
             ],
-            axes: vec![AxisValue { id: Id::lit("bias"), value: bias }],
+            axes: vec![AxisValue { id: id("bias"), value: bias }],
         };
-        let value = match serde_json::to_value(&intent).expect("an intent serializes") {
-            Value::Object(m) => m,
-            _ => unreachable!(),
-        };
-        TypedValue::new(decision_schema(), value)
+        TypedValue::new(decision_schema(), intent.to_json())
+            .expect("a direct-control decision fits the contract")
     }
 
     async fn initialize(&mut self, ctx: &HandlerCtx<'_>) -> DomainResult<HandlerReply> {
@@ -353,7 +347,7 @@ impl FakeAgentWorker {
                  state interface",
             ));
         }
-        if scope.step.0 != 0 {
+        if scope.step != 0 {
             return Err(DomainError::before(
                 ErrorCode::FutureStep,
                 "Agent.Initialize uses the new epoch at step 0",
@@ -379,7 +373,7 @@ impl FakeAgentWorker {
         let available = FakeAgentWorker::available_actions(&params.initial_decision_context)?;
         // Everything is validated before the model is constructed.
         let encoded = self.encode(ctx, &params.initial_input).await?;
-        if params.initial_input.boundary.0 != 0 {
+        if params.initial_input.boundary != 0 {
             return Err(DomainError::invalid("the initial input must observe boundary 0"));
         }
 
@@ -390,7 +384,7 @@ impl FakeAgentWorker {
         // Warm-up runs with learning disabled and produces no gameplay reward or control.
         model.advance(self.config.warmup_ticks);
         accumulator.warm_up(self.config.warmup_ticks).map_err(|e| {
-            DomainError::new(ErrorCode::Internal, e, Mutation::Applied)
+            DomainError::new(ErrorCode::Internal, e, MutationCertainty::Applied)
         })?;
         // Calibration happens on settled rates, after warm-up. The readout is a pure read of
         // the model, so calibrating it mutates nothing.
@@ -412,8 +406,8 @@ impl FakeAgentWorker {
             agent_id: self.config.agent_id.clone(),
             profile_digest: params.profile.digest.clone(),
             tick_duration: self.config.tick_duration,
-            warmup_ticks: U64(self.config.warmup_ticks),
-            committed_step: U64(0),
+            warmup_ticks: self.config.warmup_ticks,
+            committed_step: 0,
             decision_context_digest: self.context_digest.clone().expect("just set"),
             telemetry: self.model.telemetry(),
         };
@@ -429,13 +423,13 @@ impl FakeAgentWorker {
                 format!("Agent.Prepare needs Ready(k); this worker is {:?}", self.phase),
             ));
         };
-        if scope.step.0 < k {
+        if scope.step < k {
             return Err(DomainError::before(
                 ErrorCode::StaleStep,
                 "Agent.Prepare names a step this worker has left",
             ));
         }
-        if scope.step.0 > k {
+        if scope.step > k {
             return Err(DomainError::before(
                 ErrorCode::FutureStep,
                 "Agent.Prepare names a step beyond this worker's committed boundary",
@@ -462,7 +456,7 @@ impl FakeAgentWorker {
             ));
         }
         params.interval.validate().map_err(DomainError::invalid)?;
-        if params.pre_step_stimulations.len() > MAX_EVENT_ARRAY {
+        if params.pre_step_stimulations.len() > MAX_STIMULI {
             return Err(DomainError::invalid("at most 64 pre-step stimulations"));
         }
         for stimulus in &params.pre_step_stimulations {
@@ -487,7 +481,7 @@ impl FakeAgentWorker {
         let ticks = {
             let accumulator = self.accumulator.as_mut().expect("initialized");
             accumulator.advance(&params.interval).map_err(|e| {
-                DomainError::new(ErrorCode::InvalidArgument, e, Mutation::Applied)
+                DomainError::new(ErrorCode::InvalidArgument, e, MutationCertainty::Applied)
             })?
         };
         self.model.advance(ticks);
@@ -499,7 +493,7 @@ impl FakeAgentWorker {
         };
         let prepared = PreparedDecision {
             agent_id: self.config.agent_id.clone(),
-            ticks_advanced: U64(ticks),
+            ticks_advanced: ticks,
             brain_ticks,
             remainder,
             decision,
@@ -520,9 +514,9 @@ impl FakeAgentWorker {
                 format!("Agent.Commit needs Prepared(k); this worker is {:?}", self.phase),
             ));
         };
-        if scope.step.0 != k {
+        if scope.step != k {
             return Err(DomainError::before(
-                if scope.step.0 < k { ErrorCode::StaleStep } else { ErrorCode::FutureStep },
+                if scope.step < k { ErrorCode::StaleStep } else { ErrorCode::FutureStep },
                 "Agent.Commit must carry the step of its transition, not the new boundary",
             ));
         }
@@ -540,12 +534,12 @@ impl FakeAgentWorker {
                 "Agent.Commit does not match this worker's Prepare request",
             ));
         }
-        if params.next_input.boundary.0 != k + 1 {
+        if params.next_input.boundary != k + 1 {
             return Err(DomainError::invalid(
                 "the next sensory input must observe boundary k+1",
             ));
         }
-        if params.rewards.len() > MAX_EVENT_ARRAY || params.task_stimulations.len() > MAX_EVENT_ARRAY
+        if params.rewards.len() > MAX_REWARDS || params.task_stimulations.len() > MAX_STIMULI
         {
             return Err(DomainError::invalid("at most 64 rewards and 64 stimulations"));
         }
@@ -579,7 +573,7 @@ impl FakeAgentWorker {
             return Err(DomainError::new(
                 ErrorCode::BackendFailure,
                 "injected commit failure after the next input was installed",
-                Mutation::Applied,
+                MutationCertainty::Applied,
             ));
         }
         // 2. apply task-derived stimulation in returned event order
@@ -598,12 +592,12 @@ impl FakeAgentWorker {
         self.prepared = None;
         self.phase = AgentPhase::Ready(k + 1);
         self.status.set_state(WorkerState::Ready);
-        self.status.set_scope(Some(Scope::new(&scope.session_id, &scope.epoch, k + 1)));
+        self.status.set_scope(Some(scope_at(&scope.session_id, &scope.epoch, k + 1)));
         self.status.advance_to(self.model.mutations());
 
         let result = AgentCommitResult {
             agent_id: self.config.agent_id.clone(),
-            committed_step: U64(k + 1),
+            committed_step: k + 1,
             decision_context_digest: self.context_digest.clone().expect("just set"),
             telemetry: self.model.telemetry(),
         };
@@ -634,7 +628,7 @@ impl WorkerEndpoint for FakeAgentWorker {
     }
 
     fn capabilities(&self) -> Vec<Id> {
-        vec![Id::lit("agent-step-v1"), Id::lit("pixel-observation-v1")]
+        vec![id("agent-step-v1"), id("pixel-observation-v1")]
     }
 
     fn status_cell(&self) -> StatusCell {
@@ -676,10 +670,10 @@ pub fn synthetic_profile(agent_id: &Id, tick_duration: &RationalNs, warmup_ticks
         tick_duration.numerator, tick_duration.denominator
     );
     AssetRef {
-        id: Id::lit("arena-direct-v1"),
-        digest: Digest::of(text.as_bytes()),
-        byte_length: U64(text.len() as u64),
-        format: Id::lit("fly-profile-v1"),
+        id: id("arena-direct-v1"),
+        digest: digest_of_bytes(text.as_bytes()),
+        byte_length: text.len() as u64,
+        format: id("fly-profile-v1"),
     }
 }
 

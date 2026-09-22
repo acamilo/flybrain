@@ -13,19 +13,16 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Map, Value};
 
 use crate::dedup::{Admission, CachedReply, OpClass, OperationKey, ResultCache};
-use crate::types::{
-    self as types, AcknowledgeParams, AcknowledgeResult, Digest, DomainError, DomainResult,
-    ErrorCode, HelloLimits, HelloParams, HelloResult, Id, Mutation, RequestId, Role,
-    SessionRpcFailure, SessionRpcOutcome, SessionRpcRequest, SessionRpcSuccess, ShutdownParams,
-    ShutdownResult, StatusResult, U64, WorkerState,
-};
+// `crate::types` is this crate's facade over the shared `fly-session-types` crate; the
+// glob keeps the contract's own names in sight instead of restating them.
+use crate::types::*;
 
 /// `Worker.Acknowledge` accepts 1..=16 request ids.
 pub const MAX_ACKNOWLEDGE_IDS: usize = 16;
 
 /// The build identity a worker reports in Hello. It is not a profile digest.
 pub fn build_digest() -> Digest {
-    Digest::of(b"fly-session/synthetic-workers-v1")
+    digest_of_bytes(b"fly-session/synthetic-workers-v1")
 }
 
 /// The status a worker reports, kept outside the endpoint mutex so `Worker.Status` stays
@@ -35,9 +32,9 @@ pub struct StatusCell(Arc<Mutex<StatusInner>>);
 
 struct StatusInner {
     state: WorkerState,
-    current_scope: Option<types::Scope>,
-    active_request_id: Option<Id>,
-    last_completed_request_id: Option<Id>,
+    current_scope: Option<Scope>,
+    active_request_id: Option<DomainRequestId>,
+    last_completed_request_id: Option<DomainRequestId>,
     last_batch_id: Option<Id>,
     progress_counter: u64,
 }
@@ -73,15 +70,15 @@ impl StatusCell {
         self.with(|s| s.state)
     }
 
-    pub fn set_scope(&self, scope: Option<types::Scope>) {
+    pub fn set_scope(&self, scope: Option<Scope>) {
         self.with(|s| s.current_scope = scope);
     }
 
-    pub fn set_active(&self, request_id: Option<Id>) {
+    pub fn set_active(&self, request_id: Option<DomainRequestId>) {
         self.with(|s| s.active_request_id = request_id);
     }
 
-    pub fn set_completed(&self, request_id: Id) {
+    pub fn set_completed(&self, request_id: DomainRequestId) {
         self.with(|s| {
             s.active_request_id = None;
             s.last_completed_request_id = Some(request_id);
@@ -114,7 +111,7 @@ impl StatusCell {
             active_request_id: s.active_request_id.clone(),
             last_completed_request_id: s.last_completed_request_id.clone(),
             last_batch_id: s.last_batch_id.clone(),
-            progress_counter: U64(s.progress_counter),
+            progress_counter: s.progress_counter,
         })
     }
 }
@@ -139,12 +136,9 @@ impl HandlerReply {
         HandlerReply { result, artifacts, mutated: true }
     }
 
-    pub fn from<T: serde::Serialize>(value: &T) -> HandlerReply {
-        let v = serde_json::to_value(value).expect("a result serializes");
-        match v {
-            Value::Object(m) => HandlerReply::new(m),
-            _ => unreachable!("a struct serializes to an object"),
-        }
+    /// The canonical JSON of one method result.
+    pub fn from<T: DomainType>(value: &T) -> HandlerReply {
+        HandlerReply::new(object(value.to_json()))
     }
 }
 
@@ -157,14 +151,17 @@ pub struct HandlerCtx<'a> {
 }
 
 impl HandlerCtx<'_> {
-    /// Deserializes `params` into a method payload, reporting INVALID_ARGUMENT.
-    pub fn params<T: serde::de::DeserializeOwned>(&self) -> DomainResult<T> {
-        serde_json::from_value(Value::Object(self.request.params.clone()))
+    /// Reads and validates `params` as a method payload, reporting INVALID_ARGUMENT.
+    ///
+    /// The contract crate does the reading, so a misspelled required field fails here rather
+    /// than silently defaulting.
+    pub fn params<T: DomainType>(&self) -> DomainResult<T> {
+        T::from_json(&self.request.params)
             .map_err(|e| DomainError::invalid(format!("{}: {e}", self.method)))
     }
 
     /// The scope the request must carry.
-    pub fn scope(&self) -> DomainResult<&types::Scope> {
+    pub fn scope(&self) -> DomainResult<&Scope> {
         self.request
             .scope
             .as_ref()
@@ -281,12 +278,14 @@ async fn run<E: WorkerEndpoint>(
     while let Some(incoming) = service.next().await {
         let method = incoming.method().to_owned();
         let responder = incoming.responder();
-        let request = match SessionRpcRequest::from_payload(incoming.payload()) {
+        let request = match SessionRpcRequest::from_json(&Value::Object(
+            incoming.payload().clone(),
+        )) {
             Ok(request) => request,
             Err(e) => {
                 // A malformed envelope has no usable requestId, so the reply names req-0.
                 let failure = failure(
-                    &Id::lit("req-0"),
+                    &DomainRequestId::from_serial(0),
                     &worker_id,
                     &incarnation_id,
                     None,
@@ -296,20 +295,8 @@ async fn run<E: WorkerEndpoint>(
                 continue;
             }
         };
-        let serial = match RequestId::parse(&request.request_id) {
-            Ok(serial) => serial,
-            Err(e) => {
-                let failure = failure(
-                    &request.request_id,
-                    &worker_id,
-                    &incarnation_id,
-                    request.scope.clone(),
-                    DomainError::invalid(e),
-                );
-                let _ = responder.reply(failure.to_outcome(), &[]).await;
-                continue;
-            }
-        };
+        // The contract type already validated the `req-<U64>` form when it read the envelope.
+        let serial = request.request_id.clone();
 
         // The common methods never enter the endpoint mutex, so they answer during a mutation.
         match method.as_str() {
@@ -326,7 +313,7 @@ async fn run<E: WorkerEndpoint>(
                 continue;
             }
             "Worker.Status" => {
-                let result = serde_json::to_value(status.snapshot()).expect("status serializes");
+                let result = status.snapshot().to_json();
                 let outcome = success(
                     &request,
                     &worker_id,
@@ -349,12 +336,10 @@ async fn run<E: WorkerEndpoint>(
             "Worker.Shutdown" => {
                 let outcome = match request.params.get("reason") {
                     Some(_) => {
-                        match serde_json::from_value::<ShutdownParams>(Value::Object(
-                            request.params.clone(),
-                        )) {
+                        match ShutdownParams::from_json(&request.params) {
                             Ok(_) => {
                                 status.set_state(WorkerState::Stopping);
-                                Ok(ShutdownResult { stopping: true })
+                                Ok(ShutdownResult)
                             }
                             Err(e) => Err(DomainError::invalid(format!("Worker.Shutdown: {e}"))),
                         }
@@ -363,7 +348,7 @@ async fn run<E: WorkerEndpoint>(
                 };
                 match outcome {
                     Ok(result) => {
-                        let value = serde_json::to_value(result).expect("shutdown serializes");
+                        let value = result.to_json();
                         let outcome =
                             success(&request, &worker_id, &incarnation_id, object(value));
                         let _ = responder.reply(outcome.to_outcome(), &[]).await;
@@ -402,12 +387,25 @@ async fn run<E: WorkerEndpoint>(
             continue;
         };
 
-        let body = request.body_digest(&method);
+        let body = match request.body_digest(&method) {
+            Ok(body) => body,
+            Err(e) => {
+                let outcome = failure(
+                    &request.request_id,
+                    &worker_id,
+                    &incarnation_id,
+                    request.scope.clone(),
+                    DomainError::invalid(format!("{method}: {e}")),
+                );
+                let _ = responder.reply(outcome.to_outcome(), &[]).await;
+                continue;
+            }
+        };
         let key = match (class, &request.scope) {
             (OpClass::StepMutation, Some(scope)) => OperationKey {
                 session_id: scope.session_id.clone(),
                 epoch: scope.epoch.clone(),
-                step: scope.step.0,
+                step: scope.step,
                 method: method.clone(),
                 worker_id: worker_id.clone(),
             },
@@ -424,7 +422,7 @@ async fn run<E: WorkerEndpoint>(
             }
             _ => OperationKey {
                 session_id: session_id.clone(),
-                epoch: Id::lit("lifecycle"),
+                epoch: id("lifecycle"),
                 step: 0,
                 method: method.clone(),
                 worker_id: worker_id.clone(),
@@ -436,7 +434,7 @@ async fn run<E: WorkerEndpoint>(
         // consumed and needs only the cached result.
         let admission = {
             let mut c = cache.lock().await;
-            c.admit(class, &key, serial, &body)
+            c.admit(class, &key, serial.clone(), &body)
         };
         match admission {
             Admission::Replay(reply) => {
@@ -495,7 +493,7 @@ async fn execute<E: WorkerEndpoint>(
     incarnation_id: Id,
     class: OpClass,
     key: OperationKey,
-    serial: RequestId,
+    serial: DomainRequestId,
     body: Digest,
     method: String,
     request: SessionRpcRequest,
@@ -541,19 +539,18 @@ async fn execute<E: WorkerEndpoint>(
             let _ = responder.reply(outcome.to_outcome(), &attachments).await;
         }
         Err(e) => {
-            if e.mutation == Mutation::None {
+            if e.mutation == MutationCertainty::None {
                 // Nothing happened, so the key stays free for the corrected request.
                 let mut c = cache.lock().await;
                 c.abandon(&key);
             } else {
-                let cached = CachedReply::new(SessionRpcOutcome::Failure(SessionRpcFailure {
-                    kind: types::FailureTag::Error,
-                    request_id: request.request_id.clone(),
-                    worker_id: worker_id.clone(),
-                    incarnation_id: incarnation_id.clone(),
-                    scope: request.scope.clone(),
-                    error: e.clone(),
-                }));
+                let cached = CachedReply::new(failure_outcome(
+                    &request.request_id,
+                    &worker_id,
+                    &incarnation_id,
+                    request.scope.clone(),
+                    e.clone(),
+                ));
                 let mut c = cache.lock().await;
                 if class == OpClass::StepMutation {
                     c.record(key, serial, body, cached);
@@ -600,31 +597,23 @@ fn success(
     incarnation_id: &Id,
     result: Map<String, Value>,
 ) -> SessionRpcOutcome {
-    SessionRpcOutcome::Success(SessionRpcSuccess {
-        kind: types::SuccessTag::Result,
-        request_id: request.request_id.clone(),
-        worker_id: worker_id.clone(),
-        incarnation_id: incarnation_id.clone(),
-        scope: request.scope.clone(),
+    success_outcome(
+        &request.request_id,
+        worker_id,
+        incarnation_id,
+        request.scope.clone(),
         result,
-    })
+    )
 }
 
 fn failure(
-    request_id: &Id,
+    request_id: &DomainRequestId,
     worker_id: &Id,
     incarnation_id: &Id,
-    scope: Option<types::Scope>,
+    scope: Option<Scope>,
     error: DomainError,
 ) -> SessionRpcOutcome {
-    SessionRpcOutcome::Failure(SessionRpcFailure {
-        kind: types::FailureTag::Error,
-        request_id: request_id.clone(),
-        worker_id: worker_id.clone(),
-        incarnation_id: incarnation_id.clone(),
-        scope,
-        error,
-    })
+    failure_outcome(request_id, worker_id, incarnation_id, scope, error)
 }
 
 fn hello(
@@ -635,8 +624,7 @@ fn hello(
     role: Role,
     capabilities: &[Id],
 ) -> SessionRpcOutcome {
-    let params: HelloParams =
-        match serde_json::from_value(Value::Object(request.params.clone())) {
+    let params: HelloParams = match HelloParams::from_json(&request.params) {
             Ok(params) => params,
             Err(e) => {
                 return failure(
@@ -682,21 +670,20 @@ fn hello(
         );
     }
     let result = HelloResult {
-        selected_major: 1,
-        selected_minor: 0,
         worker_id: worker_id.clone(),
         incarnation_id: incarnation_id.clone(),
         role,
         build_digest: build_digest(),
-        contract_digest: types::contract_digest(),
+        contract_digest: contract_digest(),
         capabilities: capabilities.to_vec(),
-        limits: HelloLimits { max_agents: types::MAX_AGENTS, max_ports: types::MAX_PORTS },
+        max_agents: MAX_AGENTS as u64,
+        max_ports: MAX_PORTS as u64,
     };
     success(
         request,
         worker_id,
         incarnation_id,
-        object(serde_json::to_value(result).expect("hello serializes")),
+        object(result.to_json()),
     )
 }
 
@@ -704,9 +691,8 @@ async fn acknowledge(
     request: &SessionRpcRequest,
     cache: &Arc<tokio::sync::Mutex<ResultCache>>,
 ) -> DomainResult<Map<String, Value>> {
-    let params: AcknowledgeParams =
-        serde_json::from_value(Value::Object(request.params.clone()))
-            .map_err(|e| DomainError::invalid(format!("Worker.Acknowledge: {e}")))?;
+    let params: AcknowledgeParams = AcknowledgeParams::from_json(&request.params)
+        .map_err(|e| DomainError::invalid(format!("Worker.Acknowledge: {e}")))?;
     if params.request_ids.is_empty() || params.request_ids.len() > MAX_ACKNOWLEDGE_IDS {
         return Err(DomainError::invalid("Worker.Acknowledge takes 1..=16 request ids"));
     }
@@ -715,5 +701,5 @@ async fn acknowledge(
         c.acknowledge(&params.request_ids)
     };
     let result = AcknowledgeResult { acknowledged };
-    Ok(object(serde_json::to_value(result).expect("acknowledge serializes")))
+    Ok(object(result.to_json()))
 }

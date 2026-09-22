@@ -11,7 +11,9 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::types::{Digest, DomainError, ErrorCode, Id, RequestId, SessionRpcOutcome};
+// `crate::types` is this crate's facade over the shared `fly-session-types` crate; the
+// glob keeps the contract's own names in sight instead of restating them.
+use crate::types::*;
 
 /// `ipc-v1` section 5: unacknowledged lifecycle replies are bounded at 16, then BUSY.
 pub const MAX_UNACKNOWLEDGED: usize = 16;
@@ -88,7 +90,7 @@ pub enum Admission {
 
 #[derive(Clone, Debug)]
 struct Record {
-    request_id: RequestId,
+    request_id: DomainRequestId,
     body: Digest,
     reply: CachedReply,
 }
@@ -96,10 +98,10 @@ struct Record {
 /// One worker's domain request cache.
 pub struct ResultCache {
     steps: BTreeMap<OperationKey, Record>,
-    active: BTreeMap<OperationKey, (RequestId, Digest)>,
-    lifecycle: BTreeMap<Id, Record>,
-    lifecycle_order: VecDeque<Id>,
-    readonly: VecDeque<(Id, CachedReply)>,
+    active: BTreeMap<OperationKey, (DomainRequestId, Digest)>,
+    lifecycle: BTreeMap<String, Record>,
+    lifecycle_order: VecDeque<String>,
+    readonly: VecDeque<(String, CachedReply)>,
     highest_serial: Option<u64>,
     step_watermark: Option<u64>,
     /// Serials retired by `Worker.Acknowledge`; reuse below this is refused without keeping a
@@ -132,7 +134,7 @@ impl ResultCache {
         &mut self,
         class: OpClass,
         key: &OperationKey,
-        request: RequestId,
+        request: DomainRequestId,
         body: &Digest,
     ) -> Admission {
         match class {
@@ -142,7 +144,7 @@ impl ResultCache {
         }
     }
 
-    fn admit_step(&mut self, key: &OperationKey, request: RequestId, body: &Digest) -> Admission {
+    fn admit_step(&mut self, key: &OperationKey, request: DomainRequestId, body: &Digest) -> Admission {
         if let Some(record) = self.steps.get(key) {
             if record.request_id == request && record.body == *body {
                 return Admission::Replay(record.reply.clone());
@@ -151,7 +153,7 @@ impl ResultCache {
                 ErrorCode::Conflict,
                 "this operation key already holds a different request or body",
                 // The earlier result stands; refusing the duplicate undoes nothing.
-                crate::types::Mutation::None,
+                MutationCertainty::None,
             ));
         }
         if !self.active.is_empty() && !self.active.contains_key(key) {
@@ -164,16 +166,17 @@ impl ResultCache {
         }
         if let Some((active_request, active_body)) = self.active.get(key) {
             if *active_request == request && *active_body == *body {
-                return Admission::Refuse(DomainError::new(
+                // The duplicate bus call started no work at all, so its certainty is none;
+                // it must not be mistaken for the original operation's failure.
+                return Admission::Refuse(DomainError::before(
                     ErrorCode::InProgress,
                     "the original operation is still executing; this duplicate started no work",
-                    crate::types::Mutation::Unknown,
                 ));
             }
             return Admission::Refuse(DomainError::new(
                 ErrorCode::Conflict,
                 "an operation with a different body is active for this key",
-                crate::types::Mutation::None,
+                MutationCertainty::None,
             ));
         }
         // No record and nothing active. Eviction must never re-enable execution, so a step
@@ -181,12 +184,12 @@ impl ResultCache {
         if let Some(watermark) = self.step_watermark
             && key.step + RETAINED_STEPS <= watermark
         {
-            let issued = self.highest_serial.is_some_and(|h| request.0 <= h);
+            let issued = self.highest_serial.is_some_and(|h| request.serial() <= h);
             return Admission::Refuse(if issued {
                 DomainError::new(
                     ErrorCode::ResultExpired,
                     "the retained result for this request is gone; it is never recomputed",
-                    crate::types::Mutation::Unknown,
+                    MutationCertainty::Unknown,
                 )
             } else {
                 DomainError::before(
@@ -196,20 +199,20 @@ impl ResultCache {
             });
         }
         if let Some(watermark) = self.acknowledged_watermark
-            && request.0 <= watermark
+            && request.serial() <= watermark
         {
             return Admission::Refuse(DomainError::new(
                 ErrorCode::ResultExpired,
                 "this request serial was acknowledged and cannot be reused",
-                crate::types::Mutation::Unknown,
+                MutationCertainty::Unknown,
             ));
         }
         self.begin(key.clone(), request, body.clone());
         Admission::Execute
     }
 
-    fn admit_lifecycle(&mut self, request: RequestId, body: &Digest) -> Admission {
-        let id = request.id();
+    fn admit_lifecycle(&mut self, request: DomainRequestId, body: &Digest) -> Admission {
+        let id = request.as_str().to_owned();
         if let Some(record) = self.lifecycle.get(&id) {
             if record.body == *body {
                 return Admission::Replay(record.reply.clone());
@@ -220,12 +223,12 @@ impl ResultCache {
             ));
         }
         if let Some(watermark) = self.acknowledged_watermark
-            && request.0 <= watermark
+            && request.serial() <= watermark
         {
             return Admission::Refuse(DomainError::new(
                 ErrorCode::ResultExpired,
                 "this request serial was acknowledged and cannot be reused",
-                crate::types::Mutation::Unknown,
+                MutationCertainty::Unknown,
             ));
         }
         if self.lifecycle.len() >= MAX_UNACKNOWLEDGED {
@@ -237,8 +240,8 @@ impl ResultCache {
         Admission::Execute
     }
 
-    fn begin(&mut self, key: OperationKey, request: RequestId, body: Digest) {
-        self.highest_serial = Some(self.highest_serial.map_or(request.0, |h| h.max(request.0)));
+    fn begin(&mut self, key: OperationKey, request: DomainRequestId, body: Digest) {
+        self.highest_serial = Some(self.highest_serial.map_or(request.serial(), |h| h.max(request.serial())));
         self.step_watermark = Some(self.step_watermark.map_or(key.step, |w| w.max(key.step)));
         self.active.insert(key, (request, body));
     }
@@ -247,7 +250,7 @@ impl ResultCache {
     pub fn record(
         &mut self,
         key: OperationKey,
-        request: RequestId,
+        request: DomainRequestId,
         body: Digest,
         reply: CachedReply,
     ) {
@@ -259,9 +262,9 @@ impl ResultCache {
     }
 
     /// Stores a lifecycle reply, retained until `Worker.Acknowledge`.
-    pub fn record_lifecycle(&mut self, request: RequestId, body: Digest, reply: CachedReply) {
-        let id = request.id();
-        self.highest_serial = Some(self.highest_serial.map_or(request.0, |h| h.max(request.0)));
+    pub fn record_lifecycle(&mut self, request: DomainRequestId, body: Digest, reply: CachedReply) {
+        let id = request.as_str().to_owned();
+        self.highest_serial = Some(self.highest_serial.map_or(request.serial(), |h| h.max(request.serial())));
         if self.lifecycle.insert(id.clone(), Record { request_id: request, body, reply }).is_none()
         {
             self.lifecycle_order.push_back(id);
@@ -269,8 +272,8 @@ impl ResultCache {
     }
 
     /// Stores a read-only reply in the last-16 cache.
-    pub fn record_readonly(&mut self, request: RequestId, reply: CachedReply) {
-        let id = request.id();
+    pub fn record_readonly(&mut self, request: DomainRequestId, reply: CachedReply) {
+        let id = request.as_str().to_owned();
         self.readonly.retain(|(existing, _)| *existing != id);
         self.readonly.push_back((id, reply));
         while self.readonly.len() > MAX_READONLY_REPLIES {
@@ -285,14 +288,14 @@ impl ResultCache {
 
     /// `Worker.Acknowledge`: drops those lifecycle records, ignoring unknown ids, and raises
     /// the serial watermark so an acknowledged id cannot be reused.
-    pub fn acknowledge(&mut self, ids: &[Id]) -> Vec<Id> {
+    pub fn acknowledge(&mut self, ids: &[DomainRequestId]) -> Vec<DomainRequestId> {
         let mut out = Vec::new();
         for id in ids {
-            if let Some(record) = self.lifecycle.remove(id) {
-                self.lifecycle_order.retain(|existing| existing != id);
+            if let Some(record) = self.lifecycle.remove(id.as_str()) {
+                self.lifecycle_order.retain(|existing| existing != id.as_str());
                 self.acknowledged_watermark = Some(
                     self.acknowledged_watermark
-                        .map_or(record.request_id.0, |w| w.max(record.request_id.0)),
+                        .map_or(record.request_id.serial(), |w| w.max(record.request_id.serial())),
                 );
                 out.push(id.clone());
             }
@@ -326,16 +329,17 @@ impl ResultCache {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::types::{Scope, SessionRpcSuccess, SuccessTag};
+    use serde_json::Value;
 
+    use super::*;
+    
     fn key(step: u64, method: &str) -> OperationKey {
         OperationKey {
-            session_id: Id::lit("demo"),
-            epoch: Id::lit("e1"),
+            session_id: id("demo"),
+            epoch: id("e1"),
             step,
             method: method.to_owned(),
-            worker_id: Id::lit("fly-a"),
+            worker_id: id("fly-a"),
         }
     }
 
@@ -343,26 +347,25 @@ mod tests {
         let mut result = serde_json::Map::new();
         result.insert("tag".into(), tag.into());
         CachedReply::new(SessionRpcOutcome::Success(SessionRpcSuccess {
-            kind: SuccessTag::Result,
-            request_id: Id::lit("req-1"),
-            worker_id: Id::lit("fly-a"),
-            incarnation_id: Id::lit("inc-1"),
-            scope: Some(Scope::new(&Id::lit("demo"), &Id::lit("e1"), 0)),
-            result,
+            request_id: DomainRequestId::from_serial(1),
+            worker_id: id("fly-a"),
+            incarnation_id: id("inc-1"),
+            scope: Some(scope_at("demo", "e1", 0)),
+            result: Value::Object(result),
         }))
     }
 
     fn body(s: &str) -> Digest {
-        Digest::of(s.as_bytes())
+        digest_of_bytes(s.as_bytes())
     }
 
     #[test]
     fn the_same_key_request_and_body_replays() {
         let mut c = ResultCache::new();
         let k = key(0, "Agent.Prepare");
-        assert!(matches!(c.admit(OpClass::StepMutation, &k, RequestId(1), &body("a")), Admission::Execute));
-        c.record(k.clone(), RequestId(1), body("a"), reply("first"));
-        match c.admit(OpClass::StepMutation, &k, RequestId(1), &body("a")) {
+        assert!(matches!(c.admit(OpClass::StepMutation, &k, DomainRequestId::from_serial(1), &body("a")), Admission::Execute));
+        c.record(k.clone(), DomainRequestId::from_serial(1), body("a"), reply("first"));
+        match c.admit(OpClass::StepMutation, &k, DomainRequestId::from_serial(1), &body("a")) {
             Admission::Replay(r) => {
                 assert_eq!(r.outcome.result().unwrap()["tag"], "first");
             }
@@ -374,9 +377,9 @@ mod tests {
     fn a_changed_body_for_a_recorded_key_is_a_conflict() {
         let mut c = ResultCache::new();
         let k = key(0, "Environment.Advance");
-        c.admit(OpClass::StepMutation, &k, RequestId(1), &body("a"));
-        c.record(k.clone(), RequestId(1), body("a"), reply("first"));
-        match c.admit(OpClass::StepMutation, &k, RequestId(1), &body("b")) {
+        c.admit(OpClass::StepMutation, &k, DomainRequestId::from_serial(1), &body("a"));
+        c.record(k.clone(), DomainRequestId::from_serial(1), body("a"), reply("first"));
+        match c.admit(OpClass::StepMutation, &k, DomainRequestId::from_serial(1), &body("b")) {
             Admission::Refuse(e) => assert_eq!(e.code, ErrorCode::Conflict),
             other => panic!("wanted CONFLICT, got {other:?}"),
         }
@@ -386,8 +389,8 @@ mod tests {
     fn a_duplicate_while_the_original_runs_is_in_progress() {
         let mut c = ResultCache::new();
         let k = key(0, "Agent.Prepare");
-        c.admit(OpClass::StepMutation, &k, RequestId(1), &body("a"));
-        match c.admit(OpClass::StepMutation, &k, RequestId(1), &body("a")) {
+        c.admit(OpClass::StepMutation, &k, DomainRequestId::from_serial(1), &body("a"));
+        match c.admit(OpClass::StepMutation, &k, DomainRequestId::from_serial(1), &body("a")) {
             Admission::Refuse(e) => assert_eq!(e.code, ErrorCode::InProgress),
             other => panic!("wanted IN_PROGRESS, got {other:?}"),
         }
@@ -398,17 +401,17 @@ mod tests {
         let mut c = ResultCache::new();
         for step in 0..4u64 {
             let k = key(step, "Agent.Prepare");
-            c.admit(OpClass::StepMutation, &k, RequestId(step + 1), &body("a"));
-            c.record(k, RequestId(step + 1), body("a"), reply("x"));
+            c.admit(OpClass::StepMutation, &k, DomainRequestId::from_serial(step + 1), &body("a"));
+            c.record(k, DomainRequestId::from_serial(step + 1), body("a"), reply("x"));
         }
         assert_eq!(c.retained_steps(), 2);
         // req-1 named step 0, whose record is long gone.
-        match c.admit(OpClass::StepMutation, &key(0, "Agent.Prepare"), RequestId(1), &body("a")) {
+        match c.admit(OpClass::StepMutation, &key(0, "Agent.Prepare"), DomainRequestId::from_serial(1), &body("a")) {
             Admission::Refuse(e) => assert_eq!(e.code, ErrorCode::ResultExpired),
             other => panic!("wanted RESULT_EXPIRED, got {other:?}"),
         }
         // A serial above the highest issued is a new operation naming an old step.
-        match c.admit(OpClass::StepMutation, &key(0, "Agent.Prepare"), RequestId(99), &body("a")) {
+        match c.admit(OpClass::StepMutation, &key(0, "Agent.Prepare"), DomainRequestId::from_serial(99), &body("a")) {
             Admission::Refuse(e) => assert_eq!(e.code, ErrorCode::StaleStep),
             other => panic!("wanted STALE_STEP, got {other:?}"),
         }
@@ -419,20 +422,23 @@ mod tests {
         let mut c = ResultCache::new();
         for serial in 1..=MAX_UNACKNOWLEDGED as u64 {
             assert!(matches!(
-                c.admit(OpClass::Lifecycle, &key(0, "Agent.Initialize"), RequestId(serial), &body("a")),
+                c.admit(OpClass::Lifecycle, &key(0, "Agent.Initialize"), DomainRequestId::from_serial(serial), &body("a")),
                 Admission::Execute
             ));
-            c.record_lifecycle(RequestId(serial), body("a"), reply("init"));
+            c.record_lifecycle(DomainRequestId::from_serial(serial), body("a"), reply("init"));
         }
-        match c.admit(OpClass::Lifecycle, &key(0, "Agent.Initialize"), RequestId(99), &body("a")) {
+        match c.admit(OpClass::Lifecycle, &key(0, "Agent.Initialize"), DomainRequestId::from_serial(99), &body("a")) {
             Admission::Refuse(e) => assert_eq!(e.code, ErrorCode::Busy),
             other => panic!("wanted BUSY, got {other:?}"),
         }
-        let dropped = c.acknowledge(&[Id::lit("req-1"), Id::lit("req-404")]);
-        assert_eq!(dropped, vec![Id::lit("req-1")]);
+        let dropped = c.acknowledge(&[
+            DomainRequestId::from_serial(1),
+            DomainRequestId::from_serial(404),
+        ]);
+        assert_eq!(dropped, vec![DomainRequestId::from_serial(1)]);
         assert_eq!(c.unacknowledged(), MAX_UNACKNOWLEDGED - 1);
         // The acknowledged serial cannot come back.
-        match c.admit(OpClass::Lifecycle, &key(0, "Agent.Initialize"), RequestId(1), &body("a")) {
+        match c.admit(OpClass::Lifecycle, &key(0, "Agent.Initialize"), DomainRequestId::from_serial(1), &body("a")) {
             Admission::Refuse(e) => assert_eq!(e.code, ErrorCode::ResultExpired),
             other => panic!("wanted RESULT_EXPIRED, got {other:?}"),
         }

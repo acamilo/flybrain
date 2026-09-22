@@ -8,6 +8,12 @@ sequential transaction of `step-v1`, driven over the Flybus router, with small f
 standing in for a brain and an emulator. It contains no public controller API, no implicit
 best-effort retry, no real emulator and no real brain.
 
+The domain scalars, method payloads, their validation, the canonical digests and the trace
+format all come from [`fly-session-types`](../fly-session-types), the CONTRACT-01 crate. This
+crate adds only what is not part of the type contract: a session-side error value, the
+synthetic composition's schema and event-id derivations, and the coordinator-local
+`ControllerIntent`, `PortBinding` and `AgentOutcome` that never cross the bus.
+
 ```text
 Ready(k) ─ Prepare all agents concurrently ────────────> every agent Prepared(k)
          ─ one executor per agent, sorted agent-id order
@@ -22,7 +28,7 @@ Ready(k) ─ Prepare all agents concurrently ───────────�
 
 | Module | Contents |
 | --- | --- |
-| `fly_session_types` | The CONTRACT-01 domain types, as a local stand-in until that crate exists |
+| `types` | A facade over the [`fly-session-types`](../fly-session-types) crate, plus the session-side additions a coordinator needs |
 | `clock` | The `step-v1` section 5 rational tick accumulator and the coordinator's pacing |
 | `phase` | The `step-v1` section 2 state machine as an explicit edge table |
 | `dedup` | The `ipc-v1` section 5 operation keys, result caches and retention |
@@ -97,6 +103,18 @@ harness.shutdown().await;
 - **Task.** Rewards are the counter delta of each agent's own port control, with deterministic
   event ids derived from epoch, source step, rule and ordinal.
 - **Executors.** The stateless identity executor only, as v1 specifies.
+
+## Where this crate narrows or adds to the contract crate
+
+- **Required views.** `WorldObservation::validate_against` checks the views a result carries
+  against their descriptors. Requiring every *declared* view to be there at all is the
+  coordinator's Phase C check, so `verify_step_result` makes it: a missing required sensory
+  view fails the transition with `BUFFER_INVALID` rather than being replaced by an older frame.
+- **`ControllerIntent`.** `workers-v1` section 4 calls the task and executor interfaces local
+  libraries, so their types live here rather than in the payload contract. An intent is a
+  `PortControl` without its port, and only the coordinator adds the port.
+- **The phase machine.** `step-v1` section 2 is this crate's, not the contract crate's; the
+  trace's phase path is recorded beside the contract's `TransitionTrace`.
 
 ## Limitations
 

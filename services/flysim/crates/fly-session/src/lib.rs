@@ -16,6 +16,9 @@
 //! the result caches of `ipc-v1` section 5 in front of every mutation. Nothing here contains a
 //! public controller API, an implicit best-effort retry, a real emulator or a real brain.
 //!
+//! The domain types come from the CONTRACT-01 crate [`fly_session_types`]; [`types`] is a
+//! facade over it plus the few session-side additions a coordinator needs.
+//!
 //! [`step-v1`]: https://example.invalid/step-v1
 
 pub mod agent;
@@ -29,10 +32,10 @@ pub mod rpc;
 pub mod task;
 pub mod worker;
 
-// CONTRACT-01 owns the domain types. Until its crate exists they live in this module under
-// the same names; swapping it for the crate is a change to these two lines.
-pub mod fly_session_types;
-pub use fly_session_types as types;
+// CONTRACT-01 owns the domain types; `types` is a facade over its crate plus the few
+// session-side additions a coordinator needs.
+pub mod types;
+pub use fly_session_types;
 
 pub use coordinator::{Coordinator, DispatchOrder, Injections, SessionFailure, StepReport};
 pub use phase::{Phase, PhaseMachine};

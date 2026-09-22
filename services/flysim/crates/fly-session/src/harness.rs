@@ -20,7 +20,9 @@ use crate::coordinator::{AgentSlot, Coordinator};
 use crate::environment::{CounterEnvironment, EnvironmentConfig, EnvironmentFaults};
 use crate::rpc::WorkerRef;
 use crate::task::{ActionExecutor, CounterTask, IdentityExecutor, Terminal};
-use crate::types::{Id, RationalNs};
+// `crate::types` is this crate's facade over the shared `fly-session-types` crate; the
+// glob keeps the contract's own names in sight instead of restating them.
+use crate::types::*;
 use crate::worker::{StatusCell, WorkerHandle, serve};
 
 /// Which transport the session runs over. Both must produce the same behaviour.
@@ -59,19 +61,19 @@ pub struct HarnessConfig {
 impl Default for HarnessConfig {
     fn default() -> HarnessConfig {
         HarnessConfig {
-            session_id: Id::lit("demo"),
-            epoch: Id::lit("e1"),
-            episode_id: Id::lit("ep1"),
+            session_id: id("demo"),
+            epoch: id("e1"),
+            episode_id: id("ep1"),
             agents: vec![
                 AgentSpec {
-                    agent_id: Id::lit("fly-a"),
-                    port_id: Id::lit("p1"),
+                    agent_id: id("fly-a"),
+                    port_id: id("p1"),
                     seed: 7,
                     faults: AgentFaults::default(),
                 },
                 AgentSpec {
-                    agent_id: Id::lit("fly-b"),
-                    port_id: Id::lit("p2"),
+                    agent_id: id("fly-b"),
+                    port_id: id("p2"),
                     seed: 11,
                     faults: AgentFaults::default(),
                 },
@@ -203,8 +205,8 @@ impl SessionHarness {
             listeners: Mutex::new(Vec::new()),
         };
 
-        let step_duration = RationalNs::from_hz(config.step_hz).expect("a positive cadence");
-        let tick_duration = RationalNs::from_millis(config.tick_ms).expect("a positive tick");
+        let step_duration = hz(config.step_hz).expect("a positive cadence");
+        let tick_duration = millis(config.tick_ms).expect("a positive tick");
 
         // The environment first: it owns the world and the descriptor.
         let env_client = connector.client(ENV_CLIENT).await?;
@@ -215,8 +217,8 @@ impl SessionHarness {
             env_service,
             CounterEnvironment::new(EnvironmentConfig {
                 session_id: config.session_id.clone(),
-                worker_id: Id::lit(ENV_WORKER),
-                incarnation_id: Id::lit("arena-inc-1"),
+                worker_id: id(ENV_WORKER),
+                incarnation_id: id("arena-inc-1"),
                 step_duration,
                 ports: config.agents.iter().map(|a| a.port_id.clone()).collect(),
                 faults: config.environment_faults.clone(),
@@ -236,7 +238,7 @@ impl SessionHarness {
                 FakeAgentWorker::new(AgentConfig {
                     session_id: config.session_id.clone(),
                     agent_id: spec.agent_id.clone(),
-                    incarnation_id: Id::parse(&format!("{}-inc-1", spec.agent_id))
+                    incarnation_id: parse_id(&format!("{}-inc-1", spec.agent_id))
                         .expect("an agent id plus a suffix is an Id"),
                     tick_duration,
                     warmup_ticks: config.warmup_ticks,
@@ -266,7 +268,7 @@ impl SessionHarness {
             config.session_id.clone(),
             config.epoch.clone(),
             config.episode_id.clone(),
-            WorkerRef::new(ENV_SERVICE, &env_incarnation, &Id::lit(ENV_WORKER)),
+            WorkerRef::new(ENV_SERVICE, &env_incarnation, &id(ENV_WORKER)),
             slots,
             Box::new(CounterTask::new(&config.epoch, config.terminal)),
             executors,
@@ -304,7 +306,7 @@ impl SessionHarness {
     /// The coordinator still pins the old registration, so its next call to that agent fails
     /// rather than silently reaching another brain.
     pub async fn restart_agent(&mut self, agent_id: &Id) -> Result<Restarted, flybus::BusError> {
-        let tick_duration = RationalNs::from_millis(self.config.tick_ms).expect("a positive tick");
+        let tick_duration = millis(self.config.tick_ms).expect("a positive tick");
         if let Some(old) = self.agents.remove(agent_id) {
             old.stop().await;
         }
@@ -328,7 +330,7 @@ impl SessionHarness {
             .expect("a configured agent")
             .clone();
         let incarnation_id =
-            Id::parse(&format!("{agent_id}-inc-2")).expect("an agent id plus a suffix is an Id");
+            parse_id(&format!("{agent_id}-inc-2")).expect("an agent id plus a suffix is an Id");
         let restarted = Restarted {
             service: service_name,
             service_incarnation: service.incarnation().to_owned(),

@@ -10,39 +10,37 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value, json};
 
-use crate::types::{
-    AgentOutcome, ControllerIntent, DomainError, DomainResult, EpisodeKind, EpisodeRequest,
-    ErrorCode, Id, PortBinding, PortControl, Reward, SchemaRef, Scope, Stimulus, TaskEvent,
-    TypedValue, U64, event_id,
-};
+// `crate::types` is this crate's facade over the shared `fly-session-types` crate; the
+// glob keeps the contract's own names in sight instead of restating them.
+use crate::types::*;
 
 /// The schemas the synthetic arena composition registers.
 pub fn inspection_schema() -> SchemaRef {
-    SchemaRef::synthetic("arena.inspection.v1", 1)
+    synthetic_schema("arena.inspection.v1", 1)
 }
 
 pub fn decision_schema() -> SchemaRef {
-    SchemaRef::synthetic("arena.decision.v1", 1)
+    synthetic_schema("arena.decision.v1", 1)
 }
 
 pub fn context_schema() -> SchemaRef {
-    SchemaRef::synthetic("arena.context.v1", 1)
+    synthetic_schema("arena.context.v1", 1)
 }
 
 pub fn progress_schema() -> SchemaRef {
-    SchemaRef::synthetic("arena.progress.v1", 1)
+    synthetic_schema("arena.progress.v1", 1)
 }
 
 pub fn event_schema() -> SchemaRef {
-    SchemaRef::synthetic("arena.event.v1", 1)
+    synthetic_schema("arena.event.v1", 1)
 }
 
 pub fn episode_schema() -> SchemaRef {
-    SchemaRef::synthetic("arena.episode.v1", 1)
+    synthetic_schema("arena.episode.v1", 1)
 }
 
 pub fn controller_schema_ref() -> SchemaRef {
-    SchemaRef::synthetic("arena.controller.v1", 1)
+    synthetic_schema("arena.controller.v1", 1)
 }
 
 /// What `Task.bootstrap` produced.
@@ -98,7 +96,7 @@ pub trait ActionExecutor: Send {
         decision: &TypedValue,
         current_game_state: &TypedValue,
         progress: &TypedValue,
-        clock: &crate::types::RationalNs,
+        clock: &RationalNs,
     ) -> DomainResult<(ControllerIntent, Vec<TaskEvent>)>;
 }
 
@@ -113,7 +111,7 @@ impl ActionExecutor for IdentityExecutor {
         decision: &TypedValue,
         _current_game_state: &TypedValue,
         _progress: &TypedValue,
-        _clock: &crate::types::RationalNs,
+        _clock: &RationalNs,
     ) -> DomainResult<(ControllerIntent, Vec<TaskEvent>)> {
         if decision.schema != decision_schema() {
             return Err(DomainError::before(
@@ -121,9 +119,8 @@ impl ActionExecutor for IdentityExecutor {
                 "the decision does not carry the profile's registered intent schema",
             ));
         }
-        let intent: ControllerIntent =
-            serde_json::from_value(Value::Object(decision.value.clone()))
-                .map_err(|e| DomainError::invalid(format!("decision: {e}")))?;
+        let intent = ControllerIntent::from_json(&decision.value)
+            .map_err(|e| DomainError::invalid(format!("decision: {e}")))?;
         Ok((intent, Vec::new()))
     }
 }
@@ -167,31 +164,21 @@ impl CounterTask {
     }
 
     fn context(&self, step: u64, boot: bool) -> TypedValue {
-        TypedValue::new(
-            context_schema(),
-            match json!({
+        TypedValue::new(context_schema(), json!({
                 "available": ["inc", "dec"],
                 "boot": boot,
                 "step": step,
-            }) {
-                Value::Object(m) => m,
-                _ => unreachable!(),
-            },
-        )
+            }))
+                .expect("a synthetic typed value fits the contract")
     }
 
     fn progress_value(&self) -> TypedValue {
-        TypedValue::new(
-            progress_schema(),
-            match json!({
+        TypedValue::new(progress_schema(), json!({
                 "counter": self.counter,
                 "transitions": self.transitions,
                 "totalReward": self.total_reward,
-            }) {
-                Value::Object(m) => m,
-                _ => unreachable!(),
-            },
-        )
+            }))
+                .expect("a synthetic typed value fits the contract")
     }
 
     /// The counter delta one port control asks for: `inc` adds one, `dec` subtracts one.
@@ -246,16 +233,11 @@ impl Task for CounterTask {
         // gameplay outcome at all.
         let events = vec![TaskEvent {
             id: event_id(&self.epoch, 0, "bootstrap", 0),
-            kind_id: Id::lit("arena.bootstrap"),
-            source_step: U64(0),
+            kind_id: id("arena.bootstrap"),
+            source_step: 0,
             agent_id: None,
-            payload: TypedValue::new(
-                event_schema(),
-                match json!({"counter": self.counter}) {
-                    Value::Object(m) => m,
-                    _ => unreachable!(),
-                },
-            ),
+            payload: TypedValue::new(event_schema(), json!({"counter": self.counter}))
+                    .expect("a synthetic typed value fits the contract"),
         }];
         Ok(Bootstrap { contexts, progress: self.progress_value(), events })
     }
@@ -269,7 +251,7 @@ impl Task for CounterTask {
     ) -> DomainResult<Evaluation> {
         let old = old_inspection.integer("counter").map_err(DomainError::invalid)?;
         let new = new_inspection.integer("counter").map_err(DomainError::invalid)?;
-        let source_step = scope.step.0 + 1;
+        let source_step = scope.step + 1;
         self.evaluations += 1;
         self.transitions += 1;
         self.counter = new;
@@ -290,20 +272,15 @@ impl Task for CounterTask {
                 ));
             };
             let delta = CounterTask::delta_of(control);
-            let id = event_id(&self.epoch, source_step, "counter-delta", ordinal);
+            let event = event_id(&self.epoch, source_step, "counter-delta", ordinal);
             ordinal += 1;
             events.push(TaskEvent {
-                id: id.clone(),
-                kind_id: Id::lit("arena.counter-delta"),
-                source_step: U64(source_step),
+                id: event.clone(),
+                kind_id: id("arena.counter-delta"),
+                source_step,
                 agent_id: Some(agent.clone()),
-                payload: TypedValue::new(
-                    event_schema(),
-                    match json!({"delta": delta, "counter": new}) {
-                        Value::Object(m) => m,
-                        _ => unreachable!(),
-                    },
-                ),
+                payload: TypedValue::new(event_schema(), json!({"delta": delta, "counter": new}))
+                        .expect("a synthetic typed value fits the contract"),
             });
             let outcome = outcomes.get_mut(&agent).ok_or_else(|| {
                 DomainError::before(
@@ -314,8 +291,8 @@ impl Task for CounterTask {
             // A shipped positive-only profile would reject a negative value; this task is
             // signed on purpose, so the profile that consumes it declares signed rewards.
             outcome.rewards.push(Reward {
-                event_id: id,
-                rule_id: Id::lit("counter-delta"),
+                event_id: event,
+                rule_id: id("counter-delta"),
                 value: delta as f64,
             });
             self.total_reward += delta as f64;
@@ -324,7 +301,7 @@ impl Task for CounterTask {
             if delta != 0 && new.rem_euclid(5) == 0 {
                 outcome.stimulations.push(Stimulus {
                     id: event_id(&self.epoch, source_step, "milestone", ordinal),
-                    kind_id: Id::lit("arena.milestone"),
+                    kind_id: id("arena.milestone"),
                     duration_ms: 4.0,
                 });
             }
@@ -333,7 +310,7 @@ impl Task for CounterTask {
             return Err(DomainError::new(
                 ErrorCode::BackendFailure,
                 "the world did not move by the batch the task read",
-                crate::types::Mutation::Unknown,
+                MutationCertainty::Unknown,
             ));
         }
 
@@ -347,16 +324,11 @@ impl Task for CounterTask {
             Terminal::Counter(target) => new >= target,
             Terminal::AfterTransitions(n) => self.transitions >= n,
         };
+        // The contract's `EpisodeRequest` is terminal by construction: `kind` is a constant.
         let episode = terminal.then(|| EpisodeRequest {
-            kind: EpisodeKind::Terminal,
-            reason: Id::lit("counter-target"),
-            outcome: TypedValue::new(
-                episode_schema(),
-                match json!({"counter": new, "transitions": self.transitions}) {
-                    Value::Object(m) => m,
-                    _ => unreachable!(),
-                },
-            ),
+            reason: id("counter-target"),
+            outcome: TypedValue::new(episode_schema(), json!({"counter": new, "transitions": self.transitions}))
+                    .expect("a synthetic typed value fits the contract"),
         });
         Ok(Evaluation {
             outcomes,
@@ -381,5 +353,6 @@ pub fn inspection(counter: i64, boundary: u64) -> TypedValue {
     let mut value = Map::new();
     value.insert("counter".into(), counter.into());
     value.insert("boundary".into(), boundary.into());
-    TypedValue::new(inspection_schema(), value)
+    TypedValue::new(inspection_schema(), Value::Object(value))
+        .expect("the arena inspection fits the contract")
 }

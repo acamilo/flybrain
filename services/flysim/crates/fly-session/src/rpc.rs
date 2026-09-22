@@ -1,4 +1,4 @@
-//! Domain RPC over Flybus: `req-<U64>` serials, incarnation pinning and the retry rule.
+//! Domain RPC over Flybus: `req-<u64>` serials, incarnation pinning and the retry rule.
 //!
 //! A domain retry keeps its `requestId` and body and takes a fresh bus `callId`. Nothing here
 //! retries on its own: an uncertain call is resolved by the caller, which is the coordinator.
@@ -7,9 +7,9 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};
 
-use crate::types::{
-    DomainError, ErrorCode, Id, Mutation, RequestId, SessionRpcOutcome, SessionRpcRequest, Scope,
-};
+// `crate::types` is this crate's facade over the shared `fly-session-types` crate; the
+// glob keeps the contract's own names in sight instead of restating them.
+use crate::types::*;
 
 /// A named worker endpoint, pinned to one bus registration and one domain incarnation.
 #[derive(Clone, Debug)]
@@ -36,20 +36,20 @@ impl WorkerRef {
 /// One terminal domain reply and the artifacts it brought.
 pub struct DomainReply {
     pub outcome: SessionRpcOutcome,
-    pub request_id: RequestId,
+    pub request_id: DomainRequestId,
     pub artifacts: BTreeMap<String, flybus::Artifact>,
 }
 
 impl DomainReply {
     /// The success `result`, or the domain error.
-    pub fn result(&self) -> Result<&Map<String, Value>, DomainError> {
-        self.outcome.result()
+    pub fn result(&self) -> Result<&Value, DomainError> {
+        outcome_result(&self.outcome)
     }
 
-    pub fn parse<T: serde::de::DeserializeOwned>(&self) -> Result<T, DomainError> {
-        let result = self.outcome.result()?;
-        serde_json::from_value(Value::Object(result.clone()))
-            .map_err(|e| DomainError::invalid(format!("unreadable result: {e}")))
+    /// Reads and validates the success `result` as a method payload.
+    pub fn parse<T: DomainType>(&self) -> Result<T, DomainError> {
+        let result = outcome_result(&self.outcome)?;
+        T::from_json(result).map_err(|e| DomainError::invalid(format!("unreadable result: {e}")))
     }
 }
 
@@ -66,22 +66,22 @@ pub async fn call(
     scope: Option<Scope>,
     params: Map<String, Value>,
     attachments: &[(&str, &flybus::Artifact)],
-    request_id: RequestId,
+    request_id: DomainRequestId,
     want_artifacts: &[String],
 ) -> Result<DomainReply, DomainError> {
-    let request = SessionRpcRequest::new(&request_id, scope, params);
+    let request = SessionRpcRequest { request_id: request_id.clone(), scope, params: Value::Object(params) };
     let mut pending = bus
         .call(
             &target.service,
             Some(&target.bus_incarnation),
             method,
-            request.to_payload(),
+            object(request.to_json()),
             attachments,
         )
         .await
         .map_err(|e| bus_error(method, &e))?;
     let result = pending.result().await.map_err(|e| bus_error(method, &e))?;
-    let outcome = SessionRpcOutcome::from_outcome(result.outcome())
+    let outcome = SessionRpcOutcome::from_json(&Value::Object(result.outcome().clone()))
         .map_err(|e| DomainError::invalid(format!("{method}: {e}")))?;
     let mut artifacts = BTreeMap::new();
     for name in want_artifacts {
@@ -105,8 +105,8 @@ pub async fn call(
 /// Maps a bus failure onto a domain error, preserving how certain the mutation is.
 fn bus_error(method: &str, e: &flybus::BusError) -> DomainError {
     let mutation = match e.dispatch {
-        flybus::Dispatch::NotDispatched => Mutation::None,
-        flybus::Dispatch::Dispatched | flybus::Dispatch::Unknown => Mutation::Unknown,
+        flybus::Dispatch::NotDispatched => MutationCertainty::None,
+        flybus::Dispatch::Dispatched | flybus::Dispatch::Unknown => MutationCertainty::Unknown,
     };
     let code = match e.code {
         flybus::ErrorCode::TargetChanged | flybus::ErrorCode::NoService => {
@@ -127,10 +127,10 @@ fn bus_error(method: &str, e: &flybus::BusError) -> DomainError {
 pub struct Serials(BTreeMap<String, u64>);
 
 impl Serials {
-    pub fn next(&mut self, service: &str) -> RequestId {
+    pub fn next(&mut self, service: &str) -> DomainRequestId {
         let slot = self.0.entry(service.to_owned()).or_insert(0);
         *slot += 1;
-        RequestId(*slot)
+        DomainRequestId::from_serial(*slot)
     }
 
     pub fn highest(&self, service: &str) -> u64 {

@@ -9,18 +9,14 @@ use std::collections::BTreeSet;
 use std::io::Write;
 
 use crate::task::{controller_schema_ref, inspection, inspection_schema};
-use crate::types::{
-    AdvanceParams, AxisRange, AxisSchema, ControllerSchema, Determinism, Digest, DomainError,
-    DomainResult, EnvironmentDescriptor, EnvironmentInitializeParams, EnvironmentInitializeResult,
-    ErrorCode, Id, MAX_PORTS, Mutation, PixelAspect, PortBinding, PortControl, PortDescriptor,
-    RationalNs, Recovery, Role, Scope, StepResult, U64, ViewDescriptor, ViewFormat, ViewRef,
-    WorkerState, WorldObservation, controls_digest,
-};
+// `crate::types` is this crate's facade over the shared `fly-session-types` crate; the
+// glob keeps the contract's own names in sight instead of restating them.
+use crate::types::*;
 use crate::worker::{BoxFuture, HandlerCtx, HandlerReply, StatusCell, WorkerEndpoint};
 
 /// The arena's view: a 4x4 RGBA8 tile whose bytes carry the counter.
-pub const VIEW_WIDTH: u32 = 4;
-pub const VIEW_HEIGHT: u32 = 4;
+pub const VIEW_WIDTH: u64 = 4;
+pub const VIEW_HEIGHT: u64 = 4;
 
 /// Deliberate faults a test can ask the environment for.
 #[derive(Clone, Debug, Default)]
@@ -68,7 +64,7 @@ impl CounterEnvironment {
             bindings: Vec::new(),
             boundary: 0,
             counter: 0,
-            world_time: RationalNs::zero(),
+            world_time: RationalNs::ZERO,
             advances: 0,
             batches: BTreeSet::new(),
             config,
@@ -96,9 +92,9 @@ impl CounterEnvironment {
     pub fn controller_schema() -> ControllerSchema {
         ControllerSchema {
             schema: controller_schema_ref(),
-            buttons: vec![Id::lit("inc"), Id::lit("dec")],
+            buttons: vec![id("inc"), id("dec")],
             axes: vec![AxisSchema {
-                id: Id::lit("bias"),
+                id: id("bias"),
                 range: AxisRange::Bipolar,
                 neutral: 0.0,
             }],
@@ -107,21 +103,21 @@ impl CounterEnvironment {
 
     pub fn view_descriptor() -> ViewDescriptor {
         ViewDescriptor {
-            view_id: Id::lit("arena"),
+            view_id: id("arena"),
             width: VIEW_WIDTH,
             height: VIEW_HEIGHT,
-            format: ViewFormat::Rgba8,
             row_stride: VIEW_WIDTH * 4,
-            pixel_aspect: PixelAspect { numerator: 1, denominator: 1 },
+            pixel_aspect_numerator: 1,
+            pixel_aspect_denominator: 1,
             observation_delay_steps: 0,
         }
     }
 
     fn build_descriptor(&self) -> DomainResult<EnvironmentDescriptor> {
         let descriptor = EnvironmentDescriptor {
-            backend_digest: Digest::of(b"counter-arena-backend-v1"),
-            content_digest: Digest::of(b"counter-arena-content-v1"),
-            configuration_digest: Digest::of(
+            backend_digest: digest_of_bytes(b"counter-arena-backend-v1"),
+            content_digest: digest_of_bytes(b"counter-arena-content-v1"),
+            configuration_digest: digest_of_bytes(
                 format!(
                     "counter-arena-config-v1\nstep={}/{}\nports={}\n",
                     self.config.step_duration.numerator,
@@ -166,7 +162,7 @@ impl CounterEnvironment {
                 DomainError::new(
                     ErrorCode::BackendFailure,
                     format!("frame allocation failed: {}", e.message),
-                    Mutation::Applied,
+                    MutationCertainty::Applied,
                 )
             })?;
         // Every pixel carries the counter's low byte, so an agent reading the frame reads the
@@ -178,20 +174,20 @@ impl CounterEnvironment {
                 DomainError::new(
                     ErrorCode::BackendFailure,
                     format!("frame write failed: {e}"),
-                    Mutation::Applied,
+                    MutationCertainty::Applied,
                 )
             })?;
         let artifact = writer.seal().await.map_err(|e| {
             DomainError::new(
                 ErrorCode::BackendFailure,
                 format!("frame seal failed: {}", e.message),
-                Mutation::Applied,
+                MutationCertainty::Applied,
             )
         })?;
         let view = ViewRef {
             view_id: descriptor.view_id.clone(),
-            produced_step: U64(descriptor.required_produced_step(self.boundary)),
-            pixels: crate::types::ArtifactRef(artifact.reference().clone()),
+            produced_step: descriptor.required_produced_step(self.boundary),
+            pixels: artifact.reference().clone(),
         };
         Ok((view, artifact))
     }
@@ -209,7 +205,7 @@ impl CounterEnvironment {
             (vec![view], vec![(name, artifact)])
         };
         let observation = WorldObservation {
-            boundary: U64(self.boundary),
+            boundary: self.boundary,
             world_time: self.world_time,
             engine_frame: Some(self.boundary.to_string()),
             sensory_views: views.clone(),
@@ -235,38 +231,42 @@ impl CounterEnvironment {
                 "this environment belongs to another session",
             ));
         }
-        if scope.step.0 != 0 {
+        if scope.step != 0 {
             return Err(DomainError::before(
                 ErrorCode::FutureStep,
                 "Environment.Initialize uses the new epoch at step 0",
             ));
         }
         let params: EnvironmentInitializeParams = ctx.params()?;
-        if params.port_bindings.len() > MAX_PORTS as usize {
+        if params.port_bindings.len() > MAX_PORTS {
             return Err(DomainError::invalid("at most 4 ports in the first composition"));
         }
         let mut seen = BTreeSet::new();
-        for binding in &params.port_bindings {
-            if !self.config.ports.contains(&binding.port_id) {
+        for (port_id, _agent_id) in &params.port_bindings {
+            if !self.config.ports.contains(port_id) {
                 return Err(DomainError::before(
                     ErrorCode::IdentityMismatch,
-                    format!("port {} is not a port of this arena", binding.port_id),
+                    format!("port {port_id} is not a port of this arena"),
                 ));
             }
-            if !seen.insert(binding.port_id.clone()) {
-                return Err(DomainError::invalid(format!(
-                    "port {} is bound twice",
-                    binding.port_id
-                )));
+            if !seen.insert(port_id.clone()) {
+                return Err(DomainError::invalid(format!("port {port_id} is bound twice")));
             }
         }
         let descriptor = self.build_descriptor()?;
         self.epoch = Some(scope.epoch.clone());
         self.episode_id = Some(params.episode_id.clone());
-        self.bindings = params.port_bindings.clone();
+        self.bindings = params
+            .port_bindings
+            .iter()
+            .map(|(port_id, agent_id)| PortBinding {
+                port_id: port_id.clone(),
+                agent_id: agent_id.clone(),
+            })
+            .collect();
         self.boundary = 0;
         self.counter = 0;
-        self.world_time = RationalNs::zero();
+        self.world_time = RationalNs::ZERO;
         self.batches.clear();
         self.descriptor = Some(descriptor.clone());
         // The world is stopped when O[0] goes out and cannot free-run while the brains boot.
@@ -304,9 +304,9 @@ impl CounterEnvironment {
                 ));
             }
         }
-        if scope.step.0 != self.boundary {
+        if scope.step != self.boundary {
             return Err(DomainError::before(
-                if scope.step.0 < self.boundary {
+                if scope.step < self.boundary {
                     ErrorCode::StaleStep
                 } else {
                     ErrorCode::FutureStep
@@ -337,11 +337,11 @@ impl CounterEnvironment {
         self.world_time = self
             .world_time
             .checked_add(&descriptor.step_duration)
-            .map_err(|e| DomainError::new(ErrorCode::Internal, e, Mutation::Applied))?;
+            .map_err(|e| DomainError::new(ErrorCode::Internal, e, MutationCertainty::Applied))?;
         self.advances += 1;
         self.batches.insert(params.batch_id.clone());
         self.status.set_batch(params.batch_id.clone());
-        self.status.set_scope(Some(Scope::new(
+        self.status.set_scope(Some(scope_at(
             &scope.session_id,
             &scope.epoch,
             self.boundary,
@@ -359,8 +359,8 @@ impl CounterEnvironment {
         // The record of batch id, result and next boundary exists before the acknowledgment.
         let result = StepResult {
             batch_id: params.batch_id,
-            applied_from_step: U64(applied_from),
-            next_step: U64(self.boundary),
+            applied_from_step: applied_from,
+            next_step: self.boundary,
             applied_controls_digest: digest,
             observation,
         };
@@ -415,9 +415,9 @@ impl WorkerEndpoint for CounterEnvironment {
 
     fn capabilities(&self) -> Vec<Id> {
         vec![
-            Id::lit("world-step-v1"),
-            Id::lit("pixel-observation-v1"),
-            Id::lit("checkpoint-v1"),
+            id("world-step-v1"),
+            id("pixel-observation-v1"),
+            id("checkpoint-v1"),
         ]
     }
 
@@ -444,11 +444,11 @@ impl WorkerEndpoint for CounterEnvironment {
 }
 
 /// A synthetic backend/task configuration asset for the arena.
-pub fn synthetic_asset(id: &str, body: &str) -> crate::types::AssetRef {
-    crate::types::AssetRef {
-        id: Id::lit(id),
-        digest: Digest::of(body.as_bytes()),
-        byte_length: U64(body.len() as u64),
-        format: Id::lit("fly-config-v1"),
+pub fn synthetic_asset(asset_id: &str, body: &str) -> AssetRef {
+    AssetRef {
+        id: id(asset_id),
+        digest: digest_of_bytes(body.as_bytes()),
+        byte_length: body.len() as u64,
+        format: id("fly-config-v1"),
     }
 }

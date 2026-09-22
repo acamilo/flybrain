@@ -11,7 +11,7 @@ use common::{Fixture, at, count, default_fixture, fixture, fly_a, fly_b, within}
 use fly_session::coordinator::DispatchOrder;
 use fly_session::harness::{AgentSpec, HarnessConfig, Via};
 use fly_session::phase::Phase;
-use fly_session::types::Id;
+use fly_session::types::*;
 use fly_session::agent::AgentFaults;
 
 both_transports!(
@@ -40,7 +40,7 @@ async fn one_world_advance_per_complete_batch(via: Via) {
     assert_eq!(f.harness.coordinator.stats().advances, STEPS);
     assert_eq!(f.harness.coordinator.phase(), Phase::Ready(STEPS));
     assert_eq!(
-        f.harness.coordinator.observation().unwrap().boundary.get(),
+        f.harness.coordinator.observation().unwrap().boundary,
         STEPS,
         "the world is at exactly one boundary per batch"
     );
@@ -135,12 +135,12 @@ async fn a_60_hz_world_with_a_1_ms_tick_runs_16_17_17(via: Via) {
         let ticks: Vec<u64> = transitions
             .iter()
             .map(|t| {
-                t.agents
+                t.behaviour
+                    .agents
                     .iter()
                     .find(|a| a.agent_id == agent)
                     .expect("the agent is in every transition")
                     .ticks_advanced
-                    .get()
             })
             .collect();
         assert_eq!(ticks, vec![16, 17, 17], "{agent} tick profile");
@@ -148,13 +148,14 @@ async fn a_60_hz_world_with_a_1_ms_tick_runs_16_17_17(via: Via) {
         let last = transitions
             .last()
             .unwrap()
+            .behaviour
             .agents
             .iter()
             .find(|a| a.agent_id == agent)
             .unwrap();
         assert!(last.remainder.is_zero(), "{agent} remainder after three steps");
         // Warm-up ticks are counted too, so brainTicks is warm-up plus the 50 gameplay ticks.
-        assert_eq!(last.brain_ticks.get(), 50 + f.harness.config.warmup_ticks);
+        assert_eq!(last.brain_ticks, 50 + f.harness.config.warmup_ticks);
     }
     f.shutdown().await;
 }
@@ -195,7 +196,7 @@ async fn a_pause_mid_step_completes_the_step_and_pauses_at_the_boundary(via: Via
     // A paused worker retains its state and answers Status; the world does not advance.
     let env = f.harness.coordinator.environment_ref().clone();
     let status = within("status", f.harness.coordinator.status(&env)).await.unwrap();
-    assert_eq!(status.current_scope.unwrap().step.get(), 2);
+    assert_eq!(status.current_scope.unwrap().step, 2);
     assert_eq!(f.harness.coordinator.stats().advances, 2);
 
     f.harness.coordinator.resume().unwrap();
@@ -213,14 +214,14 @@ async fn bootstrap_cannot_advance_the_world_or_produce_a_reward(via: Via) {
     within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     assert_eq!(f.harness.coordinator.phase(), Phase::Ready(0));
     let observation = f.harness.coordinator.observation().unwrap();
-    assert_eq!(observation.boundary.get(), 0);
+    assert_eq!(observation.boundary, 0);
     assert!(observation.world_time.is_zero());
     assert_eq!(f.harness.coordinator.stats().advances, 0);
     assert_eq!(f.harness.coordinator.evaluations(), 0);
     // The environment advanced nothing, so its status is still at boundary 0 with no batch.
     let env = f.harness.coordinator.environment_ref().clone();
     let status = within("status", f.harness.coordinator.status(&env)).await.unwrap();
-    assert_eq!(status.current_scope.as_ref().unwrap().step.get(), 0);
+    assert_eq!(status.current_scope.as_ref().unwrap().step, 0);
     assert!(status.last_batch_id.is_none(), "no batch was ever applied");
     // Warm-up did run, with learning disabled, so the models did mutate.
     for agent in [fly_a(), fly_b()] {
@@ -294,7 +295,7 @@ async fn a_terminal_episode_pauses_at_its_own_boundary(via: Via) {
     assert!(f.harness.coordinator.episode_request().is_some());
     // No worker resets itself, and no further gameplay transition is allowed.
     let err = f.harness.coordinator.step().await.expect_err("no transition after terminal");
-    assert_eq!(err.error.code, fly_session::types::ErrorCode::InvalidPhase);
+    assert_eq!(err.error.code, ErrorCode::InvalidPhase);
     f.shutdown().await;
 }
 
@@ -306,12 +307,12 @@ async fn status_answers_with_the_committed_boundary(via: Via) {
     for agent in [fly_a(), fly_b()] {
         let worker = f.harness.coordinator.agent_ref(&agent).cloned().unwrap();
         let status = within("status", f.harness.coordinator.status(&worker)).await.unwrap();
-        assert_eq!(status.state, fly_session::types::WorkerState::Ready);
-        assert_eq!(status.current_scope.unwrap().step.get(), 2);
-        let before = status.progress_counter.get();
+        assert_eq!(status.state, WorkerState::Ready);
+        assert_eq!(status.current_scope.unwrap().step, 2);
+        let before = status.progress_counter;
         // A status query is not progress.
         let again = within("status", f.harness.coordinator.status(&worker)).await.unwrap();
-        assert_eq!(again.progress_counter.get(), before);
+        assert_eq!(again.progress_counter, before);
     }
     f.shutdown().await;
 }
@@ -323,7 +324,7 @@ async fn a_worker_refuses_a_second_initialize(via: Via) {
     let err = within("second bootstrap", f.harness.coordinator.bootstrap())
         .await
         .expect_err("the environment is already initialized");
-    assert_eq!(err.error.code, fly_session::types::ErrorCode::InvalidPhase);
+    assert_eq!(err.error.code, ErrorCode::InvalidPhase);
     f.shutdown().await;
 }
 
@@ -356,8 +357,10 @@ async fn sequential_concurrent_and_reversed_orders_agree() {
             assert_eq!(behaviour.len(), 4);
             behaviours.insert(format!("{via:?}/{order:?}"), behaviour);
             // The operational metadata is recorded but is not part of the comparison.
-            let operational = f.harness.coordinator.trace.transitions[0].operational();
-            assert!(operational.iter().any(|(k, _)| k == "batchId"));
+            // The operational metadata is recorded beside the behaviour, not inside it.
+            let operational = &f.harness.coordinator.trace.transitions[0].operational;
+            assert_eq!(operational.prepare_request_ids.len(), 2);
+            assert_eq!(operational.commit_request_ids.len(), 2);
             f.shutdown().await;
         }
     }
@@ -377,8 +380,8 @@ async fn sequential_concurrent_and_reversed_orders_agree() {
 async fn a_single_agent_composition_runs_the_same_transaction() {
     let config = HarnessConfig {
         agents: vec![AgentSpec {
-            agent_id: Id::lit("fly-a"),
-            port_id: Id::lit("p1"),
+            agent_id: id("fly-a"),
+            port_id: id("p1"),
             seed: 7,
             faults: AgentFaults::default(),
         }],
@@ -394,7 +397,7 @@ async fn a_single_agent_composition_runs_the_same_transaction() {
         .trace
         .transitions
         .iter()
-        .map(|t| t.agents[0].ticks_advanced.get())
+        .map(|t| t.behaviour.agents[0].ticks_advanced)
         .collect();
     assert_eq!(ticks, vec![16, 17, 17]);
     f.shutdown().await;

@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use fly_session::harness::{HarnessConfig, SessionHarness, Via};
-use fly_session::types::Id;
+use fly_session::types::*;
 
 pub const WAIT: Duration = Duration::from_secs(20);
 
@@ -68,11 +68,11 @@ pub async fn default_fixture(via: Via) -> Fixture {
 }
 
 pub fn fly_a() -> Id {
-    Id::lit("fly-a")
+    id("fly-a")
 }
 
 pub fn fly_b() -> Id {
-    Id::lit("fly-b")
+    id("fly-b")
 }
 
 /// The index of an audit entry, or a panic naming what was missing.

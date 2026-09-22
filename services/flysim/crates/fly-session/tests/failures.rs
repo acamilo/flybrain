@@ -14,7 +14,7 @@ use fly_session::coordinator::Injections;
 use fly_session::environment::EnvironmentFaults;
 use fly_session::harness::{HarnessConfig, SessionHarness, Via};
 use fly_session::phase::Phase;
-use fly_session::types::{ErrorCode, Id};
+use fly_session::types::*;
 
 both_transports!(
     a_duplicate_prepare_after_a_lost_reply_repeats_nothing,
@@ -156,8 +156,11 @@ async fn a_lost_advance_result_resolves_the_same_operation(via: Via) {
     )
     .await;
     assert!(
-        injected.injections.iter().any(|o| o.what == "lost-advance-result"),
-        "the call was abandoned with an uncertain outcome"
+        injected
+            .injections
+            .iter()
+            .any(|o| o.what == "lost-advance-result" && o.identical),
+        "the call was abandoned after dispatch, with an uncertain outcome"
     );
     assert!(
         injected.injections.iter().any(|o| o.what == "status-after-loss" && o.identical),
@@ -202,7 +205,7 @@ async fn one_commit_failing_after_another_succeeds_fails_the_epoch(via: Via) {
         .await
         .expect_err("the epoch fails when one commit fails");
     assert_eq!(err.error.code, ErrorCode::BackendFailure);
-    assert_eq!(err.error.mutation, fly_session::types::Mutation::Applied);
+    assert_eq!(err.error.mutation, MutationCertainty::Applied);
     assert_eq!(f.harness.coordinator.phase(), Phase::Failed);
 
     // The world took the step whose commits failed, and it takes no further step.
@@ -210,12 +213,12 @@ async fn one_commit_failing_after_another_succeeds_fails_the_epoch(via: Via) {
     assert_eq!(advances, 1, "the failed transition never reached a committed boundary");
     let env = f.harness.coordinator.environment_ref().clone();
     let status = within("status", f.harness.coordinator.status(&env)).await.unwrap();
-    assert_eq!(status.current_scope.as_ref().unwrap().step.get(), 2);
+    assert_eq!(status.current_scope.as_ref().unwrap().step, 2);
     let again = f.harness.coordinator.step().await.expect_err("no step from Failed");
     assert_eq!(again.error.code, ErrorCode::InvalidPhase);
     let status = within("status", f.harness.coordinator.status(&env)).await.unwrap();
     assert_eq!(
-        status.current_scope.unwrap().step.get(),
+        status.current_scope.unwrap().step,
         2,
         "no world step follows a partial commit"
     );
@@ -223,10 +226,10 @@ async fn one_commit_failing_after_another_succeeds_fails_the_epoch(via: Via) {
     // The agent that succeeded is at the new boundary; the one that failed reports Failed.
     let a = f.harness.coordinator.agent_ref(&fly_a()).cloned().unwrap();
     let status = within("status", f.harness.coordinator.status(&a)).await.unwrap();
-    assert_eq!(status.current_scope.unwrap().step.get(), 2);
+    assert_eq!(status.current_scope.unwrap().step, 2);
     assert_eq!(
         f.harness.agent_status(&fly_b()).unwrap().state(),
-        fly_session::types::WorkerState::Failed
+        WorkerState::Failed
     );
     // Nothing was published for the boundary that failed to commit.
     let audit = f.harness.coordinator.audit.clone();
@@ -331,7 +334,7 @@ async fn an_exact_duplicate_of_a_running_operation_is_in_progress(via: Via) {
     );
     // And the original still completed: exactly one world step, at one boundary.
     assert_eq!(f.harness.coordinator.stats().advances, 1);
-    assert_eq!(f.harness.coordinator.observation().unwrap().boundary.get(), 1);
+    assert_eq!(f.harness.coordinator.observation().unwrap().boundary, 1);
     f.shutdown().await;
 }
 
@@ -348,16 +351,12 @@ async fn an_old_epoch_operation_is_refused_with_stale_epoch() {
     // The agent is live and initialized under epoch e1. An operation naming another epoch is
     // refused as stale rather than applied to this brain.
     let worker = harness.coordinator.agent_ref(&fly_a()).cloned().unwrap();
-    let scope = fly_session::types::Scope::new(
-        &Id::lit("demo"),
-        &Id::lit("e0"),
-        1,
-    );
+    let scope = scope_at("demo", "e0", 1);
     let params = serde_json::json!({
         "agentId": "fly-a",
-        "profileDigest": fly_session::types::Digest::of(b"whatever").to_string(),
+        "profileDigest": digest_of_bytes(b"whatever").to_string(),
         "interval": {"numerator": "16666667", "denominator": "1"},
-        "decisionContextDigest": fly_session::types::Digest::of(b"whatever").to_string(),
+        "decisionContextDigest": digest_of_bytes(b"whatever").to_string(),
         "preStepStimulations": [],
     });
     let bus = harness.client("coordinator2").await;
