@@ -197,8 +197,9 @@ fn checkpoint_envelope() -> String {
             "priorInspection": "prior-inspection",
             "executorState": [{"agentId": "fly-a", "payload": "executor-fly-a"}],
             "admissionState": null,
-            "eventWatermarks": {"lastEventId": "evt-1", "lastOrdinal": "7"},
+            "eventWatermarks": {"lastSourceStep": "42", "issued": "7"},
         },
+        "environment": {"workerId": "arena", "payload": "world"},
         "helperState": [],
         "payloads": payload_table(),
     });

@@ -133,7 +133,14 @@ pub fn arena_frame(descriptor: &ViewDescriptor, counter: i64, boundary: u64) -> 
 /// cannot be served an arbitrary stale image.
 pub struct ViewPipeline {
     descriptor: ViewDescriptor,
-    frames: VecDeque<(u64, flybus::Artifact)>,
+    /// Each retained frame: its producing boundary, the world counter it was rendered from
+    /// and the owned handle on its immutable bytes.
+    ///
+    /// The counter is kept because it is the whole of the reconstruction input: a checkpoint
+    /// records `(boundary, counter)` per retained frame and a restore re-renders them into
+    /// fresh artifacts of the current store, rather than persisting a transient artifact
+    /// identity that cannot survive a router restart.
+    frames: VecDeque<(u64, i64, flybus::Artifact)>,
     renders: RenderCounter,
 }
 
@@ -160,10 +167,54 @@ impl ViewPipeline {
         let bytes = arena_frame(&self.descriptor, counter, boundary);
         let artifact = seal(client, FRAME_CONTENT_TYPE, &bytes).await?;
         self.renders.bump();
-        self.frames.push_back((boundary, artifact));
+        self.frames.push_back((boundary, counter, artifact));
         // Keep exactly the frames a declared delay can still require.
         while self.frames.len() > self.descriptor.observation_delay_steps as usize + 1 {
             self.frames.pop_front();
+        }
+        Ok(())
+    }
+
+    /// The reconstruction inputs of every retained frame, oldest first.
+    ///
+    /// This is what a checkpoint records for the pending sensor pipeline: the producing
+    /// boundary and the world counter, never an artifact identity.
+    pub fn retained(&self) -> Vec<(u64, i64)> {
+        self.frames
+            .iter()
+            .map(|(boundary, counter, _)| (*boundary, *counter))
+            .collect()
+    }
+
+    /// Rebuilds the pipeline from recorded reconstruction inputs, into fresh artifacts.
+    ///
+    /// Every frame is rendered again in the current store, so nothing a fence dropped is
+    /// expected to come back and no old artifact identity crosses the recovery.
+    pub async fn restore(
+        &mut self,
+        client: &flybus::Client,
+        frames: &[(u64, i64)],
+    ) -> DomainResult<()> {
+        if frames.len() > self.descriptor.observation_delay_steps as usize + 1 {
+            return Err(media_error(format!(
+                "a captured pipeline of {} frames does not fit a declared delay of {}",
+                frames.len(),
+                self.descriptor.observation_delay_steps
+            )));
+        }
+        for window in frames.windows(2) {
+            if window[1].0 != window[0].0 + 1 {
+                return Err(media_error(
+                    "a captured pipeline's producing boundaries are not consecutive",
+                ));
+            }
+        }
+        self.frames.clear();
+        for (boundary, counter) in frames {
+            let bytes = arena_frame(&self.descriptor, *counter, *boundary);
+            let artifact = seal(client, FRAME_CONTENT_TYPE, &bytes).await?;
+            self.renders.bump();
+            self.frames.push_back((*boundary, *counter, artifact));
         }
         Ok(())
     }
@@ -181,7 +232,7 @@ impl ViewPipeline {
         bytes.truncate(bytes.len() - self.descriptor.row_stride as usize);
         let artifact = seal(client, FRAME_CONTENT_TYPE, &bytes).await?;
         self.renders.bump();
-        self.frames.push_back((boundary, artifact));
+        self.frames.push_back((boundary, counter, artifact));
         while self.frames.len() > self.descriptor.observation_delay_steps as usize + 2 {
             self.frames.pop_front();
         }
@@ -198,8 +249,8 @@ impl ViewPipeline {
     pub fn frame_produced_at(&self, produced: u64) -> Option<(ViewRef, flybus::Artifact)> {
         self.frames
             .iter()
-            .find(|(step, _)| *step == produced)
-            .map(|(step, artifact)| {
+            .find(|(step, _, _)| *step == produced)
+            .map(|(step, _, artifact)| {
                 (
                     ViewRef {
                         view_id: self.descriptor.view_id.clone(),
@@ -255,6 +306,52 @@ impl AudioSource {
         let mut source = AudioSource::new(descriptor, sample);
         source.discontinuous = true;
         source
+    }
+
+    /// The exact state a capture recorded: sample position, waveform phase and the
+    /// unconsumed fraction of a frame.
+    ///
+    /// Restoring the position alone would restart the waveform and round the remainder away,
+    /// which is a resample the restore rules refuse. The first chunk of the new epoch marks
+    /// the discontinuity the recovery established.
+    pub fn restored_from(
+        descriptor: AudioDescriptor,
+        next_sample: u64,
+        phase: u64,
+        accumulator: u128,
+        denominator: u128,
+    ) -> DomainResult<AudioSource> {
+        if denominator == 0 {
+            return Err(DomainError::invalid(
+                "audio: a captured accumulator denominator of zero",
+            ));
+        }
+        if accumulator >= denominator {
+            return Err(DomainError::invalid(
+                "audio: a captured accumulator is not below one whole frame",
+            ));
+        }
+        if phase >= descriptor.sample_rate {
+            return Err(DomainError::invalid(
+                "audio: a captured phase is not below the sample rate",
+            ));
+        }
+        let mut source = AudioSource::new(descriptor, next_sample);
+        source.discontinuous = true;
+        source.phase = phase;
+        source.accumulator = accumulator;
+        source.denominator = denominator;
+        Ok(source)
+    }
+
+    /// The waveform phase, for a capture.
+    pub fn phase(&self) -> u64 {
+        self.phase
+    }
+
+    /// The unconsumed fraction of a frame and the denominator it is over, for a capture.
+    pub fn accumulator(&self) -> (u128, u128) {
+        (self.accumulator, self.denominator)
     }
 
     pub fn descriptor(&self) -> &AudioDescriptor {
@@ -439,18 +536,47 @@ pub fn check_required_views(
     Ok(())
 }
 
-/// Every declared audio stream produces exactly one chunk per transition.
+/// Where an observation came from.
+///
+/// `state-media-v1` section 2 makes a chunk the audio of an *interval*, so whether an
+/// observation must carry one is a question about its provenance and not about its boundary
+/// number. MEDIA-01 wrote the rule as "boundary 0 carries no chunk", which is true of the one
+/// observation that slice could produce without a transition and false of the other one:
+/// `State.ActivateRestore` installs a coherent observation at boundary `k` without advancing
+/// gameplay, and it covers no interval either. Naming the provenance is the fix; exempting
+/// the restored observation from the validator instead would have left "must a chunk exist"
+/// unanswered exactly where a stale chunk would do the most damage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObservationOrigin {
+    /// The observation a completed transition produced. Its interval has audio.
+    Transition,
+    /// An observation established at a boundary without running a transition:
+    /// `Environment.Initialize`'s `O[0]` and `State.ActivateRestore`'s restored observation.
+    /// It covers no interval, so it carries no chunk and one in it is refused.
+    Installed,
+}
+
+/// Every declared audio stream produces exactly one chunk per transition, and none at all in
+/// an observation that is not one.
 ///
 /// The contract states the shape and the ordering of chunks, not whether one has to exist, so
 /// this is MEDIA-01's choice and it is deliberate: a session that tolerates a silently missing
 /// chunk cannot tell "this world produced no audio for this interval" from "the chunk was
-/// lost", and the second is the case the retention rules care about. Boundary 0 has no
-/// preceding interval and so carries no chunk.
+/// lost", and the second is the case the retention rules care about. The mirror of that, which
+/// STATE-01 needs, is that an installed observation carrying a chunk is a stale chunk being
+/// offered as current, and is refused for the same reason.
 pub fn check_required_audio(
     descriptor: &EnvironmentDescriptor,
     observation: &WorldObservation,
+    origin: ObservationOrigin,
 ) -> DomainResult<()> {
-    if observation.boundary == 0 {
+    if origin == ObservationOrigin::Installed {
+        if let Some(chunk) = observation.audio.first() {
+            return Err(media_error(format!(
+                "audio stream {} produced a chunk for an observation that ran no transition",
+                chunk.stream_id
+            )));
+        }
         return Ok(());
     }
     for stream in &descriptor.audio {

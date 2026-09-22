@@ -46,8 +46,10 @@ Worker options (agent and environment):
   agent:        --agent ID --port ID --tick-numerator N --tick-denominator N
                 --warmup-ticks N [--prepare-delay-ms N] [--commit-delay-ms N]
                 [--fail-commit-at-step N]
+                [--fail-stage-restore 0|1] [--fail-activate-restore 0|1]
   environment:  --worker ID --ports p1,p2 --step-numerator N --step-denominator N
                 [--advance-delay-ms N] [--omit-view-at-boundary N]
+                [--fail-stage-restore 0|1] [--fail-activate-restore 0|1]
 
 Measure options:
   --steps N            transitions per run (default 200)
@@ -145,6 +147,17 @@ impl Options {
         }
     }
 
+    /// A flag whose value is `0` or `1`. Anything else is an error naming it, so a
+    /// mistyped injection is a failed launch rather than a fault that never fires.
+    fn flag(&self, name: &str) -> Result<bool, String> {
+        match self.0.get(name) {
+            None => Ok(false),
+            Some(value) if value == "0" => Ok(false),
+            Some(value) if value == "1" => Ok(true),
+            Some(value) => Err(format!("--{name}: {value:?} is not 0 or 1")),
+        }
+    }
+
     fn opt_u64(&self, name: &str) -> Result<Option<u64>, String> {
         match self.0.get(name) {
             None => Ok(None),
@@ -197,6 +210,8 @@ fn serve(role: &str, options: &Options) -> Result<(), String> {
                 fail_commit_at_step: options.opt_u64(flags::FAIL_COMMIT_AT_STEP)?,
                 prepare_delay_ms: options.u64(flags::PREPARE_DELAY_MS, 0)?,
                 commit_delay_ms: options.u64(flags::COMMIT_DELAY_MS, 0)?,
+                fail_stage_restore: options.flag(flags::FAIL_STAGE_RESTORE)?,
+                fail_activate_restore: options.flag(flags::FAIL_ACTIVATE_RESTORE)?,
             },
             client_id: client_id.clone(),
             service: service.clone(),
@@ -219,6 +234,8 @@ fn serve(role: &str, options: &Options) -> Result<(), String> {
                 omit_audio_at_boundary: options.opt_u64(flags::OMIT_AUDIO_AT_BOUNDARY)?,
                 overlapping_audio_at_boundary: options
                     .opt_u64(flags::OVERLAPPING_AUDIO_AT_BOUNDARY)?,
+                fail_stage_restore: options.flag(flags::FAIL_STAGE_RESTORE)?,
+                fail_activate_restore: options.flag(flags::FAIL_ACTIVATE_RESTORE)?,
             },
             client_id: client_id.clone(),
             service: service.clone(),

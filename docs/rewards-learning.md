@@ -1,6 +1,6 @@
 # Rewards and learning
 
-The live reward catalog of the Pokémon Red adapter, `pokered-unique8-v5`. The code of record is
+The live reward catalog of the Pokémon Red adapter, `pokered-unique8-v6`. The code of record is
 `services/flysim/crates/flybrain-gb/src/pokemon_red/` (`catalog.rs` holds the values, `mod.rs` the
 gates and the rules); this page says what each rule pays for and why it is allowed to. The
 prototype's own `docs/rewards-learning.md` in `fly-plays-pokemon` is where the first seven rules
@@ -24,6 +24,7 @@ change what the fly can do.
 | `battle` | `wildwin` | +0.1, +0.05, +0.0333 | 100 ms | At most three observed wild KOs per `(map, species, level)` |
 | `badge` | `badge` | +3 | 400 ms | Each newly set badge bit |
 | `boundary` | `explore` | +0.05, +0.10 | 100 ms | First tile adjacent to one of the map's exits, and the exit tile itself; once per `(map, exit)` for the lifetime of the ledger |
+| `catch` | `wildwin` | +0.30, +0.10 | 150 ms | A wild Pokémon kept by a ball: +0.30 for a species this run had never owned, +0.10 for a repeat; at most three payouts per species for the lifetime of the ledger |
 
 Every value is positive: there are no loss or blackout penalties, and `catalog::rule("blackout")`
 is `None` by test. The values in one frame sum into `R`, and the network reinforces once with
@@ -32,6 +33,54 @@ is `None` by test. The values in one frame sum into `R`, and the network reinfor
 The feed-kind column is `RewardKind::from_adapter` in `services/flysim/crates/flysim/src/snapshot.rs`:
 `docs/feed-protocol.md` publishes seven counters, and an adapter kind that has no counter of its
 own shares the nearest one. It still reaches the page as an event with its own label.
+
+Two consequences of that sharing are worth stating rather than discovering. `catch` publishes on
+`wildwin` because a catch is a wild battle the fly won by keeping the Pokémon, and *not* on
+`pokedex` because the `species` rule already pays for the Pokédex bit the same catch sets --
+counting it twice would be the dishonest option. And the stage's ticker copy is keyed on the feed
+kind, not on the catalog kind (`apps/stage/src/games/pokemon-red.ts`), so the row for a catch
+currently reads "wild win". The event's own label, `CAUGHT #<species>`, is what reaches the event
+log, `/status` and the checkpoint. Changing the ticker copy means opening the feed's closed kind
+set, which this rule deliberately did not do.
+
+## Catch rewards
+
+The operator's decision of 2026-09-22: the fly is paid for *keeping* a wild Pokémon, not only for
+knocking one out. The rule is one kind with two payouts, the way `boundary` is.
+
+**How a catch is read.** From `wCapturedMonSpecies` (`$d11c`), whose comment in `ram/wram.asm` at
+the pinned commit is "0 if no mon was captured". `ItemUseBall` zeroes it before every throw
+(`.canUseBall`) and writes `wEnemyMonSpecies` into it only on the branch that keeps the Pokémon;
+`UseBagItem`'s `.returnAfterCapturingMon` zeroes it again and sets `wBattleResult` to 2 on the way
+out of the battle. `wBattleResult` is 2 on exactly two paths in the whole game -- that one, and a
+link battle whose opponent ran -- so requiring both the species and the result means a byte read
+out of a half-initialised battle cannot pay. The adapter records the species during the battle and
+pays on the way out, where the wild-KO payout already lives.
+
+Not from `wPartyCount`. A catch with a full party raises `wBoxCount` instead, and `wPartyCount`
+also rises for a gift, a trade and a Pokémon taken out of the PC, so it would need a second rule
+to mean anything. The cartridge's own flag needs none.
+
+**What counts as a new species.** The `species` payout inside the same battle. Nothing but a catch
+can set a `wPokedexOwned` bit during a wild battle, so a `species` payout between the battle
+starting and the ball keeping the Pokémon *is* that Pokémon being new to the run. It is read this
+way rather than off `wCapturedMonSpecies` because that byte is the cartridge's **internal** species
+index while the owned bitset is by **Pokédex number**, and nothing in WRAM converts between the two
+(`docs/design/macros-wram.md` section 2, "species numbering"). A battle restored from a checkpoint
+written before this rule existed carries no "species payouts when it started", which reads as
+"cannot tell" and pays the repeat amount: the conservative half, and at most 0.20 once.
+
+**The budget.** Three payouts per species for the lifetime of the ledger, the same cap and the
+same reason as the wild-KO rule's three: a species the fly can find over and over is a farm, and
+three is enough for the behaviour to be learned. A rollback blocks every species already paid,
+exactly as it blocks every wild-KO key already paid, so the same catch cannot be replayed for
+reward. A Safari Zone or old-man battle pays nothing, because the whole sample is dropped a step
+earlier with a visible mode; a trainer battle pays nothing, because balls cannot be thrown in one.
+
+**The scale.** 0.30 on its own is below a new Pokédex entry (0.50), below a story flag (1.0) and
+well below a badge (3.0). A catch of a new species pays 0.80 across two kinds, which sits between
+a story flag and a badge -- deliberately, because it is the one event that is both a discovery and
+a thing the fly had to do on purpose.
 
 ## Gates
 
@@ -128,7 +177,19 @@ body picks the macro; the descending neurons press the buttons.**
 
 ## Honesty
 
-The catalog now includes exits. That is worth saying plainly on the honesty panel, because paying
+The catalog now includes catches. The honesty panel's copy is not data-driven from the catalog --
+`apps/stage/src/lib/schedule.ts`'s rotating card is four written lines and lists no kinds -- so
+there was nothing to regenerate and the copy is unchanged. The sentences below are where the
+argument lives.
+
+Paying for a catch does not move the fly: the ball is thrown by a macro the mushroom body chose
+among the ones the battle scene put on the pad, and the payout is read out of WRAM after the
+frame. What it does do is make one of the palette's existing macros worth choosing, which is the
+same kind of pressure every other rule applies. The cap is what keeps it from becoming a farm: a
+run that finds one patch of grass and throws balls at the same species all night earns 0.50 from
+it and then nothing.
+
+The catalog also includes exits. That is worth saying plainly on the honesty panel, because paying
 for a door is closer to telling the fly where to go than paying for a badge is:
 
 - **still no button path.** Nothing in the adapter chooses or biases a button. The reward is read

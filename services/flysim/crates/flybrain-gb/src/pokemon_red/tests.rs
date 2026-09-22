@@ -83,6 +83,34 @@ impl Fixture {
         self.visit(x, 0)
     }
 
+    /// One wild battle that ends in a ball keeping the Pokémon, byte for byte as the
+    /// cartridge writes it at the pinned commit.
+    ///
+    /// `InitBattleVariables` clears `wBattleResult`; `ItemUseBall`'s capture branch sets the
+    /// Pokédex bit (for a species the player did not already own) and writes
+    /// `wEnemyMonSpecies` into `wCapturedMonSpecies`; `UseBagItem`'s
+    /// `.returnAfterCapturingMon` then zeroes that byte, sets `wBattleResult` to 2 and leaves
+    /// the battle. `dex` is the Pokédex *number* minus one, i.e. the bit index, and `None` is a
+    /// species this run already owns.
+    fn catch(&mut self, species: u8, dex: Option<u16>) -> Vec<RewardEvent> {
+        self.memory.set(ram::wBattleResult, 0);
+        self.memory.set(ram::wIsInBattle, 1);
+        self.memory.set(ram::wEnemyMonSpecies, species);
+        self.memory.set(ram::wEnemyMonHP + 1, 10);
+        self.memory.set(ram::wEnemyMonMaxHP + 1, 10);
+        let mut events = self.sample();
+        if let Some(index) = dex {
+            self.memory.or(ram::wPokedexOwned + (index >> 3), 1 << (index & 7));
+        }
+        self.memory.set(ram::wCapturedMonSpecies, species);
+        events.extend(self.sample());
+        self.memory.set(ram::wCapturedMonSpecies, 0);
+        self.memory.set(ram::wBattleResult, 2);
+        self.memory.set(ram::wIsInBattle, 0);
+        events.extend(self.sample());
+        events
+    }
+
     /// Write a warp table: `wNumberOfWarps` plus one four-byte `Y, X, warp id, map id` entry per
     /// `(x, y)`, the layout `ram/wram.asm` documents at the pinned commit.
     fn warps(&mut self, warps: &[(u8, u8)]) {
@@ -321,6 +349,136 @@ fn a_wild_run_capture_or_single_faint_never_pays_a_ko_while_a_verified_ko_does()
 }
 
 #[test]
+fn a_catch_pays_the_new_species_amount_once_the_repeat_amount_after_and_stops_at_three() {
+    let mut f = Fixture::new();
+    f.sample();
+
+    // A species this run has never owned: the cartridge sets the Pokédex bit on the way
+    // through, so the existing `species` rule pays 0.50 and the new rule pays 0.30.
+    let first = f.catch(0xb0, Some(3));
+    assert_eq!(kinds(&first), ["species", "catch"]);
+    assert_eq!(labels(&first), ["OWNED #4", "CAUGHT #176"]);
+    assert!((first[0].value - 0.5).abs() < 1e-12, "the species rule is untouched");
+    assert!((first[1].value - 0.30).abs() < 1e-12);
+
+    // The same species again: a repeat, twice, and then the cap.
+    for _ in 0..2 {
+        let again = f.catch(0xb0, None);
+        assert_eq!(kinds(&again), ["catch"]);
+        assert_eq!(again[0].value, 0.10, "the repeat amount is exactly 0.10, not 0.3/3");
+    }
+    assert!(f.catch(0xb0, None).is_empty(), "three payouts per species is the cap");
+    assert_eq!(f.reward.statistics().counts[kind::CATCH], 3);
+
+    // Another species starts its own count, and its own 0.30.
+    let other = f.catch(0x99, Some(0));
+    assert_eq!(kinds(&other), ["species", "catch"]);
+    assert!((other[1].value - 0.30).abs() < 1e-12);
+}
+
+#[test]
+fn a_catch_of_a_species_this_run_already_owns_pays_the_repeat_amount() {
+    let mut f = Fixture::new();
+    f.sample();
+    // Owned before the battle -- a gift, a trade, an evolution -- so no Pokédex bit is set
+    // during it and the catch is not a new species.
+    f.memory.or(ram::wPokedexOwned, 1);
+    assert_eq!(kinds(&f.sample()), ["species"]);
+
+    let events = f.catch(0x99, None);
+    assert_eq!(kinds(&events), ["catch"]);
+    assert_eq!(events[0].value, 0.10);
+}
+
+#[test]
+fn nothing_but_a_wild_catch_pays_the_catch_rule() {
+    // A trainer battle: balls cannot be thrown, and `wIsInBattle` is 2.
+    let mut f = Fixture::new();
+    f.sample();
+    f.memory.set(ram::wIsInBattle, 2);
+    f.memory.set(ram::wEnemyMonHP + 1, 10);
+    f.memory.set(ram::wEnemyMonMaxHP + 1, 10);
+    f.sample();
+    f.memory.set(ram::wCapturedMonSpecies, 0xb0);
+    f.sample();
+    f.memory.set(ram::wCapturedMonSpecies, 0);
+    f.memory.set(ram::wBattleResult, 2);
+    f.memory.set(ram::wIsInBattle, 0);
+    assert!(f.sample().is_empty(), "a trainer battle never pays the catch rule");
+
+    // The Safari Zone and the old man's tutorial are excluded a step earlier: the whole
+    // sample is dropped with a visible mode, so no battle is ever opened.
+    for battle_type in [1u8, 2] {
+        let mut f = Fixture::new();
+        f.sample();
+        f.memory.set(ram::wBattleType, battle_type);
+        f.memory.set(ram::wIsInBattle, 1);
+        assert!(f.sample().is_empty());
+        f.memory.set(ram::wCapturedMonSpecies, 0xb0);
+        assert!(f.sample().is_empty());
+        f.memory.set(ram::wCapturedMonSpecies, 0);
+        f.memory.set(ram::wBattleResult, 2);
+        f.memory.set(ram::wIsInBattle, 0);
+        f.memory.set(ram::wBattleType, 0);
+        assert!(f.sample().is_empty());
+        assert_eq!(f.reward.statistics().counts[kind::CATCH], 0);
+    }
+
+    // A ball that missed: `wCapturedMonSpecies` never leaves zero and the battle ends as a
+    // run or a loss.
+    let mut f = Fixture::new();
+    f.sample();
+    f.memory.set(ram::wIsInBattle, 1);
+    f.memory.set(ram::wEnemyMonHP + 1, 10);
+    f.memory.set(ram::wEnemyMonMaxHP + 1, 10);
+    f.sample();
+    f.memory.set(ram::wIsInBattle, 0);
+    assert!(f.sample().is_empty());
+}
+
+#[test]
+fn a_rollback_cannot_replay_a_catch() {
+    let mut f = Fixture::new();
+    f.sample();
+    assert_eq!(kinds(&f.catch(0xb0, Some(3))), ["species", "catch"]);
+
+    f.reward.clear_transient();
+    let state = f.reward.export_state();
+    f.reward.import_state(&state).unwrap();
+    assert!(f.catch(0xb0, None).is_empty(), "an already-paid species cannot pay after rollback");
+    assert_eq!(f.reward.statistics().counts[kind::CATCH], 1);
+}
+
+#[test]
+fn a_v5_state_restores_under_v6_with_the_catch_counter_at_zero() {
+    let mut f = Fixture::new();
+    f.sample();
+    f.catch(0xb0, Some(3));
+    let v6 = f.reward.export_state();
+    assert_eq!(v6["catchCounts"], json!({ "176": 1 }));
+
+    // The v5 shape is this one without the counter the rule added: same `version`, same field
+    // names, same meanings. That is the whole of the documented migration.
+    let mut v5 = v6.clone();
+    v5.as_object_mut().unwrap().remove("catchCounts");
+    assert_eq!(v5["version"], json!(STATE_VERSION), "v5 and v6 states share a schema version");
+
+    let mut restored = PokemonRedReward::new();
+    restored.import_state(&v5).unwrap();
+    let mut expected = v6.clone();
+    expected["catchCounts"] = json!({});
+    assert_eq!(restored.export_state(), expected, "the counter starts at 0, nothing else moves");
+
+    // A genuine v5 `counts` object carries eight kinds and no `catch`, which reads as zero.
+    let mut older = v5.clone();
+    older["counts"].as_object_mut().unwrap().remove("catch");
+    let mut restored = PokemonRedReward::new();
+    restored.import_state(&older).unwrap();
+    assert_eq!(restored.statistics().counts[kind::CATCH], 0);
+    assert_eq!(restored.statistics().counts[kind::SPECIES], 1);
+}
+
+#[test]
 fn a_repeated_wild_ko_decays_then_stops() {
     let mut f = Fixture::new();
     f.sample();
@@ -378,6 +536,7 @@ fn malformed_checkpoint_fields_are_named_in_the_error() {
         ("counts", json!([])),
         ("tileCounts", json!("not a record")),
         ("wildWins", json!(3)),
+        ("catchCounts", json!(3)),
     ] {
         let mut broken = good.clone();
         broken[field] = wrong;
@@ -706,7 +865,8 @@ fn the_recent_ticker_keeps_the_newest_eight_events_newest_first() {
 #[test]
 fn the_adapter_reports_its_identity_and_pinned_rom() {
     let reward = PokemonRedReward::new();
-    assert_eq!(reward.id(), "pokered-unique8-v5");
+    assert_eq!(reward.id(), "pokered-unique8-v6");
+    assert_eq!(reward.migrates_from(), ["pokered-unique8-v5"]);
     assert!(reward.rom_allowed(SUPPORTED_ROM));
     assert!(!reward.rom_allowed(
         "5ca7ba01642a3b27b0cc0b5349b52792795b62d3ed977e98a09390659af96b7b"
@@ -716,6 +876,9 @@ fn the_adapter_reports_its_identity_and_pinned_rom() {
     assert_eq!(symbols::ram::wNumberOfWarps, 0xd3ae);
     assert_eq!(symbols::ram::wWarpEntries, 0xd3af);
     assert_eq!(symbols::ram::wCurMapConnections, 0xd370);
+    // Resolved from ram/wram.asm by services/flysim/tools/resolve_wram.py, bracketed by
+    // wFontLoaded and wForcePlayerToChooseMon; never written out by hand.
+    assert_eq!(symbols::ram::wCapturedMonSpecies, 0xd11c);
     assert_eq!(symbols::MILESTONES.len(), 17);
 }
 

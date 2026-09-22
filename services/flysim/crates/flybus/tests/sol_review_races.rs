@@ -266,13 +266,14 @@ async fn pending_connections_are_bounded_and_hello_expires() {
     let router = Router::new(config).unwrap();
 
     let pending = router.connect_in_memory_as("first");
-    tokio::time::timeout(Duration::from_millis(20), async {
+    // Registration happens on the router's own task. How long that takes is this box's
+    // business; that it happens is the router's.
+    within("the pending connection occupies the only slot", async {
         while router.stats().connections != 1 {
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })
-    .await
-    .unwrap();
+    .await;
     assert_eq!(router.stats().connections, 1);
     let refused = Client::connect(
         router.connect_in_memory_as("second"),
@@ -280,7 +281,14 @@ async fn pending_connections_are_bounded_and_hello_expires() {
     )
     .await;
     assert_eq!(refused.unwrap_err().code, ErrorCode::RouterLost);
-    tokio::time::sleep(Duration::from_millis(80)).await;
+    // The 40 ms hello timeout expires on the router's clock: wait for the expiry to be
+    // observed rather than sleep past it and read the count once.
+    within("the pending Hello expires", async {
+        while router.stats().connections != 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await;
     assert_eq!(router.stats().connections, 0, "pending Hello timed out");
     drop(pending);
 

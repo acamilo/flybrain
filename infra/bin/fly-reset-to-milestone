@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# infra/bin/fly-reset-to-milestone — restart the run from an earlier ladder rung,
+# instead of from scratch.
+#
+# The operator's decision of 2026-09-22: "restart the live run from an early
+# checkpoint instead of from scratch". 05-deploy's FLY_RESET_STATE=1 cannot do
+# that — it archives the durable state and the next start warms up a fresh fly,
+# losing everything the brain has learned. This promotes one milestone archive
+# (milestone-<N>.checkpoint, written at the first commit at a new best rank and
+# never rotated away) to being what both stores restore.
+#
+# Usage: fly-reset-to-milestone <N>
+#   Run INSIDE the container, as root, with flysim STOPPED. It refuses
+#   otherwise, and it refuses a rung this run never reached.
+#
+# The whole sequence — stop, reset, deploy with the adapter opt-in, start,
+# verify the rank — is in infra/docs/runbook.md, "Restart the run from a rung".
+# Nothing here is destructive on its own: every file in both stores is copied to
+# a dated directory next to the durable one before anything is rewritten.
+set -euo pipefail
+
+: "${FLY_STATE_DIR:=/srv/fly/state}"
+: "${FLY_STATE_HOT_DIR:=/run/fly/state}"
+: "${FLY_RELEASE_DIR:=/opt/fly/current}"
+: "${FLY_SERVICE:=flysim.service}"
+: "${FLY_USER:=fly}"
+
+FLYSIM="${FLY_BIN:-${FLY_RELEASE_DIR}/flysim}"
+
+log() { echo "fly-reset-to-milestone: $*" >&2; }
+die() { log "$*"; exit 1; }
+
+RANK="${1:-}"
+if [ "$#" -ne 1 ] || ! [[ "$RANK" =~ ^[0-9]+$ ]]; then
+    die "usage: fly-reset-to-milestone <rung>   (e.g. fly-reset-to-milestone 9)"
+fi
+
+# --- refusals ----------------------------------------------------------------
+# A running flysim owns both stores: it commits a hot checkpoint every few
+# seconds and a durable one every few minutes, so a reset underneath it would be
+# overwritten within the minute and the tool would have lied.
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$FLY_SERVICE"; then
+    die "$FLY_SERVICE is running. Stop it first: systemctl stop $FLY_SERVICE"
+fi
+[ -x "$FLYSIM" ] || die "no flysim binary at $FLYSIM (set FLY_BIN to point at one)"
+
+milestone="${FLY_STATE_DIR}/milestone-${RANK}.checkpoint"
+# The binary refuses this too, and refuses before it copies anything; checking
+# here as well is what makes the message name the rungs that do exist.
+if [ ! -f "$milestone" ]; then
+    log "no milestone archive for rung ${RANK}: $milestone does not exist."
+    log "rungs this run reached:"
+    ls -1 "${FLY_STATE_DIR}"/milestone-*.checkpoint 2>/dev/null \
+        | sed 's|.*/milestone-||; s|\.checkpoint$||' | sort -n | tr '\n' ' ' >&2 || true
+    echo >&2
+    exit 1
+fi
+
+# --- the reset ---------------------------------------------------------------
+log "resetting to rung ${RANK} (durable ${FLY_STATE_DIR}, hot ${FLY_STATE_HOT_DIR})"
+FLY_STATE="$FLY_STATE_DIR" FLY_STATE_HOT="$FLY_STATE_HOT_DIR" \
+    "$FLYSIM" --reset-to-milestone "$RANK"
+
+# flysim runs unprivileged; this tool runs as root, so everything it wrote and
+# everything it archived has to go back to the service account.
+if command -v chown >/dev/null 2>&1 && id "$FLY_USER" >/dev/null 2>&1; then
+    chown -R "${FLY_USER}:${FLY_USER}" "$FLY_STATE_DIR" "$FLY_STATE_HOT_DIR" 2>/dev/null || true
+    for dir in "${FLY_STATE_DIR}".reset-*; do
+        [ -d "$dir" ] && chown -R "${FLY_USER}:${FLY_USER}" "$dir"
+    done
+fi
+
+log "done. Next, per infra/docs/runbook.md:"
+log "  1. deploy the build whose adapter wrote that checkpoint, or deploy the new"
+log "     one with FLY_ACCEPT_ADAPTERS set to the checkpoint's adapter id"
+log "  2. systemctl start $FLY_SERVICE"
+log "  3. curl -s localhost:7401/status | grep -o '\"rank\":[0-9]*'"

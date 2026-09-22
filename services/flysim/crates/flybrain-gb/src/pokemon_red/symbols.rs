@@ -47,6 +47,7 @@ pub mod ram {
     pub const wBattleType: u16 = 0xd05a;                  // 53338
     pub const wTrainerNo: u16 = 0xd05d;                   // 53341
     pub const wPartyMenuTypeOrMessageID: u16 = 0xd07d;    // 53373
+    pub const wCapturedMonSpecies: u16 = 0xd11c;          // 53532
     pub const wForcePlayerToChooseMon: u16 = 0xd11f;      // 53535
     pub const wTextBoxID: u16 = 0xd125;                   // 53541
     pub const wPartyCount: u16 = 0xd163;                  // 53603
