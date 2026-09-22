@@ -633,6 +633,38 @@ async fn the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_kil
         "only the first instance may warm up; the second must restore:\n{log}"
     );
 
+    // The CHAT panel came back with the service. The ring is session state in a sidecar beside
+    // the hot checkpoints, never a chunk in the envelope: the durable store holds no copy of it,
+    // and the checkpoint this restore just read carries no chat text.
+    let resumed_chat = resumed
+        .chat
+        .as_ref()
+        .expect("chat is enabled, so the header carries a ring");
+    let restored_line = resumed_chat
+        .iter()
+        .find(|line| line.id == chat_event_id)
+        .unwrap_or_else(|| panic!("the chat ring did not survive the restart: {resumed_chat:?}"));
+    assert_eq!(restored_line.by, "integration_test");
+    assert_eq!(restored_line.text, "go LEFT!");
+    assert!(
+        resumed_chat.iter().any(|line| line.bot == Some(true)),
+        "the bot's line came back too: {resumed_chat:?}"
+    );
+    assert!(
+        dir.path().join("hot/chat-ring.json").is_file(),
+        "the sidecar lives beside the hot checkpoints"
+    );
+    assert!(
+        !dir.path().join("state/chat-ring.json").exists(),
+        "the durable store carries no chat"
+    );
+    let envelope =
+        std::fs::read(dir.path().join(format!("state/{generation}.checkpoint"))).unwrap();
+    assert!(
+        !envelope.windows(8).any(|window| window == b"go LEFT!"),
+        "chat text must never enter the checkpoint envelope"
+    );
+
     // -- 6. SIGTERM writes a final checkpoint --------------------------------------------
     let (_, before) = service.get("/status");
     let before = before["checkpoint"]["generation"].as_u64().unwrap();

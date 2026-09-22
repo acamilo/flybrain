@@ -100,6 +100,22 @@ mode = "raw"                           # "raw" or "macros"; FLY_MACRO_MODE overr
 - Refusals are counted as `fly_chat_rejected_total{reason}`, one series per rule: `control`,
   `charset`, `empty`, `too_long`, `url`, `name`, `deny_list`, `rate_limited`, `malformed`.
   Acceptances are `fly_chat_accepted_total`, and the ring depth is `fly_chat_ring_lines`.
+- **The ring survives a restart (2026-09-22).** Every accepted line rewrites a sidecar,
+  `<hot_dir>/chat-ring.json` (`[paths] hot_dir`, the tmpfs the hot checkpoints use), by the same
+  atomic sequence a checkpoint commit uses: tmp file, fsync, rename over. At startup, before the
+  first publish, the file is read back; lines older than 24 hours are dropped, only the newest
+  `ring` of them are kept, and a missing file is silence. An unreadable, unparseable or
+  unknown-version file is ignored with a logged warning and an empty panel — which is what a
+  restart gave before this existed — never a startup failure. Writing it is best-effort too: a
+  failure is a warning, and the line is still accepted and still on screen.
+
+  The sidecar is **not** part of the checkpoint: it is session state, it adds no chunk to the
+  `FLYSIM01` envelope and nothing about it enters the compatibility string, so `--print-compatibility`
+  is unchanged and a build that refuses every checkpoint in a directory still restores the panel.
+  It lives beside the hot checkpoints because it has their lifetime — a reboot clears the tmpfs —
+  and `FLY_RESET_STATE=1` clears it along with them (`infra/05-deploy.sh`). The bridge resends
+  nothing on reconnect: the lines the page shows after a restart are the ones the service already
+  accepted, with their original event ids and timestamps.
 
 `POST /chat` status codes: `202 { eventId }` accepted, `400` malformed body, `403` chat disabled,
 `422 { error }` a rule refused the line (the error names the rule), `429 { retryAfterMs }` a rate
