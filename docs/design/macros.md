@@ -806,6 +806,59 @@ list, whose only bound button with one Pokémon is `BACK`. Six hundred thousand 
 
 The decoder, the reward catalog, the adapter version and the compatibility string are untouched.
 
+### 12.9 `BACK` belongs to a list, and a ball is not thrown at what the party already has (2026-09-22, rung 9, sixty-nine hours)
+
+Rank 9 (VIRIDIAN FOREST, next PEWTER CITY), sixty-nine hours on the rung, the ratchet's three
+attempts spent, the fly on Route 2 and in the forest and mostly in wild battles. Since the restart
+the macro starts were `BACK` 135, `THROW BALL` 28, `MOVE 2` 10, `RUN` 5 and `GO ROUTE` 5, and the
+event log repeated `RUN blocked, BACK start, BACK done`. `infra/docs/macros-traps.md` has the
+reproduction and the numbers; two macros, and section 12.2's one rule between them.
+
+- **`BACK` is a button only where there is a list to leave.** The top-level battle menu never had
+  it and does not now: FIGHT, PKMN, ITEM and RUN are the four answers to it and B is not a fifth.
+  What dealt it was the *between-turns* row, which section 13.1 gave `NEXT, BACK` for the sake of
+  the battle bag -- the bag reads as nobody's turn (12.6), so it lands there -- and which is also
+  every frame of battle text, every animation and every turn resolving. On those frames there is
+  nothing open, so the B press changes nothing the `NEXT` beside it does not, the macro completes
+  in a handful of frames on the tile it started on, and half the pad is a button that cannot move
+  the game on. That is exactly **a macro that completes without moving because its precondition is
+  already satisfied where the fly stands** (12.2). The row is now the sub-state's, like the own
+  turn's: `BACK` with the bag open, `NEXT` alone otherwise, and the move list and the party list
+  keep it as before.
+- **`RUN blocked` was the script, not the cartridge.** Not "can't escape": `RUN` is one cursor
+  navigation, and a cursor macro whose list is not accepting input *waits* rather than pressing
+  blind (section 4), for `CURSOR_WAIT` = 180 frames before it reports `Blocked`. So a `RUN` that
+  won a hold as the menu closed spent three brain seconds pressing nothing and then gave up --
+  row 19 of the audit, bounded and left, and the reason it was visible at all is the `BACK` above
+  filling the frames on either side of it. `RUN`'s own precondition is unchanged (13.1: only a
+  wild battle the fly is losing).
+- **A ball is not thrown at a species the party already holds.** `THROW BALL`'s precondition was
+  three facts -- a wild battle, a ball in the bag, room in the party -- and it now has a fourth:
+  the Pokémon on the other side is not one the party already has. Viridian Forest holds five
+  species and the fly had caught its own, so every throw spent a ball on a Caterpie or a Weedle it
+  was carrying, and a catch opens the nickname screen, which reads `Unknown`, needs the START the
+  pad has no button for (row 14), and is the one screen in the game neither `NEXT` nor `BACK`
+  leaves. The party is the caught set here and it is the honest one: it is the cartridge's own
+  lifetime record, it survives the restart the session ledgers do not, and it is in the same
+  numbering the enemy is read in -- the internal species index. **`wPokedexOwned` is not asked**,
+  because that bitset is by Pokédex *number* and the table converting an internal index into one
+  lives in a ROM bank this crate cannot read: `docs/design/ladder.md`'s rule is that an unverified
+  number does not go in. It costs nothing measurable -- the button is already off the pad while
+  the party is full and nothing in the vocabulary deposits into a box (row 17), so every species
+  this run has caught is in the party this reads. An enemy the seam cannot place leaves the button
+  where it was: a precondition this crate cannot observe is not a precondition (13.1).
+- **The ratchet is not the backstop, and on this rung it cannot be.** `budget_spent` precedes both
+  triggers and three attempts on rank 9 were spent sixty-nine hours ago, so no recovery can fire
+  again until the rank *improves* -- row 22, contract, and the reason the trap hunt runs on the dev
+  box before a release. What has to carry the run is the road: rung 9's place stays
+  `VIRIDIAN_FOREST`, the objective is the lowest **unearned** rung (12.4), which is rung 10's
+  `PEWTER_CITY`, and `geography::next_hop` from the forest answers `VIRIDIAN_FOREST_NORTH_GATE`
+  (47), then Route 2's north piece, then Pewter (2) -- already asserted hop by hop in
+  `macros::geography`'s own tests since 12.7. `GO OBJECTIVE` is on the overworld pad there, which
+  the ROM-gated run from this checkpoint holds.
+
+The decoder, the reward catalog, the adapter version and the compatibility string are untouched.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")
@@ -883,12 +936,12 @@ observe is not a precondition, it is a guess.
 | Menu (the start menu) | CLOSE, CONFIRM, BACK | unchanged. The cursor is the fly's to move with the **raw** D-pad, which still reaches the cartridge in macros mode; a SAVE or a POKéDEX button would be a macro per start-menu entry and is not asked for |
 | Menu (the bag, an elevator, the party list outside a battle) | CLOSE, CONFIRM, BACK | unchanged |
 | Unknown (the Pokédex, the trainer card, OPTION, a naming screen, a mid-warp frame) | NEXT, **BACK** | **BACK added** (row 9): B is what leaves the first three, and A leaves none of them |
-| Battle, own turn, main menu | MOVE 1..4, SWITCH, ITEM, THROW BALL, RUN, NEXT | four move buttons for `ATTACK` (section 14); THROW BALL added; **RUN gated**, below |
+| Battle, own turn, main menu | MOVE 1..4, SWITCH, ITEM, THROW BALL, RUN, NEXT | four move buttons for `ATTACK` (section 14); THROW BALL added, and gated on the species since 12.9; **RUN gated**, below. No `BACK`: the four entries are the answers to this menu |
 | Battle, own turn, move list | MOVE 1..4, BACK | as above |
 | Battle, own turn, party list | SWITCH, BACK | unchanged |
 | Battle, the bag | NEXT, **BACK** | **BACK added**, and the list now reports a *cursor* (`macros-wram.md` 7.1) — before this `ITEM` could open the bag and had nothing to read |
 | Battle, forced switch | SWITCH, NEXT | unchanged (row 8) |
-| Battle, between turns | NEXT, **BACK** | **BACK added** |
+| Battle, between turns | NEXT | `BACK` was added here for the bag (the row above reads as nobody’s turn) and **taken back out by section 12.9**: on a frame of battle text there is no list to leave, and a `BACK` that changes nothing is the trap of section 12.2 |
 | Shop | BUY POTION, BUY BALL, BUY ANTIDOTE, BUY REPEL, CONFIRM, LEAVE | two purchases to four; CONFIRM added |
 | PC | **CONFIRM**, LEAVE | **CONFIRM added**: a list the fly opened is one it can answer rather than only close. Depositing and withdrawing are still not in the vocabulary (row 17) |
 | Title | nothing | unchanged, by contract: the readout's boot variant applies |

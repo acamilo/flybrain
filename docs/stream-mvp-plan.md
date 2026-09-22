@@ -610,3 +610,8 @@ then purge; then the stale-doc pass.
 - 2026-09-22 02:22 UTC (v0.4.1): first release cut from the public repository (fresh history at
   v0.4.0); the DESCRIBE card carries the repository URL. Deployed to the release container with a
   flysim and flystage restart, checkpoint carried over at rank 9, lag 0, encoder output clean.
+- 2026-09-22 (v0.4.2, loop review, auto): rung 9 for 69 h. The between-turns battle row dealt
+  BACK with no list open (175 of 959 starts, instant, net nothing) and THROW BALL threw at species
+  the party already held. Fixed: BACK only where a list is open; THROW BALL skips held species.
+  Trap hunt: tiles 216 -> 286, listless BACK 175 -> 0, dialog frames 23,548 -> 0. Ethos check
+  held. Row 41 named: a nurse box answered YES 474 times on one tile.
