@@ -18,7 +18,7 @@ use flysim::store::{self, RuntimeState};
 /// nothing here parses it, and a seven-digest one would be 455 characters of noise.
 fn compatibility(adapter: &str) -> String {
     format!(
-        "lif-1ms-f64-v2/{adapter}/aa:bb:cc:dd:ee:ff:00/fly-kc-mbon-rstdp-v2/\
+        "lif-1ms-f64-v2/{adapter}/aabbccddeeff00/fly-kc-mbon-rstdp-v2/\
          binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/\
          pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu"
     )
