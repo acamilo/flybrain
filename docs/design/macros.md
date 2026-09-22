@@ -1032,3 +1032,88 @@ rather than argued:
 `LAYOUT.macroPalette` was `{x: 480, y: 816, w: 364, h: 212}` while the grid existed — one box
 moved, the strip's top edge from 852 to 816 — and it is back to `{x: 480, y: 852, w: 364, h: 176}`.
 Nothing in the layout differs from main.
+
+## 15. Map-aware walks: one plan over the whole map (the operator, 2026-09-22: "the frontier and
+## warp macros need to be map aware: A* over walkable tiles.")
+
+Section 4 has said "A* over the current map's walkable tiles" since the first draft, and it was
+never that. The walkable predicate answers for the ten tiles by nine of the screen buffer and
+`Walkable::Unknown` for everything else (`docs/design/macros-wram.md`), so every walk in the game
+planned through guesses at eight times the price of a known tile, re-planned at every window edge,
+and `GO FRONTIER` aimed at whatever unstood ground was on screen -- never the far side of a town,
+which nothing could see.
+
+What changes is where the tile ids come from. The rule does not change at all: a tile is walkable
+when the current tileset's collision list holds its id, which is `CheckTilePassable`.
+
+- **The whole map is decoded** from the tables the cartridge has already loaded: the block ids out
+  of `wOverworldMap`, the block-to-tiles blockset out of the tileset header, the collision list as
+  before, and the `TilePairCollisionsLand` pairs as **directed walls**. `MapGrid` is every tile of
+  the loaded map with those walls, and `docs/design/macros-wram.md` section 9 is the byte-level
+  evidence, the new addresses and the verification.
+- **One read of a ROM bank was needed, so `MemoryReader` gained one method.** The blockset does
+  not live in bank 0, and the only way to reach another bank through the CPU bus would be to
+  *write* the mapper's bank register. `MemoryReader::read_rom(bank, address)` reads the cartridge image the process
+  already holds instead: the same bytes, addressed the way the disassembly addresses them, and no
+  write into a running game. The joypad register is still the only write (section 12).
+- **`path::route` and `path::frontier` plan over the grid**, and the plan is the same A*: one step
+  per tile, the multi-goal heuristic, the committed route of section 12.3, re-planned only on a
+  refusal or a displacement. `GO WARP`, `GO OUT` and `GO ROUTE` route to their warp or connection
+  tile across the whole map; `GO OBJECTIVE` takes the exit that is the first hop; the frontier is
+  the nearest unstood walkable tile *anywhere on the map*, by the stood ledger of section 12.7.
+- **The window stays as the fallback, and it says when.** A frame with no grid falls back to the
+  ten-by-nine reading exactly as before, and `GridRefusal` names which of the five reasons it is:
+  no map header, no player, no collision list, no blockset (which is what a reader with no
+  cartridge behind it answers), the map not on screen, or the decode disagreeing with the screen.
+  Nothing is guessed and nothing silently degrades.
+- **The grid is checked against the screen before it is trusted, and again whenever it is served.**
+  The decode is compared with the window predicate over the tile the fly is standing on and its
+  four neighbours, and a frame where the window can answer for none of them is refused — the block
+  data shares its bytes with the picture buffer, so a battle is exactly when it belongs to somebody
+  else. Serving a cached grid re-checks the fly's own tile, because a warp writes the map id before
+  the header and the blocks: for a frame or two on a doormat, `wCurMap` is the map the fly is
+  arriving on and the blocks are still the map it is leaving.
+- **Cached per map, decoded once on arrival**, dropped when the map or its size changes. Session
+  state beside the talked, blocked, reached, stood and errand ledgers; never checkpointed, so a
+  restored run decodes the map again on its first overworld frame.
+- **The probes report it.** `examples/scene_probe.rs` prints the grid's size, its walkable count,
+  the count reachable from where the fly stands and the count never stood on, draws the ground with
+  the reading it used, and names the refusal when there is none; `examples/trap_hunt.rs` carries the
+  same line into every trace line and into the summary table. Three numbers read a stalled walk at
+  a glance: a fly with forty walkable tiles and four reachable ones is fenced in, and no amount of
+  re-planning will help it.
+
+**Nothing about the choice moves.** The scene deals the same buttons, the readout presses them, and
+what changed is what a chosen walk knows about the ground — which is where section 12 puts
+knowledge. The decoder, the reward catalog, the adapter version and the compatibility string are
+untouched: 648 bytes, `0d9bfde7…707fa`, byte-identical across the change.
+
+Two things the cartridge settled rather than the design, both measured and both written up with
+their bytes in `docs/design/macros-wram.md` section 9: the collision id of a map tile is the
+**lower left** of its four screen tiles and not the upper left, and **a warp writes the map id
+before the map**, which is what the per-serve check above is for.
+
+### 15.1 The proof
+
+- **Unit tests, no cartridge.** The decoder against a made-up tileset: a block's four quadrants,
+  a collision list over a map wider than the window, a tile-pair collision as a wall in both
+  directions and not in another tileset, a block id past the end of the blockset staying `Unknown`,
+  and the reachable count over a fenced region. The reader against synthetic WRAM with a synthetic
+  blockset in a synthetic bank: the whole map decoded, a screen that disagrees refused, a reader
+  with no cartridge refused, a battle frame refused, and the cache holding one map. The search over
+  a grid: one plan across a map larger than the window where the window's own plan walks into a
+  wall it cannot see, a frontier beyond the window where the window's frontier is empty, a
+  tile-pair wall planned around, and a connection whose walls are not goals.
+- **ROM-gated, from the release container's own checkpoints** (`tests/rom_map_grid.rs`, `FLY_ROM`
+  plus a checkpoint, skipped cleanly without either). On **Pallet Town** — 20x18, 221 walkable
+  tiles, 207 of them reachable, none unknown — and on **Viridian Forest** — 34x48, 719 walkable,
+  all reachable, none unknown: the decode agrees with the window predicate on all ninety tiles the
+  window can answer for, and it agrees with a **survey of real presses** on every one of the first
+  120 tiles the walk can stand on (58 refused presses on the town, 74 in the forest, every one of
+  them a wall, a directed wall or a tile a sprite was standing on; 10 presses in the forest that
+  the cartridge answered with a battle, which say nothing about the ground either way).
+  `GO FRONTIER` in the forest planned to ground outside the window and walked there in 215 frames
+  (615 of its frontier tiles are outside the window); every way out of the forest is one plan away,
+  27 to 149 steps, with no guessed tile in any of them.
+- **The trap hunt**, twenty brain minutes from the rung-9 checkpoint, before and after, is in
+  `infra/docs/macros-traps.md`.
