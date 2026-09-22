@@ -239,6 +239,12 @@ struct Run {
     blocked_where: std::collections::BTreeSet<String>,
     /// Macros started while the fly was still on the map it resumed on.
     macros_on_the_first_map: u32,
+    /// How many times each macro started while the fly was still on that map, by name.
+    ///
+    /// The total is the wrong measure for a room the fly is meant to *leave*: a run that leaves it
+    /// and then fights a gym answers `YES` in the gym's own boxes, which is the fly playing the
+    /// game. What row 41 is about is the presses spent in the room.
+    started_on_the_first_map: std::collections::BTreeMap<&'static str, u32>,
     /// The longest chain of macro starts that alternated `MENU`, `BACK`, `MENU`, `BACK`.
     longest_menu_back_alternation: u32,
     menu_alternation: u32,
@@ -350,6 +356,7 @@ impl Run {
             blocked: std::collections::BTreeMap::new(),
             blocked_where: std::collections::BTreeSet::new(),
             macros_on_the_first_map: 0,
+            started_on_the_first_map: std::collections::BTreeMap::new(),
             longest_menu_back_alternation: 0,
             dialog_frames: 0,
             prompt_frames: 0,
@@ -450,6 +457,7 @@ impl Run {
             blocked: std::collections::BTreeMap::new(),
             blocked_where: std::collections::BTreeSet::new(),
             macros_on_the_first_map: 0,
+            started_on_the_first_map: std::collections::BTreeMap::new(),
             longest_menu_back_alternation: 0,
             dialog_frames: 0,
             prompt_frames: 0,
@@ -755,6 +763,7 @@ impl Run {
             self.last_start = Some(name);
             if self.route.len() == 1 {
                 self.macros_on_the_first_map += 1;
+                *self.started_on_the_first_map.entry(name).or_insert(0) += 1;
             }
             *self.started.entry(name).or_insert(0) += 1;
         }
@@ -2147,6 +2156,7 @@ fn the_fly_leaves_the_pokemon_center_from_the_rung_ten_checkpoint() {
         run.prompt_frames,
         run.blocked
     );
+    eprintln!("macros spent in the centre: {:?}", run.started_on_the_first_map);
 
     assert!(
         !run.next_on_a_prompt,
@@ -2156,8 +2166,11 @@ fn the_fly_leaves_the_pokemon_center_from_the_rung_ten_checkpoint() {
         !run.talk_at_a_rested_nurse,
         "`TALK` was on the pad at a nurse the party had no use for"
     );
-    let yes = run.started.get("YES").copied().unwrap_or(0);
-    assert!(yes < 5, "`YES` started {yes} times: {:?}", run.started);
+    // In the **centre**, which is what row 41 is about: the run goes on to leave Pewter's gym
+    // door and fight there, and the gym's own boxes are the fly playing the game rather than the
+    // ring. 1,278 of 1,295 in the rung-9 hunt from this room; 2,142 live.
+    let yes = run.started_on_the_first_map.get("YES").copied().unwrap_or(0);
+    assert!(yes < 5, "`YES` started {yes} times in the centre: {:?}", run.started_on_the_first_map);
     let Some(left) = left else {
         panic!("the fly never left map {from:#04x}: {:?}", run.started)
     };
