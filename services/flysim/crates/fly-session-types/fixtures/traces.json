@@ -1,0 +1,1141 @@
+{
+  "description": "step-v1 section 8: sequential, concurrent and reversed runs must agree on behaviour, and only on behaviour.",
+  "baseline": {
+    "behaviour": {
+      "scope": {
+        "sessionId": "demo",
+        "epoch": "epoch-1",
+        "step": "41"
+      },
+      "agents": [
+        {
+          "agentId": "fly-a",
+          "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+          "ticksAdvanced": "17",
+          "brainTicks": "2517",
+          "remainder": {
+            "numerator": "1000000",
+            "denominator": "3"
+          },
+          "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+          "committedStep": "42"
+        },
+        {
+          "agentId": "fly-b",
+          "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+          "ticksAdvanced": "17",
+          "brainTicks": "2550",
+          "remainder": {
+            "numerator": "0",
+            "denominator": "1"
+          },
+          "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+          "committedStep": "42"
+        }
+      ],
+      "batchId": "batch-41",
+      "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+      "acknowledgedBoundary": "42",
+      "observationBoundaries": [
+        {
+          "viewId": "screen",
+          "producedStep": "42"
+        },
+        {
+          "viewId": "spectator",
+          "producedStep": "41"
+        }
+      ],
+      "outcomeIds": [
+        "outcome-1",
+        "outcome-2"
+      ],
+      "eventIds": [
+        "evt-1",
+        "evt-2"
+      ],
+      "publishedBoundary": "42"
+    },
+    "operational": {
+      "wallTimeNs": "1234567890",
+      "prepareRequestIds": [
+        {
+          "agentId": "fly-a",
+          "requestId": "req-41"
+        },
+        {
+          "agentId": "fly-b",
+          "requestId": "req-42"
+        }
+      ],
+      "advanceRequestId": "req-43",
+      "commitRequestIds": [
+        {
+          "agentId": "fly-a",
+          "requestId": "req-44"
+        },
+        {
+          "agentId": "fly-b",
+          "requestId": "req-45"
+        }
+      ],
+      "busCallIds": [
+        "call-100",
+        "call-101",
+        "call-102"
+      ],
+      "deliveryIds": [
+        "dlv-7",
+        "own-9"
+      ]
+    }
+  },
+  "variants": [
+    {
+      "name": "reversed dispatch and completion order",
+      "trace": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "spectator",
+              "producedStep": "41"
+            },
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1",
+            "outcome-2"
+          ],
+          "eventIds": [
+            "evt-1",
+            "evt-2"
+          ],
+          "publishedBoundary": "42"
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            },
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            },
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ]
+        }
+      },
+      "behaviourEquals": true,
+      "reason": "completion order never affects the committed result"
+    },
+    {
+      "name": "a safe retry with fresh bus callIds, delivery ids and wall time",
+      "trace": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            },
+            {
+              "viewId": "spectator",
+              "producedStep": "41"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1",
+            "outcome-2"
+          ],
+          "eventIds": [
+            "evt-1",
+            "evt-2"
+          ],
+          "publishedBoundary": "42"
+        },
+        "operational": {
+          "wallTimeNs": "9999999999",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-500",
+            "call-501",
+            "call-502",
+            "call-503"
+          ],
+          "deliveryIds": [
+            "dlv-91",
+            "own-92"
+          ]
+        }
+      },
+      "behaviourEquals": true,
+      "reason": "a retry has a new transport correlation and the same behaviour"
+    },
+    {
+      "name": "another run's domain request ids",
+      "trace": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            },
+            {
+              "viewId": "spectator",
+              "producedStep": "41"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1",
+            "outcome-2"
+          ],
+          "eventIds": [
+            "evt-1",
+            "evt-2"
+          ],
+          "publishedBoundary": "42"
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-1041"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-1042"
+            }
+          ],
+          "advanceRequestId": "req-1043",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-1044"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-1045"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ]
+        }
+      },
+      "behaviourEquals": true,
+      "reason": "step-v1 section 8 excludes request ids from the comparison"
+    },
+    {
+      "name": "one extra neural tick",
+      "trace": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "18",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            },
+            {
+              "viewId": "spectator",
+              "producedStep": "41"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1",
+            "outcome-2"
+          ],
+          "eventIds": [
+            "evt-1",
+            "evt-2"
+          ],
+          "publishedBoundary": "42"
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ]
+        }
+      },
+      "behaviourEquals": false,
+      "diffContains": "agent fly-a"
+    },
+    {
+      "name": "a different tick remainder",
+      "trace": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            },
+            {
+              "viewId": "spectator",
+              "producedStep": "41"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1",
+            "outcome-2"
+          ],
+          "eventIds": [
+            "evt-1",
+            "evt-2"
+          ],
+          "publishedBoundary": "42"
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ]
+        }
+      },
+      "behaviourEquals": false,
+      "diffContains": "agent fly-a"
+    },
+    {
+      "name": "a different decision digest",
+      "trace": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "3c7a9d8634cce0a0624d30476695f94c9c1f31d47d471396497db4f562a2e068",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            },
+            {
+              "viewId": "spectator",
+              "producedStep": "41"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1",
+            "outcome-2"
+          ],
+          "eventIds": [
+            "evt-1",
+            "evt-2"
+          ],
+          "publishedBoundary": "42"
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ]
+        }
+      },
+      "behaviourEquals": false,
+      "diffContains": "agent fly-a"
+    },
+    {
+      "name": "a different control digest",
+      "trace": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "b80f397807afe6543058911e501c7f2945266a04badaad4815997e17c908d38f",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            },
+            {
+              "viewId": "spectator",
+              "producedStep": "41"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1",
+            "outcome-2"
+          ],
+          "eventIds": [
+            "evt-1",
+            "evt-2"
+          ],
+          "publishedBoundary": "42"
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ]
+        }
+      },
+      "behaviourEquals": false,
+      "diffContains": "controlDigest"
+    },
+    {
+      "name": "a different batch id",
+      "trace": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-999",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            },
+            {
+              "viewId": "spectator",
+              "producedStep": "41"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1",
+            "outcome-2"
+          ],
+          "eventIds": [
+            "evt-1",
+            "evt-2"
+          ],
+          "publishedBoundary": "42"
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ]
+        }
+      },
+      "behaviourEquals": false,
+      "diffContains": "batchId"
+    },
+    {
+      "name": "an observation produced at another boundary",
+      "trace": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "41"
+            },
+            {
+              "viewId": "spectator",
+              "producedStep": "41"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1",
+            "outcome-2"
+          ],
+          "eventIds": [
+            "evt-1",
+            "evt-2"
+          ],
+          "publishedBoundary": "42"
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ]
+        }
+      },
+      "behaviourEquals": false,
+      "diffContains": "observationBoundaries"
+    },
+    {
+      "name": "task events in another order",
+      "trace": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            },
+            {
+              "viewId": "spectator",
+              "producedStep": "41"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1",
+            "outcome-2"
+          ],
+          "eventIds": [
+            "evt-2",
+            "evt-1"
+          ],
+          "publishedBoundary": "42"
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ]
+        }
+      },
+      "behaviourEquals": false,
+      "diffContains": "eventIds"
+    },
+    {
+      "name": "a different agent in the transition",
+      "trace": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-c",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            },
+            {
+              "viewId": "spectator",
+              "producedStep": "41"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1",
+            "outcome-2"
+          ],
+          "eventIds": [
+            "evt-1",
+            "evt-2"
+          ],
+          "publishedBoundary": "42"
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-c",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-c",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ]
+        }
+      },
+      "behaviourEquals": false,
+      "diffContains": "agents"
+    }
+  ]
+}

@@ -1,0 +1,2787 @@
+{
+  "description": "Payloads every implementation must accept, round trip and canonicalize identically.",
+  "cases": [
+    {
+      "name": "scope at step 41",
+      "type": "Scope",
+      "value": {
+        "sessionId": "demo",
+        "epoch": "epoch-1",
+        "step": "41"
+      },
+      "note": "",
+      "canonical": "{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"}",
+      "digest": "1953a38efa113f682ee69e2db93e9cf01e17638f3a82af6d4b1666dde8c25d7b"
+    },
+    {
+      "name": "scope at boundary zero",
+      "type": "Scope",
+      "value": {
+        "sessionId": "demo",
+        "epoch": "epoch-1",
+        "step": "0"
+      },
+      "note": "",
+      "canonical": "{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"0\"}",
+      "digest": "de1105b866a42a79ba7162e9b2c914dd1da8d96b11b65f0458baddd17d6e356c"
+    },
+    {
+      "name": "scope at the U64 maximum",
+      "type": "Scope",
+      "value": {
+        "sessionId": "demo",
+        "epoch": "epoch-1",
+        "step": "18446744073709551615"
+      },
+      "note": "",
+      "canonical": "{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"18446744073709551615\"}",
+      "digest": "d941cef9e565492376d10812c27787d661bbee13995e9310ddaabb7aa55cc2bd"
+    },
+    {
+      "name": "rational zero in its only legal form",
+      "type": "RationalNs",
+      "value": {
+        "numerator": "0",
+        "denominator": "1"
+      },
+      "note": "zero is encoded 0/1",
+      "canonical": "{\"denominator\":\"1\",\"numerator\":\"0\"}",
+      "digest": "a93ea196102f24ae67e9e177f75ac40c9597c06d361c37fbc5a742f517c55425"
+    },
+    {
+      "name": "reduced 60 Hz step duration",
+      "type": "RationalNs",
+      "value": {
+        "numerator": "50000000",
+        "denominator": "3"
+      },
+      "note": "",
+      "canonical": "{\"denominator\":\"3\",\"numerator\":\"50000000\"}",
+      "digest": "952c3304ef49b0e8422de5a46b0c95c3e2a54db8608a605dbfe195b84dc686d2"
+    },
+    {
+      "name": "one millisecond tick duration",
+      "type": "RationalNs",
+      "value": {
+        "numerator": "1000000",
+        "denominator": "1"
+      },
+      "note": "",
+      "canonical": "{\"denominator\":\"1\",\"numerator\":\"1000000\"}",
+      "digest": "663997e4702a3fb1a303fcd3500e11fcda0d662e20c995b1fa070e32c65e7ad3"
+    },
+    {
+      "name": "schema reference at version 1",
+      "type": "SchemaRef",
+      "value": {
+        "id": "pokemon.progress.v1",
+        "version": 1,
+        "digest": "80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1"
+      },
+      "note": "",
+      "canonical": "{\"digest\":\"80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1\",\"id\":\"pokemon.progress.v1\",\"version\":1}",
+      "digest": "929dcd71459199d62b8e215c0866e8ade178ff4ed5f24f8aa11b9e33c8380122"
+    },
+    {
+      "name": "schema reference at the maximum version",
+      "type": "SchemaRef",
+      "value": {
+        "id": "pokemon.progress.v1",
+        "version": 65535,
+        "digest": "80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1"
+      },
+      "note": "",
+      "canonical": "{\"digest\":\"80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1\",\"id\":\"pokemon.progress.v1\",\"version\":65535}",
+      "digest": "7d2ce2fe9d99be170ca980d0c47ffa49bff5800bd21a371a92588e015b4ee55d"
+    },
+    {
+      "name": "typed value",
+      "type": "TypedValue",
+      "value": {
+        "schema": {
+          "id": "pokemon.progress.v1",
+          "version": 1,
+          "digest": "80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1"
+        },
+        "value": {
+          "rank": 10,
+          "badges": 2
+        }
+      },
+      "note": "",
+      "canonical": "{\"schema\":{\"digest\":\"80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1\",\"id\":\"pokemon.progress.v1\",\"version\":1},\"value\":{\"badges\":2,\"rank\":10}}",
+      "digest": "d0e2d096f61633567f6959e3bbfb6e8f1f2bb507a3c54219118b9eee96c20e32"
+    },
+    {
+      "name": "typed value with an empty object",
+      "type": "TypedValue",
+      "value": {
+        "schema": {
+          "id": "empty.v1",
+          "version": 1,
+          "digest": "b86e38af20e53d5426f2ae6cd496f258bf7592bd047aea2b0f6e41dfed7ef79e"
+        },
+        "value": {}
+      },
+      "note": "",
+      "canonical": "{\"schema\":{\"digest\":\"b86e38af20e53d5426f2ae6cd496f258bf7592bd047aea2b0f6e41dfed7ef79e\",\"id\":\"empty.v1\",\"version\":1},\"value\":{}}",
+      "digest": "a39dd4af1f8581cdc2afaa6d86fb7b5b4c384dff5ea6d98212dc7b983d0a5d0b"
+    },
+    {
+      "name": "asset reference",
+      "type": "AssetRef",
+      "value": {
+        "id": "profile-fly-a",
+        "digest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "byteLength": "4096",
+        "format": "flyprofile"
+      },
+      "note": "",
+      "canonical": "{\"byteLength\":\"4096\",\"digest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"format\":\"flyprofile\",\"id\":\"profile-fly-a\"}",
+      "digest": "9fef94f7c3f2601a13d235077441c5d28f604b68a3156d1ad01c5ad26e953c49"
+    },
+    {
+      "name": "sensory input with one view",
+      "type": "SensoryInput",
+      "value": {
+        "boundary": "1",
+        "views": [
+          {
+            "viewId": "screen",
+            "producedStep": "1",
+            "pixels": {
+              "storeId": "store-1",
+              "artifactId": "frame-1",
+              "generation": "1",
+              "byteLength": "92160",
+              "contentType": "image/x-rgba8",
+              "digest": null
+            }
+          }
+        ],
+        "structured": null
+      },
+      "note": "",
+      "canonical": "{\"boundary\":\"1\",\"structured\":null,\"views\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"1\",\"viewId\":\"screen\"}]}",
+      "digest": "41754900becead6be965919ca73661069ef2e25ac4ba2c44717e1419de91970a"
+    },
+    {
+      "name": "sensory input with no views at bootstrap",
+      "type": "SensoryInput",
+      "value": {
+        "boundary": "0",
+        "views": [],
+        "structured": null
+      },
+      "note": "",
+      "canonical": "{\"boundary\":\"0\",\"structured\":null,\"views\":[]}",
+      "digest": "7f92dff3688a5042f2aeec4ca6e902f53db84635651f780b03a26c2e3356d42d"
+    },
+    {
+      "name": "sensory input with structured sensing",
+      "type": "SensoryInput",
+      "value": {
+        "boundary": "3",
+        "views": [
+          {
+            "viewId": "screen",
+            "producedStep": "3",
+            "pixels": {
+              "storeId": "store-1",
+              "artifactId": "frame-1",
+              "generation": "1",
+              "byteLength": "92160",
+              "contentType": "image/x-rgba8",
+              "digest": null
+            }
+          }
+        ],
+        "structured": {
+          "schema": {
+            "id": "arena.features.v1",
+            "version": 1,
+            "digest": "81414e2c9750102a91d75ba71b8d3dd5161f3e2d69a0c470c6961033def0710d"
+          },
+          "value": {
+            "near": 1
+          }
+        }
+      },
+      "note": "",
+      "canonical": "{\"boundary\":\"3\",\"structured\":{\"schema\":{\"digest\":\"81414e2c9750102a91d75ba71b8d3dd5161f3e2d69a0c470c6961033def0710d\",\"id\":\"arena.features.v1\",\"version\":1},\"value\":{\"near\":1}},\"views\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"3\",\"viewId\":\"screen\"}]}",
+      "digest": "e491f273bd045b3f954bc1b5051b551868346fc28115a2e13781b696c1256757"
+    },
+    {
+      "name": "stimulus",
+      "type": "Stimulus",
+      "value": {
+        "id": "stim-1",
+        "kindId": "sugar",
+        "durationMs": 50.0
+      },
+      "note": "",
+      "canonical": "{\"durationMs\":50,\"id\":\"stim-1\",\"kindId\":\"sugar\"}",
+      "digest": "67590e9e9852976a074d7ae91632c4f10cde7264459f300a0cc1903077ed58c5"
+    },
+    {
+      "name": "reward",
+      "type": "Reward",
+      "value": {
+        "eventId": "evt-1",
+        "ruleId": "badge",
+        "value": 1.5
+      },
+      "note": "",
+      "canonical": "{\"eventId\":\"evt-1\",\"ruleId\":\"badge\",\"value\":1.5}",
+      "digest": "95f4c5f144f496f85642fffa483cd94dc674e332a0d7e95e88e664796d438801"
+    },
+    {
+      "name": "reward of zero",
+      "type": "Reward",
+      "value": {
+        "eventId": "evt-2",
+        "ruleId": "idle",
+        "value": 0.0
+      },
+      "note": "",
+      "canonical": "{\"eventId\":\"evt-2\",\"ruleId\":\"idle\",\"value\":0}",
+      "digest": "7bb6160ed3e10345e4084118546ff27725eea5666407b483e23bd9b95a87a51e"
+    },
+    {
+      "name": "agent telemetry",
+      "type": "AgentTelemetry",
+      "value": {
+        "brainTicks": "17",
+        "populationRateHz": 12.5,
+        "rates": [
+          {
+            "roleId": "kenyon",
+            "hz": 3.25
+          },
+          {
+            "roleId": "mbon",
+            "hz": 0.0
+          }
+        ],
+        "learning": {
+          "enabled": true,
+          "updates": "4",
+          "changed": "2",
+          "signal": 0.5
+        }
+      },
+      "note": "",
+      "canonical": "{\"brainTicks\":\"17\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}]}",
+      "digest": "de4c4e0a2cc3cac459929480a057495029a74e67e9444ea4e197b403659155ed"
+    },
+    {
+      "name": "agent telemetry with no tracked roles",
+      "type": "AgentTelemetry",
+      "value": {
+        "brainTicks": "0",
+        "populationRateHz": 0.0,
+        "rates": [],
+        "learning": {
+          "enabled": false,
+          "updates": "0",
+          "changed": "0",
+          "signal": 0.0
+        }
+      },
+      "note": "",
+      "canonical": "{\"brainTicks\":\"0\",\"learning\":{\"changed\":\"0\",\"enabled\":false,\"signal\":0,\"updates\":\"0\"},\"populationRateHz\":0,\"rates\":[]}",
+      "digest": "51c684931ea3d7c54f67a78a90d676944d9527b0bc4465d5a6d4e02b87ff7485"
+    },
+    {
+      "name": "session rpc request with a scope",
+      "type": "SessionRpcRequest",
+      "value": {
+        "requestId": "req-41",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "41"
+        },
+        "params": {
+          "agentId": "fly-a"
+        }
+      },
+      "note": "",
+      "canonical": "{\"params\":{\"agentId\":\"fly-a\"},\"requestId\":\"req-41\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"}}",
+      "digest": "236215ca3453d8d07cbaa4cfe3b5c9d7c92ed145bd8e6cd3b85a9adcd1de77af"
+    },
+    {
+      "name": "session rpc request without a scope",
+      "type": "SessionRpcRequest",
+      "value": {
+        "requestId": "req-1",
+        "scope": null,
+        "params": {}
+      },
+      "note": "",
+      "canonical": "{\"params\":{},\"requestId\":\"req-1\",\"scope\":null}",
+      "digest": "2442374424ed68182d5c77ee66f026caeb286bccd836d9713e8def9e50b55976"
+    },
+    {
+      "name": "session rpc success",
+      "type": "SessionRpcSuccess",
+      "value": {
+        "type": "result",
+        "requestId": "req-41",
+        "workerId": "fly-a",
+        "incarnationId": "inc-1",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "41"
+        },
+        "result": {
+          "agentId": "fly-a"
+        }
+      },
+      "note": "",
+      "canonical": "{\"incarnationId\":\"inc-1\",\"requestId\":\"req-41\",\"result\":{\"agentId\":\"fly-a\"},\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"},\"type\":\"result\",\"workerId\":\"fly-a\"}",
+      "digest": "d4bf3e4a30901d8936a3b1034447cd2ca4d6821de832bfb63018d138f504d5d9"
+    },
+    {
+      "name": "session rpc failure before mutation",
+      "type": "SessionRpcFailure",
+      "value": {
+        "type": "error",
+        "requestId": "req-41",
+        "workerId": "fly-a",
+        "incarnationId": "inc-1",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "41"
+        },
+        "error": {
+          "code": "INVALID_ARGUMENT",
+          "message": "interval is not reduced",
+          "mutation": "none"
+        }
+      },
+      "note": "",
+      "canonical": "{\"error\":{\"code\":\"INVALID_ARGUMENT\",\"message\":\"interval is not reduced\",\"mutation\":\"none\"},\"incarnationId\":\"inc-1\",\"requestId\":\"req-41\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"},\"type\":\"error\",\"workerId\":\"fly-a\"}",
+      "digest": "c7cd2c928eb476a53edb1ed6ff297b4c1097fd26d3934da1c8823bb63f8670e2"
+    },
+    {
+      "name": "session rpc failure with uncertain mutation",
+      "type": "SessionRpcFailure",
+      "value": {
+        "type": "error",
+        "requestId": "req-42",
+        "workerId": "world",
+        "incarnationId": "inc-2",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "42"
+        },
+        "error": {
+          "code": "BACKEND_FAILURE",
+          "message": "backend stopped responding",
+          "mutation": "unknown"
+        }
+      },
+      "note": "",
+      "canonical": "{\"error\":{\"code\":\"BACKEND_FAILURE\",\"message\":\"backend stopped responding\",\"mutation\":\"unknown\"},\"incarnationId\":\"inc-2\",\"requestId\":\"req-42\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"42\"},\"type\":\"error\",\"workerId\":\"world\"}",
+      "digest": "9f59e69015ec7b9dea324242cd1e63d9d79d8229b389ea67f6b2e51f927eeadf"
+    },
+    {
+      "name": "agent initialize params",
+      "type": "AgentInitializeParams",
+      "value": {
+        "agentId": "fly-a",
+        "profile": {
+          "id": "profile-fly-a",
+          "digest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+          "byteLength": "4096",
+          "format": "flyprofile"
+        },
+        "seed": -2147483648,
+        "initialInput": {
+          "boundary": "0",
+          "views": [
+            {
+              "viewId": "screen",
+              "producedStep": "0",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "structured": null
+        },
+        "initialDecisionContext": {
+          "schema": {
+            "id": "gameboy.context.v1",
+            "version": 1,
+            "digest": "e37846f922a5c35b218684fb650d9f2566db7d93dc8eb0e2deb86e22860784b0"
+          },
+          "value": {
+            "available": [
+              "a",
+              "start"
+            ]
+          }
+        },
+        "workerThreads": 3
+      },
+      "note": "",
+      "canonical": "{\"agentId\":\"fly-a\",\"initialDecisionContext\":{\"schema\":{\"digest\":\"e37846f922a5c35b218684fb650d9f2566db7d93dc8eb0e2deb86e22860784b0\",\"id\":\"gameboy.context.v1\",\"version\":1},\"value\":{\"available\":[\"a\",\"start\"]}},\"initialInput\":{\"boundary\":\"0\",\"structured\":null,\"views\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"0\",\"viewId\":\"screen\"}]},\"profile\":{\"byteLength\":\"4096\",\"digest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"format\":\"flyprofile\",\"id\":\"profile-fly-a\"},\"seed\":-2147483648,\"workerThreads\":3}",
+      "digest": "d5d768bc0d130d87dc0020cf95648b77a68c15d63e1acac99c89df0c7de3eb98"
+    },
+    {
+      "name": "agent initialize result",
+      "type": "AgentInitializeResult",
+      "value": {
+        "agentId": "fly-a",
+        "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "tickDuration": {
+          "numerator": "1000000",
+          "denominator": "1"
+        },
+        "warmupTicks": "2500",
+        "committedStep": "0",
+        "decisionContextDigest": "ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4",
+        "telemetry": {
+          "brainTicks": "2500",
+          "populationRateHz": 12.5,
+          "rates": [
+            {
+              "roleId": "kenyon",
+              "hz": 3.25
+            },
+            {
+              "roleId": "mbon",
+              "hz": 0.0
+            }
+          ],
+          "learning": {
+            "enabled": true,
+            "updates": "4",
+            "changed": "2",
+            "signal": 0.5
+          }
+        }
+      },
+      "note": "",
+      "canonical": "{\"agentId\":\"fly-a\",\"committedStep\":\"0\",\"decisionContextDigest\":\"ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"telemetry\":{\"brainTicks\":\"2500\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}]},\"tickDuration\":{\"denominator\":\"1\",\"numerator\":\"1000000\"},\"warmupTicks\":\"2500\"}",
+      "digest": "a220160c75d758720fe43145089939201ee35c86bb100fae0c4efdd3c4eafaa6"
+    },
+    {
+      "name": "prepare params",
+      "type": "PrepareParams",
+      "value": {
+        "agentId": "fly-a",
+        "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "interval": {
+          "numerator": "50000000",
+          "denominator": "3"
+        },
+        "decisionContextDigest": "ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4",
+        "preStepStimulations": [
+          {
+            "id": "stim-1",
+            "kindId": "sugar",
+            "durationMs": 50.0
+          }
+        ]
+      },
+      "note": "",
+      "canonical": "{\"agentId\":\"fly-a\",\"decisionContextDigest\":\"ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4\",\"interval\":{\"denominator\":\"3\",\"numerator\":\"50000000\"},\"preStepStimulations\":[{\"durationMs\":50,\"id\":\"stim-1\",\"kindId\":\"sugar\"}],\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\"}",
+      "digest": "cdad8a625a5d33b5029a587b91959c234b265d2e23aa2f8e86169abc2cca8730"
+    },
+    {
+      "name": "prepare params with no stimulation",
+      "type": "PrepareParams",
+      "value": {
+        "agentId": "fly-b",
+        "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "interval": {
+          "numerator": "50000000",
+          "denominator": "3"
+        },
+        "decisionContextDigest": "ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4",
+        "preStepStimulations": []
+      },
+      "note": "",
+      "canonical": "{\"agentId\":\"fly-b\",\"decisionContextDigest\":\"ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4\",\"interval\":{\"denominator\":\"3\",\"numerator\":\"50000000\"},\"preStepStimulations\":[],\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\"}",
+      "digest": "549b9f9d93ac1d826f3bba2a57f1293b1371404304ae8ab2c173f05f76b78065"
+    },
+    {
+      "name": "prepared decision",
+      "type": "PreparedDecision",
+      "value": {
+        "agentId": "fly-a",
+        "ticksAdvanced": "17",
+        "brainTicks": "2517",
+        "remainder": {
+          "numerator": "1000000",
+          "denominator": "3"
+        },
+        "decision": {
+          "schema": {
+            "id": "gameboy.intent.v1",
+            "version": 1,
+            "digest": "e70451b26fb5462ec63729d8355912dad01c3963a95bec0e6a8452375717ad9d"
+          },
+          "value": {
+            "press": "a"
+          }
+        }
+      },
+      "note": "",
+      "canonical": "{\"agentId\":\"fly-a\",\"brainTicks\":\"2517\",\"decision\":{\"schema\":{\"digest\":\"e70451b26fb5462ec63729d8355912dad01c3963a95bec0e6a8452375717ad9d\",\"id\":\"gameboy.intent.v1\",\"version\":1},\"value\":{\"press\":\"a\"}},\"remainder\":{\"denominator\":\"3\",\"numerator\":\"1000000\"},\"ticksAdvanced\":\"17\"}",
+      "digest": "55f6ba23215c294f85515712613f7c1eb16a7e4e395556da273b65e0ad871698"
+    },
+    {
+      "name": "prepared decision with a zero remainder",
+      "type": "PreparedDecision",
+      "value": {
+        "agentId": "fly-a",
+        "ticksAdvanced": "17",
+        "brainTicks": "2550",
+        "remainder": {
+          "numerator": "0",
+          "denominator": "1"
+        },
+        "decision": {
+          "schema": {
+            "id": "gameboy.intent.v1",
+            "version": 1,
+            "digest": "e70451b26fb5462ec63729d8355912dad01c3963a95bec0e6a8452375717ad9d"
+          },
+          "value": {
+            "press": "none"
+          }
+        }
+      },
+      "note": "",
+      "canonical": "{\"agentId\":\"fly-a\",\"brainTicks\":\"2550\",\"decision\":{\"schema\":{\"digest\":\"e70451b26fb5462ec63729d8355912dad01c3963a95bec0e6a8452375717ad9d\",\"id\":\"gameboy.intent.v1\",\"version\":1},\"value\":{\"press\":\"none\"}},\"remainder\":{\"denominator\":\"1\",\"numerator\":\"0\"},\"ticksAdvanced\":\"17\"}",
+      "digest": "36f799eb6897274d8bc7afe96d5dd49fd68a15d47b4d6ea15bcfc6057018228a"
+    },
+    {
+      "name": "commit params",
+      "type": "CommitParams",
+      "value": {
+        "agentId": "fly-a",
+        "preparedRequestId": "req-41",
+        "nextInput": {
+          "boundary": "42",
+          "views": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "structured": null
+        },
+        "nextDecisionContext": {
+          "schema": {
+            "id": "gameboy.context.v1",
+            "version": 1,
+            "digest": "e37846f922a5c35b218684fb650d9f2566db7d93dc8eb0e2deb86e22860784b0"
+          },
+          "value": {
+            "available": [
+              "b"
+            ]
+          }
+        },
+        "rewards": [
+          {
+            "eventId": "evt-1",
+            "ruleId": "badge",
+            "value": 1.5
+          }
+        ],
+        "taskStimulations": [
+          {
+            "id": "stim-2",
+            "kindId": "sugar",
+            "durationMs": 25.0
+          }
+        ]
+      },
+      "note": "",
+      "canonical": "{\"agentId\":\"fly-a\",\"nextDecisionContext\":{\"schema\":{\"digest\":\"e37846f922a5c35b218684fb650d9f2566db7d93dc8eb0e2deb86e22860784b0\",\"id\":\"gameboy.context.v1\",\"version\":1},\"value\":{\"available\":[\"b\"]}},\"nextInput\":{\"boundary\":\"42\",\"structured\":null,\"views\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"42\",\"viewId\":\"screen\"}]},\"preparedRequestId\":\"req-41\",\"rewards\":[{\"eventId\":\"evt-1\",\"ruleId\":\"badge\",\"value\":1.5}],\"taskStimulations\":[{\"durationMs\":25,\"id\":\"stim-2\",\"kindId\":\"sugar\"}]}",
+      "digest": "cb55fa3e34b0a895f69b59359035120fcd9205dfc8bb4b0b3cd5097b58852dd7"
+    },
+    {
+      "name": "commit params with empty outcome arrays",
+      "type": "CommitParams",
+      "value": {
+        "agentId": "fly-b",
+        "preparedRequestId": "req-41",
+        "nextInput": {
+          "boundary": "42",
+          "views": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "structured": null
+        },
+        "nextDecisionContext": {
+          "schema": {
+            "id": "gameboy.context.v1",
+            "version": 1,
+            "digest": "e37846f922a5c35b218684fb650d9f2566db7d93dc8eb0e2deb86e22860784b0"
+          },
+          "value": {
+            "available": []
+          }
+        },
+        "rewards": [],
+        "taskStimulations": []
+      },
+      "note": "",
+      "canonical": "{\"agentId\":\"fly-b\",\"nextDecisionContext\":{\"schema\":{\"digest\":\"e37846f922a5c35b218684fb650d9f2566db7d93dc8eb0e2deb86e22860784b0\",\"id\":\"gameboy.context.v1\",\"version\":1},\"value\":{\"available\":[]}},\"nextInput\":{\"boundary\":\"42\",\"structured\":null,\"views\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"42\",\"viewId\":\"screen\"}]},\"preparedRequestId\":\"req-41\",\"rewards\":[],\"taskStimulations\":[]}",
+      "digest": "698d48a40e9438e7973af49afa13e92f1e3d4681cea71bc75a38a8f41310f86b"
+    },
+    {
+      "name": "agent commit result",
+      "type": "AgentCommitResult",
+      "value": {
+        "agentId": "fly-a",
+        "committedStep": "42",
+        "decisionContextDigest": "ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4",
+        "telemetry": {
+          "brainTicks": "2534",
+          "populationRateHz": 12.5,
+          "rates": [
+            {
+              "roleId": "kenyon",
+              "hz": 3.25
+            },
+            {
+              "roleId": "mbon",
+              "hz": 0.0
+            }
+          ],
+          "learning": {
+            "enabled": true,
+            "updates": "4",
+            "changed": "2",
+            "signal": 0.5
+          }
+        }
+      },
+      "note": "",
+      "canonical": "{\"agentId\":\"fly-a\",\"committedStep\":\"42\",\"decisionContextDigest\":\"ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4\",\"telemetry\":{\"brainTicks\":\"2534\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}]}}",
+      "digest": "9f0a8812101f8f41a147846f6a94b67ae7898ca143fa3cf44ae3a3d5924cd17c"
+    },
+    {
+      "name": "controller schema",
+      "type": "ControllerSchema",
+      "value": {
+        "schema": {
+          "id": "gameboy.controller.v1",
+          "version": 1,
+          "digest": "b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5"
+        },
+        "buttons": [
+          "a",
+          "b",
+          "start",
+          "select",
+          "up",
+          "down",
+          "left",
+          "right"
+        ],
+        "axes": [
+          {
+            "id": "stick-x",
+            "range": "bipolar",
+            "neutral": 0.0
+          },
+          {
+            "id": "trigger",
+            "range": "unit",
+            "neutral": 0.0
+          }
+        ]
+      },
+      "note": "",
+      "canonical": "{\"axes\":[{\"id\":\"stick-x\",\"neutral\":0,\"range\":\"bipolar\"},{\"id\":\"trigger\",\"neutral\":0,\"range\":\"unit\"}],\"buttons\":[\"a\",\"b\",\"start\",\"select\",\"up\",\"down\",\"left\",\"right\"],\"schema\":{\"digest\":\"b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5\",\"id\":\"gameboy.controller.v1\",\"version\":1}}",
+      "digest": "4a551ed563aa1fae4a4598a5547eb58367ed9a81c3db706b89e7aca1fb50ff6d"
+    },
+    {
+      "name": "port control at neutral",
+      "type": "PortControl",
+      "value": {
+        "portId": "port-1",
+        "buttons": [
+          {
+            "id": "a",
+            "down": true
+          },
+          {
+            "id": "b",
+            "down": false
+          },
+          {
+            "id": "start",
+            "down": false
+          },
+          {
+            "id": "select",
+            "down": false
+          },
+          {
+            "id": "up",
+            "down": false
+          },
+          {
+            "id": "down",
+            "down": false
+          },
+          {
+            "id": "left",
+            "down": false
+          },
+          {
+            "id": "right",
+            "down": false
+          }
+        ],
+        "axes": [
+          {
+            "id": "stick-x",
+            "value": 0.0
+          },
+          {
+            "id": "trigger",
+            "value": 0.0
+          }
+        ]
+      },
+      "note": "",
+      "canonical": "{\"axes\":[{\"id\":\"stick-x\",\"value\":0},{\"id\":\"trigger\",\"value\":0}],\"buttons\":[{\"down\":true,\"id\":\"a\"},{\"down\":false,\"id\":\"b\"},{\"down\":false,\"id\":\"start\"},{\"down\":false,\"id\":\"select\"},{\"down\":false,\"id\":\"up\"},{\"down\":false,\"id\":\"down\"},{\"down\":false,\"id\":\"left\"},{\"down\":false,\"id\":\"right\"}],\"portId\":\"port-1\"}",
+      "digest": "305732269e99981d7cac457acd0f711ff3687ba9acab2af2fddb9587401456b5"
+    },
+    {
+      "name": "port control at the analog limits",
+      "type": "PortControl",
+      "value": {
+        "portId": "port-1",
+        "buttons": [
+          {
+            "id": "a",
+            "down": true
+          },
+          {
+            "id": "b",
+            "down": false
+          },
+          {
+            "id": "start",
+            "down": false
+          },
+          {
+            "id": "select",
+            "down": false
+          },
+          {
+            "id": "up",
+            "down": false
+          },
+          {
+            "id": "down",
+            "down": false
+          },
+          {
+            "id": "left",
+            "down": false
+          },
+          {
+            "id": "right",
+            "down": false
+          }
+        ],
+        "axes": [
+          {
+            "id": "stick-x",
+            "value": -1.0
+          },
+          {
+            "id": "trigger",
+            "value": 1.0
+          }
+        ]
+      },
+      "note": "",
+      "canonical": "{\"axes\":[{\"id\":\"stick-x\",\"value\":-1},{\"id\":\"trigger\",\"value\":1}],\"buttons\":[{\"down\":true,\"id\":\"a\"},{\"down\":false,\"id\":\"b\"},{\"down\":false,\"id\":\"start\"},{\"down\":false,\"id\":\"select\"},{\"down\":false,\"id\":\"up\"},{\"down\":false,\"id\":\"down\"},{\"down\":false,\"id\":\"left\"},{\"down\":false,\"id\":\"right\"}],\"portId\":\"port-1\"}",
+      "digest": "11cef7568389c537fd826845523021f3408762a5a8b8d7827e6a62e5a9116e02"
+    },
+    {
+      "name": "environment descriptor with one port",
+      "type": "EnvironmentDescriptor",
+      "value": {
+        "backendDigest": "10e08a419e850eba1ebba18fdd28eb7ec1b7e8baa9bcc3b973e2b8891ec726be",
+        "contentDigest": "ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+        "configurationDigest": "b7d64a9221007dfd5390f7df6cd5b8f3ea4f82faa1237141e35ebf161f5511a1",
+        "stepDuration": {
+          "numerator": "50000000",
+          "denominator": "3"
+        },
+        "ports": [
+          {
+            "portId": "port-1",
+            "controls": {
+              "schema": {
+                "id": "gameboy.controller.v1",
+                "version": 1,
+                "digest": "b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5"
+              },
+              "buttons": [
+                "a",
+                "b",
+                "start",
+                "select",
+                "up",
+                "down",
+                "left",
+                "right"
+              ],
+              "axes": [
+                {
+                  "id": "stick-x",
+                  "range": "bipolar",
+                  "neutral": 0.0
+                },
+                {
+                  "id": "trigger",
+                  "range": "unit",
+                  "neutral": 0.0
+                }
+              ]
+            }
+          }
+        ],
+        "inspectionSchema": {
+          "id": "gameboy.inspection.v1",
+          "version": 1,
+          "digest": "1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1"
+        },
+        "views": [
+          {
+            "viewId": "screen",
+            "width": 160,
+            "height": 144,
+            "format": "rgba8",
+            "rowStride": 640,
+            "pixelAspect": {
+              "numerator": 10,
+              "denominator": 11
+            },
+            "observationDelaySteps": 0
+          }
+        ],
+        "audio": [
+          {
+            "streamId": "mix",
+            "sampleRate": 48000,
+            "channels": 2,
+            "format": "f32le-interleaved"
+          }
+        ],
+        "recovery": "exact-checkpoint",
+        "determinism": "fixed-build"
+      },
+      "note": "",
+      "canonical": "{\"audio\":[{\"channels\":2,\"format\":\"f32le-interleaved\",\"sampleRate\":48000,\"streamId\":\"mix\"}],\"backendDigest\":\"10e08a419e850eba1ebba18fdd28eb7ec1b7e8baa9bcc3b973e2b8891ec726be\",\"configurationDigest\":\"b7d64a9221007dfd5390f7df6cd5b8f3ea4f82faa1237141e35ebf161f5511a1\",\"contentDigest\":\"ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"determinism\":\"fixed-build\",\"inspectionSchema\":{\"digest\":\"1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1\",\"id\":\"gameboy.inspection.v1\",\"version\":1},\"ports\":[{\"controls\":{\"axes\":[{\"id\":\"stick-x\",\"neutral\":0,\"range\":\"bipolar\"},{\"id\":\"trigger\",\"neutral\":0,\"range\":\"unit\"}],\"buttons\":[\"a\",\"b\",\"start\",\"select\",\"up\",\"down\",\"left\",\"right\"],\"schema\":{\"digest\":\"b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5\",\"id\":\"gameboy.controller.v1\",\"version\":1}},\"portId\":\"port-1\"}],\"recovery\":\"exact-checkpoint\",\"stepDuration\":{\"denominator\":\"3\",\"numerator\":\"50000000\"},\"views\":[{\"format\":\"rgba8\",\"height\":144,\"observationDelaySteps\":0,\"pixelAspect\":{\"denominator\":11,\"numerator\":10},\"rowStride\":640,\"viewId\":\"screen\",\"width\":160}]}",
+      "digest": "885834e2ba9a5dee35b12a7844768746aa2842fec2f07622ead180905fa11d8f"
+    },
+    {
+      "name": "environment descriptor with four ports",
+      "type": "EnvironmentDescriptor",
+      "value": {
+        "backendDigest": "10e08a419e850eba1ebba18fdd28eb7ec1b7e8baa9bcc3b973e2b8891ec726be",
+        "contentDigest": "ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+        "configurationDigest": "b7d64a9221007dfd5390f7df6cd5b8f3ea4f82faa1237141e35ebf161f5511a1",
+        "stepDuration": {
+          "numerator": "50000000",
+          "denominator": "3"
+        },
+        "ports": [
+          {
+            "portId": "port-1",
+            "controls": {
+              "schema": {
+                "id": "gameboy.controller.v1",
+                "version": 1,
+                "digest": "b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5"
+              },
+              "buttons": [
+                "a",
+                "b",
+                "start",
+                "select",
+                "up",
+                "down",
+                "left",
+                "right"
+              ],
+              "axes": [
+                {
+                  "id": "stick-x",
+                  "range": "bipolar",
+                  "neutral": 0.0
+                },
+                {
+                  "id": "trigger",
+                  "range": "unit",
+                  "neutral": 0.0
+                }
+              ]
+            }
+          },
+          {
+            "portId": "port-2",
+            "controls": {
+              "schema": {
+                "id": "gameboy.controller.v1",
+                "version": 1,
+                "digest": "b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5"
+              },
+              "buttons": [
+                "a",
+                "b",
+                "start",
+                "select",
+                "up",
+                "down",
+                "left",
+                "right"
+              ],
+              "axes": [
+                {
+                  "id": "stick-x",
+                  "range": "bipolar",
+                  "neutral": 0.0
+                },
+                {
+                  "id": "trigger",
+                  "range": "unit",
+                  "neutral": 0.0
+                }
+              ]
+            }
+          },
+          {
+            "portId": "port-3",
+            "controls": {
+              "schema": {
+                "id": "gameboy.controller.v1",
+                "version": 1,
+                "digest": "b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5"
+              },
+              "buttons": [
+                "a",
+                "b",
+                "start",
+                "select",
+                "up",
+                "down",
+                "left",
+                "right"
+              ],
+              "axes": [
+                {
+                  "id": "stick-x",
+                  "range": "bipolar",
+                  "neutral": 0.0
+                },
+                {
+                  "id": "trigger",
+                  "range": "unit",
+                  "neutral": 0.0
+                }
+              ]
+            }
+          },
+          {
+            "portId": "port-4",
+            "controls": {
+              "schema": {
+                "id": "gameboy.controller.v1",
+                "version": 1,
+                "digest": "b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5"
+              },
+              "buttons": [
+                "a",
+                "b",
+                "start",
+                "select",
+                "up",
+                "down",
+                "left",
+                "right"
+              ],
+              "axes": [
+                {
+                  "id": "stick-x",
+                  "range": "bipolar",
+                  "neutral": 0.0
+                },
+                {
+                  "id": "trigger",
+                  "range": "unit",
+                  "neutral": 0.0
+                }
+              ]
+            }
+          }
+        ],
+        "inspectionSchema": {
+          "id": "gameboy.inspection.v1",
+          "version": 1,
+          "digest": "1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1"
+        },
+        "views": [
+          {
+            "viewId": "screen",
+            "width": 160,
+            "height": 144,
+            "format": "rgba8",
+            "rowStride": 640,
+            "pixelAspect": {
+              "numerator": 10,
+              "denominator": 11
+            },
+            "observationDelaySteps": 0
+          }
+        ],
+        "audio": [
+          {
+            "streamId": "mix",
+            "sampleRate": 48000,
+            "channels": 2,
+            "format": "f32le-interleaved"
+          }
+        ],
+        "recovery": "exact-checkpoint",
+        "determinism": "fixed-build"
+      },
+      "note": "",
+      "canonical": "{\"audio\":[{\"channels\":2,\"format\":\"f32le-interleaved\",\"sampleRate\":48000,\"streamId\":\"mix\"}],\"backendDigest\":\"10e08a419e850eba1ebba18fdd28eb7ec1b7e8baa9bcc3b973e2b8891ec726be\",\"configurationDigest\":\"b7d64a9221007dfd5390f7df6cd5b8f3ea4f82faa1237141e35ebf161f5511a1\",\"contentDigest\":\"ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"determinism\":\"fixed-build\",\"inspectionSchema\":{\"digest\":\"1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1\",\"id\":\"gameboy.inspection.v1\",\"version\":1},\"ports\":[{\"controls\":{\"axes\":[{\"id\":\"stick-x\",\"neutral\":0,\"range\":\"bipolar\"},{\"id\":\"trigger\",\"neutral\":0,\"range\":\"unit\"}],\"buttons\":[\"a\",\"b\",\"start\",\"select\",\"up\",\"down\",\"left\",\"right\"],\"schema\":{\"digest\":\"b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5\",\"id\":\"gameboy.controller.v1\",\"version\":1}},\"portId\":\"port-1\"},{\"controls\":{\"axes\":[{\"id\":\"stick-x\",\"neutral\":0,\"range\":\"bipolar\"},{\"id\":\"trigger\",\"neutral\":0,\"range\":\"unit\"}],\"buttons\":[\"a\",\"b\",\"start\",\"select\",\"up\",\"down\",\"left\",\"right\"],\"schema\":{\"digest\":\"b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5\",\"id\":\"gameboy.controller.v1\",\"version\":1}},\"portId\":\"port-2\"},{\"controls\":{\"axes\":[{\"id\":\"stick-x\",\"neutral\":0,\"range\":\"bipolar\"},{\"id\":\"trigger\",\"neutral\":0,\"range\":\"unit\"}],\"buttons\":[\"a\",\"b\",\"start\",\"select\",\"up\",\"down\",\"left\",\"right\"],\"schema\":{\"digest\":\"b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5\",\"id\":\"gameboy.controller.v1\",\"version\":1}},\"portId\":\"port-3\"},{\"controls\":{\"axes\":[{\"id\":\"stick-x\",\"neutral\":0,\"range\":\"bipolar\"},{\"id\":\"trigger\",\"neutral\":0,\"range\":\"unit\"}],\"buttons\":[\"a\",\"b\",\"start\",\"select\",\"up\",\"down\",\"left\",\"right\"],\"schema\":{\"digest\":\"b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5\",\"id\":\"gameboy.controller.v1\",\"version\":1}},\"portId\":\"port-4\"}],\"recovery\":\"exact-checkpoint\",\"stepDuration\":{\"denominator\":\"3\",\"numerator\":\"50000000\"},\"views\":[{\"format\":\"rgba8\",\"height\":144,\"observationDelaySteps\":0,\"pixelAspect\":{\"denominator\":11,\"numerator\":10},\"rowStride\":640,\"viewId\":\"screen\",\"width\":160}]}",
+      "digest": "a8e29d9cdb27e83478f86450e8a24b287de2def947860ba0b85147ef9baf23ec"
+    },
+    {
+      "name": "environment descriptor that only restarts episodes",
+      "type": "EnvironmentDescriptor",
+      "value": {
+        "backendDigest": "10e08a419e850eba1ebba18fdd28eb7ec1b7e8baa9bcc3b973e2b8891ec726be",
+        "contentDigest": "ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+        "configurationDigest": "b7d64a9221007dfd5390f7df6cd5b8f3ea4f82faa1237141e35ebf161f5511a1",
+        "stepDuration": {
+          "numerator": "50000000",
+          "denominator": "3"
+        },
+        "ports": [
+          {
+            "portId": "port-1",
+            "controls": {
+              "schema": {
+                "id": "gameboy.controller.v1",
+                "version": 1,
+                "digest": "b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5"
+              },
+              "buttons": [
+                "a",
+                "b",
+                "start",
+                "select",
+                "up",
+                "down",
+                "left",
+                "right"
+              ],
+              "axes": [
+                {
+                  "id": "stick-x",
+                  "range": "bipolar",
+                  "neutral": 0.0
+                },
+                {
+                  "id": "trigger",
+                  "range": "unit",
+                  "neutral": 0.0
+                }
+              ]
+            }
+          }
+        ],
+        "inspectionSchema": {
+          "id": "gameboy.inspection.v1",
+          "version": 1,
+          "digest": "1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1"
+        },
+        "views": [
+          {
+            "viewId": "screen",
+            "width": 160,
+            "height": 144,
+            "format": "rgba8",
+            "rowStride": 640,
+            "pixelAspect": {
+              "numerator": 10,
+              "denominator": 11
+            },
+            "observationDelaySteps": 0
+          }
+        ],
+        "audio": [
+          {
+            "streamId": "mix",
+            "sampleRate": 48000,
+            "channels": 2,
+            "format": "f32le-interleaved"
+          }
+        ],
+        "recovery": "episode-restart",
+        "determinism": "fixed-build"
+      },
+      "note": "",
+      "canonical": "{\"audio\":[{\"channels\":2,\"format\":\"f32le-interleaved\",\"sampleRate\":48000,\"streamId\":\"mix\"}],\"backendDigest\":\"10e08a419e850eba1ebba18fdd28eb7ec1b7e8baa9bcc3b973e2b8891ec726be\",\"configurationDigest\":\"b7d64a9221007dfd5390f7df6cd5b8f3ea4f82faa1237141e35ebf161f5511a1\",\"contentDigest\":\"ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"determinism\":\"fixed-build\",\"inspectionSchema\":{\"digest\":\"1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1\",\"id\":\"gameboy.inspection.v1\",\"version\":1},\"ports\":[{\"controls\":{\"axes\":[{\"id\":\"stick-x\",\"neutral\":0,\"range\":\"bipolar\"},{\"id\":\"trigger\",\"neutral\":0,\"range\":\"unit\"}],\"buttons\":[\"a\",\"b\",\"start\",\"select\",\"up\",\"down\",\"left\",\"right\"],\"schema\":{\"digest\":\"b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5\",\"id\":\"gameboy.controller.v1\",\"version\":1}},\"portId\":\"port-1\"}],\"recovery\":\"episode-restart\",\"stepDuration\":{\"denominator\":\"3\",\"numerator\":\"50000000\"},\"views\":[{\"format\":\"rgba8\",\"height\":144,\"observationDelaySteps\":0,\"pixelAspect\":{\"denominator\":11,\"numerator\":10},\"rowStride\":640,\"viewId\":\"screen\",\"width\":160}]}",
+      "digest": "e46887f6c10989a8b1bcd8e5bfa40e66b33b3208389ee6ebad7907ca9277e6e3"
+    },
+    {
+      "name": "environment initialize params",
+      "type": "EnvironmentInitializeParams",
+      "value": {
+        "backendConfig": {
+          "id": "backend-gb",
+          "digest": "b86130f294ef46c5343a505946e6e0507f061d7a1bcf46f09c6d42e1aeb9a2a1",
+          "byteLength": "512",
+          "format": "flybackend"
+        },
+        "taskConfig": {
+          "id": "task-escape",
+          "digest": "b48eb1e3b6f871c6384b86387e59d4e3b6c69245168011968d5982204c656ac6",
+          "byteLength": "256",
+          "format": "flytask"
+        },
+        "episodeId": "episode-1",
+        "portBindings": [
+          {
+            "portId": "port-1",
+            "agentId": "fly-a"
+          }
+        ]
+      },
+      "note": "",
+      "canonical": "{\"backendConfig\":{\"byteLength\":\"512\",\"digest\":\"b86130f294ef46c5343a505946e6e0507f061d7a1bcf46f09c6d42e1aeb9a2a1\",\"format\":\"flybackend\",\"id\":\"backend-gb\"},\"episodeId\":\"episode-1\",\"portBindings\":[{\"agentId\":\"fly-a\",\"portId\":\"port-1\"}],\"taskConfig\":{\"byteLength\":\"256\",\"digest\":\"b48eb1e3b6f871c6384b86387e59d4e3b6c69245168011968d5982204c656ac6\",\"format\":\"flytask\",\"id\":\"task-escape\"}}",
+      "digest": "be5e458e0e900e16b3a4bb3befe032047463c5d2576f424e3c0f32d1ed194012"
+    },
+    {
+      "name": "environment initialize result at boundary zero",
+      "type": "EnvironmentInitializeResult",
+      "value": {
+        "descriptor": {
+          "backendDigest": "10e08a419e850eba1ebba18fdd28eb7ec1b7e8baa9bcc3b973e2b8891ec726be",
+          "contentDigest": "ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+          "configurationDigest": "b7d64a9221007dfd5390f7df6cd5b8f3ea4f82faa1237141e35ebf161f5511a1",
+          "stepDuration": {
+            "numerator": "50000000",
+            "denominator": "3"
+          },
+          "ports": [
+            {
+              "portId": "port-1",
+              "controls": {
+                "schema": {
+                  "id": "gameboy.controller.v1",
+                  "version": 1,
+                  "digest": "b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5"
+                },
+                "buttons": [
+                  "a",
+                  "b",
+                  "start",
+                  "select",
+                  "up",
+                  "down",
+                  "left",
+                  "right"
+                ],
+                "axes": [
+                  {
+                    "id": "stick-x",
+                    "range": "bipolar",
+                    "neutral": 0.0
+                  },
+                  {
+                    "id": "trigger",
+                    "range": "unit",
+                    "neutral": 0.0
+                  }
+                ]
+              }
+            }
+          ],
+          "inspectionSchema": {
+            "id": "gameboy.inspection.v1",
+            "version": 1,
+            "digest": "1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1"
+          },
+          "views": [
+            {
+              "viewId": "screen",
+              "width": 160,
+              "height": 144,
+              "format": "rgba8",
+              "rowStride": 640,
+              "pixelAspect": {
+                "numerator": 10,
+                "denominator": 11
+              },
+              "observationDelaySteps": 0
+            }
+          ],
+          "audio": [
+            {
+              "streamId": "mix",
+              "sampleRate": 48000,
+              "channels": 2,
+              "format": "f32le-interleaved"
+            }
+          ],
+          "recovery": "exact-checkpoint",
+          "determinism": "fixed-build"
+        },
+        "observation": {
+          "boundary": "0",
+          "worldTime": {
+            "numerator": "0",
+            "denominator": "1"
+          },
+          "engineFrame": null,
+          "sensoryViews": [
+            {
+              "viewId": "screen",
+              "producedStep": "0",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "inspection": {
+            "schema": {
+              "id": "gameboy.inspection.v1",
+              "version": 1,
+              "digest": "1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1"
+            },
+            "value": {
+              "map": 0,
+              "x": 0,
+              "y": 0
+            }
+          },
+          "broadcastViews": [],
+          "audio": []
+        }
+      },
+      "note": "",
+      "canonical": "{\"descriptor\":{\"audio\":[{\"channels\":2,\"format\":\"f32le-interleaved\",\"sampleRate\":48000,\"streamId\":\"mix\"}],\"backendDigest\":\"10e08a419e850eba1ebba18fdd28eb7ec1b7e8baa9bcc3b973e2b8891ec726be\",\"configurationDigest\":\"b7d64a9221007dfd5390f7df6cd5b8f3ea4f82faa1237141e35ebf161f5511a1\",\"contentDigest\":\"ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"determinism\":\"fixed-build\",\"inspectionSchema\":{\"digest\":\"1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1\",\"id\":\"gameboy.inspection.v1\",\"version\":1},\"ports\":[{\"controls\":{\"axes\":[{\"id\":\"stick-x\",\"neutral\":0,\"range\":\"bipolar\"},{\"id\":\"trigger\",\"neutral\":0,\"range\":\"unit\"}],\"buttons\":[\"a\",\"b\",\"start\",\"select\",\"up\",\"down\",\"left\",\"right\"],\"schema\":{\"digest\":\"b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5\",\"id\":\"gameboy.controller.v1\",\"version\":1}},\"portId\":\"port-1\"}],\"recovery\":\"exact-checkpoint\",\"stepDuration\":{\"denominator\":\"3\",\"numerator\":\"50000000\"},\"views\":[{\"format\":\"rgba8\",\"height\":144,\"observationDelaySteps\":0,\"pixelAspect\":{\"denominator\":11,\"numerator\":10},\"rowStride\":640,\"viewId\":\"screen\",\"width\":160}]},\"observation\":{\"audio\":[],\"boundary\":\"0\",\"broadcastViews\":[],\"engineFrame\":null,\"inspection\":{\"schema\":{\"digest\":\"1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1\",\"id\":\"gameboy.inspection.v1\",\"version\":1},\"value\":{\"map\":0,\"x\":0,\"y\":0}},\"sensoryViews\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"0\",\"viewId\":\"screen\"}],\"worldTime\":{\"denominator\":\"1\",\"numerator\":\"0\"}}}",
+      "digest": "f7a51022984e5584f8cb366e09673a814755a4154520ba802867947f44824769"
+    },
+    {
+      "name": "world observation",
+      "type": "WorldObservation",
+      "value": {
+        "boundary": "1",
+        "worldTime": {
+          "numerator": "50000000",
+          "denominator": "3"
+        },
+        "engineFrame": "1",
+        "sensoryViews": [
+          {
+            "viewId": "screen",
+            "producedStep": "1",
+            "pixels": {
+              "storeId": "store-1",
+              "artifactId": "frame-1",
+              "generation": "1",
+              "byteLength": "92160",
+              "contentType": "image/x-rgba8",
+              "digest": null
+            }
+          }
+        ],
+        "inspection": {
+          "schema": {
+            "id": "gameboy.inspection.v1",
+            "version": 1,
+            "digest": "1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1"
+          },
+          "value": {
+            "map": 40,
+            "x": 5,
+            "y": 7
+          }
+        },
+        "broadcastViews": [
+          {
+            "viewId": "screen",
+            "producedStep": "1",
+            "pixels": {
+              "storeId": "store-1",
+              "artifactId": "frame-1",
+              "generation": "1",
+              "byteLength": "92160",
+              "contentType": "image/x-rgba8",
+              "digest": null
+            }
+          }
+        ],
+        "audio": [
+          {
+            "streamId": "mix",
+            "firstSample": "800",
+            "sampleFrames": 800,
+            "samples": {
+              "storeId": "store-1",
+              "artifactId": "audio-1",
+              "generation": "1",
+              "byteLength": "6400",
+              "contentType": "audio/x-f32le",
+              "digest": null
+            },
+            "discontinuity": false
+          }
+        ]
+      },
+      "note": "",
+      "canonical": "{\"audio\":[{\"discontinuity\":false,\"firstSample\":\"800\",\"sampleFrames\":800,\"samples\":{\"artifactId\":\"audio-1\",\"byteLength\":\"6400\",\"contentType\":\"audio/x-f32le\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"streamId\":\"mix\"}],\"boundary\":\"1\",\"broadcastViews\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"1\",\"viewId\":\"screen\"}],\"engineFrame\":\"1\",\"inspection\":{\"schema\":{\"digest\":\"1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1\",\"id\":\"gameboy.inspection.v1\",\"version\":1},\"value\":{\"map\":40,\"x\":5,\"y\":7}},\"sensoryViews\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"1\",\"viewId\":\"screen\"}],\"worldTime\":{\"denominator\":\"3\",\"numerator\":\"50000000\"}}",
+      "digest": "f60d51dab4cf43c98b55724ee33fae362092527c3e76ebc480eca3a3be4b47cd"
+    },
+    {
+      "name": "advance params",
+      "type": "AdvanceParams",
+      "value": {
+        "batchId": "batch-41",
+        "controls": [
+          {
+            "portId": "port-1",
+            "buttons": [
+              {
+                "id": "a",
+                "down": true
+              },
+              {
+                "id": "b",
+                "down": false
+              },
+              {
+                "id": "start",
+                "down": false
+              },
+              {
+                "id": "select",
+                "down": false
+              },
+              {
+                "id": "up",
+                "down": false
+              },
+              {
+                "id": "down",
+                "down": false
+              },
+              {
+                "id": "left",
+                "down": false
+              },
+              {
+                "id": "right",
+                "down": false
+              }
+            ],
+            "axes": [
+              {
+                "id": "stick-x",
+                "value": 0.0
+              },
+              {
+                "id": "trigger",
+                "value": 0.0
+              }
+            ]
+          }
+        ]
+      },
+      "note": "",
+      "canonical": "{\"batchId\":\"batch-41\",\"controls\":[{\"axes\":[{\"id\":\"stick-x\",\"value\":0},{\"id\":\"trigger\",\"value\":0}],\"buttons\":[{\"down\":true,\"id\":\"a\"},{\"down\":false,\"id\":\"b\"},{\"down\":false,\"id\":\"start\"},{\"down\":false,\"id\":\"select\"},{\"down\":false,\"id\":\"up\"},{\"down\":false,\"id\":\"down\"},{\"down\":false,\"id\":\"left\"},{\"down\":false,\"id\":\"right\"}],\"portId\":\"port-1\"}]}",
+      "digest": "1b6088e49d17d1d58d415348018f36be0df2b758f27267839d1d31cc434abe32"
+    },
+    {
+      "name": "advance params for four ports",
+      "type": "AdvanceParams",
+      "value": {
+        "batchId": "batch-41",
+        "controls": [
+          {
+            "portId": "port-1",
+            "buttons": [
+              {
+                "id": "a",
+                "down": true
+              },
+              {
+                "id": "b",
+                "down": false
+              },
+              {
+                "id": "start",
+                "down": false
+              },
+              {
+                "id": "select",
+                "down": false
+              },
+              {
+                "id": "up",
+                "down": false
+              },
+              {
+                "id": "down",
+                "down": false
+              },
+              {
+                "id": "left",
+                "down": false
+              },
+              {
+                "id": "right",
+                "down": false
+              }
+            ],
+            "axes": [
+              {
+                "id": "stick-x",
+                "value": 0.0
+              },
+              {
+                "id": "trigger",
+                "value": 0.0
+              }
+            ]
+          },
+          {
+            "portId": "port-2",
+            "buttons": [
+              {
+                "id": "a",
+                "down": true
+              },
+              {
+                "id": "b",
+                "down": false
+              },
+              {
+                "id": "start",
+                "down": false
+              },
+              {
+                "id": "select",
+                "down": false
+              },
+              {
+                "id": "up",
+                "down": false
+              },
+              {
+                "id": "down",
+                "down": false
+              },
+              {
+                "id": "left",
+                "down": false
+              },
+              {
+                "id": "right",
+                "down": false
+              }
+            ],
+            "axes": [
+              {
+                "id": "stick-x",
+                "value": 0.0
+              },
+              {
+                "id": "trigger",
+                "value": 0.0
+              }
+            ]
+          },
+          {
+            "portId": "port-3",
+            "buttons": [
+              {
+                "id": "a",
+                "down": true
+              },
+              {
+                "id": "b",
+                "down": false
+              },
+              {
+                "id": "start",
+                "down": false
+              },
+              {
+                "id": "select",
+                "down": false
+              },
+              {
+                "id": "up",
+                "down": false
+              },
+              {
+                "id": "down",
+                "down": false
+              },
+              {
+                "id": "left",
+                "down": false
+              },
+              {
+                "id": "right",
+                "down": false
+              }
+            ],
+            "axes": [
+              {
+                "id": "stick-x",
+                "value": 0.0
+              },
+              {
+                "id": "trigger",
+                "value": 0.0
+              }
+            ]
+          },
+          {
+            "portId": "port-4",
+            "buttons": [
+              {
+                "id": "a",
+                "down": true
+              },
+              {
+                "id": "b",
+                "down": false
+              },
+              {
+                "id": "start",
+                "down": false
+              },
+              {
+                "id": "select",
+                "down": false
+              },
+              {
+                "id": "up",
+                "down": false
+              },
+              {
+                "id": "down",
+                "down": false
+              },
+              {
+                "id": "left",
+                "down": false
+              },
+              {
+                "id": "right",
+                "down": false
+              }
+            ],
+            "axes": [
+              {
+                "id": "stick-x",
+                "value": 0.0
+              },
+              {
+                "id": "trigger",
+                "value": 0.0
+              }
+            ]
+          }
+        ]
+      },
+      "note": "",
+      "canonical": "{\"batchId\":\"batch-41\",\"controls\":[{\"axes\":[{\"id\":\"stick-x\",\"value\":0},{\"id\":\"trigger\",\"value\":0}],\"buttons\":[{\"down\":true,\"id\":\"a\"},{\"down\":false,\"id\":\"b\"},{\"down\":false,\"id\":\"start\"},{\"down\":false,\"id\":\"select\"},{\"down\":false,\"id\":\"up\"},{\"down\":false,\"id\":\"down\"},{\"down\":false,\"id\":\"left\"},{\"down\":false,\"id\":\"right\"}],\"portId\":\"port-1\"},{\"axes\":[{\"id\":\"stick-x\",\"value\":0},{\"id\":\"trigger\",\"value\":0}],\"buttons\":[{\"down\":true,\"id\":\"a\"},{\"down\":false,\"id\":\"b\"},{\"down\":false,\"id\":\"start\"},{\"down\":false,\"id\":\"select\"},{\"down\":false,\"id\":\"up\"},{\"down\":false,\"id\":\"down\"},{\"down\":false,\"id\":\"left\"},{\"down\":false,\"id\":\"right\"}],\"portId\":\"port-2\"},{\"axes\":[{\"id\":\"stick-x\",\"value\":0},{\"id\":\"trigger\",\"value\":0}],\"buttons\":[{\"down\":true,\"id\":\"a\"},{\"down\":false,\"id\":\"b\"},{\"down\":false,\"id\":\"start\"},{\"down\":false,\"id\":\"select\"},{\"down\":false,\"id\":\"up\"},{\"down\":false,\"id\":\"down\"},{\"down\":false,\"id\":\"left\"},{\"down\":false,\"id\":\"right\"}],\"portId\":\"port-3\"},{\"axes\":[{\"id\":\"stick-x\",\"value\":0},{\"id\":\"trigger\",\"value\":0}],\"buttons\":[{\"down\":true,\"id\":\"a\"},{\"down\":false,\"id\":\"b\"},{\"down\":false,\"id\":\"start\"},{\"down\":false,\"id\":\"select\"},{\"down\":false,\"id\":\"up\"},{\"down\":false,\"id\":\"down\"},{\"down\":false,\"id\":\"left\"},{\"down\":false,\"id\":\"right\"}],\"portId\":\"port-4\"}]}",
+      "digest": "a174e6849f0f02a4c160af2e487517f18bee3e58f3f0a7fa33a66afe5904df77"
+    },
+    {
+      "name": "step result",
+      "type": "StepResult",
+      "value": {
+        "batchId": "batch-41",
+        "appliedFromStep": "41",
+        "nextStep": "42",
+        "appliedControlsDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+        "observation": {
+          "boundary": "42",
+          "worldTime": {
+            "numerator": "50000000",
+            "denominator": "3"
+          },
+          "engineFrame": "1",
+          "sensoryViews": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "inspection": {
+            "schema": {
+              "id": "gameboy.inspection.v1",
+              "version": 1,
+              "digest": "1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1"
+            },
+            "value": {
+              "map": 40,
+              "x": 5,
+              "y": 7
+            }
+          },
+          "broadcastViews": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "audio": [
+            {
+              "streamId": "mix",
+              "firstSample": "33600",
+              "sampleFrames": 800,
+              "samples": {
+                "storeId": "store-1",
+                "artifactId": "audio-1",
+                "generation": "1",
+                "byteLength": "6400",
+                "contentType": "audio/x-f32le",
+                "digest": null
+              },
+              "discontinuity": false
+            }
+          ]
+        }
+      },
+      "note": "",
+      "canonical": "{\"appliedControlsDigest\":\"1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6\",\"appliedFromStep\":\"41\",\"batchId\":\"batch-41\",\"nextStep\":\"42\",\"observation\":{\"audio\":[{\"discontinuity\":false,\"firstSample\":\"33600\",\"sampleFrames\":800,\"samples\":{\"artifactId\":\"audio-1\",\"byteLength\":\"6400\",\"contentType\":\"audio/x-f32le\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"streamId\":\"mix\"}],\"boundary\":\"42\",\"broadcastViews\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"42\",\"viewId\":\"screen\"}],\"engineFrame\":\"1\",\"inspection\":{\"schema\":{\"digest\":\"1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1\",\"id\":\"gameboy.inspection.v1\",\"version\":1},\"value\":{\"map\":40,\"x\":5,\"y\":7}},\"sensoryViews\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"42\",\"viewId\":\"screen\"}],\"worldTime\":{\"denominator\":\"3\",\"numerator\":\"50000000\"}}}",
+      "digest": "afabd9118523470ac7ccc4caa8bb907b0bd6b79202b22c3d1cec0eaf33855e8f"
+    },
+    {
+      "name": "hello params",
+      "type": "HelloParams",
+      "value": {
+        "sessionId": "demo",
+        "expectedWorkerId": "fly-a",
+        "role": "agent",
+        "supportedMajors": [
+          1
+        ]
+      },
+      "note": "",
+      "canonical": "{\"expectedWorkerId\":\"fly-a\",\"role\":\"agent\",\"sessionId\":\"demo\",\"supportedMajors\":[1]}",
+      "digest": "d1d183576de14e9a4f3a247e86b467520f5ee48b861ff1f78c2e21aa6c65acb4"
+    },
+    {
+      "name": "hello result for an agent",
+      "type": "HelloResult",
+      "value": {
+        "selectedMajor": 1,
+        "selectedMinor": 0,
+        "workerId": "fly-a",
+        "incarnationId": "inc-1",
+        "role": "agent",
+        "buildDigest": "44575cf5b28512d75644bf54a517dcef304ff809fd511747621b4d64f19aac66",
+        "contractDigest": "cc8321d6375c494d043fdd0260f21bc0ec51dacc9f6abb7f909cdcd3041b78bf",
+        "capabilities": [
+          "agent-step-v1",
+          "checkpoint-v1",
+          "pixel-observation-v1"
+        ],
+        "limits": {
+          "maxAgents": 4,
+          "maxPorts": 4
+        }
+      },
+      "note": "",
+      "canonical": "{\"buildDigest\":\"44575cf5b28512d75644bf54a517dcef304ff809fd511747621b4d64f19aac66\",\"capabilities\":[\"agent-step-v1\",\"checkpoint-v1\",\"pixel-observation-v1\"],\"contractDigest\":\"cc8321d6375c494d043fdd0260f21bc0ec51dacc9f6abb7f909cdcd3041b78bf\",\"incarnationId\":\"inc-1\",\"limits\":{\"maxAgents\":4,\"maxPorts\":4},\"role\":\"agent\",\"selectedMajor\":1,\"selectedMinor\":0,\"workerId\":\"fly-a\"}",
+      "digest": "9f8cbc9dfe7a7532c2e41b53c4ce001973ca95703a81aad30ee2b1c8b640bc13"
+    },
+    {
+      "name": "hello result for an environment",
+      "type": "HelloResult",
+      "value": {
+        "selectedMajor": 1,
+        "selectedMinor": 0,
+        "workerId": "world",
+        "incarnationId": "inc-2",
+        "role": "environment",
+        "buildDigest": "44575cf5b28512d75644bf54a517dcef304ff809fd511747621b4d64f19aac66",
+        "contractDigest": "cc8321d6375c494d043fdd0260f21bc0ec51dacc9f6abb7f909cdcd3041b78bf",
+        "capabilities": [
+          "world-step-v1",
+          "checkpoint-v1"
+        ],
+        "limits": {
+          "maxAgents": 1,
+          "maxPorts": 1
+        }
+      },
+      "note": "",
+      "canonical": "{\"buildDigest\":\"44575cf5b28512d75644bf54a517dcef304ff809fd511747621b4d64f19aac66\",\"capabilities\":[\"world-step-v1\",\"checkpoint-v1\"],\"contractDigest\":\"cc8321d6375c494d043fdd0260f21bc0ec51dacc9f6abb7f909cdcd3041b78bf\",\"incarnationId\":\"inc-2\",\"limits\":{\"maxAgents\":1,\"maxPorts\":1},\"role\":\"environment\",\"selectedMajor\":1,\"selectedMinor\":0,\"workerId\":\"world\"}",
+      "digest": "0dc33a6cbf6bf66c4d28dc41b17b2eb7918b55c65469f4161e009f662f11bca2"
+    },
+    {
+      "name": "status result before initialization",
+      "type": "StatusResult",
+      "value": {
+        "state": "uninitialized",
+        "currentScope": null,
+        "activeRequestId": null,
+        "lastCompletedRequestId": null,
+        "lastBatchId": null,
+        "progressCounter": "0"
+      },
+      "note": "",
+      "canonical": "{\"activeRequestId\":null,\"currentScope\":null,\"lastBatchId\":null,\"lastCompletedRequestId\":null,\"progressCounter\":\"0\",\"state\":\"uninitialized\"}",
+      "digest": "3c3fccc7e3f27a83bcadfd5cc081861039edd0845001c9dc5484d4b6042a1597"
+    },
+    {
+      "name": "status result while advancing",
+      "type": "StatusResult",
+      "value": {
+        "state": "advancing",
+        "currentScope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "41"
+        },
+        "activeRequestId": "req-41",
+        "lastCompletedRequestId": "req-40",
+        "lastBatchId": "batch-41",
+        "progressCounter": "9001"
+      },
+      "note": "",
+      "canonical": "{\"activeRequestId\":\"req-41\",\"currentScope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"},\"lastBatchId\":\"batch-41\",\"lastCompletedRequestId\":\"req-40\",\"progressCounter\":\"9001\",\"state\":\"advancing\"}",
+      "digest": "7685d8f26c9ac05e98b31e49623482473ce6562e7312fe7a07ad2d0140885442"
+    },
+    {
+      "name": "acknowledge params",
+      "type": "AcknowledgeParams",
+      "value": {
+        "requestIds": [
+          "req-1",
+          "req-2"
+        ]
+      },
+      "note": "",
+      "canonical": "{\"requestIds\":[\"req-1\",\"req-2\"]}",
+      "digest": "ecdd5329b6c03e60e4baa506410e49631cdc6c6bc69b91c4a587e990c1bc2d0b"
+    },
+    {
+      "name": "acknowledge params at the cap",
+      "type": "AcknowledgeParams",
+      "value": {
+        "requestIds": [
+          "req-1",
+          "req-2",
+          "req-3",
+          "req-4",
+          "req-5",
+          "req-6",
+          "req-7",
+          "req-8",
+          "req-9",
+          "req-10",
+          "req-11",
+          "req-12",
+          "req-13",
+          "req-14",
+          "req-15",
+          "req-16"
+        ]
+      },
+      "note": "",
+      "canonical": "{\"requestIds\":[\"req-1\",\"req-2\",\"req-3\",\"req-4\",\"req-5\",\"req-6\",\"req-7\",\"req-8\",\"req-9\",\"req-10\",\"req-11\",\"req-12\",\"req-13\",\"req-14\",\"req-15\",\"req-16\"]}",
+      "digest": "4f1bceb404d3fc6dce13ad4cd9fbb013b3d86a9c4ee9d6eaf0c333ee5d2f9a95"
+    },
+    {
+      "name": "acknowledge result dropping unknown ids",
+      "type": "AcknowledgeResult",
+      "value": {
+        "acknowledged": [
+          "req-1"
+        ]
+      },
+      "note": "",
+      "canonical": "{\"acknowledged\":[\"req-1\"]}",
+      "digest": "ef54663300ad31be91aac4d9fe3a30a8a043287865fe775ada4789dd4ce2c294"
+    },
+    {
+      "name": "shutdown params",
+      "type": "ShutdownParams",
+      "value": {
+        "reason": "operator-request"
+      },
+      "note": "",
+      "canonical": "{\"reason\":\"operator-request\"}",
+      "digest": "a69c521cf80c05893c9972bf7929c6ec1733314ece599bc6e650247adf74ec2b"
+    },
+    {
+      "name": "shutdown result",
+      "type": "ShutdownResult",
+      "value": {
+        "stopping": true
+      },
+      "note": "",
+      "canonical": "{\"stopping\":true}",
+      "digest": "345f7d009561b6b78b4a89f1a3e5aa15d7b3249c9037cfbaa61088deaae4ed3f"
+    },
+    {
+      "name": "task event for a transition",
+      "type": "TaskEvent",
+      "value": {
+        "id": "evt-1",
+        "kindId": "badge",
+        "sourceStep": "42",
+        "agentId": "fly-a",
+        "payload": {
+          "schema": {
+            "id": "pokemon.badge.v1",
+            "version": 1,
+            "digest": "8d3c215ae3088736279f7cd130ff173ed57101a729629983c553246dc9bd44db"
+          },
+          "value": {
+            "badge": 2
+          }
+        }
+      },
+      "note": "",
+      "canonical": "{\"agentId\":\"fly-a\",\"id\":\"evt-1\",\"kindId\":\"badge\",\"payload\":{\"schema\":{\"digest\":\"8d3c215ae3088736279f7cd130ff173ed57101a729629983c553246dc9bd44db\",\"id\":\"pokemon.badge.v1\",\"version\":1},\"value\":{\"badge\":2}},\"sourceStep\":\"42\"}",
+      "digest": "e4e879b453bce7b5560e6e31412b8e30b4ae5ad5baef4aaacd86fe64c72c61ed"
+    },
+    {
+      "name": "task event with no recipient",
+      "type": "TaskEvent",
+      "value": {
+        "id": "evt-2",
+        "kindId": "bootstrap",
+        "sourceStep": "0",
+        "agentId": null,
+        "payload": {
+          "schema": {
+            "id": "pokemon.bootstrap.v1",
+            "version": 1,
+            "digest": "88537024c85058bd9d01546dada047a39d341811d7e74b47fdcfceae728cb20d"
+          },
+          "value": {}
+        }
+      },
+      "note": "",
+      "canonical": "{\"agentId\":null,\"id\":\"evt-2\",\"kindId\":\"bootstrap\",\"payload\":{\"schema\":{\"digest\":\"88537024c85058bd9d01546dada047a39d341811d7e74b47fdcfceae728cb20d\",\"id\":\"pokemon.bootstrap.v1\",\"version\":1},\"value\":{}},\"sourceStep\":\"0\"}",
+      "digest": "f7b2de586eb822ea82a59380188478066717d51319cdb65d913e5d12f4fd5402"
+    },
+    {
+      "name": "terminal episode request",
+      "type": "EpisodeRequest",
+      "value": {
+        "kind": "terminal",
+        "reason": "game-over",
+        "outcome": {
+          "schema": {
+            "id": "pokemon.outcome.v1",
+            "version": 1,
+            "digest": "ca50728d52392393703acff8c15d1d40e0bf3c65d5eb2686037923a8c503a425"
+          },
+          "value": {
+            "rank": 10
+          }
+        }
+      },
+      "note": "",
+      "canonical": "{\"kind\":\"terminal\",\"outcome\":{\"schema\":{\"digest\":\"ca50728d52392393703acff8c15d1d40e0bf3c65d5eb2686037923a8c503a425\",\"id\":\"pokemon.outcome.v1\",\"version\":1},\"value\":{\"rank\":10}},\"reason\":\"game-over\"}",
+      "digest": "7bf1b49d1144d4cc9c8090e4f74fc7067ab7ac89a428f2cb4d39e97cb8e7df30"
+    },
+    {
+      "name": "view descriptor",
+      "type": "ViewDescriptor",
+      "value": {
+        "viewId": "screen",
+        "width": 160,
+        "height": 144,
+        "format": "rgba8",
+        "rowStride": 640,
+        "pixelAspect": {
+          "numerator": 10,
+          "denominator": 11
+        },
+        "observationDelaySteps": 0
+      },
+      "note": "",
+      "canonical": "{\"format\":\"rgba8\",\"height\":144,\"observationDelaySteps\":0,\"pixelAspect\":{\"denominator\":11,\"numerator\":10},\"rowStride\":640,\"viewId\":\"screen\",\"width\":160}",
+      "digest": "53979af7b85fd859eefb4724fc01f40e6d89bfa3f7c602532a9148ccf6e1df73"
+    },
+    {
+      "name": "view descriptor with a two step pipeline delay",
+      "type": "ViewDescriptor",
+      "value": {
+        "viewId": "screen",
+        "width": 160,
+        "height": 144,
+        "format": "rgba8",
+        "rowStride": 640,
+        "pixelAspect": {
+          "numerator": 10,
+          "denominator": 11
+        },
+        "observationDelaySteps": 2
+      },
+      "note": "",
+      "canonical": "{\"format\":\"rgba8\",\"height\":144,\"observationDelaySteps\":2,\"pixelAspect\":{\"denominator\":11,\"numerator\":10},\"rowStride\":640,\"viewId\":\"screen\",\"width\":160}",
+      "digest": "72454a1263266ec7660b78bb3df4f94cd13ec90813a282a57044182c80151498"
+    },
+    {
+      "name": "view reference",
+      "type": "ViewRef",
+      "value": {
+        "viewId": "screen",
+        "producedStep": "41",
+        "pixels": {
+          "storeId": "store-1",
+          "artifactId": "frame-1",
+          "generation": "1",
+          "byteLength": "92160",
+          "contentType": "image/x-rgba8",
+          "digest": null
+        }
+      },
+      "note": "",
+      "canonical": "{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"41\",\"viewId\":\"screen\"}",
+      "digest": "0e480b869f260e96dba893b9cb836cb4c98de67f1fbd7cd47d78c3be93a81efa"
+    },
+    {
+      "name": "audio descriptor",
+      "type": "AudioDescriptor",
+      "value": {
+        "streamId": "mix",
+        "sampleRate": 48000,
+        "channels": 2,
+        "format": "f32le-interleaved"
+      },
+      "note": "",
+      "canonical": "{\"channels\":2,\"format\":\"f32le-interleaved\",\"sampleRate\":48000,\"streamId\":\"mix\"}",
+      "digest": "0c04ad89aae871a1210e603abd4af011fe05e0b94284f41927eaa240e03b9a3c"
+    },
+    {
+      "name": "audio reference",
+      "type": "AudioRef",
+      "value": {
+        "streamId": "mix",
+        "firstSample": "0",
+        "sampleFrames": 800,
+        "samples": {
+          "storeId": "store-1",
+          "artifactId": "audio-1",
+          "generation": "1",
+          "byteLength": "6400",
+          "contentType": "audio/x-f32le",
+          "digest": null
+        },
+        "discontinuity": false
+      },
+      "note": "",
+      "canonical": "{\"discontinuity\":false,\"firstSample\":\"0\",\"sampleFrames\":800,\"samples\":{\"artifactId\":\"audio-1\",\"byteLength\":\"6400\",\"contentType\":\"audio/x-f32le\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"streamId\":\"mix\"}",
+      "digest": "0b3ae931f6c9b8854203a5aa17370cc36f9dff27bcfdb49e33edcb670b546cba"
+    },
+    {
+      "name": "audio reference marking a discontinuity",
+      "type": "AudioRef",
+      "value": {
+        "streamId": "mix",
+        "firstSample": "48000",
+        "sampleFrames": 800,
+        "samples": {
+          "storeId": "store-1",
+          "artifactId": "audio-1",
+          "generation": "1",
+          "byteLength": "6400",
+          "contentType": "audio/x-f32le",
+          "digest": null
+        },
+        "discontinuity": true
+      },
+      "note": "",
+      "canonical": "{\"discontinuity\":true,\"firstSample\":\"48000\",\"sampleFrames\":800,\"samples\":{\"artifactId\":\"audio-1\",\"byteLength\":\"6400\",\"contentType\":\"audio/x-f32le\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"streamId\":\"mix\"}",
+      "digest": "e1ef310a3f4e93f392e36354d376701cf9a407f9fc56c0d5f52bfd15f3b3ea1f"
+    },
+    {
+      "name": "empty audio chunk",
+      "type": "AudioRef",
+      "value": {
+        "streamId": "mix",
+        "firstSample": "0",
+        "sampleFrames": 0,
+        "samples": {
+          "storeId": "store-1",
+          "artifactId": "audio-empty",
+          "generation": "1",
+          "byteLength": "0",
+          "contentType": "audio/x-f32le",
+          "digest": null
+        },
+        "discontinuity": true
+      },
+      "note": "",
+      "canonical": "{\"discontinuity\":true,\"firstSample\":\"0\",\"sampleFrames\":0,\"samples\":{\"artifactId\":\"audio-empty\",\"byteLength\":\"0\",\"contentType\":\"audio/x-f32le\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"streamId\":\"mix\"}",
+      "digest": "0ff6dcec5a76aa3e6347026f05704c34207c39dbe8f582c7ad329ac1cd3aba57"
+    },
+    {
+      "name": "capture params",
+      "type": "CaptureParams",
+      "value": {
+        "checkpointId": "ckpt-1"
+      },
+      "note": "",
+      "canonical": "{\"checkpointId\":\"ckpt-1\"}",
+      "digest": "0840127e4277d0eac4d69dd88468c7737d0a8b64aad12ef554a25e4a7c653baa"
+    },
+    {
+      "name": "capture result",
+      "type": "CaptureResult",
+      "value": {
+        "checkpointId": "ckpt-1",
+        "boundary": "42",
+        "compatibilityDigest": "2b33a9570d42f8af1c84dbe8b8c9bb50664f9b19ca8f7ee100548b9945a52f5d",
+        "payload": {
+          "storeId": "store-1",
+          "artifactId": "payload-1",
+          "generation": "1",
+          "byteLength": "1024",
+          "contentType": "application/octet-stream",
+          "digest": "239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"
+        }
+      },
+      "note": "",
+      "canonical": "{\"boundary\":\"42\",\"checkpointId\":\"ckpt-1\",\"compatibilityDigest\":\"2b33a9570d42f8af1c84dbe8b8c9bb50664f9b19ca8f7ee100548b9945a52f5d\",\"payload\":{\"artifactId\":\"payload-1\",\"byteLength\":\"1024\",\"contentType\":\"application/octet-stream\",\"digest\":\"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5\",\"generation\":\"1\",\"storeId\":\"store-1\"}}",
+      "digest": "73ef46de54c10ca8a28bb9c71aecb25199c995027af7271ca4bad9d2540a61c3"
+    },
+    {
+      "name": "stage restore params",
+      "type": "StageRestoreParams",
+      "value": {
+        "checkpointId": "ckpt-1",
+        "sourceScope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "42"
+        },
+        "compatibilityDigest": "2b33a9570d42f8af1c84dbe8b8c9bb50664f9b19ca8f7ee100548b9945a52f5d",
+        "payload": {
+          "storeId": "store-1",
+          "artifactId": "payload-2",
+          "generation": "1",
+          "byteLength": "1024",
+          "contentType": "application/octet-stream",
+          "digest": "239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"
+        }
+      },
+      "note": "",
+      "canonical": "{\"checkpointId\":\"ckpt-1\",\"compatibilityDigest\":\"2b33a9570d42f8af1c84dbe8b8c9bb50664f9b19ca8f7ee100548b9945a52f5d\",\"payload\":{\"artifactId\":\"payload-2\",\"byteLength\":\"1024\",\"contentType\":\"application/octet-stream\",\"digest\":\"239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5\",\"generation\":\"1\",\"storeId\":\"store-1\"},\"sourceScope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"42\"}}",
+      "digest": "da479328a30068075fd8702cd53e06e2aaecd8ddc9b015998ee7901e8a2dcab0"
+    },
+    {
+      "name": "stage restore result",
+      "type": "StageRestoreResult",
+      "value": {
+        "checkpointId": "ckpt-1",
+        "restoreToken": "restore-1"
+      },
+      "note": "",
+      "canonical": "{\"checkpointId\":\"ckpt-1\",\"restoreToken\":\"restore-1\"}",
+      "digest": "006d551d31d2cb4a6d850a8bb4f19ba16b4173835fda5eda8f6806cb03ec163b"
+    },
+    {
+      "name": "activate restore params",
+      "type": "ActivateRestoreParams",
+      "value": {
+        "restoreToken": "restore-1"
+      },
+      "note": "",
+      "canonical": "{\"restoreToken\":\"restore-1\"}",
+      "digest": "fadaacb907911c4402937640c711d3368bfe348842916856d34750795bad6ee3"
+    },
+    {
+      "name": "activate restore result for an agent",
+      "type": "ActivateRestoreResult",
+      "value": {
+        "committedStep": "42",
+        "checkpointId": "ckpt-1",
+        "observation": null
+      },
+      "note": "",
+      "canonical": "{\"checkpointId\":\"ckpt-1\",\"committedStep\":\"42\",\"observation\":null}",
+      "digest": "eec98a58c81ad50c3dcd4406c743c7139e60108869dedbfd6d55a2f037bcd41a"
+    },
+    {
+      "name": "activate restore result for an environment",
+      "type": "ActivateRestoreResult",
+      "value": {
+        "committedStep": "42",
+        "checkpointId": "ckpt-1",
+        "observation": {
+          "boundary": "42",
+          "worldTime": {
+            "numerator": "50000000",
+            "denominator": "3"
+          },
+          "engineFrame": "1",
+          "sensoryViews": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "inspection": {
+            "schema": {
+              "id": "gameboy.inspection.v1",
+              "version": 1,
+              "digest": "1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1"
+            },
+            "value": {
+              "map": 40,
+              "x": 5,
+              "y": 7
+            }
+          },
+          "broadcastViews": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "audio": [
+            {
+              "streamId": "mix",
+              "firstSample": "33600",
+              "sampleFrames": 800,
+              "samples": {
+                "storeId": "store-1",
+                "artifactId": "audio-1",
+                "generation": "1",
+                "byteLength": "6400",
+                "contentType": "audio/x-f32le",
+                "digest": null
+              },
+              "discontinuity": false
+            }
+          ]
+        }
+      },
+      "note": "",
+      "canonical": "{\"checkpointId\":\"ckpt-1\",\"committedStep\":\"42\",\"observation\":{\"audio\":[{\"discontinuity\":false,\"firstSample\":\"33600\",\"sampleFrames\":800,\"samples\":{\"artifactId\":\"audio-1\",\"byteLength\":\"6400\",\"contentType\":\"audio/x-f32le\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"streamId\":\"mix\"}],\"boundary\":\"42\",\"broadcastViews\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"42\",\"viewId\":\"screen\"}],\"engineFrame\":\"1\",\"inspection\":{\"schema\":{\"digest\":\"1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1\",\"id\":\"gameboy.inspection.v1\",\"version\":1},\"value\":{\"map\":40,\"x\":5,\"y\":7}},\"sensoryViews\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"42\",\"viewId\":\"screen\"}],\"worldTime\":{\"denominator\":\"3\",\"numerator\":\"50000000\"}}}",
+      "digest": "90950aaf244f6f779268687db63b69c3cb1ee316de2541fcf0b1fa393a34b819"
+    },
+    {
+      "name": "session descriptor",
+      "type": "SessionDescriptor",
+      "value": {
+        "sessionId": "demo",
+        "revision": "7",
+        "compositionDigest": "730d725c8a59d3a7303def2bed041a577edb4255aabd4889ce12918311d952f0",
+        "schedulerId": "lockstep-v1",
+        "environment": {
+          "backendDigest": "10e08a419e850eba1ebba18fdd28eb7ec1b7e8baa9bcc3b973e2b8891ec726be",
+          "contentDigest": "ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+          "configurationDigest": "b7d64a9221007dfd5390f7df6cd5b8f3ea4f82faa1237141e35ebf161f5511a1",
+          "stepDuration": {
+            "numerator": "50000000",
+            "denominator": "3"
+          },
+          "ports": [
+            {
+              "portId": "port-1",
+              "controls": {
+                "schema": {
+                  "id": "gameboy.controller.v1",
+                  "version": 1,
+                  "digest": "b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5"
+                },
+                "buttons": [
+                  "a",
+                  "b",
+                  "start",
+                  "select",
+                  "up",
+                  "down",
+                  "left",
+                  "right"
+                ],
+                "axes": [
+                  {
+                    "id": "stick-x",
+                    "range": "bipolar",
+                    "neutral": 0.0
+                  },
+                  {
+                    "id": "trigger",
+                    "range": "unit",
+                    "neutral": 0.0
+                  }
+                ]
+              }
+            }
+          ],
+          "inspectionSchema": {
+            "id": "gameboy.inspection.v1",
+            "version": 1,
+            "digest": "1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1"
+          },
+          "views": [
+            {
+              "viewId": "screen",
+              "width": 160,
+              "height": 144,
+              "format": "rgba8",
+              "rowStride": 640,
+              "pixelAspect": {
+                "numerator": 10,
+                "denominator": 11
+              },
+              "observationDelaySteps": 0
+            }
+          ],
+          "audio": [
+            {
+              "streamId": "mix",
+              "sampleRate": 48000,
+              "channels": 2,
+              "format": "f32le-interleaved"
+            }
+          ],
+          "recovery": "exact-checkpoint",
+          "determinism": "fixed-build"
+        },
+        "taskSchema": {
+          "id": "pokemon.task.v1",
+          "version": 1,
+          "digest": "e4ca46e969a0f0e53a4f537561360851269e0b3f684eccaa634fe9672fdaabb4"
+        },
+        "agents": [
+          {
+            "agentId": "fly-a",
+            "portId": "port-1",
+            "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+            "datasetDigest": "6c0af1f0784ef63a393ee77d614e8246c625051360f3f1a48838374c5d355b52",
+            "indexDigest": "1bc04b5291c26a46d918139138b992d2de976d6851d0893b0476b85bfbdfc6e6",
+            "neuronCount": "139255",
+            "rateRoles": [
+              "kenyon",
+              "mbon"
+            ],
+            "supportedStimuli": [
+              "sugar"
+            ]
+          }
+        ],
+        "assets": [
+          {
+            "id": "profile-fly-a",
+            "digest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+            "byteLength": "4096",
+            "format": "flyprofile"
+          }
+        ]
+      },
+      "note": "",
+      "canonical": "{\"agents\":[{\"agentId\":\"fly-a\",\"datasetDigest\":\"6c0af1f0784ef63a393ee77d614e8246c625051360f3f1a48838374c5d355b52\",\"indexDigest\":\"1bc04b5291c26a46d918139138b992d2de976d6851d0893b0476b85bfbdfc6e6\",\"neuronCount\":\"139255\",\"portId\":\"port-1\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"rateRoles\":[\"kenyon\",\"mbon\"],\"supportedStimuli\":[\"sugar\"]}],\"assets\":[{\"byteLength\":\"4096\",\"digest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"format\":\"flyprofile\",\"id\":\"profile-fly-a\"}],\"compositionDigest\":\"730d725c8a59d3a7303def2bed041a577edb4255aabd4889ce12918311d952f0\",\"environment\":{\"audio\":[{\"channels\":2,\"format\":\"f32le-interleaved\",\"sampleRate\":48000,\"streamId\":\"mix\"}],\"backendDigest\":\"10e08a419e850eba1ebba18fdd28eb7ec1b7e8baa9bcc3b973e2b8891ec726be\",\"configurationDigest\":\"b7d64a9221007dfd5390f7df6cd5b8f3ea4f82faa1237141e35ebf161f5511a1\",\"contentDigest\":\"ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73\",\"determinism\":\"fixed-build\",\"inspectionSchema\":{\"digest\":\"1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1\",\"id\":\"gameboy.inspection.v1\",\"version\":1},\"ports\":[{\"controls\":{\"axes\":[{\"id\":\"stick-x\",\"neutral\":0,\"range\":\"bipolar\"},{\"id\":\"trigger\",\"neutral\":0,\"range\":\"unit\"}],\"buttons\":[\"a\",\"b\",\"start\",\"select\",\"up\",\"down\",\"left\",\"right\"],\"schema\":{\"digest\":\"b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5\",\"id\":\"gameboy.controller.v1\",\"version\":1}},\"portId\":\"port-1\"}],\"recovery\":\"exact-checkpoint\",\"stepDuration\":{\"denominator\":\"3\",\"numerator\":\"50000000\"},\"views\":[{\"format\":\"rgba8\",\"height\":144,\"observationDelaySteps\":0,\"pixelAspect\":{\"denominator\":11,\"numerator\":10},\"rowStride\":640,\"viewId\":\"screen\",\"width\":160}]},\"revision\":\"7\",\"schedulerId\":\"lockstep-v1\",\"sessionId\":\"demo\",\"taskSchema\":{\"digest\":\"e4ca46e969a0f0e53a4f537561360851269e0b3f684eccaa634fe9672fdaabb4\",\"id\":\"pokemon.task.v1\",\"version\":1}}",
+      "digest": "58857f4d64c19fdda320e8b3f857c6964d12748d01b7ba5a4fd40fc4393529e8"
+    },
+    {
+      "name": "committed snapshot at boundary zero",
+      "type": "CommittedSnapshot",
+      "value": {
+        "descriptorRevision": "7",
+        "publisherIncarnation": "pub-1",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "0"
+        },
+        "episodeId": "episode-1",
+        "sequence": "0",
+        "worldTime": {
+          "numerator": "0",
+          "denominator": "1"
+        },
+        "agents": [
+          {
+            "agentId": "fly-a",
+            "telemetry": {
+              "brainTicks": "2500",
+              "populationRateHz": 12.5,
+              "rates": [
+                {
+                  "roleId": "kenyon",
+                  "hz": 3.25
+                },
+                {
+                  "roleId": "mbon",
+                  "hz": 0.0
+                }
+              ],
+              "learning": {
+                "enabled": true,
+                "updates": "4",
+                "changed": "2",
+                "signal": 0.5
+              }
+            },
+            "selectedDecision": null,
+            "appliedControls": null
+          }
+        ],
+        "progress": {
+          "schema": {
+            "id": "pokemon.progress.v1",
+            "version": 1,
+            "digest": "80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1"
+          },
+          "value": {
+            "rank": 0
+          }
+        },
+        "media": {
+          "views": [
+            {
+              "viewId": "screen",
+              "producedStep": "0",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "audio": []
+        },
+        "eventIds": []
+      },
+      "note": "",
+      "canonical": "{\"agents\":[{\"agentId\":\"fly-a\",\"appliedControls\":null,\"selectedDecision\":null,\"telemetry\":{\"brainTicks\":\"2500\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}]}}],\"descriptorRevision\":\"7\",\"episodeId\":\"episode-1\",\"eventIds\":[],\"media\":{\"audio\":[],\"views\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"0\",\"viewId\":\"screen\"}]},\"progress\":{\"schema\":{\"digest\":\"80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1\",\"id\":\"pokemon.progress.v1\",\"version\":1},\"value\":{\"rank\":0}},\"publisherIncarnation\":\"pub-1\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"0\"},\"sequence\":\"0\",\"worldTime\":{\"denominator\":\"1\",\"numerator\":\"0\"}}",
+      "digest": "e9c432eee00e95c28d8a12428aaa9cb71568bcaf079b557b01fb1fde26723da9"
+    },
+    {
+      "name": "committed snapshot after a transition",
+      "type": "CommittedSnapshot",
+      "value": {
+        "descriptorRevision": "7",
+        "publisherIncarnation": "pub-1",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "42"
+        },
+        "episodeId": "episode-1",
+        "sequence": "42",
+        "worldTime": {
+          "numerator": "700000000",
+          "denominator": "1"
+        },
+        "agents": [
+          {
+            "agentId": "fly-a",
+            "telemetry": {
+              "brainTicks": "2534",
+              "populationRateHz": 12.5,
+              "rates": [
+                {
+                  "roleId": "kenyon",
+                  "hz": 3.25
+                },
+                {
+                  "roleId": "mbon",
+                  "hz": 0.0
+                }
+              ],
+              "learning": {
+                "enabled": true,
+                "updates": "4",
+                "changed": "2",
+                "signal": 0.5
+              }
+            },
+            "selectedDecision": {
+              "schema": {
+                "id": "gameboy.intent.v1",
+                "version": 1,
+                "digest": "e70451b26fb5462ec63729d8355912dad01c3963a95bec0e6a8452375717ad9d"
+              },
+              "value": {
+                "press": "a"
+              }
+            },
+            "appliedControls": {
+              "portId": "port-1",
+              "buttons": [
+                {
+                  "id": "a",
+                  "down": true
+                },
+                {
+                  "id": "b",
+                  "down": false
+                },
+                {
+                  "id": "start",
+                  "down": false
+                },
+                {
+                  "id": "select",
+                  "down": false
+                },
+                {
+                  "id": "up",
+                  "down": false
+                },
+                {
+                  "id": "down",
+                  "down": false
+                },
+                {
+                  "id": "left",
+                  "down": false
+                },
+                {
+                  "id": "right",
+                  "down": false
+                }
+              ],
+              "axes": [
+                {
+                  "id": "stick-x",
+                  "value": 0.0
+                },
+                {
+                  "id": "trigger",
+                  "value": 0.0
+                }
+              ]
+            }
+          }
+        ],
+        "progress": {
+          "schema": {
+            "id": "pokemon.progress.v1",
+            "version": 1,
+            "digest": "80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1"
+          },
+          "value": {
+            "rank": 10
+          }
+        },
+        "media": {
+          "views": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "audio": [
+            {
+              "streamId": "mix",
+              "firstSample": "33600",
+              "sampleFrames": 800,
+              "samples": {
+                "storeId": "store-1",
+                "artifactId": "audio-1",
+                "generation": "1",
+                "byteLength": "6400",
+                "contentType": "audio/x-f32le",
+                "digest": null
+              },
+              "discontinuity": false
+            }
+          ]
+        },
+        "eventIds": [
+          "evt-1"
+        ]
+      },
+      "note": "",
+      "canonical": "{\"agents\":[{\"agentId\":\"fly-a\",\"appliedControls\":{\"axes\":[{\"id\":\"stick-x\",\"value\":0},{\"id\":\"trigger\",\"value\":0}],\"buttons\":[{\"down\":true,\"id\":\"a\"},{\"down\":false,\"id\":\"b\"},{\"down\":false,\"id\":\"start\"},{\"down\":false,\"id\":\"select\"},{\"down\":false,\"id\":\"up\"},{\"down\":false,\"id\":\"down\"},{\"down\":false,\"id\":\"left\"},{\"down\":false,\"id\":\"right\"}],\"portId\":\"port-1\"},\"selectedDecision\":{\"schema\":{\"digest\":\"e70451b26fb5462ec63729d8355912dad01c3963a95bec0e6a8452375717ad9d\",\"id\":\"gameboy.intent.v1\",\"version\":1},\"value\":{\"press\":\"a\"}},\"telemetry\":{\"brainTicks\":\"2534\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}]}}],\"descriptorRevision\":\"7\",\"episodeId\":\"episode-1\",\"eventIds\":[\"evt-1\"],\"media\":{\"audio\":[{\"discontinuity\":false,\"firstSample\":\"33600\",\"sampleFrames\":800,\"samples\":{\"artifactId\":\"audio-1\",\"byteLength\":\"6400\",\"contentType\":\"audio/x-f32le\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"streamId\":\"mix\"}],\"views\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"42\",\"viewId\":\"screen\"}]},\"progress\":{\"schema\":{\"digest\":\"80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1\",\"id\":\"pokemon.progress.v1\",\"version\":1},\"value\":{\"rank\":10}},\"publisherIncarnation\":\"pub-1\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"42\"},\"sequence\":\"42\",\"worldTime\":{\"denominator\":\"1\",\"numerator\":\"700000000\"}}",
+      "digest": "d5ed83ccb866318b3cf17b53c8a5b1dea2f404b10649f6b640bf5f2b88a31435"
+    },
+    {
+      "name": "transition trace",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42"
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ]
+        }
+      },
+      "note": "",
+      "canonical": "{\"behaviour\":{\"acknowledgedBoundary\":\"42\",\"agents\":[{\"agentId\":\"fly-a\",\"brainTicks\":\"2517\",\"committedStep\":\"42\",\"decisionDigest\":\"a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"3\",\"numerator\":\"1000000\"},\"ticksAdvanced\":\"17\"},{\"agentId\":\"fly-b\",\"brainTicks\":\"2550\",\"committedStep\":\"42\",\"decisionDigest\":\"ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"1\",\"numerator\":\"0\"},\"ticksAdvanced\":\"17\"}],\"batchId\":\"batch-41\",\"controlDigest\":\"1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6\",\"eventIds\":[\"evt-1\"],\"observationBoundaries\":[{\"producedStep\":\"42\",\"viewId\":\"screen\"}],\"outcomeIds\":[\"outcome-1\"],\"publishedBoundary\":\"42\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"}},\"operational\":{\"advanceRequestId\":\"req-43\",\"busCallIds\":[\"call-100\",\"call-101\",\"call-102\"],\"commitRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-44\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-45\"}],\"deliveryIds\":[\"dlv-7\",\"own-9\"],\"prepareRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-41\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-42\"}],\"wallTimeNs\":\"1234567890\"}}",
+      "digest": "707701d6dcf5529a67cc9b1e300d5e1a273b9a7b02d91154d4a2a1978cd8e549"
+    },
+    {
+      "name": "trace behaviour on its own",
+      "type": "TraceBehaviour",
+      "value": {
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "41"
+        },
+        "agents": [
+          {
+            "agentId": "fly-a",
+            "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+            "ticksAdvanced": "17",
+            "brainTicks": "2517",
+            "remainder": {
+              "numerator": "1000000",
+              "denominator": "3"
+            },
+            "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+            "committedStep": "42"
+          },
+          {
+            "agentId": "fly-b",
+            "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+            "ticksAdvanced": "17",
+            "brainTicks": "2550",
+            "remainder": {
+              "numerator": "0",
+              "denominator": "1"
+            },
+            "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+            "committedStep": "42"
+          }
+        ],
+        "batchId": "batch-41",
+        "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+        "acknowledgedBoundary": "42",
+        "observationBoundaries": [
+          {
+            "viewId": "screen",
+            "producedStep": "42"
+          }
+        ],
+        "outcomeIds": [
+          "outcome-1"
+        ],
+        "eventIds": [
+          "evt-1"
+        ],
+        "publishedBoundary": "42"
+      },
+      "note": "the half two runs must agree on",
+      "canonical": "{\"acknowledgedBoundary\":\"42\",\"agents\":[{\"agentId\":\"fly-a\",\"brainTicks\":\"2517\",\"committedStep\":\"42\",\"decisionDigest\":\"a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"3\",\"numerator\":\"1000000\"},\"ticksAdvanced\":\"17\"},{\"agentId\":\"fly-b\",\"brainTicks\":\"2550\",\"committedStep\":\"42\",\"decisionDigest\":\"ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"1\",\"numerator\":\"0\"},\"ticksAdvanced\":\"17\"}],\"batchId\":\"batch-41\",\"controlDigest\":\"1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6\",\"eventIds\":[\"evt-1\"],\"observationBoundaries\":[{\"producedStep\":\"42\",\"viewId\":\"screen\"}],\"outcomeIds\":[\"outcome-1\"],\"publishedBoundary\":\"42\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"}}",
+      "digest": "d938188fe3006537dbc0038fabf2a05df584e64b361b1106d79f3f965dff414a"
+    },
+    {
+      "name": "trace operational metadata on its own",
+      "type": "TraceOperational",
+      "value": {
+        "wallTimeNs": "1234567890",
+        "prepareRequestIds": [
+          {
+            "agentId": "fly-a",
+            "requestId": "req-41"
+          },
+          {
+            "agentId": "fly-b",
+            "requestId": "req-42"
+          }
+        ],
+        "advanceRequestId": "req-43",
+        "commitRequestIds": [
+          {
+            "agentId": "fly-a",
+            "requestId": "req-44"
+          },
+          {
+            "agentId": "fly-b",
+            "requestId": "req-45"
+          }
+        ],
+        "busCallIds": [
+          "call-100",
+          "call-101",
+          "call-102"
+        ],
+        "deliveryIds": [
+          "dlv-7",
+          "own-9"
+        ]
+      },
+      "note": "recorded by step-v1 section 8, excluded from its comparison",
+      "canonical": "{\"advanceRequestId\":\"req-43\",\"busCallIds\":[\"call-100\",\"call-101\",\"call-102\"],\"commitRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-44\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-45\"}],\"deliveryIds\":[\"dlv-7\",\"own-9\"],\"prepareRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-41\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-42\"}],\"wallTimeNs\":\"1234567890\"}",
+      "digest": "07c3402ab0e48b186d56f667da980a15b2a48b21381235cff37523a24ff0dfff"
+    }
+  ]
+}

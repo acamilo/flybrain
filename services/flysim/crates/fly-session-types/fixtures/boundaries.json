@@ -1,0 +1,153 @@
+{
+  "description": "The U64 decimal-string and double boundaries, shared by both languages.",
+  "u64": [
+    {
+      "text": "0",
+      "accept": true,
+      "reason": "zero is \"0\""
+    },
+    {
+      "text": "1",
+      "accept": true,
+      "reason": ""
+    },
+    {
+      "text": "18446744073709551615",
+      "accept": true,
+      "reason": "the U64 maximum"
+    },
+    {
+      "text": "18446744073709551616",
+      "accept": false,
+      "reason": "one past the maximum"
+    },
+    {
+      "text": "184467440737095516150",
+      "accept": false,
+      "reason": "far past the maximum"
+    },
+    {
+      "text": "00",
+      "accept": false,
+      "reason": "no leading zeros"
+    },
+    {
+      "text": "01",
+      "accept": false,
+      "reason": "no leading zeros"
+    },
+    {
+      "text": "",
+      "accept": false,
+      "reason": "empty"
+    },
+    {
+      "text": "-1",
+      "accept": false,
+      "reason": "unsigned"
+    },
+    {
+      "text": "+1",
+      "accept": false,
+      "reason": "no sign"
+    },
+    {
+      "text": "1.0",
+      "accept": false,
+      "reason": "integers only"
+    },
+    {
+      "text": "1e3",
+      "accept": false,
+      "reason": "decimal digits only"
+    },
+    {
+      "text": " 1",
+      "accept": false,
+      "reason": "no whitespace"
+    },
+    {
+      "text": "1 ",
+      "accept": false,
+      "reason": "no whitespace"
+    },
+    {
+      "text": "0x10",
+      "accept": false,
+      "reason": "decimal only"
+    },
+    {
+      "text": "9007199254740993",
+      "accept": true,
+      "reason": "a U64 string keeps precision a double would lose"
+    }
+  ],
+  "doubles": [
+    {
+      "value": 0.0,
+      "canonical": "0",
+      "accept": true,
+      "reason": ""
+    },
+    {
+      "value": -0.0,
+      "canonical": "0",
+      "accept": true,
+      "reason": "JSON.stringify prints negative zero as 0"
+    },
+    {
+      "value": 1.0,
+      "canonical": "1",
+      "accept": true,
+      "reason": "an integral double prints without a fraction"
+    },
+    {
+      "value": 0.1,
+      "canonical": "0.1",
+      "accept": true,
+      "reason": ""
+    },
+    {
+      "value": 1e+21,
+      "canonical": "1e+21",
+      "accept": true,
+      "reason": "ECMAScript switches to exponent notation at 1e21"
+    },
+    {
+      "value": 1e-07,
+      "canonical": "1e-7",
+      "accept": true,
+      "reason": ""
+    },
+    {
+      "value": 5e-324,
+      "canonical": "5e-324",
+      "accept": true,
+      "reason": "the smallest subnormal double"
+    },
+    {
+      "value": 1.7976931348623157e+308,
+      "canonical": "1.7976931348623157e+308",
+      "accept": true,
+      "reason": "the largest finite double"
+    },
+    {
+      "value": 9007199254740991,
+      "canonical": "9007199254740991",
+      "accept": true,
+      "reason": "the largest exactly representable integer"
+    },
+    {
+      "value": 9007199254740993,
+      "canonical": null,
+      "accept": false,
+      "reason": "past the exact integer range, canonical JSON refuses it"
+    },
+    {
+      "value": 0.30000000000000004,
+      "canonical": "0.30000000000000004",
+      "accept": true,
+      "reason": "shortest round-tripping form, not a rounded one"
+    }
+  ]
+}
