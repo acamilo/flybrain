@@ -103,6 +103,19 @@ pub const CHEAPEST_PURCHASE: u32 = {
     least
 };
 
+/// Rows of a mart's priced buy list the shared cursor can sit on.
+///
+/// Three, measured rather than derived (`infra/docs/macros-traps.md` row 55): on the live list in
+/// the Pewter mart the cursor walked `0, 1, 2` under DOWN and then stopped moving while the
+/// *window scrolled* under it, so the fourth drawn row is a look-ahead the cursor never occupies.
+/// The absolute position of the item the cursor is on is that index plus `wListScrollOffset`,
+/// which is not in the reviewed address list and cannot be pinned without the disassembly
+/// `gen_symbols.py` reads -- so an item past the third of a counter's stock has no index this seam
+/// can name, and a purchase aimed at one is a button whose script gives up before it presses
+/// anything. [`super::palette::stock_index`] is where the rule is applied, once, for both the pad
+/// and the plan.
+pub const MART_CURSOR_ROWS: usize = 3;
+
 /// Cursor indices of the battle menu, as `state::BattleMenu::Main` documents them: "0 FIGHT,
 /// 1 PKMN, 2 ITEM, 3 RUN".
 pub mod battle_entry {

@@ -1308,14 +1308,18 @@ fn the_four_purchases_are_bound_by_the_counters_own_stock() {
         "Viridian stocks no Potion and no Repel"
     );
 
-    // Cerulean's, which stocks both of the other two.
+    // Cerulean's, which stocks both of the other two -- and whose fourth entry is out of the
+    // cursor's reach, exactly as Pewter's Antidote is (row 55): the list scrolls, so only the
+    // first three of a counter's stock have an index this seam can aim at.
     world.stock = vec![item::POKE_BALL, item::POTION, item::REPEL, item::ANTIDOTE];
     assert_eq!(
         names(&Palette::for_scene(Scene::Shop, &mut world)),
-        ["CONFIRM", "BUY POTION", "BUY BALL", "BUY ANTIDOTE", "BUY REPEL", "LEAVE"]
+        ["CONFIRM", "BUY POTION", "BUY BALL", "BUY REPEL", "LEAVE"]
     );
 
-    // Money is the other half, per item: 150 buys an Antidote and nothing else.
+    // Money is the other half, per item: 150 buys an Antidote and nothing else, at a counter
+    // whose Antidote the cursor can reach.
+    world.stock = vec![item::POKE_BALL, item::ANTIDOTE, 15, 12];
     world.money = 150;
     assert_eq!(
         names(&Palette::for_scene(Scene::Shop, &mut world)),

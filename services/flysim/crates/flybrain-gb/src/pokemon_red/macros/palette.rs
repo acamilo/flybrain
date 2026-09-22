@@ -9,7 +9,7 @@
 //! B 5.
 
 use super::cartridge::{
-    CHEAPEST_PURCHASE, FACINGS, opposite,
+    CHEAPEST_PURCHASE, FACINGS, MART_CURSOR_ROWS, opposite,
     ExitId, ListKind, Listing, MacroState, Objective, PARTY_CAPACITY, PURCHASES, TalkTarget,
     TargetKey, Tile, item, outdoors,
 };
@@ -908,19 +908,52 @@ pub fn objective_place(state: &mut dyn MacroState) -> Option<Objective> {
     errand_place(state).or_else(|| state.objective())
 }
 
-/// Whether the open mart stocks `item` and the money on hand covers it.
+/// Whether the open mart stocks `item` within reach of its cursor, and the money on hand covers
+/// it.
 ///
-/// Both halves, and the stock half is the one that surprises: Viridian's counter sells POKE BALL,
-/// ANTIDOTE, PARLYZ HEAL and BURN HEAL and **no Potion at all** (`data/items/marts.asm` at the
-/// pinned commit), so `BUY POTION` is correctly off the pad in the first mart the fly ever walks
-/// into. That is the precondition working, not a gap.
+/// Three halves now, and each one has been the answer at a different counter.
+///
+/// - **Stock.** Viridian's counter sells POKE BALL, ANTIDOTE, PARLYZ HEAL and BURN HEAL and **no
+///   Potion at all** (`data/items/marts.asm` at the pinned commit), so `BUY POTION` is correctly
+///   off the pad in the first mart the fly ever walks into. That is the precondition working, not
+///   a gap.
+/// - **Money**, which is section 13's "money allows at least one".
+/// - **Reach**, which is row 55. A purchase is navigated by *reading the cursor*, and a mart's
+///   buy list scrolls: the cursor sits on rows `0, 1, 2` and the window moves under it, so the
+///   absolute position of the item the cursor is on is the index plus a scroll offset this seam
+///   cannot read ([`super::cartridge::MART_CURSOR_ROWS`]). Pewter's counter carries seven items and
+///   ANTIDOTE is its fourth, so `BUY ANTIDOTE` there is a button whose script gives up before it
+///   presses anything -- 747 starts and 747 `blocked` in ten brain minutes, none of them pressing
+///   a button and none of them changing a byte. A macro that cannot run is not on the pad, so the
+///   first three of a counter's stock are what the four purchases are bound on, and the rest wait
+///   for `wListScrollOffset` to be a pinned address.
+///
+/// The clerk's own text box is the fourth thing this refuses, and it refuses it through the seam
+/// rather than here: [`ShopScreen::Talking`] is not one of the two screens a purchase can start
+/// from (`docs/design/macros-wram.md` section 7, row 55).
 fn affordable(state: &mut dyn MacroState, item: u8, cost: u32) -> bool {
-    // Sell cursors index the bag, not the counter's stock
-    state
+    // Sell cursors index the bag, not the counter's stock; and while the clerk is talking there is
+    // no list up at all.
+    if !state
         .shop()
         .is_some_and(|shop| matches!(shop.screen, ShopScreen::BuySellQuit | ShopScreen::Buying))
-        && state.money() >= cost
-        && state.shop_stock().contains(&item)
+    {
+        return false;
+    }
+    state.money() >= cost && stock_index(state, item).is_some()
+}
+
+/// The cursor index of `item` in the open counter's stock, when the cursor can reach it.
+///
+/// One accessor rather than the same `position` in the precondition and in the script, so the
+/// button and the plan cannot disagree about which items a mart can sell the fly (row 6's rule:
+/// the cheap question and the real one have to be the same question when they are the same fact).
+pub fn stock_index(state: &mut dyn MacroState, item: u8) -> Option<u8> {
+    let index = state.shop_stock().iter().position(|stocked| *stocked == item)?;
+    if index >= MART_CURSOR_ROWS {
+        return None;
+    }
+    u8::try_from(index).ok()
 }
 
 /// What `GO SHOP` or `GO HEAL` walks to, or empty when there is nothing to walk to.
@@ -1932,6 +1965,15 @@ pub fn listing(state: &mut dyn MacroState) -> Option<Listing> {
         });
     }
     if let Some(shop) = state.shop() {
+        // **The clerk talking is not a list.** Row 55: `wListMenuID` keeps `PRICEDITEMLISTMENU`
+        // across the mart's own text, and the cursor bytes left behind belong to a two-option box
+        // -- so a cursor step that read this would take its length and its direction from a menu
+        // that is not on screen, which is section 12.11's rule in the one scene it had not
+        // reached. Reporting nothing makes the step *wait*, pressing nothing, exactly as it waits
+        // for a list that has not drawn yet.
+        if shop.screen == ShopScreen::Talking {
+            return None;
+        }
         return Some(Listing {
             kind: ListKind::Shop,
             current: shop.cursor.current,
