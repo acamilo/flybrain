@@ -135,6 +135,18 @@
         "denominator": "2"
       },
       "error": "reduced value does not fit U64"
+    },
+    {
+      "a": {
+        "numerator": "18446744073709551615",
+        "denominator": "18446744073709551614"
+      },
+      "b": {
+        "numerator": "18446744073709551613",
+        "denominator": "18446744073709551611"
+      },
+      "error": "the cross-multiplied numerators sum past 2^128",
+      "reason": "two reduced fractions near the U64 maximum: every multiplication fits u128, their sum does not, and the arithmetic must refuse rather than wrap"
     }
   ],
   "subtract": [
@@ -176,6 +188,18 @@
         "denominator": "2"
       },
       "error": "subtraction would be negative"
+    },
+    {
+      "a": {
+        "numerator": "18446744073709551615",
+        "denominator": "18446744073709551614"
+      },
+      "b": {
+        "numerator": "1",
+        "denominator": "18446744073709551611"
+      },
+      "error": "the reduced difference does not fit U64",
+      "reason": "large denominators reach the reduction limit rather than the subtraction one"
     }
   ],
   "multiply": [
