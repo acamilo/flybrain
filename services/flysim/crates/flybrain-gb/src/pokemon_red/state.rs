@@ -1342,6 +1342,10 @@ impl MacroState for PokeState<'_> {
         !controllable(self.memory)
     }
 
+    fn text_open(&mut self) -> bool {
+        text_box(self.memory).open
+    }
+
     fn yes_no_prompt(&mut self) -> bool {
         yes_no_prompt(self.memory)
     }

@@ -476,7 +476,26 @@ pub fn scene_set(scene: Scene, state: &mut dyn MacroState) -> Vec<MacroKind> {
         // Section 2 treats `Unknown` like a dialog -- advance only -- and `BACK` is the other half
         // of advancing, because `Unknown` is also where the Pokédex, the trainer card and OPTION
         // land (`docs/design/macros-wram.md`) and B is what leaves all three.
-        Scene::Unknown => vec![Next, Back],
+        //
+        // **Only while there is something on screen with words in it** (section 12.13, the
+        // rung-10 Pewter loop). `Unknown` is the detector's residue and it holds two states, not
+        // one: a screen this crate cannot name, where A and B are what leave it, and a frame of
+        // the *overworld* where the cartridge is driving -- a warp in flight, a scripted
+        // push-back, the museum guide walking the fly through the door -- which
+        // `scene::detect` calls `Unknown` because the buttons are not reaching the player. On the
+        // second, `NEXT` and `BACK` are an A and a B pressed into somebody else's script: they
+        // change nothing, they complete where the fly stands, and they are section 12.2's trap
+        // with no text box to advance. Measured live on rung 10: `BACK` **678** macro starts in
+        // 47 minutes, 189 of them on map `0x02` with no box on screen at all. So the pad is
+        // empty there and the fly waits, which is the doctrine's own answer for a scene with
+        // nothing sensible to press -- and the cartridge gives the buttons back by itself.
+        Scene::Unknown => {
+            if state.text_open() {
+                vec![Next, Back]
+            } else {
+                Vec::new()
+            }
+        }
         // `NEXT`, `YES`, `NO` for a plain box -- A and B both advance one, and what the three
         // buy is the fly being *able* to answer no. On the one box that **is** a choice, the pad
         // is the choice's own answers: section 12.12.

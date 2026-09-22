@@ -465,6 +465,22 @@ pub trait MacroState: GameState {
         false
     }
 
+    /// Whether a text box is open at all: `wFontLoaded`'s bit, and nothing drawn.
+    ///
+    /// The one thing that tells a screen with words on it from a frame of the overworld the
+    /// cartridge happens to be driving, and [`super::palette::scene_set`] deals
+    /// [`Scene::Unknown`]'s pad on it (**section 12.13**). `Unknown` is two different states
+    /// wearing one name: a screen this crate cannot name -- the Pokedex, the trainer card,
+    /// OPTION -- where `NEXT` and `BACK` are the A and B that leave it; and a *scripted* overworld
+    /// frame, where `scene::detect` falls through to `Unknown` because the buttons are not
+    /// reaching the player, and where an A or a B press is a press into somebody else's script.
+    ///
+    /// The default is `false`, which narrows: with no reading, `Unknown` deals nothing and the
+    /// fly waits, which is what the doctrine says a scene with nothing to press does.
+    fn text_open(&mut self) -> bool {
+        false
+    }
+
     /// Whether the box on screen is the two-option YES/NO prompt rather than a plain text box.
     ///
     /// `pokemon_red::state::yes_no_prompt`: the border `DisplayTwoOptionMenu` draws plus the

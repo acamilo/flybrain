@@ -164,6 +164,13 @@ struct World {
     /// A frame at which the cartridge heals the party, which is what a Pokémon Center does while
     /// its text box is open (`docs/design/macros.md` section 13).
     heal_at: Option<u32>,
+    /// Whether a text box is drawn on a scene that is not [`Scene::Dialog`]
+    /// ([`MacroState::text_open`]).
+    ///
+    /// `Dialog` *is* an open box, so the reading is true there by construction; the field is for
+    /// `Unknown`, which holds both a screen with words on it -- the Pokedex, the trainer card,
+    /// OPTION -- and a frame of the overworld the cartridge is driving (section 12.13).
+    box_open: bool,
     /// Whether the two-option YES/NO box is the thing on screen ([`MacroState::yes_no_prompt`]).
     ///
     /// A field rather than a shape of the `list`, because on the cartridge it is a *drawn box*
@@ -243,6 +250,7 @@ impl World {
             pending: None,
             switch: None,
             heal_at: None,
+            box_open: false,
             prompt: false,
             scripted: false,
             scripted_at: None,
@@ -658,6 +666,13 @@ impl MacroState for World {
         self.scripted
     }
 
+    /// `wFontLoaded` is set for every dialogue box, which is what `Dialog` is; on `Unknown` the
+    /// fixture has to say, because that is the reading that tells a screen from a scripted
+    /// overworld frame (section 12.13).
+    fn text_open(&mut self) -> bool {
+        self.scene == Scene::Dialog || self.box_open
+    }
+
     /// A drawn box is what the reading rests on, so a prompt cannot be open with no box open:
     /// `pokemon_red::state::yes_no_prompt` gates on `wFontLoaded` before it looks at the tiles.
     fn yes_no_prompt(&mut self) -> bool {
@@ -990,10 +1005,29 @@ fn the_dialog_row_is_next_yes_and_no() {
 #[test]
 fn an_unknown_scene_is_dialog_with_advance_only() {
     let mut world = World::room();
+    world.box_open = true;
     let palette = Palette::for_scene(Scene::Unknown, &mut world);
     // Row 9 of `infra/docs/macros-traps.md`, closed by section 13.1: B is what leaves the Pokédex,
-    // the trainer card and OPTION, and all three read `Unknown`.
+    // the trainer card and OPTION, and all three read `Unknown` with a box drawn.
     assert_eq!(names(&palette), ["NEXT", "BACK"]);
+}
+
+#[test]
+fn an_unknown_frame_with_no_box_on_it_deals_nothing() {
+    // Section 12.13, the rung-10 Pewter loop. The other half of `Unknown` is the overworld with
+    // the cartridge driving -- a warp in flight, a push-back, the museum guide walking the fly in
+    // -- where `scene::detect` falls through because the buttons are not reaching the player.
+    // There is no box to advance and no screen to leave, so `NEXT` and `BACK` are an A and a B
+    // pressed into somebody else's script: they change nothing and they complete where the fly
+    // stands, which is section 12.2's trap. The pad is empty and the fly waits.
+    let mut world = World::room();
+    world.scripted = true;
+    assert!(!world.text_open());
+    let palette = Palette::for_scene(Scene::Unknown, &mut world);
+    assert_eq!(palette.bound(), 0, "an A and a B into a script are not buttons");
+    // And the moment the cartridge draws something, both are back.
+    world.box_open = true;
+    assert_eq!(names(&Palette::for_scene(Scene::Unknown, &mut world)), ["NEXT", "BACK"]);
 }
 
 #[test]
@@ -2525,6 +2559,7 @@ fn a_forced_switch_plans_one_entry_and_the_other_scenes_plan_their_one_move() {
     ] {
         let mut world = World::room();
         world.scene = scene;
+        world.box_open = scene == Scene::Unknown;
         assert_eq!(plan(&mut world), entries, "{}", scene.label());
     }
 
@@ -3139,6 +3174,10 @@ fn no_playable_scene_deals_an_empty_pad() {
     ] {
         let mut world = World::room();
         world.scene = scene;
+        // `Unknown` is dealt on what is drawn (section 12.13): a screen with words on it has
+        // `NEXT` and `BACK`, and a scripted overworld frame is the one deliberate empty pad,
+        // which `an_unknown_frame_with_no_box_on_it_deals_nothing` is about.
+        world.box_open = scene == Scene::Unknown;
         world.battle = matches!(scene, Scene::Battle { .. })
             .then_some((BattleKind::Wild, false, false));
         assert!(
@@ -4087,6 +4126,9 @@ fn no_playable_scene_and_no_sub_state_deals_an_empty_pad() {
     ] {
         let mut world = World::room();
         world.scene = scene;
+        // See the sweep in `no_playable_scene_deals_an_empty_pad`: `Unknown` with nothing drawn
+        // on it is the overworld being driven by the cartridge, and its pad is empty by design.
+        world.box_open = scene == Scene::Unknown;
         world.mons.clear();
         worst(&mut world);
     }
