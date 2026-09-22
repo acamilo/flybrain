@@ -22,6 +22,7 @@ use flybus::{Client, Grants, Pattern, Policy, Router, RouterConfig};
 use crate::agent::{AgentFaults, synthetic_profile};
 use crate::coordinator::{AgentSlot, Coordinator};
 use crate::environment::EnvironmentFaults;
+use crate::media::{RenderCounter, SensorLog};
 use crate::launcher::{
     AgentLaunch, EnvironmentLaunch, Launcher, ReapOutcome, SUPERVISOR_CLIENT, ThreadBudget,
 };
@@ -72,6 +73,8 @@ pub struct HarnessConfig {
     pub tick_ms: u64,
     pub warmup_ticks: u64,
     pub terminal: Terminal,
+    /// The view's declared render delay, in steps. Zero is same-boundary output.
+    pub observation_delay_steps: u64,
     pub environment_faults: EnvironmentFaults,
     /// Where each participant runs.
     pub mode: ExecutionMode,
@@ -98,6 +101,7 @@ impl Default for HarnessConfig {
             tick_ms: 1,
             warmup_ticks: 10,
             terminal: Terminal::Never,
+            observation_delay_steps: 0,
             environment_faults: EnvironmentFaults::default(),
             mode: ExecutionMode::InProcess,
             thread_budget: None,
@@ -160,6 +164,11 @@ pub struct SessionHarness {
     pub config: HarnessConfig,
     pub via: Via,
     pub mode: ExecutionMode,
+    /// The media instrumentation of the participants that live in this process. Both are
+    /// shared memory, so both are empty for a participant with a process of its own; the
+    /// accessors below return `None` there rather than zero.
+    renders: RenderCounter,
+    sensors: BTreeMap<Id, SensorLog>,
     /// The supervisor. It owns every participant's lifetime and thread allocation.
     pub launcher: Launcher,
     observers: Mutex<Vec<Client>>,
@@ -226,6 +235,12 @@ impl SessionHarness {
 
         let step_duration = hz(config.step_hz).expect("a positive cadence");
         let tick_duration = millis(config.tick_ms).expect("a positive tick");
+        let renders = RenderCounter::new();
+        let sensors: BTreeMap<Id, SensorLog> = config
+            .agents
+            .iter()
+            .map(|spec| (spec.agent_id.clone(), SensorLog::new()))
+            .collect();
 
         // The environment first: it owns the world and the descriptor.
         let environment = launcher
@@ -236,6 +251,8 @@ impl SessionHarness {
                 step_duration,
                 ports: config.agents.iter().map(|a| a.port_id.clone()).collect(),
                 worker_threads: config.environment_threads,
+                observation_delay_steps: config.observation_delay_steps,
+                renders: renders.clone(),
                 faults: config.environment_faults.clone(),
                 client_id: ENV_CLIENT.to_owned(),
                 service: ENV_SERVICE.to_owned(),
@@ -259,6 +276,7 @@ impl SessionHarness {
                     tick_duration,
                     warmup_ticks: config.warmup_ticks,
                     worker_threads: spec.worker_threads,
+                    sensors: sensors[&spec.agent_id].clone(),
                     faults: spec.faults.clone(),
                     client_id: agent_client(&spec.agent_id),
                     service: agent_service(&spec.agent_id),
@@ -304,6 +322,8 @@ impl SessionHarness {
             config,
             via,
             mode: launcher.mode(),
+            renders,
+            sensors,
             launcher,
             observers: Mutex::new(Vec::new()),
         })
@@ -366,6 +386,9 @@ impl SessionHarness {
                 tick_duration,
                 warmup_ticks: self.config.warmup_ticks,
                 worker_threads: spec.worker_threads,
+                // The same log: a replacement worker in this process keeps writing where its
+                // predecessor wrote, so a restore's sensory input is visible beside it.
+                sensors: self.sensors.get(agent_id).cloned().unwrap_or_default(),
                 faults: spec.faults.clone(),
                 client_id: format!("{}-r2", agent_client(agent_id)),
                 service: agent_service(agent_id),
@@ -388,6 +411,30 @@ impl SessionHarness {
     /// The worker id the environment answers to.
     pub fn environment_id(&self) -> Id {
         id(ENV_WORKER)
+    }
+
+    /// What one agent read out of its sensory attachments, in order, when this process is
+    /// where that log lives.
+    ///
+    /// `None` means "not observable from here", not "nothing was read": an agent with a
+    /// process of its own records into its own copy. The media path itself crosses a process
+    /// boundary -- the frame is one artifact in the shared store, reached through owned
+    /// handles -- but this instrumentation does not, because it is shared memory.
+    pub fn sensor_log(&self, agent_id: &Id) -> Option<SensorLog> {
+        match self.mode {
+            ExecutionMode::Process => None,
+            _ => self.sensors.get(agent_id).cloned(),
+        }
+    }
+
+    /// How many native frames the environment rendered, when the world lives in this process.
+    ///
+    /// `None` for a world with a process of its own, for the same reason as above.
+    pub fn renders(&self) -> Option<u64> {
+        match self.mode {
+            ExecutionMode::Process => None,
+            _ => Some(self.renders.count()),
+        }
     }
 
     /// The agent worker's progress counter, which is its fake model's mutation count, when

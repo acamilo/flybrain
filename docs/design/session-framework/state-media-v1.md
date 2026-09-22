@@ -65,6 +65,23 @@ the sample position relative to the episode's configured audio origin, with inte
 firstSample/sampleRate. Crash restore preserves sample position under a new epoch; first
 chunk marks discontinuity. Within an epoch, chunks cannot overlap or go backwards.
 
+**Amendment, 2026-09-22 (MEDIA-01).** Two readings of the paragraphs above, made explicit
+because they are now enforced:
+
+- The bootstrap window is exactly the boundaries where `max(0, boundary - observationDelaySteps)`
+  is zero, that is `boundary <= observationDelaySteps`. Inside it the repeated `O[0]` is the
+  **same artifact**, not a fresh render of the same scene; outside it the producing boundary
+  advances one per step, and a frame from any other boundary -- older or newer -- is a step
+  failure. A producer therefore keeps a queue of `observationDelaySteps + 1` frames and nothing
+  more, so there is no older frame available to substitute.
+- Within an epoch, `discontinuity` marks a range the stream actually skipped. The first chunk
+  after a restore marks it, and a later chunk may mark it when it starts past where the previous
+  chunk ended; a chunk that continues the previous one exactly is continuous by construction and
+  its flag is refused. Without that reading the restore rule is advisory, because a stream could
+  set the flag on every chunk and satisfy it by accident. The requirement is one-directional: a
+  fresh epoch's first chunk **may** mark a discontinuity, because section 6's recovery
+  establishes a fresh timeline and publishes one.
+
 The environment provides **native game output**. Sensor transformations belong to the agent
 profile. Resizing for viewers, overlays, composition, audio mixing/resampling, encoding,
 browser delivery and streaming belong to the application/presentation layer. No bus or
