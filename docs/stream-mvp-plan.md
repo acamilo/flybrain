@@ -647,3 +647,15 @@ then purge; then the stale-doc pass.
   NEXT off it, only the answer that changes something is bound, TALK is off at a rested nurse, the
   nurse is talked after a heal or a decline, a prompt that reopens unchanged is excluded. ROM test:
   leaves the center on frame 326. Hunt: 1 -> 437 tiles, YES 1,424 -> 4. Ethos check held.
+- 2026-09-22 (session framework, wave 1): BUS slice merged. The flybus crate is audited section
+  by section against bus-v1 (195 rows: 178 conform, 9 allowed deviations each quoting the
+  sentence that permits it, 7 not implemented and owned), the teardown-versus-in-flight-poll
+  race is fixed (the write gate now separates "closing" from "a poll is in progress", so
+  teardown waits one poll instead of a frame), the BUS-01 to BUS-03 acceptance bullets are
+  named tests over both transports with a 29-event trace equivalence, and the guide's first
+  deliverable exists: one example with a counter RPC, a latest observer and a frame artifact
+  held past its message. Measured on the dev VM, not capacity claims: 640x480 RGBA at 60 Hz to
+  three consumers, one delayed, RPC p50 0.5-1.1 ms, seal p50 1.1-1.4 ms, router 0.18-0.22 cores,
+  RSS 11-17 MB. Two spec contradictions were resolved in bus-v1 rather than in the code (the
+  per-client byte budget now names bounded queues only, with latest slots capped separately;
+  the illustrative client sketch drops its budget argument for a caller-side deadline).
