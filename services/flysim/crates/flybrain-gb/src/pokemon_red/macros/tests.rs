@@ -4267,9 +4267,9 @@ fn throw_ball_opens_the_bag_and_moves_the_cursor_to_the_ball_by_reading_it() {
 
 /// Section 12.11: a room whose one way out every ledger is resting still offers it.
 ///
-/// **What was live** (2026-09-22, rung 10, `ct150-rank10` checkpoint): the fly on **map 0x35, the
-/// Pewter museum's upper floor** -- fourteen blocks by eight, one warp at (7, 7) down to the floor
-/// below (0x34), two signs and three exhibits. The reproduction is in
+/// **What was live** (2026-09-22, rung 10, the release container's own checkpoint): the fly on
+/// **map 0x35, the Pewter museum's upper floor** -- fourteen blocks by eight, one warp at (7, 7)
+/// down to the floor below (0x34), two signs and three exhibits. The reproduction is in
 /// `infra/docs/macros-traps.md`; the shape of it is that every candidate list on that map empties:
 ///
 /// - `geography` has no row for the museum, so `next_hop` from it answers `None` and

@@ -914,6 +914,95 @@ mechanism -- `BACK` **739 starts on the move list** and `NEXT` **739 on the top-
 
 The decoder, the reward catalog, the adapter version and the compatibility string are untouched.
 
+### 12.11 `MENU` opens a screen its own `BACK` closes, and Red's battle menu is two columns (2026-09-22, rung 10, thirty-one minutes after v0.4.3)
+
+Rank 10 (PEWTER CITY, next the BOULDER BADGE), the fly inside a Pewter building, and since the
+restart the macro starts were `MENU` **82**, `BACK` **82**, `GO FRONTIER` 8 -- the event log
+alternating `MENU start/done, BACK start/done` on **map 0x35**. Reproduced from the live checkpoint
+with the real cartridge: the map is the **upper floor of the Pewter museum**, fourteen blocks by
+eight, 81 walkable tiles all reachable and four never stood on, one warp at (7, 7) down to the
+museum's ground floor (0x34), two signs and three exhibits.
+`infra/docs/macros-traps.md` has the probe whole.
+
+- **`MENU` is a trap by section 12.2's own definition, and it was the *only* button left.** Opening
+  the start menu changes nothing in the world, so the macro completes on the tile it started on --
+  and the scene it opens deals `CLOSE`, `CONFIRM` and `BACK`, of which `BACK` presses B and closes
+  it again. Two buttons that undo each other with nothing else changing: section 12.10's rule, one
+  scene wider than a battle. **`MENU` is on no pad now.** Not narrowed -- there is nothing behind
+  it to press it for, because no macro in the vocabulary uses the start menu except as a scene to
+  leave, and "MENU to save the game" is not a macro that exists. It stays a type, a population, a
+  tag and a script, so the thirty-one channels, the roles and `--print-compatibility` do not move,
+  and the start menu is still the fly's to open with the **raw** START button, which reaches the
+  cartridge in macros mode.
+- **Why that map's pad was `MENU` and `GO FRONTIER` and nothing else.** Every candidate list on the
+  museum's upper floor empties: `geography` has no row for the museum, so `next_hop` answers `None`
+  and `GO OBJECTIVE` has nothing to aim at -- the objective itself is right, map 0x36 with a
+  *person* on it, which is rung 11's gym leader; the three exhibits and two signs are *reached* by
+  `GO NPC` and `GO ITEM`, which retires them for the session (12.1); the four unstood tiles are
+  walked or excluded and `GO FRONTIER` empties for the window; and the one way out is classified a
+  **passage** and not an exit -- it is a staircase -- so `unexcluded_exits` drops it while the
+  blocked ledger rests it, and `ways`' tier 3 for a passage is built out of the same list.
+- **`MENU` was also what made an empty overworld pad impossible, so that guarantee moves to the way
+  out.** `ways` gains, for a *room*, the last resort `GO ROUTE` has had outdoors since 13.1: with
+  nothing else on this map worth walking to (`palette::stranded`), the exits of this kind come back
+  **ignoring the blocked window**, the one toward the objective preferred. A target the ledger is
+  resting is still the only place to go, and a door the run has been through is a better answer
+  than a pad that cannot move. It is a last resort and not a tier: one unstood tile and it goes
+  away again, because "the nearest door, once per hold" is row 2's own two hours seventeen.
+- **A map with no way out at all is now a genuinely empty pad, and that is said rather than
+  papered over.** No map in Red is that -- an interior has its front door or its staircase, an
+  outdoor map has its connections -- it is asserted as a named residual in the pad-empty sweep, and
+  `game.padEmptyMs` is what reports it if one ever appears.
+- **A cursor step waits for the list it was built for.** `THROW BALL` was **63 starts and 63
+  `blocked`** on v0.4.3, mean sixty-nine frames, which is the cursor to ITEM, the A that confirms
+  it, the twenty settle frames, and a refusal on the next frame. Red keeps one cursor for every
+  menu in the game, so "where is the cursor" was half a question: the step that should have walked
+  the bag list read the battle *menu*'s four entries instead. A `Listing` now says which list it is
+  and a cursor step says which list its target indexes into; a step whose list is not up waits, as
+  it already waited for a list reporting no cursor at all (section 4), and takes its press order
+  and its budget from that list on the first frame it accepts input. A confirming press that has
+  begun still finishes, because the press is what answers the list.
+- **And the reason `THROW BALL` never reached the bag: Red's battle menu is two columns, so its
+  order is FIGHT, ITEM, PKMN, RUN.** The screen reads `FIGHT PKMN` over `ITEM RUN` and the game's
+  index does not: `wCurrentMenuItem` is the row inside the column the cursor is in, and selection
+  adds two for the right column. `battle_entry` had `PKMN` 1 and `ITEM` 2 -- the row-major reading
+  of the picture -- so **every macro that meant to open the bag opened the party list and every
+  macro that meant to open the party list opened the bag**, for as long as the four constants have
+  existed. Surveyed on the cartridge: A at `wTopMenuItemX` 15 with `wCurrentMenuItem` 0 opens the
+  party list (`wTopMenuItemY` 1, `wTopMenuItemX` 0, `wListMenuID` `$02`) and the game writes
+  `wCurrentMenuItem` 2 on the frame after. `THROW BALL` and `ITEM` and `SWITCH` have never once
+  completed on the release box; they do now. The fake had the same mistake in its own two-by-two
+  geometry, which is why no unit test could have caught it, and it is column-major now.
+- **`BACK` on the move list only where the moves can be read.** The other v0.4.3 residual: `BACK`
+  was 263 of 797 macro starts and every one was over an open move list. A move list whose battler
+  the seam cannot place binds no `MOVE n` at all, so its pad was `BACK` alone -- and closing the
+  list is exactly undoing the `MOVE 1` on the menu underneath that opened it, which is 12.10's pair
+  with `MOVE 1` in `NEXT`'s place. With nothing readable the pad is `MOVE 1` alone, and its script
+  confirms wherever the cursor stands, which is the press that ends a turn.
+
+**What the harness holds.** No scene's set and no scene's pad contains `MENU`, in any state; a room
+whose one door the ledger rests still offers it and the pad is that walk; the move list's pad is
+`MOVE n` plus `BACK` only with a readable battler and `MOVE 1` alone otherwise; a cursor step waits
+rather than reading the list it has already answered; and `battle_entry`'s four numbers are pinned
+against the survey. ROM-gated from the live checkpoint: the fly leaves the museum's upper floor on
+**frame 182**, and over thirty-three brain minutes across seven maps `MENU` is on no pad, no
+overworld pad is empty, and `MENU`/`BACK` never alternate -- where v0.4.3 deals `MENU` on all seven
+with 147 starts. ROM-gated from the rung-9 forest checkpoint: `THROW BALL` 15 starts and **0**
+blocked and `SWITCH` 17 and **0**, against 6 of 6 and 15 of 17 before.
+
+**Two things measured and not fixed here.** The trap hunt from this checkpoint does not reproduce
+this loop at all, and it cannot: the reached and blocked ledgers are session state that a restore
+clears (12.1), so a restored fly walks straight out of the museum, and the live loop needed thirty
+minutes of ledger to build. What the hunt reproduces instead is **row 41**, the Pokémon Center
+nurse's box -- 62,804 of 71,673 frames on one tile of map 0x3a with `YES` 1,278 of 1,295 macro
+starts -- and that is the next trap. Inside a battle the largest residual is `MOVE n`: 890 of 1,431
+macros report `blocked`, every one with the move list drawn and its cursor placeable but not
+accepting input, so no press moves it and the step spends its budget. That is row 30b's unplaceable
+cursor inverted and it needs a WRAM reading rather than a pad change.
+
+The decoder, the reward catalog, the adapter version, the roles and the compatibility string are
+untouched.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")
@@ -981,18 +1070,18 @@ observe is not a precondition, it is a guess.
 
 | scene / sub-state | pad | change |
 | --- | --- | --- |
-| Overworld, outdoors | GO OBJECTIVE, GO ROUTE, GO SHOP, GO HEAL, GO ITEM, GO NPC, GO FRONTIER, TALK, MENU | **MENU added** (row 18); errands added |
-| Overworld, indoors | GO OBJECTIVE, GO OUT, GO WARP, GO SHOP, GO HEAL, GO ITEM, GO NPC, GO FRONTIER, TALK, MENU | **MENU added** (row 18); `GO NPC` was off section 3's fixed indoor row and on the plan's, and with one dealer it is on both |
+| Overworld, outdoors | GO OBJECTIVE, GO ROUTE, GO SHOP, GO HEAL, GO ITEM, GO NPC, GO FRONTIER, TALK | MENU was added by row 18 and **taken back off by 12.11**: it opens a screen whose own `BACK` closes it again, and nothing in the vocabulary uses the start menu. Errands added |
+| Overworld, indoors | GO OBJECTIVE, GO OUT, GO WARP, GO SHOP, GO HEAL, GO ITEM, GO NPC, GO FRONTIER, TALK | **MENU off, by 12.11**, as above; `GO NPC` was off section 3's fixed indoor row and on the plan's, and with one dealer it is on both |
 | Overworld, inside a Pokémon Center | the indoor pad plus HEAL | new. A centre is a sub-state of the overworld, not a `Scene`: pokered has no "a Pokémon Center is open" byte, so the only honest observable is the map id, and a new `Scene` would be a new `game.scene` on the wire |
 | Overworld, inside a mart | the indoor pad | the counter is a `Shop`; the mart's *floor* is an ordinary interior, with the one exception below |
-| Overworld, inside a mart or a centre, counter unfaced | GO SHOP or GO HEAL, TALK when facing the counter, MENU | new, and it is the one place a pad is deliberately *narrow*. The errand is paid on entering and never offered again, so a walk that leaves the building spends the one visit the area gets — measured: the fly reached the mart in 1.7 brain minutes and `GO OBJECTIVE` walked it straight back out over the doormat. While the counter is unfaced nothing on the pad leaves (row 34b) |
+| Overworld, inside a mart or a centre, counter unfaced | GO SHOP or GO HEAL, TALK when facing the counter | new, and it is the one place a pad is deliberately *narrow*. The errand is paid on entering and never offered again, so a walk that leaves the building spends the one visit the area gets — measured: the fly reached the mart in 1.7 brain minutes and `GO OBJECTIVE` walked it straight back out over the doormat. While the counter is unfaced nothing on the pad leaves (row 34b) |
 | Overworld, inside a mart or a centre, counter faced | the indoor pad, plus HEAL in a centre | the suppression is released by facing the counter, by talking to it, or by a walk to it failing |
 | Dialog | NEXT, YES, NO | unchanged. There is no "a choice is open" flag (`macros-wram.md`), and A and B both advance a plain box, so all three are dealt for every box — what it buys is the fly being able to answer *no* |
-| Menu (the start menu) | CLOSE, CONFIRM, BACK | unchanged. The cursor is the fly's to move with the **raw** D-pad, which still reaches the cartridge in macros mode; a SAVE or a POKéDEX button would be a macro per start-menu entry and is not asked for |
+| Menu (the start menu) | CLOSE, CONFIRM, BACK | unchanged as a *scene*, and since **12.11** nothing on any other pad opens it: the fly reaches it with the **raw** START button, which still reaches the cartridge in macros mode, and moves its cursor with the raw D-pad. A SAVE or a POKéDEX button would be a macro per start-menu entry and is not asked for -- which is precisely why `MENU` had nothing behind it |
 | Menu (the bag, an elevator, the party list outside a battle) | CLOSE, CONFIRM, BACK | unchanged |
 | Unknown (the Pokédex, the trainer card, OPTION, a naming screen, a mid-warp frame) | NEXT, **BACK** | **BACK added** (row 9): B is what leaves the first three, and A leaves none of them |
-| Battle, own turn, main menu | MOVE 1..4, SWITCH, ITEM, THROW BALL, RUN | four move buttons for `ATTACK` (section 14); THROW BALL added, and gated on the species since 12.9; **RUN gated**, below. No `BACK`: the four entries are the answers to this menu. **`NEXT` removed by 12.10** — an A press here confirms FIGHT and reopens the list the move list's `BACK` just closed, and `MOVE 1` is the backstop instead, bound here whatever the battler reads as |
-| Battle, own turn, move list | MOVE 1..4, BACK | as above |
+| Battle, own turn, main menu | MOVE 1..4, SWITCH, ITEM, THROW BALL, RUN (whose cursor indices are FIGHT 0, **ITEM 1, PKMN 2**, RUN 3 -- two columns, 12.11) | four move buttons for `ATTACK` (section 14); THROW BALL added, and gated on the species since 12.9; **RUN gated**, below. No `BACK`: the four entries are the answers to this menu. **`NEXT` removed by 12.10** — an A press here confirms FIGHT and reopens the list the move list's `BACK` just closed, and `MOVE 1` is the backstop instead, bound here whatever the battler reads as |
+| Battle, own turn, move list | MOVE 1..4, BACK -- or **MOVE 1 alone** | as above, plus **12.11**: `BACK` is dealt here only while `wBattleMon*` reads, because a list that binds no `MOVE n` has a pad whose one button closes the list `MOVE 1` underneath had just opened. With nothing readable the pad is `MOVE 1` and its script confirms where the cursor stands |
 | Battle, own turn, party list | SWITCH, BACK | unchanged |
 | Battle, own turn, the bag | ITEM, THROW BALL, **BACK** | the bag reports a *cursor* (`macros-wram.md` 7.1), and since **12.10** it is the own turn, because a cursor accepting input is one. Its pad is the list's own answers; `NEXT` and `CONFIRM` are both off it, being the same blind A press that *uses* whatever the cursor holds |
 | Battle, forced switch | SWITCH, NEXT | unchanged (row 8). The one arm that keeps `NEXT` with a cursor up, because it cannot be cancelled and has no `BACK` to undo it |
@@ -1031,7 +1120,9 @@ measured where it cannot.
 
 | cause | closed by |
 | --- | --- |
-| a scene that binds nothing at all | the table above: every playable scene has at least one unconditional button (`MENU` on the overworld, `NEXT` in a dialog and in a battle, `CLOSE` in a menu, `LEAVE` in a shop and a PC) |
+| a scene that binds nothing at all | the table above: every playable scene but the overworld has at least one unconditional button (`NEXT` in a dialog and in a battle, `CLOSE` in a menu, `LEAVE` in a shop and a PC). The overworld's was `MENU`, and **12.11** took it off rather than keep a button whose only effect is a screen its own scene closes again; what stands in its place is the row below |
+| an overworld map with no way out at all | **not closed, and named**: with `MENU` gone this is a genuinely empty pad. No map in Red is that -- an interior has its front door or its staircase, an outdoor map has its connections -- so it is asserted as a residual in the pad-empty sweep rather than covered, and `game.padEmptyMs` reports it |
+| an *indoors* overworld where every ledger excludes everything and the blocked window is resting the one door | **fixed** (12.11): `ways`' last resort is a room's too, not only `GO ROUTE`'s. With nothing else on this map worth walking to, the exits of that kind come back ignoring the blocked window, the one toward the objective preferred. This is the rung-10 museum: its only way out is a *passage*, so tier 3 was built out of the excluded list and emptied with it |
 | an overworld where the talked, reached and blocked ledgers exclude every person, object and frontier tile, every route leads somewhere visited, and there is no objective hop | **fixed**: `ways`' last resort. With *nothing else on this map worth walking to* (`palette::stranded`), `GO ROUTE` offers the exit toward the objective and, failing that, all of them — **ignoring the blocked window**, because a target the ledger is resting is still the only place to go. It is a last resort and not a tier: with anything else on the pad it stays off, because "all of them, nearest" once per hold is row 2's own loop |
 | the frontier is empty because `path::frontier` answers about the ten-by-nine walkable window, while most of the map is unstood | **fixed**: `frontier_aims` falls back to the nearest tile of the *whole* map the stood ledger has no entry for. A fallback and not the rule, because the windowed answer is the correct one whenever it has anything in it |
 | a running macro aborts and the pad is not re-dealt until the next frame | not a cause: `observe` runs after every frame and the decoder is handed the bound channels again on the very next one |

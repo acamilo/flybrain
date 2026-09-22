@@ -1589,3 +1589,181 @@ state's `runs/` directory.
 - `infra/tests/lint.sh`: all checks passed, de-PII guard included.
 - `--print-compatibility`: **648 bytes, sha256 `0d9bfde7...707fa`** -- byte-identical to v0.4.1 and
   v0.4.2. Decoder, reward catalog, adapter version and roles untouched.
+
+## 2026-09-22, rows 44 to 47: the screen the pad opens and closes again, and a menu read row-major
+
+Thirty-one minutes after v0.4.3 deployed, the release watchdog flagged the next rung. Rank 10
+(PEWTER CITY, next the BOULDER BADGE), the fly inside a Pewter building, and since the restart the
+macro starts were `MENU` **82**, `BACK` **82** and `GO FRONTIER` 8, with the event log alternating
+
+```
+MENU start, MENU done, BACK start, BACK done
+```
+
+on map `0x35`. It is section 12.10's pair again -- two buttons that undo each other with nothing
+else changing -- with the difference that the two are on **different scenes**, so no per-pad rule
+could see it: `MENU` is on the overworld and `BACK` is on the start menu that `MENU` opens.
+`docs/design/macros.md` section 12.11 is the contract this closed against.
+
+### Which building, and why its pad was two buttons
+
+Reproduced from the release container's own checkpoint with the real cartridge,
+`examples/scene_probe.rs`:
+
+```
+- rank 10 (PEWTER CITY), badges 0, unique tiles 2132
+- player: Player { map: 53, x: 3, y: 3, facing: Left }
+- objective: Objective { map: 54, target: Some(Person) }
+- map size: MapSize { width: 14, height: 8 }
+- warps: [Warp { x: 7, y: 7, destination_warp: 4, destination_map: 52 }]
+- signs: [Sign { x: 11, y: 2 }, Sign { x: 2, y: 5 }]
+- people and objects: slot 1 picture 0x04 at (2, 7), slot 2 picture 0x25 at (0, 5),
+  slot 3 picture 0x20 at (7, 5)
+- the pad: ["GO WARP", "GO ITEM", "GO NPC", "GO FRONTIER", "MENU"]
+- the map grid: 14x8 walkable 81 reachable 81 unstood 4 unknown 0
+- `next_hop(Region { map: 53, part: 0 }, 0x36)` = None, neighbours []
+- `ways(Exit)` = [], `ways(Passage)` = [Warp(0)], `ways(Route)` = []
+- `objective_goals` = [], `objective_targets` = []
+```
+
+Map `0x35` is **the upper floor of the Pewter museum** -- `0x34` is its ground floor, `0x36` the
+gym, `0x38` the mart, `0x3a` the centre -- fourteen blocks by eight, one staircase down at (7, 7),
+two exhibit signs and three people. Every candidate list on it empties, which is why the live pad
+was `MENU` and an occasional `GO FRONTIER`:
+
+| button | why it was not there |
+| --- | --- |
+| `GO OBJECTIVE` | the objective is right -- map `0x36` with a **person** on it, which is rung 11's gym leader -- but `geography` has no row for the museum, so `next_hop` from map 53 answers `None` with no neighbours, and `objective_goals` is empty |
+| `GO OUT` | the museum's upper floor has **no exit-class warp at all**: its one way out is a staircase, which is a `Passage` |
+| `GO WARP` | on the pad at a fresh restore, and off it live: `ways(Passage)`' tier 3 is `unexcluded_exits`, which the blocked window empties for ten brain minutes after a refused walk |
+| `GO ITEM`, `GO NPC` | the two signs and three exhibits are **reached**, and a reached target is retired for the session (12.1) |
+| `TALK` | the fly at (3, 3) facing Left has nothing in front of it |
+| `GO SHOP`, `GO HEAL` | `geography::area_of` has no row for the museum, so the area's errands cannot be aimed at from inside it |
+| `GO FRONTIER` | on the pad while any of the four unstood tiles is outside the blocked window, which is the 8 starts in thirty minutes |
+
+### The survey that named the second trap
+
+`THROW BALL` was **63 starts and 63 `blocked`** in v0.4.3's own after-arm, mean sixty-nine frames,
+and the first reading of that -- the bag had not finished drawing when the step read the cursor --
+is true and is not the whole of it. Instrumenting *where* a macro reports `blocked` from the rung-9
+checkpoint answered `battle/party` and `battle/between-turns`, never `battle/bag`, and a frame dump
+of the menu bytes across one `THROW BALL` says why:
+
+```
+DUMP 21  topy=14 topx=9  cur=1 max=1 watch=0x11  sub=main     (the cursor walked DOWN)
+DUMP 35  topy=14 topx=15 cur=1 max=1 watch=0x21  sub=main     (then RIGHT)
+DUMP 52  topy=14 topx=15 cur=0 max=1 watch=0x21  sub=main     (then UP: the step's target)
+DUMP 55  topy=14 topx=15 cur=2 max=1 watch=0x21  sub=main     (A: the game adds 2 for the column)
+DUMP 60  topy=1  topx=0  cur=0 max=0 watch=0x03  sub=party  list=0x02
+```
+
+The A press at the right column's first row opens the **party list**. Red's battle menu is two
+*columns* -- the screen reads `FIGHT PKMN` over `ITEM RUN` -- and `wCurrentMenuItem` is the row
+inside the column the cursor is in, with two added for the right column on selection. So the
+game's order is **FIGHT, ITEM, PKMN, RUN**, and `macros::cartridge::battle_entry` had `PKMN` 1 and
+`ITEM` 2: the row-major reading of the picture. Every macro that meant to open the bag opened the
+party list and every macro that meant to open the party list opened the bag, for as long as the
+four constants have existed. The fake's own two-by-two moved row-major too, which is why no unit
+test could have caught it.
+
+### What changed, all of it inside the macros
+
+- **`MENU` is on no pad.** Not narrowed: nothing in the vocabulary uses the start menu except as a
+  scene to leave, so there is nothing behind the button. It stays a type, a population, a tag and a
+  script -- thirty-one channels, the roles and `--print-compatibility` do not move -- and the start
+  menu is still the fly's to open with the raw START button.
+- **`ways` gains a room's last resort**, the one `GO ROUTE` has had outdoors since 13.1: with
+  nothing else on this map worth walking to (`palette::stranded`), the exits of that kind come back
+  ignoring the blocked window, the one toward the objective preferred.
+- **A cursor step waits for the list it was built for.** A `Listing` says which list it is and a
+  step says which list its target indexes into; a step whose list is not up waits rather than
+  pressing at the list it has already answered, and takes its order and budget from that list on
+  the first frame it accepts input.
+- **`battle_entry`'s `ITEM` and `PKMN` swap**, and the fake's geometry becomes column-major.
+- **`BACK` on the move list only where the battler reads**, else `MOVE 1` alone.
+
+| # | trap | trigger | test | fix, or why it is left |
+| ---: | --- | --- | --- | --- |
+| 44 | `MENU` opens the start menu and that scene's `BACK` closes it again: a pair split across two scenes, and on a map where every other list has emptied it is the whole pad | thirty brain minutes on map `0x35`, `MENU` 82 starts and `BACK` 82; on v0.4.3 `MENU` is dealt on every overworld map | `menu_is_on_no_scenes_pad`, `the_overworld_plan_never_truncates_the_frontier_away`, `the_fly_leaves_the_pewter_building_from_the_rung_ten_checkpoint` (ROM-gated: it **fails on v0.4.3** with `MENU` on the pad of maps 2, 52, 53, 54, 55, 57, 58 and 147 starts) | **fixed**: `MENU` is off every scene's set. A macro whose precondition holds wherever the fly stands and whose effect a neighbouring scene undoes is section 12.2's trap, and the start menu has nothing in it for the fly |
+| 45 | the overworld's never-empty guarantee *was* `MENU`, so taking it off could strand a room -- and the museum's one way out is a passage the blocked window rests | the same thirty minutes: `ways(Passage)` empty, `ways(Exit)` empty because there is no exit-class warp at all | `a_room_whose_only_way_out_the_ledger_rests_still_offers_it`, `an_overworld_pad_is_never_one_button_that_undoes_itself`, `no_playable_scene_and_no_sub_state_deals_an_empty_pad` | **fixed**: `ways`' last resort covers a room as well as a route. A map with **no way out at all** is a genuinely empty pad, is asserted as such, and is reported by `game.padEmptyMs` -- no map in Red is that shape |
+| 46 | Red's battle menu is two columns, so `battle_entry`'s row-major `PKMN` 1 / `ITEM` 2 sent `ITEM` and `THROW BALL` to the party list and `SWITCH` to the bag | every `THROW BALL`, `ITEM` and `SWITCH` ever started: 63 starts and 63 `blocked` in v0.4.3's after-arm, `SWITCH` 15 of them | `the_battle_menus_two_columns_put_item_under_fight_and_pkmn_beside_it`, `throw_ball_waits_for_the_bag_rather_than_reading_the_menu_it_came_from`, `the_battles_turns_advance_from_the_rung_nine_forest_checkpoint` (ROM-gated, now asserting `THROW BALL` never blocks) | **fixed**: the order is FIGHT, ITEM, PKMN, RUN, surveyed byte by byte. ROM-gated from the rung-9 checkpoint: `THROW BALL` 15 starts and 0 blocked, `SWITCH` 17 and 0, against 6 of 6 and 15 before |
+| 47 | a move list whose battler the seam cannot read binds no `MOVE n`, so its pad is `BACK` alone -- which closes the list `MOVE 1` underneath had just opened | `BACK` was 263 of 797 macro starts in v0.4.3's after-arm, every one over an open move list | `the_move_list_deals_back_only_where_the_moves_can_be_read` | **fixed**: `BACK` is dealt on the move list only while `wBattleMon*` reads; otherwise `MOVE 1` alone, whose script confirms where the cursor stands, which is the press that ends a turn |
+
+### The ROM-gated runs, before and after
+
+From the rung-10 checkpoint, thirty-three brain minutes of the game-blind rotation, v0.4.3
+(`928d66b`) against this branch:
+
+| measure | before (v0.4.3) | after |
+| --- | ---: | ---: |
+| maps whose overworld pad dealt `MENU` | **7** (2, 52, 53, 54, 55, 57, 58) | **0** |
+| `MENU` starts | **147** | **0** |
+| overworld pads that were empty | 0 | 0 |
+| frame the fly left map `0x35` | (it left, then came back) | **182** |
+
+From the rung-9 forest checkpoint, sixty-seven brain minutes, the same two arms:
+
+| measure | before (v0.4.3) | after |
+| --- | ---: | ---: |
+| `THROW BALL` starts / blocked | 6 / **6** | 15 / **0** |
+| `SWITCH` starts / blocked | 17 / **15** | 17 / **0** |
+| `RUN` blocked | 6 | 0 |
+| battles entered / ended | 8 / 8 | 4 / 3 (one still running at the budget) |
+| worst battle, in macros | 275 | 450 |
+
+The worst battle grows because a fly whose `SWITCH` and `ITEM` reach their own lists spends turns
+switching and healing instead of only attacking. The claim the assertion carries is unchanged and
+still holds: a battle **ends**, on a bounded number of macros.
+
+### The trap hunt, before and after -- and why it says nothing about this trap
+
+Twenty brain minutes, seed 20260917, 4 sweep threads, the same connectome and the same cartridge,
+from the release container's own rung-10 checkpoint, driven by the brain.
+
+| measure | before (v0.4.3) | after |
+| --- | ---: | ---: |
+| distinct (map, tile) | 175 | 175 |
+| windows flagged | 73/73 | 73/73 |
+| macros started | 1413 | 1413 |
+| `MENU` starts | **0** | **0** |
+| `THROW BALL` blocked | 0 (never started) | 0 (never started) |
+| frames in `dialog` | 63,668 | 63,668 |
+
+**The two arms are identical, and that is the honest result rather than a null one.** The reached
+and blocked ledgers are session state that a restore clears (12.1), so a restored fly is not in the
+state the loop needed: it walks out of the museum's upper floor in one `GO WARP` and never presses
+`MENU` at all, so removing a channel the decoder never picked changes nothing downstream. The trap
+hunt cannot reproduce a ledger-built loop from a checkpoint, and this is the first review where
+that has mattered; the proof for rows 44 and 45 is the pad rules and the ROM-gated run above.
+
+What the hunt *does* reproduce, from this checkpoint, is **row 41** -- the Pokémon Center nurse's
+box -- at full scale: 62,804 of 71,673 frames are one text box on **one tile** of map `0x3a` at
+(3, 3), with `YES` **1,278** of 1,295 macro starts and the run ending there. That is the next trap
+and it now has a checkpoint of its own.
+
+### Residuals, named rather than worked around
+
+- **Row 41 is reproduced and is the next brief.** 1,295 of 1,413 macro starts in both arms are
+  `YES` at the nurse's counter, on one tile, for the last eighteen brain minutes of the run.
+- **`MOVE n` reports `blocked` 890 times in 1,431 macros** in the forest ROM run, every one of them
+  with the move list drawn and its cursor *placeable* but not accepting input: no press moves the
+  cursor and the step spends its budget (`reason=budget target=2 max=3 kind=BattleMoves here=1`,
+  535 of them). That is row 30b's unplaceable cursor inverted, it is unchanged from v0.4.3 (747
+  blocked in 1,260), and the honest fix is a WRAM reading rather than a pad change.
+- **The museum is not in `geography`**, which is why `GO OBJECTIVE`, `GO SHOP` and `GO HEAL` are
+  all off the pad inside it. Adding the row would give the fly the road to the gym from indoors;
+  this branch did not, because the map graph is a data change with its own survey (12.7) and the
+  way out now stands on its own.
+- **A map with no way out at all deals an empty pad.** No map in Red is that shape; it is asserted
+  and reported rather than covered.
+
+### Gates
+
+- `cargo test --workspace` with `FLY_ROM` set: green except
+  `flysim::integration::the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_killed`,
+  which fails identically on v0.4.3 on this box (a debug build of the service does not finish
+  booting inside the test's window here). Pre-existing and unrelated to the macro layer.
+- `cargo clippy --all-targets`: clean.
+- `infra/tests/lint.sh`: all checks passed, de-PII guard included.
+- `--print-compatibility`: **648 bytes, sha256 `0d9bfde7...707fa`** -- byte-identical to v0.4.1,
+  v0.4.2 and v0.4.3. Decoder, reward catalog, adapter version and roles untouched.
