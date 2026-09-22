@@ -23,6 +23,7 @@ use fly_session::phase::Phase;
 use fly_session::types::*;
 
 all_modes!(
+    an_acknowledge_that_releases_nothing_is_not_a_failure,
     a_slow_participant_is_resolved_rather_than_failed,
     a_resolution_says_which_of_its_two_bounds_ended_it,
     a_delayed_one_agent_result_holds_the_world,
@@ -82,6 +83,52 @@ async fn sequential_reversed_and_parallel_completion_agree() {
             "{name} produced a different behaviour trace from {first_name}"
         );
     }
+}
+
+// -------------------------------------------------------------------------------------------
+// ipc-v1 section 5: an Acknowledge that releases nothing is success
+
+/// `ipc-v1` section 5: "Already released/unknown IDs are ignored."
+///
+/// A second `Worker.Acknowledge` of ids the worker has already released answers with an empty
+/// list. That is the contract working, not a worker misbehaving, and the coordinator must
+/// accept it and carry on. The session's own bootstrap releases every lifecycle reply, so
+/// asking again for the same ids is exactly that case -- driven directly here rather than by
+/// making something slow, because it is a rule about the reply and not about timing.
+///
+/// The rule has teeth because of section 6: any Acknowledge whose reply outruns the probe is
+/// resolved, and the resolution *is* a second Acknowledge of the same ids. A coordinator that
+/// demands the whole list back therefore fences a healthy session the first time a worker is
+/// slow to answer. It did, on this branch's parent; this test fails if that check returns.
+async fn an_acknowledge_that_releases_nothing_is_not_a_failure(mode: ExecutionMode) {
+    let mut f = mode_fixture(mode, two_agents(mode)).await;
+    // Bootstrap acknowledges every lifecycle reply, so afterwards the worker holds none.
+    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
+    let worker = f.harness.coordinator.agent_ref(&fly_a()).cloned().unwrap();
+
+    // The ids bootstrap already released. The worker ignores them and releases nothing.
+    let already: Vec<DomainRequestId> =
+        (1..=3).map(DomainRequestId::from_serial).collect();
+    let released = within(
+        "acknowledge",
+        f.harness.coordinator.acknowledge_replies(&worker, &already),
+    )
+    .await
+    .expect("a second Acknowledge of released ids is success, not a failed epoch");
+    assert!(
+        released.is_empty(),
+        "already released ids are ignored, so this call released nothing: {released:?}"
+    );
+
+    // The session is untouched by it: not fenced, still at its boundary, and still plays.
+    assert!(!f.harness.coordinator.is_fenced(), "an empty acknowledgment is not a fault");
+    assert_eq!(f.harness.coordinator.phase(), Phase::Ready(0));
+    let report = within("step", f.harness.coordinator.step())
+        .await
+        .expect("the session continues after an Acknowledge that released nothing");
+    assert_eq!(report.boundary, 1);
+    assert_eq!(f.harness.coordinator.stats().advances, 1);
+    f.shutdown().await;
 }
 
 // -------------------------------------------------------------------------------------------

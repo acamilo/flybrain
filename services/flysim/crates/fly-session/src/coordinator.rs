@@ -839,22 +839,39 @@ impl Coordinator {
                 .push(request_id);
         }
         for (worker, ids) in by_worker.into_values() {
-            let params = AcknowledgeParams { request_ids: ids.clone() };
-            let reply = self
-                .call(&worker, "Worker.Acknowledge", None, object(params.to_json()), &[], &[])
-                .await?;
-            // The reply lists what this call released, which is not always everything it
-            // asked about: `ipc-v1` section 5 says "Already released/unknown IDs are
-            // ignored", and the contract type already holds the list to a subset of the
-            // request. A second Acknowledge therefore answers with an empty list by design --
-            // and the section 6 resolution produces exactly that second Acknowledge whenever
-            // the first one's reply was slow. Demanding the whole list back turned a safe,
-            // contract-sanctioned retry into a failed epoch.
-            let _: AcknowledgeResult =
-                reply.parse().map_err(|e| self.fail_now(e, "acknowledge"))?;
+            self.acknowledge_replies(&worker, &ids).await?;
         }
         self.audit.push("acknowledge.lifecycle".to_owned());
         Ok(())
+    }
+
+    /// Releases a worker's retained lifecycle replies, and accepts a short answer.
+    ///
+    /// **`ipc-v1` section 5: "Already released/unknown IDs are ignored."** The reply lists what
+    /// *this* call released, which is not always everything it asked about, and the contract
+    /// type already holds that list to a subset of the request. So a second Acknowledge of the
+    /// same ids answers with an empty list by design, and an empty list is success.
+    ///
+    /// This matters beyond tidiness. The `ipc-v1` section 6 resolution turns any Acknowledge
+    /// whose reply is slower than the probe into a second Acknowledge of the same ids, so the
+    /// short answer is not an edge case -- it is what the contract produces on an ordinarily
+    /// slow worker. Requiring the whole list back made the contract's own idempotence a failed
+    /// epoch, which is what
+    /// `an_acknowledge_that_releases_nothing_is_not_a_failure` guards against.
+    ///
+    /// Returns the ids the worker actually released.
+    pub async fn acknowledge_replies(
+        &mut self,
+        worker: &WorkerRef,
+        request_ids: &[DomainRequestId],
+    ) -> Outcome<Vec<DomainRequestId>> {
+        let params = AcknowledgeParams { request_ids: request_ids.to_vec() };
+        let reply = self
+            .call(worker, "Worker.Acknowledge", None, object(params.to_json()), &[], &[])
+            .await?;
+        let result: AcknowledgeResult =
+            reply.parse().map_err(|e| self.fail_now(e, "acknowledge"))?;
+        Ok(result.acknowledged)
     }
 
     /// Queries one worker's status without waiting for its current mutation.
