@@ -295,6 +295,24 @@ struct Run {
     talk_starts_by_map: std::collections::BTreeMap<u32, u32>,
     /// `GO FRONTIER` starts by map, for the museum (section 12.14).
     frontier_by_map: std::collections::BTreeMap<u32, u32>,
+    /// Where the macro that is running started, for the net-tiles measure below.
+    started_at: Option<(u32, u8, u8)>,
+    /// The longest chain of macros that **completed at a net of zero tiles**, and the names in it.
+    ///
+    /// Section 12.2's rule, measured (`infra/docs/macros-traps.md` row 54): "a macro that
+    /// completes without moving because its precondition is already satisfied where the fly stands
+    /// is a trap". One is ordinary -- a `TALK`, a `NEXT`, a walk that ends where it began because
+    /// it arrived by turning -- and a *chain* of them is the loop: the after arm of the v0.4.5
+    /// hunt spent brain minutes 1.0 to 8.5 cycling `GO FRONTIER`, `GO HEAL` and `GO ROUTE` over
+    /// five tiles, `GO HEAL` 204 starts at a mean net of 0.0 and a mean reach of 0.0.
+    ///
+    /// Counted over walks only, because the presses are supposed to stand still: a `YES` that
+    /// answers a box and a `MOVE 2` that picks a move both finish on the tile they started on and
+    /// neither is going anywhere.
+    net_zero_streak: u32,
+    worst_net_zero_streak: u32,
+    net_zero_chain: Vec<&'static str>,
+    worst_net_zero_chain: Vec<&'static str>,
 }
 
 impl Run {
@@ -396,6 +414,11 @@ impl Run {
             talk_on_pad_by_map: std::collections::BTreeSet::new(),
             talk_starts_by_map: std::collections::BTreeMap::new(),
             frontier_by_map: std::collections::BTreeMap::new(),
+            started_at: None,
+            net_zero_streak: 0,
+            worst_net_zero_streak: 0,
+            net_zero_chain: Vec::new(),
+            worst_net_zero_chain: Vec::new(),
             menu_alternation: 0,
             last_start: None,
         }
@@ -502,6 +525,11 @@ impl Run {
             talk_on_pad_by_map: std::collections::BTreeSet::new(),
             talk_starts_by_map: std::collections::BTreeMap::new(),
             frontier_by_map: std::collections::BTreeMap::new(),
+            started_at: None,
+            net_zero_streak: 0,
+            worst_net_zero_streak: 0,
+            net_zero_chain: Vec::new(),
+            worst_net_zero_chain: Vec::new(),
             menu_alternation: 0,
             last_start: None,
         }
@@ -731,7 +759,7 @@ impl Run {
         self.talk_on_pad = talk_bound;
         let active =
             self.decoder.decode_bound(&rates(hot), self.ms, false, None, Some(&bound));
-        let (mask, started, blocked) = {
+        let (mask, started, blocked, done) = {
             let ledger = AdapterLedger(&self.adapter);
             let decision = self.layer.decide(&active, 0, self.ms, &mut self.gb, &ledger);
             let started: Vec<&'static str> = decision
@@ -748,8 +776,39 @@ impl Run {
                 })
                 .map(|event| event.name)
                 .collect();
-            (decision.mask, started, blocked)
+            let done: Vec<&'static str> = decision
+                .events
+                .iter()
+                .filter(|event| {
+                    event.outcome.is_some_and(|outcome| outcome.as_str() == "done")
+                })
+                .map(|event| event.name)
+                .collect();
+            (decision.mask, started, blocked, done)
         };
+        // Row 54's own measure, taken before the starts below so that a macro that finishes and
+        // another that starts on the same frame are not confused for one another.
+        for name in done {
+            let walk = name.starts_with("GO ");
+            let net = match self.started_at {
+                Some((map, x, y)) if map == self.map() => {
+                    u32::from(x.abs_diff(self.tile().0)) + u32::from(y.abs_diff(self.tile().1))
+                }
+                // Another map is the biggest move a macro can make.
+                _ => u32::MAX,
+            };
+            if walk && net == 0 {
+                self.net_zero_streak += 1;
+                self.net_zero_chain.push(name);
+                if self.net_zero_streak > self.worst_net_zero_streak {
+                    self.worst_net_zero_streak = self.net_zero_streak;
+                    self.worst_net_zero_chain = self.net_zero_chain.clone();
+                }
+            } else if walk {
+                self.net_zero_streak = 0;
+                self.net_zero_chain.clear();
+            }
+        }
         for name in blocked {
             *self.blocked.entry(name).or_insert(0) += 1;
             let sub = self.battle_sub_state();
@@ -818,6 +877,8 @@ impl Run {
                 let map = self.map();
                 *self.talk_starts_by_map.entry(map).or_insert(0) += 1;
             }
+            let (x, y) = self.tile();
+            self.started_at = Some((self.map(), x, y));
         }
         self.gb.set_buttons(mask as u8);
         self.gb.run_frame().expect("a frame should complete");
@@ -898,6 +959,14 @@ impl Run {
             let seen = self.pads.entry(map).or_insert(dealt);
             *seen = (*seen).min(dealt);
         }
+    }
+
+    /// The tile the fly is standing on, as the macro layer reads it.
+    fn tile(&mut self) -> (u8, u8) {
+        (
+            self.gb.read_wram(flybrain_gb::pokemon_red::symbols::ram::wXCoord),
+            self.gb.read_wram(flybrain_gb::pokemon_red::symbols::ram::wYCoord),
+        )
     }
 
     /// Drive until `done`, or panic with where it got to.
@@ -2379,5 +2448,19 @@ fn the_fly_reaches_the_pewter_gym_from_the_rung_ten_checkpoint() {
         run.route.contains(&PEWTER_CITY),
         "the road to the gym is out of the museum's front door: {:?}",
         run.route
+    );
+    // Row 54: the cycle the last branch's after arm left behind. `GO FRONTIER`, `GO HEAL` and
+    // `GO ROUTE` each ended where they began, for seven and a half brain minutes over five tiles.
+    // Three in a row is the bound: a walk that arrives by turning, a walk cut short by a battle
+    // and a walk that finds its goal underfoot are each ordinary on their own.
+    eprintln!(
+        "the longest chain of walks that completed at a net of zero tiles: {} ({:?})",
+        run.worst_net_zero_streak, run.worst_net_zero_chain
+    );
+    assert!(
+        run.worst_net_zero_streak <= 3,
+        "{} walks in a row completed without moving the fly: {:?}",
+        run.worst_net_zero_streak,
+        run.worst_net_zero_chain
     );
 }
