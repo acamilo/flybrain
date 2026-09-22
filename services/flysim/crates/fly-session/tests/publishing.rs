@@ -14,8 +14,9 @@ use common::{Fixture, default_fixture, fixture, fly_a, fly_b, mode_fixture, with
 use fly_session::coordinator::{DESCRIPTOR_REVISION, Injections};
 use fly_session::harness::{AgentSpec, ExecutionMode, HarnessConfig, Via};
 use fly_session::publish::{
-    ApplicationChannel, ConsumerOutcome, Delivery, EVENT_BATCH_DEPTH, EventOutbox, GET_SNAPSHOT,
-    PresentationConsumer, PublicationOutcome, TopicPolicy, check_publication, query_service,
+    ApplicationChannel, ConsumerEvents, ConsumerOutcome, Delivery, EVENT_BATCH_DEPTH, EventOutbox,
+    GET_SNAPSHOT, PresentationConsumer, PublicationOutcome, TopicPolicy, check_publication,
+    query_service,
 };
 use fly_session::types::*;
 use serde_json::json;
@@ -38,6 +39,7 @@ both_transports!(
     the_query_service_answers_reads_and_nothing_else,
     a_refused_snapshot_is_still_what_the_repair_path_answers,
     a_replacement_that_built_another_index_cannot_install_the_checkpoint,
+    a_malformed_event_batch_is_unreadable_and_not_the_end_of_the_stream,
     the_published_descriptor_is_what_the_workers_attested_to,
     a_stimulus_kind_the_descriptor_does_not_declare_is_refused,
     a_restored_boundary_publishes_a_new_revision_and_no_transition,
@@ -1076,6 +1078,55 @@ async fn a_refused_snapshot_is_still_what_the_repair_path_answers(via: Via) {
         .expect("the repair path answers");
     assert_eq!(answered, DESCRIPTOR_REVISION);
     offender_client.close().await;
+    f.shutdown().await;
+}
+
+/// An event batch a consumer cannot read is reported as unreadable, and the stream goes on.
+///
+/// The two facts differ: a consumer that read "that one made no sense" as "there are no more
+/// events" would stop reading a live stream, which is the silent default this module exists to
+/// refuse. The malformed batch is published by a second publisher on the session's own address,
+/// because a well-behaved session cannot produce one.
+async fn a_malformed_event_batch_is_unreadable_and_not_the_end_of_the_stream(via: Via) {
+    let mut f = started(via).await;
+    let mut consumer = f.harness.consumer().await.expect("a consumer attaches");
+    let events_topic = f.harness.coordinator.topics().events.clone();
+    let intruder = f.harness.publisher().await.expect("a publishing client");
+
+    // A batch with no droppedBefore: readable JSON, unreadable as a batch.
+    intruder
+        .publish(
+            &events_topic,
+            object(json!({
+                "sessionId": f.harness.config.session_id.as_str(),
+                "epoch": f.harness.config.epoch.as_str(),
+                "events": [],
+            })),
+            &[],
+        )
+        .await
+        .expect("the malformed batch publishes");
+
+    match within("the malformed batch", consumer.take_events()).await {
+        Some(ConsumerEvents::Unreadable { detail }) => {
+            assert!(
+                detail.contains("droppedBefore"),
+                "the report names what it could not read: {detail}"
+            );
+        }
+        other => panic!("a malformed batch must not read as {other:?}"),
+    }
+
+    // The stream did not end: the next real batch still arrives and reads.
+    f.harness.coordinator.run(1).await.expect("a transition");
+    match within("the next batch", consumer.take_events()).await {
+        Some(ConsumerEvents::Batch(batch)) => {
+            assert_eq!(batch.epoch, f.harness.config.epoch);
+            assert!(!batch.event_ids.is_empty(), "the transition produced events");
+        }
+        other => panic!("expected a readable batch after the malformed one, got {other:?}"),
+    }
+    intruder.close().await;
     f.shutdown().await;
 }
 

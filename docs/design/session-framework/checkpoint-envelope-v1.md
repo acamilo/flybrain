@@ -111,7 +111,9 @@ Without it a replacement fly that built another graph -- the same dataset, the s
 count, another index -- passed the group check and was then published under its predecessor's
 `indexDigest`, which is a graph identity crossing a recovery and exactly what section 5's rules
 exist to prevent. It is recorded from the worker's attestation rather than recomputed from the
-dataset, because the point is that the two can disagree.
+dataset, because the point is that the two can disagree. `envelopeVersion` stays `1`, which the
+required-manifest-field rule below allows only while no production `FLYSESS1` file exists; once
+one does, adding a required manifest field must bump it.
 
 **Amendment, 2026-09-22 (STATE-01).** The table above names a holder for every payload except
 the environment's own, although section 6's fixture has one (`world`) and a group install has

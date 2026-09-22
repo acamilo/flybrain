@@ -1275,26 +1275,42 @@ impl PresentationConsumer {
     }
 
     /// Takes the next bounded event batch.
-    pub async fn take_events(&mut self) -> Option<EventBatchView> {
+    ///
+    /// `None` is the end of the stream and nothing else. A batch this consumer cannot read
+    /// comes back as [`ConsumerEvents::Unreadable`], because "there are no more events" and
+    /// "that one made no sense" are different facts and one value cannot carry both: a
+    /// consumer that saw the second as the first would stop reading a live stream.
+    pub async fn take_events(&mut self) -> Option<ConsumerEvents> {
         let message = self.events.next().await?;
         let payload = message.payload().clone();
         drop(message);
-        let epoch = payload.get("epoch").and_then(Value::as_str).map(id)?;
-        let dropped_before = payload
+        let unreadable = |what: &str| {
+            Some(ConsumerEvents::Unreadable {
+                detail: format!("an event batch has no readable {what}"),
+            })
+        };
+        let Some(epoch) = payload.get("epoch").and_then(Value::as_str).map(id) else {
+            return unreadable("epoch");
+        };
+        let Some(dropped_before) = payload
             .get("droppedBefore")
             .and_then(Value::as_str)
-            .and_then(|t| t.parse::<u64>().ok())?;
-        let event_ids = payload
-            .get("events")
-            .and_then(Value::as_array)?
+            .and_then(|t| t.parse::<u64>().ok())
+        else {
+            return unreadable("droppedBefore");
+        };
+        let Some(events) = payload.get("events").and_then(Value::as_array) else {
+            return unreadable("events array");
+        };
+        let event_ids = events
             .iter()
             .filter_map(|e| e.get("id").and_then(Value::as_str).map(str::to_owned))
             .collect();
-        Some(EventBatchView {
+        Some(ConsumerEvents::Batch(EventBatchView {
             epoch,
             dropped_before,
             event_ids,
-        })
+        }))
     }
 
     /// Records that this consumer has mapped geometry against the agents of `revision`.
