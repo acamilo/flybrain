@@ -32,11 +32,21 @@ pub const WALL_TILE: u8 = 0x60;
 
 pub struct Wram {
     bytes: Vec<u8>,
+    /// Fake cartridge banks, for the one read that needs one.
+    ///
+    /// A bank nothing has written answers `None`, which is what a seam with no cartridge behind
+    /// it answers and what the whole-map grid has to narrow on
+    /// (`docs/design/macros.md` section 15).
+    rom: std::collections::HashMap<(u8, u16), u8>,
 }
 
 impl MemoryReader for Wram {
     fn read8(&mut self, address: u16) -> u8 {
         self.bytes[address as usize]
+    }
+
+    fn read_rom(&mut self, bank: u8, address: u16) -> Option<u8> {
+        self.rom.get(&(bank, address)).copied()
     }
 }
 
@@ -49,7 +59,7 @@ impl Default for Wram {
 impl Wram {
     /// All zero: the title screen, since nothing has set the game-timer bit.
     pub fn new() -> Self {
-        Self { bytes: vec![0; 0x1_0000] }
+        Self { bytes: vec![0; 0x1_0000], rom: std::collections::HashMap::new() }
     }
 
     pub fn set(&mut self, address: u16, value: u8) -> &mut Self {
@@ -327,6 +337,76 @@ impl Wram {
                 .set(entry + 1, *x)
                 .set(entry + 2, *destination_warp)
                 .set(entry + 3, *destination_map);
+        }
+        self
+    }
+
+
+    /// The ROM bank and address this fake keeps a tileset's blockset at.
+    ///
+    /// Any non-zero bank: the point of the number is that it is *not* bank 0, because a bank the
+    /// CPU bus does not have mapped is the whole reason the seam grew
+    /// [`MemoryReader::read_rom`] (`docs/design/macros.md` section 15).
+    pub const BLOCKSET_BANK: u8 = 0x11;
+    pub const BLOCKSET_BASE: u16 = 0x4000;
+
+    /// Which tileset the loaded map uses, for the tile-pair collision lists.
+    pub fn tileset(&mut self, id: u8) -> &mut Self {
+        self.set(ram::wCurMapTileset, id)
+    }
+
+    /// A tileset header's blockset, written where a cartridge keeps one: sixteen tile ids per
+    /// block, in block-id order, in a ROM bank that is not bank 0.
+    pub fn blockset(&mut self, blocks: &[[u8; 16]]) -> &mut Self {
+        for (id, block) in blocks.iter().enumerate() {
+            for (offset, tile) in block.iter().enumerate() {
+                let address = Self::BLOCKSET_BASE + (id * 16 + offset) as u16;
+                self.rom.insert((Self::BLOCKSET_BANK, address), *tile);
+            }
+        }
+        self.set(ram::wTilesetBank, Self::BLOCKSET_BANK)
+            .set(ram::wTilesetBlocksPtr, (Self::BLOCKSET_BASE & 0xff) as u8)
+            .set(ram::wTilesetBlocksPtr + 1, (Self::BLOCKSET_BASE >> 8) as u8)
+    }
+
+    /// The loaded map's block ids, as `LoadTileBlockMap` leaves them in `wOverworldMap`: rows of
+    /// `wCurMapWidth + MAP_BORDER * 2` bytes with the map itself three rows and three columns in.
+    ///
+    /// `blocks` is row-major and `wCurMapWidth * wCurMapHeight` long; the border is left as
+    /// whatever it was, exactly as a map with no connections leaves it.
+    pub fn map_blocks(&mut self, blocks: &[u8]) -> &mut Self {
+        let width = u16::from(self.peek(ram::wCurMapWidth));
+        let height = u16::from(self.peek(ram::wCurMapHeight));
+        let border = crate::pokemon_red::mapgrid::MAP_BORDER as u16;
+        let stride = width + border * 2;
+        for row in 0..height {
+            for column in 0..width {
+                let index = usize::from(row * width + column);
+                let Some(block) = blocks.get(index) else { continue };
+                self.set(ram::wOverworldMap + (row + border) * stride + column + border, *block);
+            }
+        }
+        self
+    }
+
+    /// Write the screen buffer so that it agrees with the block data, tile for tile.
+    ///
+    /// The grid reader cross-checks its decode against the window predicate before it trusts it
+    /// ([`crate::pokemon_red::state::map_grid`]), and on a cartridge the two agree because they
+    /// are two readings of one map. This is that agreement in a fake: every map tile inside the
+    /// ten-by-nine window gets the tile id the blockset gives it, and the tiles outside it keep
+    /// whatever the screen held, which is what makes them `Unknown` to the window and answerable
+    /// only by the grid.
+    pub fn screen_from_blocks(&mut self, blocks: &[u8], blockset: &[[u8; 16]]) -> &mut Self {
+        let width = usize::from(self.peek(ram::wCurMapWidth));
+        let height = usize::from(self.peek(ram::wCurMapHeight));
+        for y in 0..height * 2 {
+            for x in 0..width * 2 {
+                let Some(block) = blocks.get((y / 2) * width + (x / 2)) else { continue };
+                let Some(tiles) = blockset.get(usize::from(*block)) else { continue };
+                let tile = tiles[(y % 2) * 2 * 4 + (x % 2) * 2];
+                self.map_tile(x as u8, y as u8, tile);
+            }
         }
         self
     }

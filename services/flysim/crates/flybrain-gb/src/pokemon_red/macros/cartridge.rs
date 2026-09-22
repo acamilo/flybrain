@@ -24,7 +24,7 @@
 use crate::adapter::PlaceKind;
 
 use super::geography::Amenity;
-use super::state::{Facing, GameState};
+use super::state::{Facing, GameState, MapGrid};
 
 /// `constants/pokemon_data_constants.asm`: `PARTY_LENGTH`, how many Pokémon fit in the party.
 ///
@@ -313,6 +313,23 @@ pub trait MacroState: GameState {
     /// cannot answer has found no such tile, which is a fresh session.
     fn pushed_tile(&mut self, _x: u8, _y: u8) -> bool {
         false
+    }
+
+    /// The whole loaded map's walkability, when the cartridge's tables can be decoded.
+    ///
+    /// `docs/design/macros.md` section 15, the operator 2026-09-22: "the frontier and warp macros
+    /// need to be map aware: A* over walkable tiles." [`GameState::walkable`] answers for the
+    /// ten-by-nine window of the screen buffer and [`super::state::Walkable::Unknown`] for
+    /// everything else, so before this every walk planned through guesses, re-planned at every
+    /// window edge, and `GO FRONTIER` aimed at whatever unstood ground happened to be on screen.
+    ///
+    /// The default is `None`, which is this trait's usual narrowing and here it is also the
+    /// documented fallback: [`super::path::route`] and [`super::path::frontier`] use the window
+    /// predicate when the grid is absent, exactly as they did before, and
+    /// [`crate::pokemon_red::state::GridRefusal`] is what says why it is absent on a frame the
+    /// reader could not decode.
+    fn map_grid(&mut self) -> Option<std::sync::Arc<MapGrid>> {
+        None
     }
 
     /// Whether this run has already been into `area`'s mart or Pokémon Center.

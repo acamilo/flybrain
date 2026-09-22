@@ -29,9 +29,10 @@ use super::macros::cartridge::{
     Objective, PushedLedger, StoodLedger, TalkLedger, TalkTarget, TargetKey, TargetLedger, Tile,
 };
 use super::macros::geography::Amenity;
+use super::mapgrid::{self, MapGrids};
 use super::macros::state::{
     BagItem, Battle, BattleKind, BattleMenu, Connections, Cursor, EnemyMon, Facing, GameState,
-    MapSize, Mon, Move, Npc, Party, Pc, Player, Scene, Shop, ShopScreen, Sign, StartMenu,
+    MapGrid, MapSize, Mon, Move, Npc, Party, Pc, Player, Scene, Shop, ShopScreen, Sign, StartMenu,
     Status, TextBox, Walkable, Warp,
 };
 use super::symbols::ram;
@@ -775,12 +776,16 @@ pub fn npcs(memory: &mut dyn MemoryReader) -> Vec<Npc> {
     npcs
 }
 
-/// Whether the current tileset calls this tile id passable.
+/// The current tileset's list of passable tile ids, terminator included.
 ///
 /// `CheckTilePassable` walks the list at `wTilesetCollisionPtr` — a little-endian pointer into the
 /// collision tables, which all live in ROM bank 0 at this commit and so are always mapped — until
-/// it matches or hits `$ff`. `None` means the pointer is not one this module will follow.
-fn passable(memory: &mut dyn MemoryReader, tile: u8) -> Option<bool> {
+/// it matches or hits `$ff`. `None` means the pointer is not one this module will follow, or the
+/// list is not terminated inside the bound below.
+///
+/// One read of the list serves both callers: [`walkable`] asks about one tile of the window, and
+/// [`map_grid`] asks about every tile of the map, and neither is allowed its own copy of the rule.
+fn collision_list(memory: &mut dyn MemoryReader) -> Option<Vec<u8>> {
     let low = u16::from(read(memory, ram::wTilesetCollisionPtr));
     let high = u16::from(read(memory, ram::wTilesetCollisionPtr + 1));
     let base = high * 256 + low;
@@ -792,14 +797,160 @@ fn passable(memory: &mut dyn MemoryReader, tile: u8) -> Option<bool> {
     }
     // No collision list in the game is longer than this; the bound is what stops a bad pointer
     // from walking the cartridge.
+    let mut list = Vec::new();
     for offset in 0..64u16 {
-        match read(memory, base + offset) {
-            0xff => return Some(false),
-            found if found == tile => return Some(true),
-            _ => {}
+        let byte = read(memory, base + offset);
+        list.push(byte);
+        if byte == mapgrid::TERMINATOR {
+            return Some(list);
         }
     }
     None
+}
+
+/// Whether the current tileset calls this tile id passable.
+///
+/// [`collision_list`]'s own walk, and `CheckTilePassable`'s: match or `$ff`, whichever comes
+/// first. `None` means the list could not be read at all.
+fn passable(memory: &mut dyn MemoryReader, tile: u8) -> Option<bool> {
+    let list = collision_list(memory)?;
+    for candidate in list {
+        if candidate == mapgrid::TERMINATOR {
+            return Some(false);
+        }
+        if candidate == tile {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
+/// Why a whole-map grid could not be decoded on this frame.
+///
+/// `docs/design/macros.md` section 15 asks the fallback to *say when*, so every way out of
+/// [`map_grid`] is named rather than being one `None`. Each one leaves the window predicate in
+/// charge, which is what the walks did before the grid existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridRefusal {
+    /// The map header is not loaded, or its size is out of range (`map_size` said `None`).
+    NoHeader,
+    /// The player's coordinates are not readable, so nothing can be cross-checked.
+    NoPlayer,
+    /// The tileset's collision list could not be followed ([`collision_list`]).
+    NoCollisionList,
+    /// The blockset could not be read: the seam has no cartridge behind it
+    /// ([`MemoryReader::read_rom`] answered `None`), or the header's pointer runs off the image.
+    NoBlockset,
+    /// The screen is not showing the map — a battle, a text box, a frame mid-warp — so there is
+    /// nothing to check the decode against, and `wOverworldMap` shares its bytes with the picture
+    /// buffer (`ram/wram.asm`'s own union), which is exactly when it must not be trusted.
+    NoScreen,
+    /// The decode and the screen buffer disagree about a tile the window can answer for. A wrong
+    /// stride, a wrong quadrant or a half-loaded map all land here, and all of them answer
+    /// plausibly, which is why this check is not optional.
+    ScreenDisagrees,
+}
+
+impl GridRefusal {
+    /// A short label for a log line and the probes.
+    pub fn label(self) -> &'static str {
+        match self {
+            GridRefusal::NoHeader => "no map header",
+            GridRefusal::NoPlayer => "no player",
+            GridRefusal::NoCollisionList => "no collision list",
+            GridRefusal::NoBlockset => "no blockset",
+            GridRefusal::NoScreen => "map not on screen",
+            GridRefusal::ScreenDisagrees => "screen disagrees",
+        }
+    }
+}
+
+/// The whole loaded map's walkability, decoded from the tables the cartridge has loaded.
+///
+/// `docs/design/macros.md` section 15. The rule is [`walkable`]'s rule — the tileset's collision
+/// list — and what this adds is the tile id of every tile of the map rather than of the ten-by-nine
+/// window:
+///
+/// - the map's **blocks** come from `wOverworldMap`, which `LoadTileBlockMap` fills from the map's
+///   own ROM bank as rows of `wCurMapWidth + MAP_BORDER * 2` bytes with the map itself three rows
+///   and three columns in. That is WRAM, so it needs no bank at all.
+/// - a block's **tiles** come from the tileset header's blockset, sixteen bytes per block id
+///   (`DrawTileBlock`). That is ROM, and not bank 0, so it is the one read that goes through
+///   [`MemoryReader::read_rom`] — the cartridge image as the process already holds it, because the
+///   alternative would be *writing* the mapper's bank register and the joypad is the only write
+///   this workspace makes into a running game.
+/// - the **tile-pair** refusals come from the values of `TilePairCollisionsLand`, keyed by
+///   `wCurMapTileset`, and become directed walls ([`mapgrid::TILE_PAIRS_LAND`]).
+///
+/// The last thing it does is check itself: the decoded tile ids are compared against
+/// [`map_tile_id`] for the player's own tile and its four neighbours, every one the window can
+/// answer for. A frame where the window can answer for none of them is refused
+/// ([`GridRefusal::NoScreen`]) rather than trusted, because `wOverworldMap` shares its bytes with
+/// the picture buffer and a battle is exactly when the blocks under it are somebody else's.
+pub fn map_grid(memory: &mut dyn MemoryReader) -> Result<MapGrid, GridRefusal> {
+    let size = map_size(memory).ok_or(GridRefusal::NoHeader)?;
+    let player = player(memory).ok_or(GridRefusal::NoPlayer)?;
+    let passable = collision_list(memory).ok_or(GridRefusal::NoCollisionList)?;
+    let width_blocks = read(memory, ram::wCurMapWidth);
+    let height_blocks = read(memory, ram::wCurMapHeight);
+    let stride = u16::from(width_blocks) + (mapgrid::MAP_BORDER as u16) * 2;
+    let border = mapgrid::MAP_BORDER as u16;
+    let mut blocks = Vec::with_capacity(usize::from(width_blocks) * usize::from(height_blocks));
+    for row in 0..u16::from(height_blocks) {
+        for column in 0..u16::from(width_blocks) {
+            blocks.push(read(memory, ram::wOverworldMap + (row + border) * stride + column + border));
+        }
+    }
+    // Only as much of the blockset as this map's blocks index into: a tileset has up to 256 of
+    // them and a room uses a dozen, and a read that stops at the highest block id used is a read
+    // that cannot run off the end of a bank for tiles nothing asks about.
+    let highest = blocks.iter().copied().max().unwrap_or(0);
+    let bank = read(memory, ram::wTilesetBank);
+    let base = u16::from(read(memory, ram::wTilesetBlocksPtr))
+        + u16::from(read(memory, ram::wTilesetBlocksPtr + 1)) * 256;
+    let wanted = (usize::from(highest) + 1) * mapgrid::BLOCK_BYTES;
+    let mut blockset = Vec::with_capacity(wanted);
+    for offset in 0..wanted {
+        let address = base.checked_add(u16::try_from(offset).map_err(|_| GridRefusal::NoBlockset)?);
+        let byte = address
+            .and_then(|address| memory.read_rom(bank, address))
+            .ok_or(GridRefusal::NoBlockset)?;
+        blockset.push(byte);
+    }
+    let tiles = mapgrid::Tileset { id: read(memory, ram::wCurMapTileset), blocks: blockset, passable };
+    let grid = mapgrid::decode(player.map, width_blocks, height_blocks, &blocks, &tiles);
+    if grid.width() != size.width || grid.height() != size.height {
+        return Err(GridRefusal::NoHeader);
+    }
+    // The cross-check. `map_tile_id` reads the screen buffer at the offset
+    // `_GetTileAndCoordsInFrontOfPlayer` uses, so agreeing with it on the tiles it can answer for
+    // is agreeing with the cartridge's own reading of the same ground.
+    let mut checked = 0;
+    for (x, y) in neighbourhood(player.x, player.y) {
+        let Some(screen) = map_tile_id(memory, x, y) else { continue };
+        if grid.tile_id(x, y) != Some(screen) {
+            return Err(GridRefusal::ScreenDisagrees);
+        }
+        checked += 1;
+    }
+    if checked == 0 {
+        return Err(GridRefusal::NoScreen);
+    }
+    Ok(grid)
+}
+
+/// The player's own tile and its four neighbours, which is every tile the window is certain to be
+/// able to answer for from where the fly is standing.
+fn neighbourhood(x: u8, y: u8) -> Vec<(u8, u8)> {
+    let mut out = vec![(x, y)];
+    for (dx, dy) in [(0i16, 1i16), (0, -1), (-1, 0), (1, 0)] {
+        if let (Ok(nx), Ok(ny)) =
+            (u8::try_from(i16::from(x) + dx), u8::try_from(i16::from(y) + dy))
+        {
+            out.push((nx, ny));
+        }
+    }
+    out
 }
 
 /// Whether the player could stand on this tile of the current map.
@@ -918,6 +1069,16 @@ pub struct PokeState<'a> {
     /// Tiles the cartridge has pushed the fly off ([`MacroState::pushed_tile`]). Session state
     /// beside the four above, owned by the same type (`infra/docs/macros-traps.md` row 37).
     pushed: &'a dyn PushedLedger,
+    /// Where the decoded map grid is kept between frames ([`MacroState::map_grid`],
+    /// `docs/design/macros.md` section 15).
+    ///
+    /// Mutable, unlike every ledger above, because this is the one thing the state *computes*
+    /// rather than looks up: a decode is a few thousand reads and a walk of the blockset, and it
+    /// is valid for as long as the map is loaded. Without a cache every caller decodes again,
+    /// which is correct and is what the tests do; the sim loop passes one
+    /// ([`PokeState::caching_grid`]) so that a precondition asking for the frontier costs a
+    /// refcount instead of a map.
+    grids: Option<&'a mut MapGrids>,
 }
 
 impl<'a> PokeState<'a> {
@@ -935,6 +1096,7 @@ impl<'a> PokeState<'a> {
             stood: &NoStood,
             areas: &NoAreas,
             pushed: &NoPushed,
+            grids: None,
         }
     }
 
@@ -948,6 +1110,7 @@ impl<'a> PokeState<'a> {
             stood: &NoStood,
             areas: &NoAreas,
             pushed: &NoPushed,
+            grids: None,
         }
     }
 
@@ -965,7 +1128,18 @@ impl<'a> PokeState<'a> {
         areas: &'a dyn AreaLedger,
         pushed: &'a dyn PushedLedger,
     ) -> Self {
-        Self { memory, ledger, talk, targets, stood, areas, pushed }
+        Self { memory, ledger, talk, targets, stood, areas, pushed, grids: None }
+    }
+
+    /// Keep the decoded map grid in `grids` instead of decoding it per question.
+    ///
+    /// The cache is keyed by map id and size and holds one map, so arriving somewhere else drops
+    /// it (`docs/design/macros.md` section 15). Session state: it is owned by
+    /// [`super::macros::driver::PokemonPalette`], never checkpointed, and rebuilt from the
+    /// cartridge on the first overworld frame after a restore.
+    pub fn caching_grid(mut self, grids: &'a mut MapGrids) -> Self {
+        self.grids = Some(grids);
+        self
     }
 }
 
@@ -1049,6 +1223,28 @@ impl GameState for PokeState<'_> {
 impl MacroState for PokeState<'_> {
     fn scripted(&mut self) -> bool {
         !controllable(self.memory)
+    }
+
+    /// The whole loaded map's walkability, from the cache when it is for this map
+    /// (`docs/design/macros.md` section 15).
+    ///
+    /// `None` is the honest answer on every frame [`map_grid`] refuses — no cartridge behind the
+    /// seam, a battle or a text box over the map, a header that is not loaded — and every caller
+    /// falls back to the ten-by-nine window predicate then, which is what all of them did before
+    /// this existed. [`GridRefusal`] names which, for the probes.
+    fn map_grid(&mut self) -> Option<std::sync::Arc<MapGrid>> {
+        let size = map_size(self.memory)?;
+        let map = player(self.memory)?.map;
+        if let Some(grids) = self.grids.as_deref()
+            && let Some(grid) = grids.get(map, size.width, size.height)
+        {
+            return Some(grid);
+        }
+        let grid = map_grid(self.memory).ok()?;
+        match self.grids.as_deref_mut() {
+            Some(grids) => Some(grids.store(grid)),
+            None => Some(std::sync::Arc::new(grid)),
+        }
     }
 
     /// What the open mart sells, in menu order (`docs/design/macros.md` section 13).

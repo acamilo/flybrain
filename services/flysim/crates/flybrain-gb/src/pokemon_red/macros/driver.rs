@@ -16,6 +16,7 @@ use crate::macros::{
     MacroPalette, Observed, Outcome, PaletteMode, RunLedger, SLOTS, SceneId, SlotBinding, Started,
 };
 
+use super::super::mapgrid::MapGrids;
 use super::super::state::PokeState;
 use super::cartridge::{Areas, MacroState, Pushed, Stood, Talked, Targets, Tile};
 use super::geography;
@@ -70,6 +71,14 @@ pub struct PokemonPalette {
     /// and walks the fly down on every frame it stands there until the Pokédex exists, and a map
     /// does not stop being like that ten brain minutes later.
     pushed: Pushed,
+    /// The decoded walkability of the map the fly is on (`docs/design/macros.md` section 15).
+    ///
+    /// Owned here beside the session ledgers because it is the same shape of thing: built from
+    /// the cartridge, valid for as long as the map is loaded, dropped on arrival somewhere else,
+    /// and never checkpointed -- a restored run decodes the map again on its first overworld
+    /// frame. It is a *cache* rather than a ledger: nothing about the run is in it, only what the
+    /// cartridge's own tables say about the ground.
+    grids: MapGrids,
     /// The brain clock of the frame being decided, from [`MacroPalette::clock`].
     ///
     /// The blocked ledger is a *window*, so it needs the same clock the loop publishes rather
@@ -93,6 +102,7 @@ impl PokemonPalette {
             stood: Stood::default(),
             areas: Areas::default(),
             pushed: Pushed::default(),
+            grids: MapGrids::default(),
             now_ms: 0.0,
         }
     }
@@ -158,11 +168,13 @@ impl MacroPalette for PokemonPalette {
 
     fn observe(&mut self, memory: &mut dyn MemoryReader, ledger: &dyn RunLedger) -> Observed {
         let (scene, bindings, standing) = {
-            let Self { machine, mode, palette: cached, talked, targets, stood, areas, pushed, .. } =
-                self;
+            let Self {
+                machine, mode, palette: cached, talked, targets, stood, areas, pushed, grids, ..
+            } = self;
             let mut state = PokeState::with_ledgers(
                 memory, ledger, talked, targets, &*stood, &*areas, &*pushed,
-            );
+            )
+            .caching_grid(grids);
             // `GameState::scene` is `pokemon_red::scene::detect` over the same reader, so the
             // palette and the scene the feed reports cannot disagree about which frame they are
             // for.
@@ -227,7 +239,8 @@ impl MacroPalette for PokemonPalette {
                 &self.stood,
                 &self.areas,
                 &self.pushed,
-            );
+            )
+            .caching_grid(&mut self.grids);
             self.machine.start(&palette, slot, &mut state)
         };
         let started = match begun {
@@ -267,7 +280,8 @@ impl MacroPalette for PokemonPalette {
                 &self.stood,
                 &self.areas,
                 &self.pushed,
-            );
+            )
+            .caching_grid(&mut self.grids);
             self.machine.step(&mut state)
         };
         // A macro that just finished may have been the press that talked to something; the ledger

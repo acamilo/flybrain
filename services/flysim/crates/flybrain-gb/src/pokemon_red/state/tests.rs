@@ -5,7 +5,8 @@
 //! passable-tile list walked out of ROM bank 0.
 
 use super::*;
-use crate::pokemon_red::fake_wram::{REDS_HOUSE_1F, WALL_TILE, Wram};
+use crate::pokemon_red::fake_wram::{self, REDS_HOUSE_1F, WALL_TILE, Wram};
+use crate::pokemon_red::macros::cartridge::MacroState;
 use crate::pokemon_red::macros::state::{BattleKind, BattleMenu, ShopScreen, Sign};
 
 /// A walkable tile id from `RedsHouse1_Coll`.
@@ -602,4 +603,142 @@ fn the_live_implementation_answers_the_whole_trait() {
     assert_eq!(state.walkable(3, 6), Walkable::Yes);
     assert_eq!(state.warps().len(), 1);
     assert!(state.connections().south);
+}
+
+/// A map ten blocks by nine — twenty tiles by eighteen, wider than the ten-by-nine window — with
+/// a wall down one column of blocks, and a screen buffer that agrees with it.
+///
+/// The three tables the grid is decoded from, all synthetic: block ids in `wOverworldMap`, a
+/// blockset in a ROM bank that is not bank 0, and a collision list in bank 0 where
+/// `wTilesetCollisionPtr` points.
+fn town() -> (Wram, Vec<u8>, Vec<[u8; 16]>) {
+    const FLOOR: u8 = 0x01;
+    let blockset = vec![[FLOOR; 16], [WALL_TILE; 16]];
+    let (wide, high) = (10usize, 9usize);
+    let mut blocks = vec![0u8; wide * high];
+    for row in 0..high {
+        blocks[row * wide + 5] = 1;
+    }
+    let mut wram = Wram::new();
+    wram.started()
+        .map(fake_wram::PALLET_TOWN, wide as u8, high as u8, 3, 4)
+        .facing(0)
+        .house_collision()
+        .tileset(0)
+        .blockset(&blockset)
+        .map_blocks(&blocks)
+        .fill_screen(WALL_TILE)
+        .screen_from_blocks(&blocks, &blockset);
+    (wram, blocks, blockset)
+}
+
+#[test]
+fn the_whole_map_decodes_from_the_block_and_collision_tables() {
+    let (mut wram, _, _) = town();
+    let grid = map_grid(&mut wram).expect("a decodable map");
+    assert_eq!((grid.width(), grid.height()), (20, 18));
+    assert_eq!(grid.unknown_count(), 0);
+    // The far corner of the map, which the window predicate cannot answer for at all: the grid
+    // does, and that is the whole of section 15.
+    assert_eq!(walkable(&mut wram, 19, 17), Walkable::Unknown);
+    assert_eq!(grid.walkable(19, 17), Walkable::Yes);
+    // The wall column, again outside the window.
+    assert_eq!(grid.walkable(10, 17), Walkable::No);
+    assert_eq!(grid.walkable(11, 17), Walkable::No);
+    // Inside the window the two readings agree tile for tile, which is what the reader checks
+    // itself with before it trusts a decode.
+    for y in 0..18u8 {
+        for x in 0..20u8 {
+            if let Some(tile) = map_tile_id(&mut wram, x, y) {
+                assert_eq!(grid.tile_id(x, y), Some(tile), "({x}, {y})");
+                assert_eq!(grid.walkable(x, y), walkable(&mut wram, x, y), "({x}, {y})");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_decode_the_screen_disagrees_with_is_refused() {
+    let (mut wram, _, _) = town();
+    // One screen tile the block data does not account for: a wrong stride, a wrong quadrant or a
+    // half-loaded map all look like this, and all of them answer plausibly.
+    wram.map_tile(3, 4, 0x77);
+    assert_eq!(map_grid(&mut wram), Err(GridRefusal::ScreenDisagrees));
+}
+
+#[test]
+fn without_a_cartridge_behind_the_seam_there_is_no_grid() {
+    let (mut wram, blocks, _) = town();
+    // The same WRAM with no blockset in any bank: `read_rom` answers `None`, which is what every
+    // reader that is not the emulator answers, and the grid narrows to nothing rather than
+    // decoding the map out of whatever bytes were to hand.
+    let mut bare = Wram::new();
+    bare.started()
+        .map(fake_wram::PALLET_TOWN, 10, 9, 3, 4)
+        .facing(0)
+        .house_collision()
+        .map_blocks(&blocks)
+        .fill_screen(WALL_TILE);
+    assert_eq!(map_grid(&mut bare), Err(GridRefusal::NoBlockset));
+    // And the window predicate still answers, which is the fallback the whole thing rests on.
+    assert_eq!(walkable(&mut wram, 3, 4), Walkable::Yes);
+}
+
+#[test]
+fn a_frame_that_is_not_showing_the_map_has_no_grid_to_check() {
+    let (mut wram, _, _) = town();
+    // `wOverworldMap` shares its bytes with the picture buffer (`ram/wram.asm`'s own union), so a
+    // battle is exactly when the blocks under it belong to somebody else. Nothing can be
+    // cross-checked then, and a decode nothing can check is refused.
+    wram.battle(1);
+    assert_eq!(map_grid(&mut wram), Err(GridRefusal::NoScreen));
+
+    let (mut wram, _, _) = town();
+    wram.dialogue_box();
+    assert_eq!(map_grid(&mut wram), Err(GridRefusal::NoScreen));
+}
+
+#[test]
+fn a_frame_with_no_map_header_has_no_grid() {
+    let mut wram = Wram::new();
+    wram.started();
+    assert_eq!(map_grid(&mut wram), Err(GridRefusal::NoHeader));
+    assert_eq!(GridRefusal::NoHeader.label(), "no map header");
+}
+
+#[test]
+fn the_grid_is_decoded_once_per_map_and_dropped_on_arrival_somewhere_else() {
+    let (mut wram, blocks, blockset) = town();
+    let mut grids = MapGrids::default();
+    {
+        let mut state = PokeState::new(&mut wram).caching_grid(&mut grids);
+        let first = state.map_grid().expect("a decodable map");
+        let again = state.map_grid().expect("the cached map");
+        assert!(std::sync::Arc::ptr_eq(&first, &again), "the second question is the same grid");
+    }
+    assert_eq!(grids.held(), Some(fake_wram::PALLET_TOWN));
+
+    // Walking through a door: another map id, so the cache is somebody else's and is dropped.
+    wram.map(fake_wram::OAKS_LAB, 10, 9, 3, 4)
+        .map_blocks(&blocks)
+        .screen_from_blocks(&blocks, &blockset);
+    {
+        let mut state = PokeState::new(&mut wram).caching_grid(&mut grids);
+        let grid = state.map_grid().expect("a decodable map");
+        assert_eq!(grid.map(), fake_wram::OAKS_LAB);
+    }
+    assert_eq!(grids.held(), Some(fake_wram::OAKS_LAB));
+}
+
+#[test]
+fn a_state_with_no_cache_still_answers_and_a_state_with_no_cartridge_answers_none() {
+    let (mut wram, _, _) = town();
+    let mut state = PokeState::new(&mut wram);
+    assert!(state.map_grid().is_some(), "no cache is slower, not blinder");
+
+    let mut bare = Wram::overworld();
+    let mut state = PokeState::new(&mut bare);
+    assert!(state.map_grid().is_none(), "no blockset, no grid");
+    // Which is the frame the window predicate is for.
+    assert_eq!(state.walkable(3, 6), Walkable::No);
 }
