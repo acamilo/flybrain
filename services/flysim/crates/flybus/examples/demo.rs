@@ -1,24 +1,38 @@
-//! A counter RPC, a pub/sub observer and a frame artifact held past its message, in one
-//! process over the in-memory transport (bus-v1 section 11).
+//! The guide's first deliverable: a counter RPC, a pub/sub observer and a frame artifact held
+//! past its message object's lifetime, in one program (bus-v1 section 11, implementation
+//! guide section 1). No game, browser or second transport is involved.
 //!
 //! ```text
 //! cargo run -p flybus --example demo
 //! ```
+//!
+//! `tests/example_demo.rs` runs [`run`] and asserts every line it returns.
 
 use std::io::Write;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use flybus::{
-    Client, ClientConfig, Policy, Retained, Router, RouterConfig, ServiceConfig, SubscriptionConfig,
+    Client, ClientConfig, Policy, Retained, Router, RouterConfig, ServiceConfig,
+    SubscriptionConfig,
 };
 use serde_json::{Map, Value, json};
+
+const W: usize = 160;
+const H: usize = 144;
 
 fn obj(v: Value) -> Map<String, Value> {
     v.as_object().cloned().unwrap_or_default()
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let root = std::env::temp_dir().join(format!("flybus-demo-{}", std::process::id()));
+/// The three parts, in one program, over one router. Returns the lines the example prints.
+pub async fn run() -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    static RUNS: AtomicU64 = AtomicU64::new(0);
+    let root = std::env::temp_dir().join(format!(
+        "flybus-demo-{}-{}",
+        std::process::id(),
+        RUNS.fetch_add(1, Ordering::Relaxed)
+    ));
     let mut config = RouterConfig::new(&root);
     config.policy = Policy::open();
     let router = Router::new(config)?;
@@ -28,14 +42,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ClientConfig::new(id, &root),
         )
     };
+    let mut lines = Vec::new();
 
-    // A counter service.
+    // 1. A counter service. An exclusive endpoint, pinned by its caller to the registration
+    //    it discovered, reached through the router like every other operation.
     let counter = connect("counter").await?;
     let mut svc = counter
         .register("example.counter", ServiceConfig::default())
         .await?;
-    tokio::spawn(async move {
-        let mut total = 0;
+    let incarnation = svc.incarnation().to_owned();
+    let service = tokio::spawn(async move {
+        let mut total = 0i64;
         while let Some(req) = svc.next().await {
             total += req.payload()["amount"].as_i64().unwrap_or(0);
             let _ = req.reply(obj(json!({ "total": total })), &[]).await;
@@ -46,54 +63,86 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let res = app
             .call_and_wait(
                 "example.counter",
-                None,
+                Some(&incarnation),
                 "Counter.Increment",
-                obj(json!({"amount": 2})),
+                obj(json!({"amount": 1})),
                 &[],
             )
             .await?;
-        println!("counter total = {}", res.outcome()["total"]);
+        lines.push(format!("counter total = {}", res.outcome()["total"]));
     }
 
-    // An observer of a frame topic.
-    app.declare_topic("world.demo.frame", Retained::None)
-        .await?;
+    // 2. A pub/sub observer. A latest-value subscription, so a slow observer coalesces
+    //    instead of holding the producer up.
+    app.declare_topic("world.demo.frame", Retained::None).await?;
     let observer = connect("observer").await?;
     let mut frames = observer
         .subscribe("world.demo.frame", SubscriptionConfig::latest())
         .await?;
 
+    // 3. A frame artifact. The bytes live in the store; the message carries a reference and
+    //    the dimensions.
     let mut writer = app
         .artifacts()
-        .allocate(160 * 144 * 4, "image/x-rgba")
+        .allocate((W * H * 4) as u64, "image/x-rgba")
         .await?;
-    writer.write_all(&vec![0x7f; 160 * 144 * 4])?;
+    writer.write_all(&vec![0x7f; W * H * 4])?;
     let frame = writer.seal().await?;
     let receipt = app
         .publish(
             "world.demo.frame",
-            obj(json!({"width": 160, "height": 144})),
+            obj(json!({"width": W, "height": H})),
             &[("frame", &frame)],
         )
         .await?;
-    println!(
+    lines.push(format!(
         "published sequence {} to {} subscriber(s)",
         receipt.topic_sequence, receipt.subscribers
-    );
+    ));
+    // The producer lets go of its own hold; the delivery keeps the bytes alive.
     drop(frame);
 
-    let message = frames.next().await.ok_or("subscription closed")?;
+    let message = frames.next().await.ok_or("the subscription closed")?;
     let image = message.artifact("frame")?;
     drop(message); // the extracted handle still owns the delivery
     let bytes = image.read_all().await?;
-    println!(
-        "read {} bytes after the message was dropped; router: {:?}",
-        bytes.len(),
-        router.stats()
-    );
+    lines.push(format!(
+        "read {} bytes after the message was dropped",
+        bytes.len()
+    ));
+    let held = router.stats();
+    lines.push(format!(
+        "while the frame is held: {} artifact(s), {} root(s)",
+        held.sealed_artifacts, held.artifact_roots
+    ));
     drop(image); // the last handle: the delivery is consumed and the frame collected
 
+    // Consumption reaches the router on the client's control lane, so collection is not
+    // instantaneous.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while router.stats().artifacts > 0 {
+        if Instant::now() > deadline {
+            return Err("the frame was never collected".into());
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let collected = router.stats();
+    lines.push(format!(
+        "after the last handle: {} artifact(s), {} root(s)",
+        collected.artifacts, collected.artifact_roots
+    ));
+
+    service.abort();
     router.shutdown();
-    std::fs::remove_dir_all(&root)?;
+    drop((app, observer, counter));
+    let _ = std::fs::remove_dir_all(&root);
+    Ok(lines)
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    for line in run().await? {
+        println!("{line}");
+    }
     Ok(())
 }
