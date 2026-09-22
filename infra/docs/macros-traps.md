@@ -1230,3 +1230,132 @@ somewhere else, and the script fires on any frame the fly stands there.
 so the only thing said about it here is that it exists and is exported. Whether a playable scene
 ever deals nothing on the release box is the watchdog's gauge to answer, over a run longer than
 twenty brain minutes.
+
+## 2026-09-22, rows 38 and 39: `BACK` between turns, and a ball at what the party already has
+
+Rank 9 (VIRIDIAN FOREST, next PEWTER CITY), **sixty-nine hours** on the rung, ratchet attempts 3 of
+3 spent, the fly on Route 2 and in the forest and mostly in wild battles. Since the last restart the
+macro starts were `BACK` 135, `THROW BALL` 28, `MOVE 2` 10, `RUN` 5 and `GO ROUTE` 5, and the event
+log repeated:
+
+```
+RUN blocked, BACK start, BACK done
+```
+
+`docs/design/macros.md` section 12.9 is the contract this closed against. Both traps are section
+12.2's one rule — *a macro that completes without moving because its precondition is already
+satisfied where the fly stands* — and the reproduction is the hunt from the release container's own
+checkpoint, twenty brain minutes, the real brain as the readout.
+
+### The mechanism
+
+Three facts, and the first one is the whole of it.
+
+1. **`BACK` was half of the pad the fly spends a wild battle looking at, and it could not change
+   anything.** The top-level battle menu never dealt it: `scene_set`'s own-turn arm is
+   `MOVE 1..4, SWITCH, ITEM, THROW BALL, RUN, NEXT` and B is not a fifth answer to a four-entry
+   menu. What dealt it was the **between-turns** row, `Scene::Battle { own_turn: false, .. }`, which
+   section 13.1 gave `NEXT, BACK` for the sake of the battle bag — the bag reads as nobody's turn
+   (12.6), so it lands on that arm — and which is *also* every frame of battle text, every
+   animation and every turn resolving. On those frames nothing is open, so `BACK`'s single B press
+   changes nothing the `NEXT` beside it does not: measured at **mean 16 frames, 1.0 tiles, net 0**,
+   163 starts between turns plus 12 more on a move list whose cursor the seam cannot place, out of
+   959 macros in twenty brain minutes. Half a pad of two, once per hold, while the turn did not
+   move.
+2. **`RUN blocked` was the script, not the cartridge.** Not "can't escape": `RUN` is one cursor
+   navigation, and a cursor macro whose list is not accepting input **waits** rather than pressing
+   blind (section 4), for `CURSOR_WAIT` = 180 frames before it reports `Blocked`. Measured: ten
+   `RUN` starts, ten `Blocked`, **mean 184 frames**, every one of them started on the top-level
+   menu. So a `RUN` that won a hold as the menu closed spent three brain seconds pressing nothing
+   and gave up. That is **row 19**, bounded and left, and the only reason it was legible in the
+   event log is the `BACK` above filling the frames on either side of it. `RUN`'s precondition is
+   unchanged (13.1: only a wild battle the fly is losing).
+3. **`THROW BALL` had no reading of what it was throwing at.** Its three facts were a wild battle,
+   a ball in the bag and room in the party, and none of them is "this is not one I already have".
+   Viridian Forest holds five species; a throw at one the party carries spends a ball for nothing,
+   and a catch opens the nickname screen, which reads `Unknown`, needs the START the pad has no
+   button for, and is the one screen neither `NEXT` nor `BACK` leaves (**row 14**). So the trap is
+   paid for twice.
+
+| # | trap | trigger | test | fix, or why it is left |
+| ---: | --- | --- | --- | --- |
+| 38 | `BACK` on a battle pad with no list open completes without changing anything, once per hold | every frame of battle text, every animation, every turn resolving — which is most of a wild battle | `back_is_on_a_battle_pad_only_where_a_list_is_open`, `a_battle_frame_that_is_not_the_players_turn_binds_next_to_advance_its_text`, `the_battles_turns_advance_from_the_rung_nine_forest_checkpoint` (ROM-gated) | **fixed**: the between-turns row is the sub-state's, like the own turn's — `NEXT, BACK` with the bag open, `NEXT` alone otherwise. The move list and the party list keep `BACK`, because backing out of a list is one of exactly two answers to one, and the top-level menu never had it |
+| 39 | `THROW BALL` throws at a species the party already holds | any wild battle after the first catch of that species | `throw_ball_refuses_a_species_the_party_already_holds`, and the ROM-gated run above asserts it never happens on the cartridge | **fixed**: a fourth fact in the precondition. The **party** is the caught set — the cartridge's own lifetime record, in the same internal species numbering the enemy is read in. `wPokedexOwned` is *not* asked: that bitset is by Pokédex number and the table converting an internal index into one lives in a ROM bank this crate cannot read, so it would be an unverified number (`docs/design/ladder.md`). It costs nothing measurable, because the button is already off the pad while the party is full and nothing in the vocabulary deposits into a box (row 17). An enemy the seam cannot place leaves the button where it was |
+| 40 | the ratchet cannot help on a rung sixty-nine hours old | `budget_spent()` precedes both triggers and three attempts on rank 9 were spent | `ratchet.rs`'s own tests ("three attempts per rank") | **left, contract**, and this is row 22 measured again: no recovery can fire until the rank *improves*. What carries the run is the road, and the road is checked rather than assumed — the objective is the lowest **unearned** rung (12.4), which is rung 10's `PEWTER_CITY`; `geography::next_hop` from the forest answers `VIRIDIAN_FOREST_NORTH_GATE` (47), then Route 2's north piece, then Pewter (2), asserted hop by hop since 12.7; and the ROM-gated run reads `GO OBJECTIVE` on the overworld pad of maps 13, 50 and 51. **The run does not reach map 47** in 67 brain minutes of the game-blind rotation, so that is reported and not asserted |
+| 41 | the nurse's box answered `YES` four hundred and seventy-four times | measured in the **before** arm only: from 11.5 brain minutes the fly stood on one tile of a Pokémon Center and the windows read `YES` x21 to the end of the run | — | **named, not worked**: 23,548 of the before arm's 71,673 frames were a text box on map `0x29` at (3, 3), 474 of them answered `YES`, and the run ended there. The after arm never enters it — `dialog` frames go **23,548 → 0** — so it is neither reproduced nor fixed by this branch, and it is *the next thing to measure*. Rows 1, 2b, 23 and 24 were each found this way: a loop behind the loop in front of it |
+
+### The trap hunt, before and after
+
+Twenty brain minutes, seed 20260917, 4 sweep threads, same connectome and same cartridge, from the
+release container's rung-9 checkpoint. **Driven by the brain rather than by `FLY_TRAP_STUB`**, which
+is legitimate here and was not for sections 13 and 14: this branch adds no macro type, so
+`tools/build_flywire.py` re-deals nothing, the thirty-one `macro_<type>` populations are the same
+function in both arms, and `--print-compatibility` is byte-identical at 648 bytes. The two arms
+differ in the macro code and in nothing else.
+
+```sh
+FLY_ROM=".../pokemon-red.gb" FLY_MACRO_BRAIN=data/fafb-v783 \
+  FLY_TRAP_CHECKPOINT=.local/checkpoints/<the rung-9 forest checkpoint> \
+  FLY_TRAP_MINUTES=20 cargo run --release -p flysim --example trap_hunt
+```
+
+| measure | before (v0.4.1) | after (`fix/loop-20260922T0254`) |
+| --- | ---: | ---: |
+| distinct (map, tile) over 20 brain minutes | 216 | **286** |
+| windows flagged | 70 of 73 | **61 of 73** |
+| windows under 4 distinct tiles | 21 | **5** |
+| macros started | 959 | 830 |
+| done / blocked / timeout | 873 / 80 / 5 | 726 / 97 / 6 |
+| frames in `battle` | 27,525 | 48,756 |
+| frames in `dialog` | 23,548 | **0** |
+| `MOVE n` starts | 36 | **68** |
+| `BACK` starts with **no list open** | **175** | **0** |
+| `THROW BALL` starts | 47 | 46 |
+
+**Both of `docs/loop-review.md`'s two criteria improve**: a third more ground (216 → 286 tiles) and
+nine fewer flagged windows, with the windows that hold fewer than four tiles down from 21 to 5. The
+pad tables the hunt gained for this work are the direct reading:
+
+| battle sub-state | pad before | pad after |
+| --- | --- | --- |
+| main menu | `move_1..4 next run throw_ball` | unchanged |
+| move list | `back move_1..4` | unchanged |
+| move list, no cursor | `back next` | **`next`** |
+| party list | `back` | unchanged |
+| between turns | `back next` | **`next`** |
+
+Four things about it that are not improvements, recorded rather than buried.
+
+- **`BACK` is still 359 starts of 830**, all of them over an open list: 306 on the move list and 46
+  on the party list, which with a party of one is `BACK` alone by design (row 34 — "what changed is
+  where `BACK` leads: a menu with `ATTACK` on it"). The trap was the *listless* `BACK`, and that is
+  the row that went to zero.
+- **A `NEXT, BACK` two-cycle closes the run**, x75 over the last four brain minutes inside one
+  battle: the move list opens before its cursor can be placed, `NEXT` advances, the cursor appears,
+  `BACK` closes the list, and round again. It is bounded — the battle is real, `MOVE n` wins holds
+  in it, and the turn does move — and it replaces a `BACK` x13 cycle in the same windows of the
+  before arm. Worth watching; the honest fix is a move list whose cursor the seam can place on its
+  opening frames, which is a WRAM reading and not a pad change.
+- **A window spent in a battle is flagged by the tile rule whatever happens in it.** A battle does
+  not move the fly, so `tiles = 1` is what a long fight looks like from outside, and the after arm
+  spends 48,756 of 71,673 frames in one. That is the known false-positive shape of the *tile* rule,
+  the mirror of the sequence rule's legitimately-repeating explorer, and it is why the pad and
+  sub-state tables above are what this row is proved on.
+- **The `THROW BALL` precondition is inert in this run and is still right.** The save carries a
+  party of **one** — the starter — so no forest species is ever in it and the new fact never fires;
+  the 46 starts are all `Blocked` at mean 67 frames, which is row 19's cursor wait again. What the
+  ROM-gated test holds is the invariant (`threw_at_a_held_species` is never set), not a drop in the
+  count. The live 28 starts were the same shape.
+
+### Gates
+
+- `cargo test --workspace` with `FLY_ROM` set: green except
+  `flysim::integration::the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_killed`,
+  which fails **identically on v0.4.1** on this box with the same assertion (`/status` reports
+  `total: 1` with the service still on `BOOT` 54 s after start, where the test wants the 38-rung
+  ladder). A debug build of the service does not finish booting inside the test's window here.
+  Pre-existing and unrelated to the macro layer; measured on both sides rather than assumed.
+- `cargo clippy --all-targets`: clean.
+- `infra/tests/lint.sh`: all checks passed, de-PII guard included.
+- `--print-compatibility`: byte-identical to v0.4.1, 648 bytes, decoder / reward catalog / adapter
+  version / roles untouched.
