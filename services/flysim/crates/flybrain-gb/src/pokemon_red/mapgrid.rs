@@ -49,6 +49,22 @@ pub const MAP_BORDER: usize = 3;
 /// which is why `wCurMapWidth` in blocks is `map_size().width` in tiles divided by this.
 pub const TILES_PER_BLOCK: u8 = 2;
 
+/// Which of a quadrant's two rows the collision read takes its tile id from: the lower one.
+///
+/// A map tile is a 2x2 patch of screen tiles and only one of the four is ever asked about, because
+/// `CheckTilePassable` matches a single tile id. Which one is **measured, not derived**: the
+/// decoded ids were compared against the screen buffer on the cartridge, tile by tile, and the
+/// screen agrees with the lower-left tile of each quadrant and not the upper-left -- Viridian
+/// Forest's (4, 32) reads `$23`, the second row of its block, where the first row holds `$04`
+/// (`tests/rom_map_grid.rs`, which is the test that pins it).
+///
+/// That is the same corner `_GetTileAndCoordsInFrontOfPlayer` reads at screen `(8, 9)` for the
+/// tile the player is standing on: the view is aligned so that the player's own 2x2 begins on
+/// screen row 8, so row 9 is its lower half. An upper-left decode still answers, and answers
+/// plausibly -- on the open ground of a town most quadrants hold one tile id four times over --
+/// which is why the cross-check in [`super::state::map_grid`] is not optional.
+const ANCHOR_ROW: usize = 1;
+
 /// Tileset ids the tile-pair lists name (`constants/tileset_constants.asm`, counted in the order
 /// that file declares them: OVERWORLD 0 … FOREST 3 … CAVERN 17).
 pub mod tileset {
@@ -143,10 +159,10 @@ pub fn decode(map: u8, width_blocks: u8, height_blocks: u8, blocks: &[u8], tiles
             let Some(block) = blocks.get(block_index).copied() else {
                 continue;
             };
-            // The top left screen tile of the map tile's own 2x2 quadrant of the block, which is
-            // the corner every collision read in the game uses.
+            // The screen tile the collision read uses, inside the map tile's own 2x2 quadrant of
+            // the block: the **lower** left one ([`ANCHOR_ROW`]).
             let column = usize::from(x % TILES_PER_BLOCK) * usize::from(TILES_PER_BLOCK);
-            let row = usize::from(y % TILES_PER_BLOCK) * usize::from(TILES_PER_BLOCK);
+            let row = usize::from(y % TILES_PER_BLOCK) * usize::from(TILES_PER_BLOCK) + ANCHOR_ROW;
             let Some(tile) = tiles.tile(block, column, row) else {
                 continue;
             };

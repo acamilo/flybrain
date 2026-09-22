@@ -404,7 +404,9 @@ impl Wram {
             for x in 0..width * 2 {
                 let Some(block) = blocks.get((y / 2) * width + (x / 2)) else { continue };
                 let Some(tiles) = blockset.get(usize::from(*block)) else { continue };
-                let tile = tiles[(y % 2) * 2 * 4 + (x % 2) * 2];
+                // The lower-left tile of the map tile's own quadrant, which is the one the
+                // cartridge's collision read uses (`mapgrid::ANCHOR_ROW`).
+                let tile = tiles[((y % 2) * 2 + 1) * 4 + (x % 2) * 2];
                 self.map_tile(x as u8, y as u8, tile);
             }
         }

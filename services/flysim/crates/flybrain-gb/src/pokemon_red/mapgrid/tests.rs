@@ -16,11 +16,13 @@ use crate::pokemon_red::macros::state::{Facing, Walkable};
 fn blockset() -> Vec<u8> {
     let floor = [FLOOR; 16];
     let wall = [WALL; 16];
+    // The four ids sit on the rows the decode reads -- the *lower* row of each 2x2 quadrant
+    // (`ANCHOR_ROW`) -- and the rows it does not read hold ids that would be wrong answers.
     let quadrants = [
-        NORTH_WEST, 0x90, NORTH_EAST, 0x91, //
-        0x92, 0x93, 0x94, 0x95, //
-        SOUTH_WEST, 0x96, SOUTH_EAST, 0x97, //
-        0x98, 0x99, 0x9a, 0x9b,
+        0x90, 0x91, 0x92, 0x93, //
+        NORTH_WEST, 0x94, NORTH_EAST, 0x95, //
+        0x96, 0x97, 0x98, 0x99, //
+        SOUTH_WEST, 0x9a, SOUTH_EAST, 0x9b,
     ];
     let mut out = Vec::new();
     out.extend_from_slice(&floor);
