@@ -240,6 +240,11 @@ pub const LIMITS: &[LimitSchema] = &[
         source: "crate",
     },
     LimitSchema {
+        name: "maxWorkerThreads",
+        value: crate::workers::MAX_WORKER_THREADS,
+        source: "workers-v1 2",
+    },
+    LimitSchema {
         name: "maxSupportedMajors",
         value: crate::workers::MAX_SUPPORTED_MAJORS as u64,
         source: "crate",
@@ -651,8 +656,8 @@ pub const SCHEMAS: &[TypeSchema] = &[
             ),
             req(
                 "limits",
-                "{maxAgents:int,maxPorts:int}",
-                "1..=4 agents and 1..=4 ports",
+                "{maxAgents:int,maxPorts:int,workerThreads:int}",
+                "1..=4 agents, 1..=4 ports, and the launcher allocation this worker runs in",
             ),
         ],
     },

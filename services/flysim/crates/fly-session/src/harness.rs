@@ -1,36 +1,37 @@
-//! The runnable synthetic composition: one router, two fake agents, one counter arena and one
-//! coordinator, over either transport.
+//! The runnable synthetic composition: one router, the configured flies, one counter arena and
+//! one coordinator, in whichever execution mode the composition asks for.
 //!
-//! All participants use router semantics even when colocated, so the in-memory and
-//! Unix-socket runs exercise the same code. The caller owns the store root directory, which
-//! keeps this module free of a temporary-directory dependency.
+//! All participants use router semantics even when colocated, so every mode and both
+//! transports exercise the same code. The caller owns the store root directory, which keeps
+//! this module free of a temporary-directory dependency.
+//!
+//! The three execution modes are the SESSION-02 comparison:
+//!
+//! | Mode | Where each participant runs | Transport |
+//! | --- | --- | --- |
+//! | [`ExecutionMode::InProcess`] | A task on the coordinator's runtime | either |
+//! | [`ExecutionMode::Thread`] | Its own OS thread and runtime | Unix socket |
+//! | [`ExecutionMode::Process`] | Its own process, one per fly plus one world | Unix socket |
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-use flybus::{
-    Client, ClientConfig, Grants, Pattern, Policy, Router, RouterConfig, ServiceConfig, Transport,
-    UnixListenerHandle,
-};
+use flybus::{Client, Grants, Pattern, Policy, Router, RouterConfig};
 
-use crate::agent::{AgentConfig, AgentFaults, FakeAgentWorker, synthetic_profile};
+use crate::agent::{AgentFaults, synthetic_profile};
 use crate::coordinator::{AgentSlot, Coordinator};
-use crate::environment::{CounterEnvironment, EnvironmentConfig, EnvironmentFaults};
-use crate::rpc::WorkerRef;
+use crate::environment::EnvironmentFaults;
+use crate::launcher::{
+    AgentLaunch, EnvironmentLaunch, Launcher, ReapOutcome, SUPERVISOR_CLIENT, ThreadBudget,
+};
 use crate::task::{ActionExecutor, CounterTask, IdentityExecutor, Terminal};
 // `crate::types` is this crate's facade over the shared `fly-session-types` crate; the
 // glob keeps the contract's own names in sight instead of restating them.
 use crate::types::*;
-use crate::worker::{StatusCell, WorkerHandle, serve};
+use crate::worker::StatusCell;
 
-/// Which transport the session runs over. Both must produce the same behaviour.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Via {
-    Memory,
-    Unix,
-}
+pub use crate::launcher::{ExecutionMode, Via};
 
 /// One agent in the composition.
 #[derive(Clone, Debug)]
@@ -41,6 +42,22 @@ pub struct AgentSpec {
     /// derivation algorithm is specified before the real agent slice.
     pub seed: i32,
     pub faults: AgentFaults,
+    /// The threads this agent asks the launcher for. `Agent.Initialize` carries exactly what
+    /// the launcher allocated, which `workers-v1` requires it to lie within.
+    pub worker_threads: usize,
+}
+
+impl AgentSpec {
+    /// One agent on one thread, with no injected fault.
+    pub fn new(agent_id: &str, port_id: &str, seed: i32) -> AgentSpec {
+        AgentSpec {
+            agent_id: id(agent_id),
+            port_id: id(port_id),
+            seed,
+            faults: AgentFaults::default(),
+            worker_threads: 1,
+        }
+    }
 }
 
 /// The composition the harness builds.
@@ -56,6 +73,15 @@ pub struct HarnessConfig {
     pub warmup_ticks: u64,
     pub terminal: Terminal,
     pub environment_faults: EnvironmentFaults,
+    /// Where each participant runs.
+    pub mode: ExecutionMode,
+    /// The total thread allocation the launcher may hand out. `None` sizes it from the
+    /// composition and the machine, which is what an ordinary run wants; a test that means to
+    /// exhaust the budget names a number.
+    pub thread_budget: Option<usize>,
+    /// The threads reserved for the coordinator, its router and its store.
+    pub coordinator_threads: usize,
+    pub environment_threads: usize,
 }
 
 impl Default for HarnessConfig {
@@ -65,31 +91,45 @@ impl Default for HarnessConfig {
             epoch: id("e1"),
             episode_id: id("ep1"),
             agents: vec![
-                AgentSpec {
-                    agent_id: id("fly-a"),
-                    port_id: id("p1"),
-                    seed: 7,
-                    faults: AgentFaults::default(),
-                },
-                AgentSpec {
-                    agent_id: id("fly-b"),
-                    port_id: id("p2"),
-                    seed: 11,
-                    faults: AgentFaults::default(),
-                },
+                AgentSpec { seed: 7, ..AgentSpec::new("fly-a", "p1", 7) },
+                AgentSpec { seed: 11, ..AgentSpec::new("fly-b", "p2", 11) },
             ],
             step_hz: 60,
             tick_ms: 1,
             warmup_ticks: 10,
             terminal: Terminal::Never,
             environment_faults: EnvironmentFaults::default(),
+            mode: ExecutionMode::InProcess,
+            thread_budget: None,
+            coordinator_threads: 1,
+            environment_threads: 1,
         }
+    }
+}
+
+impl HarnessConfig {
+    /// The threads this composition needs at a minimum: the coordinator, the world and every
+    /// agent's own allocation.
+    pub fn required_threads(&self) -> usize {
+        self.coordinator_threads
+            + self.environment_threads
+            + self.agents.iter().map(|a| a.worker_threads).sum::<usize>()
+    }
+
+    /// The budget the launcher runs under: what was configured, or a budget that covers both
+    /// this composition and this machine's physical cores.
+    pub fn budget(&self) -> Result<ThreadBudget, DomainError> {
+        let total = self
+            .thread_budget
+            .unwrap_or_else(|| crate::metrics::physical_cores().max(self.required_threads()));
+        ThreadBudget::new(total, self.coordinator_threads)
     }
 }
 
 const ENV_SERVICE: &str = "env.arena";
 const ENV_CLIENT: &str = "environment";
 const ENV_WORKER: &str = "arena";
+const COORDINATOR_CLIENT: &str = "coordinator";
 
 fn agent_service(agent_id: &Id) -> String {
     format!("agent.{agent_id}")
@@ -105,37 +145,6 @@ fn grants(f: impl FnOnce(&mut Grants)) -> Grants {
     g
 }
 
-/// Makes a connection for one launcher-bound participant, over the chosen transport.
-struct Connector {
-    router: Router,
-    via: Via,
-    store_root: PathBuf,
-    sockets: PathBuf,
-    next_socket: AtomicU64,
-    listeners: Mutex<Vec<UnixListenerHandle>>,
-}
-
-impl Connector {
-    async fn client(&self, id: &str) -> Result<Client, flybus::BusError> {
-        let transport = match self.via {
-            Via::Memory => self.router.connect_in_memory_as(id),
-            Via::Unix => {
-                let n = self.next_socket.fetch_add(1, Ordering::Relaxed);
-                let path = self.sockets.join(format!("{id}-{n}.sock"));
-                let listener = self.router.listen_unix_as(&path, id).await.map_err(|e| {
-                    flybus::BusError::new(flybus::ErrorCode::RouterLost, format!("listen: {e}"))
-                })?;
-                let transport = Transport::unix(&path).await.map_err(|e| {
-                    flybus::BusError::new(flybus::ErrorCode::RouterLost, format!("connect: {e}"))
-                })?;
-                self.listeners.lock().expect("not poisoned").push(listener);
-                transport
-            }
-        };
-        Client::connect(transport, ClientConfig::new(id, &self.store_root)).await
-    }
-}
-
 /// What a restarted worker looks like from the outside: a new registration and a new
 /// incarnation, both different from the ones the coordinator pinned.
 #[derive(Clone, Debug)]
@@ -148,16 +157,17 @@ pub struct Restarted {
 /// A running synthetic session.
 pub struct SessionHarness {
     pub coordinator: Coordinator,
-    pub environment: WorkerHandle,
-    pub agents: BTreeMap<Id, WorkerHandle>,
     pub config: HarnessConfig,
     pub via: Via,
-    connector: Connector,
+    pub mode: ExecutionMode,
+    /// The supervisor. It owns every participant's lifetime and thread allocation.
+    pub launcher: Launcher,
     observers: Mutex<Vec<Client>>,
 }
 
 impl SessionHarness {
-    /// Builds the router, the workers and the coordinator. Nothing has stepped yet.
+    /// Builds the router, launches the workers and builds the coordinator. Nothing has
+    /// stepped yet.
     pub async fn start(
         via: Via,
         root: &Path,
@@ -167,16 +177,29 @@ impl SessionHarness {
         let sockets = root.join("sockets");
         std::fs::create_dir_all(&sockets).expect("the caller owns a writable directory");
 
+        // The launcher's policy: who may connect, and what each may do. Naming a target is not
+        // authority to use it, so the supervisor calls but never registers or publishes, and a
+        // worker registers exactly one service and calls nothing.
         let mut policy = Policy::closed()
             .client(
-                "coordinator",
+                COORDINATOR_CLIENT,
                 grants(|g| {
                     g.call = vec![Pattern::prefix("agent."), Pattern::prefix("env.")];
                     g.publish = vec![Pattern::prefix("session.")];
                     g.manage_topics = vec![Pattern::prefix("session.")];
                 }),
             )
+            .client(
+                SUPERVISOR_CLIENT,
+                grants(|g| {
+                    g.call = vec![Pattern::prefix("agent."), Pattern::prefix("env.")];
+                }),
+            )
             .client(ENV_CLIENT, grants(|g| g.register = vec![Pattern::exact(ENV_SERVICE)]))
+            .client(
+                &format!("{ENV_CLIENT}-r2"),
+                grants(|g| g.register = vec![Pattern::exact(ENV_SERVICE)]),
+            )
             .client("observer", grants(|g| g.subscribe = vec![Pattern::prefix("session.")]));
         for spec in &config.agents {
             let service = agent_service(&spec.agent_id);
@@ -196,66 +219,68 @@ impl SessionHarness {
         let router = Router::new(router_config).map_err(|e| {
             flybus::BusError::new(flybus::ErrorCode::StoreFailure, format!("router: {e}"))
         })?;
-        let connector = Connector {
-            router,
-            via,
-            store_root,
-            sockets,
-            next_socket: AtomicU64::new(0),
-            listeners: Mutex::new(Vec::new()),
-        };
+
+        let budget = config.budget().map_err(refusal)?;
+        let mut launcher =
+            Launcher::start(router, config.mode, via, &store_root, &sockets, budget).await?;
 
         let step_duration = hz(config.step_hz).expect("a positive cadence");
         let tick_duration = millis(config.tick_ms).expect("a positive tick");
 
         // The environment first: it owns the world and the descriptor.
-        let env_client = connector.client(ENV_CLIENT).await?;
-        let env_service = env_client.register(ENV_SERVICE, ServiceConfig::default()).await?;
-        let env_incarnation = env_service.incarnation().to_owned();
-        let environment = serve(
-            env_client,
-            env_service,
-            CounterEnvironment::new(EnvironmentConfig {
+        let environment = launcher
+            .launch_environment(EnvironmentLaunch {
                 session_id: config.session_id.clone(),
                 worker_id: id(ENV_WORKER),
                 incarnation_id: id("arena-inc-1"),
                 step_duration,
                 ports: config.agents.iter().map(|a| a.port_id.clone()).collect(),
+                worker_threads: config.environment_threads,
                 faults: config.environment_faults.clone(),
-            }),
-        );
+                client_id: ENV_CLIENT.to_owned(),
+                service: ENV_SERVICE.to_owned(),
+            })
+            .await
+            .map_err(refusal)?;
+        let environment_ref = launcher
+            .worker(&environment.worker_id)
+            .expect("just launched")
+            .worker_ref();
 
         let mut slots = Vec::new();
-        let mut agents = BTreeMap::new();
         for spec in &config.agents {
-            let service_name = agent_service(&spec.agent_id);
-            let client = connector.client(&agent_client(&spec.agent_id)).await?;
-            let service = client.register(&service_name, ServiceConfig::default()).await?;
-            let incarnation = service.incarnation().to_owned();
-            let handle = serve(
-                client,
-                service,
-                FakeAgentWorker::new(AgentConfig {
+            let identity = launcher
+                .launch_agent(AgentLaunch {
                     session_id: config.session_id.clone(),
                     agent_id: spec.agent_id.clone(),
+                    port_id: spec.port_id.clone(),
                     incarnation_id: parse_id(&format!("{}-inc-1", spec.agent_id))
                         .expect("an agent id plus a suffix is an Id"),
                     tick_duration,
                     warmup_ticks: config.warmup_ticks,
+                    worker_threads: spec.worker_threads,
                     faults: spec.faults.clone(),
-                }),
-            );
-            slots.push(AgentSlot::new(
-                WorkerRef::new(&service_name, &incarnation, &spec.agent_id),
+                    client_id: agent_client(&spec.agent_id),
+                    service: agent_service(&spec.agent_id),
+                })
+                .await
+                .map_err(refusal)?;
+            let worker_ref = launcher
+                .worker(&spec.agent_id)
+                .expect("just launched")
+                .worker_ref();
+            let mut slot = AgentSlot::new(
+                worker_ref,
                 spec.agent_id.clone(),
                 spec.port_id.clone(),
                 synthetic_profile(&spec.agent_id, &tick_duration, config.warmup_ticks),
                 spec.seed,
-            ));
-            agents.insert(spec.agent_id.clone(), handle);
+            );
+            slot.worker_threads = identity.worker_threads as u64;
+            slots.push(slot);
         }
 
-        let coordinator_client = connector.client("coordinator").await?;
+        let coordinator_client = launcher.connect(COORDINATOR_CLIENT).await?;
         let executors: BTreeMap<Id, Box<dyn ActionExecutor>> = config
             .agents
             .iter()
@@ -268,7 +293,7 @@ impl SessionHarness {
             config.session_id.clone(),
             config.epoch.clone(),
             config.episode_id.clone(),
-            WorkerRef::new(ENV_SERVICE, &env_incarnation, &id(ENV_WORKER)),
+            environment_ref,
             slots,
             Box::new(CounterTask::new(&config.epoch, config.terminal)),
             executors,
@@ -276,27 +301,42 @@ impl SessionHarness {
 
         Ok(SessionHarness {
             coordinator,
-            environment,
-            agents,
             config,
             via,
-            connector,
+            mode: launcher.mode(),
+            launcher,
             observers: Mutex::new(Vec::new()),
         })
     }
 
     pub fn router(&self) -> &Router {
-        &self.connector.router
+        self.launcher.router()
+    }
+
+    /// The coordinator and its supervisor, borrowed apart.
+    ///
+    /// A supervisor acts while a transition is in flight -- that is what a supervisor is for
+    /// -- so the two have to be reachable at the same time.
+    pub fn parts(&mut self) -> (&mut Coordinator, &mut Launcher) {
+        (&mut self.coordinator, &mut self.launcher)
+    }
+
+    /// The router's own counters: owners, roots, queued messages and store bytes.
+    pub fn router_stats(&self) -> flybus::RouterStats {
+        self.launcher.router().stats()
     }
 
     /// A client for `id`, connected the same way every participant is.
+    ///
+    /// An unconfigured client id is refused by the launcher's policy before it can route, so
+    /// this is not a way around the composition.
     pub async fn client(&self, id: &str) -> Result<Client, flybus::BusError> {
-        self.connector.client(id).await
+        self.launcher.connect(id).await
     }
 
     /// An extra subscriber, for a test that watches the published boundaries.
     pub async fn observer(&self) -> Result<Client, flybus::BusError> {
-        let client = self.connector.client("observer").await?;
+        let client = self.launcher.connect("observer").await?;
         self.observers.lock().expect("not poisoned").push(client.clone());
         Ok(client)
     }
@@ -306,22 +346,6 @@ impl SessionHarness {
     /// The coordinator still pins the old registration, so its next call to that agent fails
     /// rather than silently reaching another brain.
     pub async fn restart_agent(&mut self, agent_id: &Id) -> Result<Restarted, flybus::BusError> {
-        let tick_duration = millis(self.config.tick_ms).expect("a positive tick");
-        if let Some(old) = self.agents.remove(agent_id) {
-            old.stop().await;
-        }
-        let service_name = agent_service(agent_id);
-        let client = self.connector.client(&format!("{}-r2", agent_client(agent_id))).await?;
-        let service = loop {
-            match client.register(&service_name, ServiceConfig::default()).await {
-                Ok(service) => break service,
-                Err(e) if e.code == flybus::ErrorCode::Conflict => {
-                    // The old registration is released when its connection finishes closing.
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                }
-                Err(e) => return Err(e),
-            }
-        };
         let spec = self
             .config
             .agents
@@ -329,53 +353,88 @@ impl SessionHarness {
             .find(|spec| spec.agent_id == *agent_id)
             .expect("a configured agent")
             .clone();
+        self.launcher.kill(agent_id).await;
+        let tick_duration = millis(self.config.tick_ms).expect("a positive tick");
         let incarnation_id =
             parse_id(&format!("{agent_id}-inc-2")).expect("an agent id plus a suffix is an Id");
-        let restarted = Restarted {
-            service: service_name,
-            service_incarnation: service.incarnation().to_owned(),
-            incarnation_id: incarnation_id.clone(),
-        };
-        let handle = serve(
-            client,
-            service,
-            FakeAgentWorker::new(AgentConfig {
+        self.launcher
+            .launch_agent(AgentLaunch {
                 session_id: self.config.session_id.clone(),
                 agent_id: agent_id.clone(),
-                incarnation_id,
+                port_id: spec.port_id.clone(),
+                incarnation_id: incarnation_id.clone(),
                 tick_duration,
                 warmup_ticks: self.config.warmup_ticks,
-                faults: spec.faults,
-            }),
-        );
-        self.agents.insert(agent_id.clone(), handle);
-        Ok(restarted)
+                worker_threads: spec.worker_threads,
+                faults: spec.faults.clone(),
+                client_id: format!("{}-r2", agent_client(agent_id)),
+                service: agent_service(agent_id),
+            })
+            .await
+            .map_err(refusal)?;
+        let worker = self.launcher.worker(agent_id).expect("just launched");
+        Ok(Restarted {
+            service: worker.identity.service.clone(),
+            service_incarnation: worker.service_incarnation.clone(),
+            incarnation_id,
+        })
     }
 
-    /// The agent worker's progress counter, which is its fake model's mutation count.
-    pub fn agent_mutations(&self, agent_id: &Id) -> u64 {
-        self.agents.get(agent_id).map(WorkerHandle::progress_counter).unwrap_or_default()
+    /// Ends one participant without asking it, as a crash would.
+    pub async fn kill(&mut self, worker_id: &Id) -> ReapOutcome {
+        self.launcher.kill(worker_id).await
     }
 
-    pub fn environment_mutations(&self) -> u64 {
-        self.environment.progress_counter()
+    /// The worker id the environment answers to.
+    pub fn environment_id(&self) -> Id {
+        id(ENV_WORKER)
     }
 
+    /// The agent worker's progress counter, which is its fake model's mutation count, when
+    /// this process is where that counter lives.
+    ///
+    /// `None` means "not observable from here", not "nothing happened": a participant with a
+    /// process of its own keeps its counter there. [`SessionHarness::progress_of`] reads it
+    /// over the bus and works in every mode.
+    pub fn agent_mutations(&self, agent_id: &Id) -> Option<u64> {
+        self.launcher
+            .worker(agent_id)
+            .and_then(crate::launcher::LaunchedWorker::progress_counter)
+    }
+
+    pub fn environment_mutations(&self) -> Option<u64> {
+        self.agent_mutations(&id(ENV_WORKER))
+    }
+
+    /// One participant's progress counter, read over the bus. Works in every execution mode.
+    pub async fn progress_of(&mut self, worker_id: &Id) -> Result<u64, DomainError> {
+        Ok(self.launcher.health_check(worker_id).await?.progress_counter)
+    }
+
+    /// The local status cell of a participant in this process, or `None` for one with a
+    /// process of its own.
     pub fn agent_status(&self, agent_id: &Id) -> Option<StatusCell> {
-        self.agents.get(agent_id).map(|handle| handle.status.clone())
+        self.launcher.worker(agent_id).and_then(crate::launcher::LaunchedWorker::status)
     }
 
-    /// Stops every worker and closes the router.
+    /// Reaps every participant and closes the router.
     pub async fn shutdown(self) {
-        let SessionHarness { coordinator, environment, agents, connector, observers, .. } = self;
+        let SessionHarness { coordinator, mut launcher, observers, .. } = self;
         drop(coordinator);
-        environment.stop().await;
-        for (_, handle) in agents {
-            handle.stop().await;
-        }
+        launcher.reap_all(&id("shutdown")).await;
         for observer in observers.into_inner().expect("not poisoned") {
             observer.close().await;
         }
-        connector.router.shutdown();
+        launcher.router().shutdown();
     }
+}
+
+/// A launcher refusal, as a bus error: the harness's one error type stays the bus's.
+fn refusal(e: DomainError) -> flybus::BusError {
+    let code = match e.code {
+        ErrorCode::Busy => flybus::ErrorCode::QuotaExceeded,
+        ErrorCode::IdentityMismatch => flybus::ErrorCode::NotAuthorized,
+        _ => flybus::ErrorCode::RouterLost,
+    };
+    flybus::BusError::new(code, e.to_string())
 }

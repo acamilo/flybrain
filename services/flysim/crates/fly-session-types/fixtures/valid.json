@@ -1758,12 +1758,13 @@
         ],
         "limits": {
           "maxAgents": 4,
-          "maxPorts": 4
+          "maxPorts": 4,
+          "workerThreads": 1
         }
       },
       "note": "",
-      "canonical": "{\"buildDigest\":\"44575cf5b28512d75644bf54a517dcef304ff809fd511747621b4d64f19aac66\",\"capabilities\":[\"agent-step-v1\",\"checkpoint-v1\",\"pixel-observation-v1\"],\"contractDigest\":\"cc8321d6375c494d043fdd0260f21bc0ec51dacc9f6abb7f909cdcd3041b78bf\",\"incarnationId\":\"inc-1\",\"limits\":{\"maxAgents\":4,\"maxPorts\":4},\"role\":\"agent\",\"selectedMajor\":1,\"selectedMinor\":0,\"workerId\":\"fly-a\"}",
-      "digest": "9f8cbc9dfe7a7532c2e41b53c4ce001973ca95703a81aad30ee2b1c8b640bc13"
+      "canonical": "{\"buildDigest\":\"44575cf5b28512d75644bf54a517dcef304ff809fd511747621b4d64f19aac66\",\"capabilities\":[\"agent-step-v1\",\"checkpoint-v1\",\"pixel-observation-v1\"],\"contractDigest\":\"cc8321d6375c494d043fdd0260f21bc0ec51dacc9f6abb7f909cdcd3041b78bf\",\"incarnationId\":\"inc-1\",\"limits\":{\"maxAgents\":4,\"maxPorts\":4,\"workerThreads\":1},\"role\":\"agent\",\"selectedMajor\":1,\"selectedMinor\":0,\"workerId\":\"fly-a\"}",
+      "digest": "262ea112e24dcdbdc1a5050b6dd6d031eace6a6a4cdca814913ac89fc9e39666"
     },
     {
       "name": "hello result for an environment",
@@ -1782,12 +1783,13 @@
         ],
         "limits": {
           "maxAgents": 1,
-          "maxPorts": 1
+          "maxPorts": 1,
+          "workerThreads": 1
         }
       },
       "note": "",
-      "canonical": "{\"buildDigest\":\"44575cf5b28512d75644bf54a517dcef304ff809fd511747621b4d64f19aac66\",\"capabilities\":[\"world-step-v1\",\"checkpoint-v1\"],\"contractDigest\":\"cc8321d6375c494d043fdd0260f21bc0ec51dacc9f6abb7f909cdcd3041b78bf\",\"incarnationId\":\"inc-2\",\"limits\":{\"maxAgents\":1,\"maxPorts\":1},\"role\":\"environment\",\"selectedMajor\":1,\"selectedMinor\":0,\"workerId\":\"world\"}",
-      "digest": "0dc33a6cbf6bf66c4d28dc41b17b2eb7918b55c65469f4161e009f662f11bca2"
+      "canonical": "{\"buildDigest\":\"44575cf5b28512d75644bf54a517dcef304ff809fd511747621b4d64f19aac66\",\"capabilities\":[\"world-step-v1\",\"checkpoint-v1\"],\"contractDigest\":\"cc8321d6375c494d043fdd0260f21bc0ec51dacc9f6abb7f909cdcd3041b78bf\",\"incarnationId\":\"inc-2\",\"limits\":{\"maxAgents\":1,\"maxPorts\":1,\"workerThreads\":1},\"role\":\"environment\",\"selectedMajor\":1,\"selectedMinor\":0,\"workerId\":\"world\"}",
+      "digest": "06ced6fff0d810005ab2598cc9fb72a138303daef0787232871c9afa43b0eac0"
     },
     {
       "name": "status result before initialization",

@@ -43,6 +43,8 @@ export const MAX_ACKNOWLEDGE = 16;
 export const MAX_ENGINE_FRAME_LEN = 64;
 /** Not stated by a document; this crate's choice, published in the schema set. */
 export const MAX_CAPABILITIES = 32;
+/** The largest `workerThreads` a launcher may allocate to one worker (workers-v1 2). */
+export const MAX_WORKER_THREADS = 4096;
 export const MAX_SUPPORTED_MAJORS = 8;
 export const MAX_MESSAGE_CODE_POINTS = 512;
 
@@ -305,7 +307,7 @@ export function readAgentInitializeParams(value: unknown): AgentInitializeParams
     seed: reader.int('seed', -2_147_483_648, 2_147_483_647),
     initialInput: readSensoryInput(reader.value('initialInput')),
     initialDecisionContext: readTypedValue(reader.value('initialDecisionContext')),
-    workerThreads: reader.int('workerThreads', 1, 4_096),
+    workerThreads: reader.int('workerThreads', 1, MAX_WORKER_THREADS),
   };
   reader.finish();
   return params;
@@ -776,7 +778,12 @@ export interface HelloResult {
   buildDigest: Digest;
   contractDigest: Digest;
   capabilities: Id[];
-  limits: { maxAgents: number; maxPorts: number };
+  /**
+   * `workerThreads` is the thread allocation this worker was launched within, added by the
+   * 2026-09-22 amendment to workers-v1 section 2: the bound "within launcher allocation" had
+   * no wire on which a caller could learn the allocation.
+   */
+  limits: { maxAgents: number; maxPorts: number; workerThreads: number };
 }
 
 export interface StatusResult {
@@ -860,6 +867,7 @@ export function readHelloResult(value: unknown): HelloResult {
   const limits = {
     maxAgents: limitsReader.int('maxAgents', 1, MAX_AGENTS),
     maxPorts: limitsReader.int('maxPorts', 1, MAX_PORTS),
+    workerThreads: limitsReader.int('workerThreads', 1, MAX_WORKER_THREADS),
   };
   limitsReader.finish();
   reader.finish();

@@ -33,6 +33,9 @@ pub const MAX_ACKNOWLEDGE: usize = 16;
 pub const MAX_ENGINE_FRAME_LEN: usize = 64;
 /// Negotiated capability ids. Not a stated bound; recorded in the schema set.
 pub const MAX_CAPABILITIES: usize = 32;
+
+/// The largest `workerThreads` a launcher may allocate to one worker (`workers-v1` 2).
+pub const MAX_WORKER_THREADS: u64 = 4_096;
 /// Supported majors in Worker.Hello. Not a stated bound; recorded in the schema set.
 pub const MAX_SUPPORTED_MAJORS: usize = 8;
 /// Domain error messages are <=512 code points (ipc-v1 section 7).
@@ -651,7 +654,7 @@ impl DomainType for AgentInitializeParams {
         let seed = i32_field(&mut f, "seed")?;
         let initial_input = SensoryInput::from_json(f.value("initialInput")?)?;
         let initial_decision_context = TypedValue::from_json(f.value("initialDecisionContext")?)?;
-        let worker_threads = f.int("workerThreads", 1, 4_096)?;
+        let worker_threads = f.int("workerThreads", 1, MAX_WORKER_THREADS)?;
         f.finish()?;
         let p = AgentInitializeParams {
             agent_id,
@@ -1958,6 +1961,13 @@ pub struct HelloResult {
     pub capabilities: Vec<String>,
     pub max_agents: u64,
     pub max_ports: u64,
+    /// The thread allocation this worker was launched within.
+    ///
+    /// `workers-v1` bounds `Agent.Initialize`'s `workerThreads` by "within launcher
+    /// allocation" and, before the 2026-09-22 amendment, named no wire on which a caller could
+    /// learn it. This is that wire: the worker reports what its launcher gave it, and a caller
+    /// that meant to ask for more finds out here rather than after the model exists.
+    pub worker_threads: u64,
 }
 
 impl HelloResult {
@@ -1990,13 +2000,14 @@ impl DomainType for HelloResult {
         let build_digest = f.string("buildDigest")?.to_owned();
         let contract_digest = f.string("contractDigest")?.to_owned();
         let capabilities = id_list(&mut f, "capabilities", 0, MAX_CAPABILITIES)?;
-        let (max_agents, max_ports) = {
+        let (max_agents, max_ports, worker_threads) = {
             let v = f.value("limits")?;
             let mut l = Fields::new(v, "HelloResult.limits")?;
             let max_agents = l.int("maxAgents", 1, MAX_AGENTS as u64)?;
             let max_ports = l.int("maxPorts", 1, MAX_PORTS as u64)?;
+            let worker_threads = l.int("workerThreads", 1, MAX_WORKER_THREADS)?;
             l.finish()?;
-            (max_agents, max_ports)
+            (max_agents, max_ports, worker_threads)
         };
         f.finish()?;
         let r = HelloResult {
@@ -2008,6 +2019,7 @@ impl DomainType for HelloResult {
             capabilities,
             max_agents,
             max_ports,
+            worker_threads,
         };
         r.validate()?;
         Ok(r)
@@ -2031,6 +2043,7 @@ impl DomainType for HelloResult {
                 obj(vec![
                     ("maxAgents", Value::from(self.max_agents)),
                     ("maxPorts", Value::from(self.max_ports)),
+                    ("workerThreads", Value::from(self.worker_threads)),
                 ]),
             ),
         ])
