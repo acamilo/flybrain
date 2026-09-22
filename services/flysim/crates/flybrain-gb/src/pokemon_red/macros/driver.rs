@@ -21,7 +21,7 @@ use super::super::state::PokeState;
 use super::cartridge::{Areas, Frontiers, MacroState, Pushed, Stood, Talked, Targets, Tile};
 use super::geography;
 use super::executor::{MacroAbort, MacroMachine, Refusal};
-use super::palette::{MacroId, Palette};
+use super::palette::{self, MacroId, Palette};
 use super::plan;
 use super::state::{GameState, Scene};
 
@@ -88,6 +88,17 @@ pub struct PokemonPalette {
     /// frame. It is a *cache* rather than a ledger: nothing about the run is in it, only what the
     /// cartridge's own tables say about the ground.
     grids: MapGrids,
+    /// The fewest map hops between the fly and its objective this run has managed, and which
+    /// objective that was (`docs/design/macros.md` section 12.15).
+    ///
+    /// Session state beside the ledgers and never checkpointed, and unlike them it is not a fact
+    /// about the map at all: it is the one reading the *sim loop* takes from the macro layer, for
+    /// the ratchet's stall window. The objective is carried with the number because the ladder's
+    /// next rung changes as the run climbs, and "nearer" means nothing across two different
+    /// places.
+    nearest: Option<(u8, u32)>,
+    /// Whether the last `observe` was the frame that number fell on.
+    nearer: bool,
     /// The brain clock of the frame being decided, from [`MacroPalette::clock`].
     ///
     /// The blocked ledger is a *window*, so it needs the same clock the loop publishes rather
@@ -113,6 +124,8 @@ impl PokemonPalette {
             frontiers: Frontiers::default(),
             pushed: Pushed::default(),
             grids: MapGrids::default(),
+            nearest: None,
+            nearer: false,
             now_ms: 0.0,
         }
     }
@@ -187,7 +200,7 @@ impl MacroPalette for PokemonPalette {
     }
 
     fn observe(&mut self, memory: &mut dyn MemoryReader, ledger: &dyn RunLedger) -> Observed {
-        let (scene, bindings, standing) = {
+        let (scene, bindings, standing, approach) = {
             let Self {
                 machine,
                 mode,
@@ -224,8 +237,17 @@ impl MacroPalette for PokemonPalette {
             // -- the coordinates and the loaded map header are from different frames, and a tile
             // recorded from that pair is a tile of nowhere.
             let standing = (!state.scripted()).then(|| state.player()).flatten();
+            // How far the objective is, over the same map graph `GO OBJECTIVE` walks (section
+            // 12.15). Read from the same frame and the same state everything else is, and only
+            // where the fly is its own master, for the same reason the ground is.
+            let approach = standing.and_then(|player| {
+                let objective = palette::objective_place(&mut state)?;
+                let hops =
+                    geography::hops(geography::region_at(player.map, player.y), objective.map)?;
+                Some((objective.map, hops))
+            });
             *cached = Some(palette);
-            (scene, bindings, standing)
+            (scene, bindings, standing, approach)
         };
         // Section 12.7: the macro layer's own answer to "has the run stood here", because the
         // adapter's reward ledger cannot record a doormat.
@@ -248,6 +270,22 @@ impl MacroPalette for PokemonPalette {
                 self.areas.record(kind, area);
             }
         }
+        // Section 12.15: nearer the objective than this run has ever been, which is the other
+        // thing that is plainly progress and which the ratchet's stall window cannot see in the
+        // exploration ledger. A level, true on the frame the number falls and false after, so
+        // there is nothing to checkpoint and nothing to drift. A different objective starts the
+        // measurement again: the ladder's next rung moves as the run climbs and "nearer" means
+        // nothing across two different places.
+        self.nearer = match (self.nearest, approach) {
+            (_, None) => false,
+            (None, Some(_)) => false,
+            (Some((was, best)), Some((map, hops))) => map == was && hops < best,
+        };
+        self.nearest = match (self.nearest, approach) {
+            (_, None) => self.nearest,
+            (Some((was, best)), Some((map, hops))) if map == was => Some((map, best.min(hops))),
+            (_, Some(now)) => Some(now),
+        };
         // The talked entry `observe_frame` may just have earned, into the ledger the next frame
         // reads.
         self.record_talk();
@@ -343,6 +381,10 @@ impl MacroPalette for PokemonPalette {
         Some((name, outcome(abort)))
     }
 
+    fn nearer_the_objective(&self) -> bool {
+        self.nearer
+    }
+
     fn cancel(&mut self) {
         self.machine.cancel();
         // A cancelled macro talked to nothing, and a stale entry would silence a person for the
@@ -413,6 +455,8 @@ mod tests {
     use crate::adapter::{MapEdge, MapExit};
     use crate::macros::NoLedger;
     use crate::pokemon_red::fake_wram::{REDS_HOUSE_1F, Wram};
+    use crate::pokemon_red::macros::geography::Amenity;
+    use crate::pokemon_red::maps;
     use crate::pokemon_red::macros::cartridge::{Edge, ExitId, MacroState};
 
     /// A ledger with one exit in it, for the wiring test below.
@@ -439,6 +483,67 @@ mod tests {
             Started::Refused { name: None, reason: "unbound" }
         );
         assert_eq!(palette.take_finished(), None);
+    }
+
+    /// A ledger whose objective is one map, for the approach reading below.
+    struct Bound(u8);
+
+    impl RunLedger for Bound {
+        fn exit_visited(&self, _exit: MapExit) -> bool {
+            false
+        }
+
+        fn objective(&self) -> Option<crate::adapter::MapPlace> {
+            Some(crate::adapter::MapPlace {
+                map: self.0,
+                tile: None,
+                warp: None,
+                edge: None,
+                target: None,
+            })
+        }
+    }
+
+    #[test]
+    fn the_objective_getting_nearer_is_read_once_per_step_of_the_road() {
+        // Section 12.15, the rung-10 stall. The ratchet's stall window is reset by ground never
+        // stood on, and a fly walking a road it has already covered earns none -- so this is the
+        // other reading, and what it has to be is a *level* that is true on the frame the hop
+        // count falls and false on every frame after it. Pewter's own museum is the road: the
+        // upper floor is three hops from the gym, the ground floor two, the town one.
+        let mut wram = Wram::new();
+        wram.started().map(maps::PEWTER_MUSEUM_2F, 4, 4, 3, 6).facing(0).house_collision();
+        let mut palette = PokemonPalette::new(7);
+        // Both of Pewter's errands discharged, so the objective is the rung's own place for the
+        // whole test: section 13 puts an unvisited mart or centre *ahead* of it, and that is a
+        // different place to be near.
+        palette.areas.record(Amenity::Mart, maps::PEWTER_CITY);
+        palette.areas.record(Amenity::Center, maps::PEWTER_CITY);
+        let ledger = Bound(maps::PEWTER_GYM);
+
+        palette.observe(&mut wram, &ledger);
+        assert!(!palette.nearer_the_objective(), "the first reading is a measurement, not a step");
+        palette.observe(&mut wram, &ledger);
+        assert!(!palette.nearer_the_objective(), "standing still is not nearer");
+
+        wram.map(maps::PEWTER_MUSEUM_1F, 4, 4, 3, 6);
+        palette.observe(&mut wram, &ledger);
+        assert!(palette.nearer_the_objective(), "down the stairs is one hop nearer");
+        palette.observe(&mut wram, &ledger);
+        assert!(!palette.nearer_the_objective(), "and it is read once, not held");
+
+        // Back upstairs is not progress, and it does not undo the number either: the measurement
+        // is the best this run has managed, so walking the road twice pays once.
+        wram.map(maps::PEWTER_MUSEUM_2F, 4, 4, 3, 6);
+        palette.observe(&mut wram, &ledger);
+        assert!(!palette.nearer_the_objective());
+        wram.map(maps::PEWTER_MUSEUM_1F, 4, 4, 3, 6);
+        palette.observe(&mut wram, &ledger);
+        assert!(!palette.nearer_the_objective(), "ground already gained is not gained again");
+
+        wram.map(maps::PEWTER_CITY, 4, 4, 3, 6);
+        palette.observe(&mut wram, &ledger);
+        assert!(palette.nearer_the_objective(), "out of the front door is nearer still");
     }
 
     #[test]

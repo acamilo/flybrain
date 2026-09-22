@@ -1054,12 +1054,20 @@ impl Sim {
         } else {
             None
         };
-        let recover = self.ratchet.observe_with_game_over(
+        // The stall window's second progress signal (`docs/design/ladder.md`, the 2026-09-17
+        // rule as amended 2026-09-22): coverage is ground never stood on, and a fly crossing a
+        // town it has already covered to reach the rung's own door earns none of it while it is
+        // plainly getting somewhere. The macro layer answers with the map graph it already walks
+        // (`docs/design/macros.md` section 12.15); in raw mode there is no layer and no
+        // objective, and the answer is false.
+        let nearer = self.macros.as_ref().is_some_and(MacroLayer::nearer_the_objective);
+        let recover = self.ratchet.observe_with_progress(
             safe,
             u64::from(progress.rank),
             progress.unique_locations as u64,
             ms as u64,
             self.adapter.game_over(),
+            nearer,
             || captured.expect("the ratchet only captures when a snapshot was prepared"),
         );
         if recover {

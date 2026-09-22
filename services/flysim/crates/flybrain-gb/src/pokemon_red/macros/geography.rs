@@ -341,6 +341,39 @@ pub fn next_hop(from: Region, to: u8) -> Option<u8> {
     None
 }
 
+/// How many hops the shortest known route from `from` to the map `to` takes, or `None` when none
+/// is known.
+///
+/// [`next_hop`]'s own breadth-first walk, counting instead of naming: `Some(0)` when the fly is
+/// already on `to`, `Some(1)` for a door out of this map into it, and `None` for a map the table
+/// cannot route to -- which is the same "nothing is guessed" [`next_hop`] answers with.
+///
+/// What it is *for* is the ratchet (`docs/design/ladder.md`, the 2026-09-17 progress rule): the
+/// stall window is reset by exploration, and a fly crossing a town it has already covered to
+/// reach the rung's own door earns no new ground while it does it. "Nearer the objective than
+/// this run has ever been" is the other thing that is plainly progress, and it is this number
+/// falling. Nothing about the *choice* reads it: no macro is ranked by it and no button is bound
+/// on it.
+pub fn hops(from: Region, to: u8) -> Option<u32> {
+    if from.map == to {
+        return Some(0);
+    }
+    let mut seen: HashSet<Region> = HashSet::from([from]);
+    let mut queue: VecDeque<(Region, u32)> = VecDeque::new();
+    queue.push_back((from, 0));
+    while let Some((region, depth)) = queue.pop_front() {
+        if region.map == to {
+            return Some(depth);
+        }
+        for next in region_neighbours(region) {
+            if seen.insert(next) {
+                queue.push_back((next, depth + 1));
+            }
+        }
+    }
+    None
+}
+
 /// A building an area has at most one of, and which this run may not have been into yet.
 ///
 /// `docs/design/macros.md` section 13: the two errands. A kind rather than two parallel tables
@@ -591,6 +624,34 @@ mod tests {
         // The museum is neither a mart nor a centre, so it is nobody's errand.
         assert_eq!(amenity_at(maps::PEWTER_MUSEUM_1F), None);
         assert_eq!(amenity_at(maps::PEWTER_MUSEUM_2F), None);
+    }
+
+    #[test]
+    fn the_hop_count_is_the_road_measured_rather_than_named() {
+        let at = |map: u8| Region::whole(map);
+        assert_eq!(hops(at(maps::PEWTER_CITY), maps::PEWTER_CITY), Some(0), "already there");
+        assert_eq!(hops(at(maps::PEWTER_CITY), maps::PEWTER_GYM), Some(1), "one door");
+        assert_eq!(hops(at(maps::PEWTER_MUSEUM_1F), maps::PEWTER_GYM), Some(2));
+        assert_eq!(hops(at(maps::PEWTER_MUSEUM_2F), maps::PEWTER_GYM), Some(3));
+        // The count agrees with the hop by hop answer, which is the thing it has to: walking the
+        // road one `next_hop` at a time takes exactly this many steps.
+        let mut here = at(maps::PEWTER_MUSEUM_2F);
+        let mut steps = 0;
+        while let Some(hop) = next_hop(here, maps::PEWTER_GYM) {
+            here = Region::whole(hop);
+            steps += 1;
+            assert!(steps < 10, "the road to the gym does not wander");
+        }
+        assert_eq!(here.map, maps::PEWTER_GYM);
+        assert_eq!(steps, 3);
+        // A split map is measured from the piece the fly is standing in, exactly as `next_hop` is.
+        assert_eq!(hops(region_at(maps::ROUTE_2, 11), maps::PEWTER_CITY), Some(1));
+        // Five from the south half, because the belt of trees between the halves needs CUT and
+        // the road is the forest: the south gate, the forest, the north gate, Route 2's north
+        // half, Pewter.
+        assert_eq!(hops(region_at(maps::ROUTE_2, 43), maps::PEWTER_CITY), Some(5));
+        // And nothing is guessed.
+        assert_eq!(hops(at(maps::PALLET_TOWN), 0xf0), None);
     }
 
     #[test]
