@@ -659,3 +659,17 @@ then purge; then the stale-doc pass.
   RSS 11-17 MB. Two spec contradictions were resolved in bus-v1 rather than in the code (the
   per-client byte budget now names bounded queues only, with latest slots capped separately;
   the illustrative client sketch drops its budget argument for a caller-side deadline).
+- 2026-09-22 (session framework, wave 1 complete): the CONTRACT and SESSION slices merged. There
+  is now one executable contract for the new architecture: a types crate and a matching
+  TypeScript package that read the same fixtures, RFC 8785 canonical JSON, a contract digest
+  generated from the schema set rather than from source formatting, the four identities typed so
+  they cannot be mistaken for one another, and two new specifications with test vectors for seed
+  derivation and the checkpoint envelope. On top of it a synthetic lockstep session runs over the
+  bus: fake agents, a counter world, identity executors and a deterministic task, stepping
+  prepare, advance, evaluate, commit in that order, with the rational clock proving 16, 17 and 17
+  ticks and a zero remainder, request deduplication that refuses a changed body and replays a
+  cached one, and the guide's failure injections as tests that compare an injected run against a
+  clean one on behaviour, mutation count and world counter. Reviews caught two defects worth
+  naming: a merge that stopped short of the TypeScript half, whose absence silently took its own
+  test gate with it, and an unchecked addition that would have wrapped in release. Both fixed
+  before merge.
