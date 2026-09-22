@@ -612,10 +612,11 @@ pub fn yes_no_prompt(memory: &mut dyn MemoryReader) -> bool {
 /// written by `MoveSelectionMenu` and **nothing clears them**, exactly as the two-option box's
 /// geometry outlives its box (`yes_no_prompt` above): the whole rest of the turn -- the text, the
 /// animation, the damage, the enemy's reply -- reads back the same five bytes. Surveyed on the
-/// cartridge over 1,878 battle frames at the rung-9 forest checkpoint, one rollback pulse per frame
-/// (`examples/scene_probe.rs`, `FLY_PROBE_CATCH=accept`): with this box **not** drawn a real
-/// directional press moved `wCurrentMenuItem` on 15 frames of 1,731, and with it drawn on 140 of
-/// 147. The cursor geometry on its own is honoured on 155 of 1,878.
+/// cartridge over 3,102 battle frames at the rung-9 forest checkpoint, one rollback pulse per frame
+/// (`examples/scene_probe.rs`, `FLY_PROBE_CATCH=accept`): by the cursor geometry alone a real
+/// directional press moved `wCurrentMenuItem` on **264** of them, and by the geometry **and** this
+/// box on **231 of 231**. With the box not drawn, 33 of 2,871 -- and those thirty-three are frames
+/// where the pulse's own thirty were long enough for the cartridge to open something by itself.
 ///
 /// The figure is `MoveSelectionMenu`'s regular menu and only it: a `TextBoxBorder` at (4, 12)
 /// fourteen wide and four tall, with two tiles written over it afterwards -- the top-left corner
