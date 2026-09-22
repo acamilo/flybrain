@@ -2,7 +2,8 @@
 
 Status: **crate landed, nothing wired onto it**. Written 2026-09-22. Index only; the
 authority for the API and the wire format is the crate's own
-[README](../../services/flysim/crates/flybus/README.md).
+[README](../../services/flysim/crates/flybus/README.md), and the audit of the crate against
+the draft is the [conformance report](session-framework/bus-conformance.md).
 
 ## What it is
 

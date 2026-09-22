@@ -33,6 +33,9 @@ retroactively to existing [public feed](../../feed-protocol.md),
 5. [Session media/state](state-media-v1.md) — observation timing and coherent recovery.
 6. [Application/presentation boundary](publishing-v1.md) — snapshots, flexible data and effects.
 7. [Implementation guide](implementation.md) — sequenced build tasks and acceptance tests.
+8. [Flybus conformance report](bus-conformance.md) — the `flybus` crate audited sentence by
+   sentence against bus-v1, with the test that proves each row, the measurements and the
+   draft's own contradictions. A review artifact, not a contract.
 
 For context: [modular-session analysis](../malecns-modular-sessions.md) and
 [Melee audit](../melee-framework-audit.md). Each contract owns its named subject; step ordering

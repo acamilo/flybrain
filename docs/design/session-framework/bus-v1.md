@@ -438,7 +438,8 @@ bounded; rejected callers choose their own retry/fail/pause policy.
 
 Transport errors include `INVALID_ENVELOPE`, `VERSION_MISMATCH`, `NOT_AUTHORIZED`,
 `NO_SERVICE`, `TARGET_CHANGED`, `BACKPRESSURE`, `CALL_GONE`, `ARTIFACT_UNSEALED`,
-`ARTIFACT_GONE`, `OWNER_INVALID`, `QUOTA_EXCEEDED`, `STORE_FAILURE`, `ROUTER_LOST`.
+`ARTIFACT_GONE`, `OWNER_INVALID`, `QUOTA_EXCEEDED`, `STORE_FAILURE`, `ROUTER_LOST`, and the
+three of section 12.
 Before admission use dispatch:not-dispatched. Once dispatch might have occurred, report
 unknown/dispatched conservatively; a caller-side timeout must not imply no mutation.
 
@@ -484,3 +485,28 @@ pipeline may itself exchange large artifacts through this same bus if useful.
 The first executable example should show a counter RPC, a pub/sub observer, and a frame
 artifact held past message consumption in one small Rust program. No game or browser required.
 Distributed simulation ordering remains the [session contract's](step-v1.md) responsibility.
+
+## 12. Amendments
+
+Draft 1 stands as written above. Each amendment below names something the draft requires but
+left unnamed, and is dated. The implementation and the sentence-by-sentence audit behind these
+entries are in the [conformance report](bus-conformance.md).
+
+**2026-09-22, from the flybus conformance audit.** Three error codes, because section 9's list
+is inclusive and these three refusals had no name:
+
+| Code | Reason |
+| --- | --- |
+| `CONFLICT` | Section 3's duplicate registration, section 5's conflicting topic redeclaration and section 5's `topic.delete` with subscribers are refusals of a live claim, not a missing route, a quota or a bad envelope. |
+| `NO_TOPIC` | Publishing to or subscribing to a name nobody declared is a missing topic, and `NO_SERVICE` names the service case only. |
+| `ARTIFACT_MISMATCH` | Section 9's "hash mismatch returns a typed artifact error", plus a sealed length that disagrees with the allocation and a reference that disagrees with the artifact it names; `STORE_FAILURE` would blame the store for the caller's claim. |
+
+**2026-09-22, same audit.** One added operation, because section 6 requires bounded call
+correlation and gives no way to end it when a handler keeps reply authority after releasing the
+request delivery:
+
+| Command | Body / reply value | Semantics |
+| --- | --- | --- |
+| `rpc.responder.release` | `{callId, requestDeliveryId}` -> `{released}` | The recipient gives up reply authority for a dispatched call. The final release for an attached call retires the correlation and emits `call.failed` with dispatch `dispatched`: `CALL_GONE` while the route is live, `NO_SERVICE` after route loss. Request consumption (section 8.3) stays independent of it. |
+
+Both amendments change `contractDigest`, which section 4 already provides for.
