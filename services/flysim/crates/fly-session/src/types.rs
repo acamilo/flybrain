@@ -8,13 +8,18 @@
 //! `Id` and `Digest` are type aliases, because the shared crate carries both as validated
 //! `String`s from `flybus::wire` rather than forking the encodings into newtypes.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Map, Value};
 
 pub use fly_session_types::ArtifactRef;
 pub use fly_session_types::canonical::{
     self, OperationKey, body_digest, canonicalize, digest_of, sha256_hex,
 };
-pub use fly_session_types::media::{AudioDescriptor, AudioRef, ViewDescriptor, ViewRef};
+pub use fly_session_types::media::{
+    ActivateRestoreParams, ActivateRestoreResult, AudioDescriptor, AudioRef, CaptureParams,
+    CaptureResult, StageRestoreParams, StageRestoreResult, ViewDescriptor, ViewRef,
+};
 pub use fly_session_types::rpc::{
     ErrorCode, MutationCertainty, SessionRpcFailure, SessionRpcOutcome, SessionRpcRequest,
     SessionRpcSuccess,
@@ -214,6 +219,57 @@ pub fn outcome_identity(
     }
 }
 
+/// The epoch-derived identities of a behaviour trace, rewritten onto one reference epoch.
+///
+/// `step-v1` section 8 compares committed behaviour across runs, excluding wall time, request
+/// ids "and other explicitly operational metadata". A resumed run's epoch is neither: it is
+/// behaviour metadata, and `scope.epoch`, the batch id and every task event id are derived
+/// from it. Comparing the two runs therefore means rewriting exactly those three things and
+/// nothing else, which is what this does -- and it **fails** on anything it does not
+/// recognise instead of passing it through, so a field that silently stopped being rebased
+/// would fail the comparison rather than weaken it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EpochRebase {
+    pub from: Id,
+    pub to: Id,
+    /// Every event identity the task issued under `from`, and the identity it has under `to`.
+    pub events: BTreeMap<Id, Id>,
+}
+
+impl EpochRebase {
+    /// Rewrites one behaviour record. An identity this rebase does not know is an error.
+    pub fn apply(&self, behaviour: &TraceBehaviour) -> Result<TraceBehaviour, String> {
+        if behaviour.scope.epoch != self.from {
+            return Err(format!(
+                "this behaviour was recorded in epoch {}, not {}",
+                behaviour.scope.epoch, self.from
+            ));
+        }
+        let mut out = behaviour.clone();
+        out.scope = Scope::new(&behaviour.scope.session_id, &self.to, behaviour.scope.step)
+            .map_err(|e| e.0)?;
+        let prefix = format!("batch-{}-", self.from);
+        let suffix = behaviour
+            .batch_id
+            .strip_prefix(&prefix)
+            .ok_or_else(|| format!("the batch id {} is not derived from {}", behaviour.batch_id, self.from))?;
+        out.batch_id = parse_id(&format!("batch-{}-{suffix}", self.to))?;
+        let map = |ids: &[Id]| -> Result<Vec<Id>, String> {
+            ids.iter()
+                .map(|id| {
+                    self.events
+                        .get(id)
+                        .cloned()
+                        .ok_or_else(|| format!("no rebased identity for the event {id}"))
+                })
+                .collect()
+        };
+        out.outcome_ids = map(&behaviour.outcome_ids)?;
+        out.event_ids = map(&behaviour.event_ids)?;
+        Ok(out)
+    }
+}
+
 /// One session phase transition, recorded whether or not it ends a step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PhaseTransition {
@@ -249,6 +305,28 @@ impl TraceLog {
             .map(|t| {
                 canonicalize(&t.behaviour.to_json())
                     .expect("a recorded behaviour canonicalizes")
+            })
+            .collect()
+    }
+
+    /// Every transition's behaviour, rebased onto one epoch and canonicalized.
+    ///
+    /// This is the comparison a resumed run is held to: the same strings as
+    /// [`TraceLog::behavior`], with the epoch metadata accounted for and nothing else changed.
+    /// A resumed run's log holds transitions from two epochs -- the ones before the checkpoint
+    /// and the ones after the restore -- so a transition already recorded in `rebase.to` is
+    /// kept as it stands and one recorded in `rebase.from` is rewritten. A transition in a
+    /// third epoch is an error; there is no pass-through case.
+    pub fn behavior_rebased(&self, rebase: &EpochRebase) -> Result<Vec<String>, String> {
+        self.transitions
+            .iter()
+            .map(|t| {
+                let behaviour = if t.behaviour.scope.epoch == rebase.to {
+                    t.behaviour.clone()
+                } else {
+                    rebase.apply(&t.behaviour)?
+                };
+                canonicalize(&behaviour.to_json()).map_err(|e| e.0)
             })
             .collect()
     }

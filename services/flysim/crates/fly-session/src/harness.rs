@@ -26,6 +26,7 @@ use crate::media::{RenderCounter, SensorLog};
 use crate::launcher::{
     AgentLaunch, EnvironmentLaunch, Launcher, ReapOutcome, SUPERVISOR_CLIENT, ThreadBudget,
 };
+use crate::state::{CheckpointStore, CheckpointWriter, StoreConfig, StoreFaults, WriterConfig, WriterFaults};
 use crate::task::{ActionExecutor, CounterTask, IdentityExecutor, Terminal};
 // `crate::types` is this crate's facade over the shared `fly-session-types` crate; the
 // glob keeps the contract's own names in sight instead of restating them.
@@ -85,6 +86,14 @@ pub struct HarnessConfig {
     /// The threads reserved for the coordinator, its router and its store.
     pub coordinator_threads: usize,
     pub environment_threads: usize,
+    /// How many committed generations the durable checkpoint store keeps.
+    pub store: StoreConfig,
+    /// The durable write faults this composition injects.
+    pub store_faults: StoreFaults,
+    /// The checkpoint queue's bounds.
+    pub writer: WriterConfig,
+    /// The writer faults this composition injects.
+    pub writer_faults: WriterFaults,
 }
 
 impl Default for HarnessConfig {
@@ -107,6 +116,10 @@ impl Default for HarnessConfig {
             thread_budget: None,
             coordinator_threads: 1,
             environment_threads: 1,
+            store: StoreConfig::default(),
+            store_faults: StoreFaults::default(),
+            writer: WriterConfig::default(),
+            writer_faults: WriterFaults::default(),
         }
     }
 }
@@ -134,6 +147,14 @@ const ENV_SERVICE: &str = "env.arena";
 const ENV_CLIENT: &str = "environment";
 const ENV_WORKER: &str = "arena";
 const COORDINATOR_CLIENT: &str = "coordinator";
+/// The checkpoint writer's own bus identity. It publishes checkpoint events and nothing else.
+const WRITER_CLIENT: &str = "checkpoint-writer";
+
+/// How many times one participant may be replaced in a composition.
+///
+/// Each replacement connects under its own client id, so a restart is visibly a new
+/// participant rather than a silent reattachment, and the policy has to name them all.
+const MAX_GENERATIONS: u32 = 8;
 
 fn agent_service(agent_id: &Id) -> String {
     format!("agent.{agent_id}")
@@ -172,6 +193,10 @@ pub struct SessionHarness {
     /// The supervisor. It owns every participant's lifetime and thread allocation.
     pub launcher: Launcher,
     observers: Mutex<Vec<Client>>,
+    /// Which generation of each participant is running: 1 is the one the composition started.
+    generations: BTreeMap<Id, u32>,
+    /// Where the durable checkpoint store lives, for a test that reads the files themselves.
+    checkpoint_root: std::path::PathBuf,
 }
 
 impl SessionHarness {
@@ -204,12 +229,16 @@ impl SessionHarness {
                     g.call = vec![Pattern::prefix("agent."), Pattern::prefix("env.")];
                 }),
             )
+            // The writer publishes the checkpoint events and never calls a participant.
+            .client(WRITER_CLIENT, grants(|g| g.publish = vec![Pattern::prefix("session.")]))
             .client(ENV_CLIENT, grants(|g| g.register = vec![Pattern::exact(ENV_SERVICE)]))
-            .client(
-                &format!("{ENV_CLIENT}-r2"),
-                grants(|g| g.register = vec![Pattern::exact(ENV_SERVICE)]),
-            )
             .client("observer", grants(|g| g.subscribe = vec![Pattern::prefix("session.")]));
+        for generation in 2..=MAX_GENERATIONS {
+            policy = policy.client(
+                &format!("{ENV_CLIENT}-r{generation}"),
+                grants(|g| g.register = vec![Pattern::exact(ENV_SERVICE)]),
+            );
+        }
         for spec in &config.agents {
             let service = agent_service(&spec.agent_id);
             policy = policy.client(
@@ -218,10 +247,12 @@ impl SessionHarness {
             );
             // A replacement worker connects under its own client id, so a restart is visibly a
             // new participant rather than a silent reattachment to the active epoch.
-            policy = policy.client(
-                &format!("{}-r2", agent_client(&spec.agent_id)),
-                grants(|g| g.register = vec![Pattern::exact(&service)]),
-            );
+            for generation in 2..=MAX_GENERATIONS {
+                policy = policy.client(
+                    &format!("{}-r{generation}", agent_client(&spec.agent_id)),
+                    grants(|g| g.register = vec![Pattern::exact(&service)]),
+                );
+            }
         }
         let mut router_config = RouterConfig::new(&store_root);
         router_config.policy = policy;
@@ -299,6 +330,21 @@ impl SessionHarness {
         }
 
         let coordinator_client = launcher.connect(COORDINATOR_CLIENT).await?;
+        // The durable store lives beside the router's artifact store and never inside it: a
+        // committed generation is outside the bus's ephemeral collection.
+        let checkpoint_root = root.join("checkpoints");
+        let mut store = CheckpointStore::open(&checkpoint_root, config.store).map_err(refusal)?;
+        *store.faults_mut() = config.store_faults.clone();
+        let writer_client = launcher.connect(WRITER_CLIENT).await?;
+        let writer = CheckpointWriter::start(
+            store,
+            config.writer,
+            config.writer_faults.clone(),
+            Some((
+                writer_client,
+                format!("session.{}.checkpoints", config.session_id),
+            )),
+        );
         let executors: BTreeMap<Id, Box<dyn ActionExecutor>> = config
             .agents
             .iter()
@@ -316,6 +362,8 @@ impl SessionHarness {
             Box::new(CounterTask::new(&config.epoch, config.terminal)),
             executors,
         );
+        let mut coordinator = coordinator;
+        coordinator.attach_store(writer);
 
         Ok(SessionHarness {
             coordinator,
@@ -326,7 +374,14 @@ impl SessionHarness {
             sensors,
             launcher,
             observers: Mutex::new(Vec::new()),
+            generations: BTreeMap::new(),
+            checkpoint_root,
         })
+    }
+
+    /// Where the durable checkpoint store's generations and store manifest live.
+    pub fn checkpoint_root(&self) -> &std::path::Path {
+        &self.checkpoint_root
     }
 
     pub fn router(&self) -> &Router {
@@ -373,10 +428,11 @@ impl SessionHarness {
             .find(|spec| spec.agent_id == *agent_id)
             .expect("a configured agent")
             .clone();
+        let generation = self.next_generation(agent_id)?;
         self.launcher.kill(agent_id).await;
         let tick_duration = millis(self.config.tick_ms).expect("a positive tick");
-        let incarnation_id =
-            parse_id(&format!("{agent_id}-inc-2")).expect("an agent id plus a suffix is an Id");
+        let incarnation_id = parse_id(&format!("{agent_id}-inc-{generation}"))
+            .expect("an agent id plus a suffix is an Id");
         self.launcher
             .launch_agent(AgentLaunch {
                 session_id: self.config.session_id.clone(),
@@ -390,7 +446,7 @@ impl SessionHarness {
                 // predecessor wrote, so a restore's sensory input is visible beside it.
                 sensors: self.sensors.get(agent_id).cloned().unwrap_or_default(),
                 faults: spec.faults.clone(),
-                client_id: format!("{}-r2", agent_client(agent_id)),
+                client_id: format!("{}-r{generation}", agent_client(agent_id)),
                 service: agent_service(agent_id),
             })
             .await
@@ -401,6 +457,102 @@ impl SessionHarness {
             service_incarnation: worker.service_incarnation.clone(),
             incarnation_id,
         })
+    }
+
+    /// Replaces the environment with a fresh, uninitialized incarnation, as a restore needs.
+    pub async fn restart_environment(&mut self) -> Result<Restarted, flybus::BusError> {
+        let worker_id = id(ENV_WORKER);
+        let generation = self.next_generation(&worker_id)?;
+        self.launcher.kill(&worker_id).await;
+        let step_duration = hz(self.config.step_hz).expect("a positive cadence");
+        let incarnation_id = parse_id(&format!("arena-inc-{generation}"))
+            .expect("a worker id plus a suffix is an Id");
+        self.launcher
+            .launch_environment(EnvironmentLaunch {
+                session_id: self.config.session_id.clone(),
+                worker_id: worker_id.clone(),
+                incarnation_id: incarnation_id.clone(),
+                step_duration,
+                ports: self.config.agents.iter().map(|a| a.port_id.clone()).collect(),
+                worker_threads: self.config.environment_threads,
+                observation_delay_steps: self.config.observation_delay_steps,
+                renders: self.renders.clone(),
+                faults: self.config.environment_faults.clone(),
+                client_id: format!("{ENV_CLIENT}-r{generation}"),
+                service: ENV_SERVICE.to_owned(),
+            })
+            .await
+            .map_err(refusal)?;
+        let worker = self.launcher.worker(&worker_id).expect("just launched");
+        Ok(Restarted {
+            service: worker.identity.service.clone(),
+            service_incarnation: worker.service_incarnation.clone(),
+            incarnation_id,
+        })
+    }
+
+    fn next_generation(&mut self, worker_id: &Id) -> Result<u32, flybus::BusError> {
+        let slot = self.generations.entry(worker_id.clone()).or_insert(1);
+        if *slot >= MAX_GENERATIONS {
+            return Err(flybus::BusError::new(
+                flybus::ErrorCode::QuotaExceeded,
+                format!(
+                    "{worker_id} has used all {MAX_GENERATIONS} configured client identities; a composition declares how many replacements it allows"
+                ),
+            ));
+        }
+        *slot += 1;
+        Ok(*slot)
+    }
+
+    /// Replaces every participant and points the fenced coordinator at the replacements.
+    ///
+    /// This is what a recovery does before it restores: the old participants belong to an
+    /// invalid epoch, and the references the coordinator pinned are exchanged deliberately.
+    pub async fn replace_all_participants(&mut self) -> Result<(), flybus::BusError> {
+        let environment = self.environment_id();
+        self.restart_environment().await?;
+        let worker = self
+            .launcher
+            .worker(&environment)
+            .expect("just launched")
+            .worker_ref();
+        self.coordinator
+            .replace_participant(&environment, worker)
+            .map_err(|e| refusal(e.error))?;
+        for agent_id in self.config.agents.iter().map(|a| a.agent_id.clone()).collect::<Vec<_>>() {
+            self.restart_agent(&agent_id).await?;
+            let worker = self
+                .launcher
+                .worker(&agent_id)
+                .expect("just launched")
+                .worker_ref();
+            self.coordinator
+                .replace_participant(&agent_id, worker)
+                .map_err(|e| refusal(e.error))?;
+        }
+        Ok(())
+    }
+
+    /// Changes one agent's injected faults, so the replacement the next restart launches is
+    /// a participant without them.
+    ///
+    /// A fault is launch configuration, so clearing one is a relaunch and not a live change:
+    /// the worker running now keeps whatever it was started with.
+    pub fn set_agent_faults(&mut self, agent_id: &Id, faults: AgentFaults) {
+        if let Some(spec) = self
+            .config
+            .agents
+            .iter_mut()
+            .find(|spec| spec.agent_id == *agent_id)
+        {
+            spec.faults = faults;
+        }
+    }
+
+    /// Changes the environment's injected faults, with the same relaunch rule.
+    pub fn set_environment_faults(&mut self, faults: EnvironmentFaults) {
+        self.config.environment_faults = faults;
     }
 
     /// Ends one participant without asking it, as a crash would.
@@ -466,7 +618,10 @@ impl SessionHarness {
 
     /// Reaps every participant and closes the router.
     pub async fn shutdown(self) {
-        let SessionHarness { coordinator, mut launcher, observers, .. } = self;
+        let SessionHarness { mut coordinator, mut launcher, observers, .. } = self;
+        // The writer task owns artifact handles and a blocking store. Leaving it running
+        // would leave both behind.
+        coordinator.shutdown_store().await;
         drop(coordinator);
         launcher.reap_all(&id("shutdown")).await;
         for observer in observers.into_inner().expect("not poisoned") {

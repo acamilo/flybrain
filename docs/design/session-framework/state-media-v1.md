@@ -190,6 +190,28 @@ restored time. It cannot advance gameplay to manufacture it. Capture/reconstruct
 covers render/inspection state and any pending sensor pipeline. Agent state agrees with it;
 do not replay reward or recalibrate merely to fill missing cached data.
 
+**Amendment, 2026-09-22 (STATE-01).** Three readings of this section, made explicit because
+they are now enforced:
+
+- `compatibilityDigest` on `CaptureResult` and `StageRestoreParams` is the **participant's**
+  capture compatibility digest of [worker interfaces](workers-v1.md) section 2 -- profile,
+  resolved seed, numerical model version and effective instance configuration for an agent;
+  backend, content, patch, controller and parser identity for an environment. It is not the
+  manifest's `compatibility` block of section 4, which is the composition's and which the
+  coordinator compares before anything is asked to stage. Both exist because they answer
+  different questions, and a restore that passed the second could still be handing an agent
+  another agent's brain.
+- The observation `ActivateRestore` returns ran no transition, so it carries **no audio
+  chunk**, and one in it is refused. Section 2's chunk is the audio of an interval and this
+  observation covers none; MEDIA-01 implemented that rule as "boundary 0 carries no chunk",
+  which is true of the only such observation that slice could produce and false of this one.
+  The rule is about provenance, not about the boundary number.
+- A participant that staged into a group install the coordinator then abandoned must be
+  **replaced** before another restore, exactly as one that activated must. It is holding a
+  validated replacement state that nothing installed, and [session RPC](ipc-v1.md) section 6
+  already refuses to silently reattach such a participant to an active epoch. Without this the
+  group's second attempt meets its own leftovers and calls them a conflict.
+
 If emulator validation requires mutation, stage a stopped replacement emulator. If that cannot
 provide externally atomic resume, advertise episode-restart, not exact-checkpoint. After all
 activation acknowledgments, install the coordinator's staged task/executor/admission state

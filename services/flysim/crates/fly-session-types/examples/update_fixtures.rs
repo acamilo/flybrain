@@ -199,6 +199,7 @@ fn checkpoint_envelope() -> String {
             "admissionState": null,
             "eventWatermarks": {"lastEventId": "evt-1", "lastOrdinal": "7"},
         },
+        "environment": {"workerId": "arena", "payload": "world"},
         "helperState": [],
         "payloads": payload_table(),
     });
