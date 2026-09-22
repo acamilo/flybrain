@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value, json};
 
 use crate::clock::Pacing;
+use crate::media::{self, AudioTimelines};
 use crate::metrics::Metrics;
 use crate::phase::{Phase, PhaseMachine};
 use crate::rpc::{self, DomainReply, Serials, WorkerRef};
@@ -260,6 +261,15 @@ pub struct Coordinator {
     views: BTreeMap<String, flybus::Artifact>,
     /// Holds on the boundary the world has just reached, before it is committed.
     pending_views: BTreeMap<String, flybus::Artifact>,
+    /// The same handles for this boundary's audio chunks. Audio is presentation data: it is
+    /// published and never attached to an agent's sensory input.
+    audio: BTreeMap<String, flybus::Artifact>,
+    pending_audio: BTreeMap<String, flybus::Artifact>,
+    /// One chunk sequence per declared audio stream, for this epoch.
+    timelines: AudioTimelines,
+    /// The attachment names this session's native media travels under. The composition
+    /// supplies them for Initialize; afterwards they come from the environment descriptor.
+    media_names: Vec<String>,
     serials: Serials,
     topics: Topics,
     pacing: Option<Pacing>,
@@ -325,6 +335,13 @@ impl Coordinator {
             observation: None,
             views: BTreeMap::new(),
             pending_views: BTreeMap::new(),
+            audio: BTreeMap::new(),
+            pending_audio: BTreeMap::new(),
+            timelines: AudioTimelines::default(),
+            media_names: vec![
+                media::view_attachment(crate::environment::VIEW_ID),
+                media::audio_attachment(crate::environment::AUDIO_STREAM_ID),
+            ],
             serials: Serials::default(),
             topics,
             pacing: None,
@@ -372,6 +389,21 @@ impl Coordinator {
 
     pub fn observation(&self) -> Option<&WorldObservation> {
         self.observation.as_ref()
+    }
+
+    /// The media handles this committed boundary holds: the one the agents were given and the
+    /// one presentation was published. They are the same objects, named by attachment.
+    pub fn media_handles(&self) -> Vec<(String, ArtifactRef)> {
+        self.views
+            .iter()
+            .chain(self.audio.iter())
+            .map(|(name, artifact)| (name.clone(), artifact.reference().clone()))
+            .collect()
+    }
+
+    /// Where each declared audio stream's next chunk may start.
+    pub fn audio_positions(&self) -> BTreeMap<String, u64> {
+        self.timelines.positions()
     }
 
     pub fn episode_request(&self) -> Option<&EpisodeRequest> {
@@ -632,6 +664,7 @@ impl Coordinator {
         };
         let worker = self.environment.clone();
         let scope = self.scope(0);
+        let want = self.media_names.clone();
         let reply = self
             .call(
                 &worker,
@@ -639,7 +672,7 @@ impl Coordinator {
                 Some(scope),
                 object(params.to_json()),
                 &[],
-                &["view.arena".to_owned()],
+                &want,
             )
             .await?;
         let result: EnvironmentInitializeResult =
@@ -672,7 +705,17 @@ impl Coordinator {
                 "port-assignment",
             ));
         }
-        self.views = reply.artifacts;
+        let (views, audio) = media::split_attachments(reply.artifacts);
+        self.views = views;
+        self.audio = audio;
+        self.media_names = media::attachment_names(&result.descriptor);
+        self.timelines = AudioTimelines::fresh(&result.descriptor);
+        if let Err(e) = self.timelines.accept(&result.descriptor, &result.observation) {
+            return Err(self.fail_now(e, "observation-0"));
+        }
+        if let Err(e) = media::check_required_views(&result.descriptor, &result.observation) {
+            return Err(self.fail_now(e, "observation-0"));
+        }
         self.descriptor = Some(result.descriptor);
         self.observation = Some(result.observation);
         self.lifecycle_acks.push((worker, reply.request_id.clone()));
@@ -1461,8 +1504,17 @@ impl Coordinator {
             .sensory_views
             .iter()
             .filter_map(|view| {
-                let name = format!("view.{}", view.view_id);
+                let name = media::view_attachment(&view.view_id);
                 self.pending_views.get(&name).map(|a| (name, a.clone()))
+            })
+            .collect();
+        let new_audio: BTreeMap<String, flybus::Artifact> = step_result
+            .observation
+            .audio
+            .iter()
+            .filter_map(|chunk| {
+                let name = media::audio_attachment(&chunk.stream_id);
+                self.pending_audio.get(&name).map(|a| (name, a.clone()))
             })
             .collect();
         let commits = self
@@ -1480,7 +1532,9 @@ impl Coordinator {
         }
         // The previous boundary's handles are no longer needed; the new ones take over.
         self.views = new_views;
+        self.audio = new_audio;
         self.pending_views.clear();
+        self.pending_audio.clear();
         self.observation = Some(step_result.observation.clone());
         self.stats.advances += 1;
 
@@ -1790,7 +1844,7 @@ impl Coordinator {
         let worker = self.environment.clone();
         let request_id = self.serials.next(&worker.service);
         self.last_advance_request = Some(request_id.clone());
-        let want = vec!["view.arena".to_owned()];
+        let want = self.media_names.clone();
         self.audit.push(format!("advance:{k}"));
         self.blame(Some(worker.worker_id.clone()));
         let advance_deadline = self.deadlines.probe;
@@ -1912,7 +1966,9 @@ impl Coordinator {
             Err(e) => return Err(self.fail_now(e, "advance")),
         };
         self.blame(None);
-        self.pending_views = reply.artifacts;
+        let (pending_views, pending_audio) = media::split_attachments(reply.artifacts);
+        self.pending_views = pending_views;
+        self.pending_audio = pending_audio;
 
         if injected && self.injections.altered_advance_controls {
             // The same request id with a different body: a conflict, never a second world
@@ -1947,6 +2003,7 @@ impl Coordinator {
                 None => None,
             };
             self.pending_views.clear();
+            self.pending_audio.clear();
             let replay = self
                 .resolve(
                     &worker,
@@ -1967,7 +2024,9 @@ impl Coordinator {
                 code: None,
                 identical: first.is_some() && first == again,
             });
-            self.pending_views = replay.artifacts;
+            let (pending_views, pending_audio) = media::split_attachments(replay.artifacts);
+            self.pending_views = pending_views;
+            self.pending_audio = pending_audio;
         }
         Ok(result)
     }
@@ -2042,43 +2101,20 @@ impl Coordinator {
                 "step-result",
             ));
         }
-        // A missing required sensory input is never silently replaced by an older frame.
-        // The contract's validator checks the views that are present against their
-        // descriptors; requiring each declared view to be there at all is the coordinator's
-        // Phase C check, so it is made here.
-        for view in &descriptor.views {
-            let want = required_produced_step(view, result.observation.boundary);
-            let got = result
-                .observation
-                .sensory_views
-                .iter()
-                .find(|given| given.view_id == view.view_id);
-            match got {
-                Some(given) if given.produced_step == want => {}
-                Some(_) => {
-                    return Err(self.fail_now(
-                        DomainError::new(
-                            ErrorCode::BufferInvalid,
-                            format!(
-                                "view {} did not come from the boundary its declared delay requires",
-                                view.view_id
-                            ),
-                            MutationCertainty::Unknown,
-                        ),
-                        "step-result",
-                    ));
-                }
-                None => {
-                    return Err(self.fail_now(
-                        DomainError::new(
-                            ErrorCode::BufferInvalid,
-                            format!("required sensory view {} is missing", view.view_id),
-                            MutationCertainty::Unknown,
-                        ),
-                        "step-result",
-                    ));
-                }
-            }
+        // A missing required sensory input is never silently replaced by an older frame,
+        // and neither is one produced further back than the declared delay allows. The
+        // contract's validator checks the views that are present against their descriptors;
+        // requiring each declared view to be there at all is this Phase C check.
+        if let Err(e) = media::check_required_views(descriptor, &result.observation) {
+            return Err(self.fail_now(e, "step-result"));
+        }
+        // Audio has no sensory role here, but its chunks still cannot overlap or go backwards
+        // inside an epoch, and a stale one must not reach presentation as current.
+        if let Err(e) = media::check_required_audio(descriptor, &result.observation) {
+            return Err(self.fail_now(e, "step-result"));
+        }
+        if let Err(e) = self.timelines.accept(descriptor, &result.observation) {
+            return Err(self.fail_now(e, "step-result"));
         }
         if let Err(e) = result.observation.validate_against(descriptor) {
             return Err(self.fail_now(
@@ -2087,7 +2123,7 @@ impl Coordinator {
             ));
         }
         for view in &result.observation.sensory_views {
-            let name = format!("view.{}", view.view_id);
+            let name = media::view_attachment(&view.view_id);
             match self.pending_views.get(&name) {
                 Some(artifact) if artifact.reference() == &view.pixels => {}
                 _ => {
@@ -2095,6 +2131,25 @@ impl Coordinator {
                         DomainError::new(
                             ErrorCode::BufferInvalid,
                             format!("required view {} arrived without a live owned handle", view.view_id),
+                            MutationCertainty::Unknown,
+                        ),
+                        "step-result",
+                    ));
+                }
+            }
+        }
+        for chunk in &result.observation.audio {
+            let name = media::audio_attachment(&chunk.stream_id);
+            match self.pending_audio.get(&name) {
+                Some(artifact) if artifact.reference() == &chunk.samples => {}
+                _ => {
+                    return Err(self.fail_now(
+                        DomainError::new(
+                            ErrorCode::BufferInvalid,
+                            format!(
+                                "audio chunk {} arrived without a live owned handle",
+                                chunk.stream_id
+                            ),
                             MutationCertainty::Unknown,
                         ),
                         "step-result",
@@ -2528,11 +2583,13 @@ impl Coordinator {
             "progress": self.task.progress().to_json(),
             "media": json!({
                 "views": Value::Array(observation.broadcast_views.iter().map(DomainType::to_json).collect()),
-                "audio": [],
+                "audio": Value::Array(observation.audio.iter().map(DomainType::to_json).collect()),
             }),
             "eventIds": event_ids.iter().map(Id::as_str).collect::<Vec<_>>(),
         });
-        let attachments = self.view_attachments();
+        // The same owned handles the agents were given, published once for presentation.
+        let mut attachments = self.view_attachments();
+        attachments.extend(self.audio.iter().map(|(n, a)| (n.clone(), a.clone())));
         let topic = self.topics.snapshots.clone();
         self.publish(
             &topic,

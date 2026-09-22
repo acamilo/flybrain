@@ -227,6 +227,9 @@ pub struct AgentLaunch {
     pub warmup_ticks: u64,
     /// What the launcher asks the budget for.
     pub worker_threads: usize,
+    /// Where this agent records the views it reads. A participant with a process of its own
+    /// gets a fresh log in that process, which the supervisor cannot read.
+    pub sensors: crate::media::SensorLog,
     pub faults: AgentFaults,
     /// The configured client id. A replacement worker connects under its own.
     pub client_id: String,
@@ -242,6 +245,10 @@ pub struct EnvironmentLaunch {
     pub step_duration: RationalNs,
     pub ports: Vec<Id>,
     pub worker_threads: usize,
+    /// The view's declared render delay, in steps.
+    pub observation_delay_steps: u64,
+    /// Where this world counts the frames it renders, with the same process caveat.
+    pub renders: crate::media::RenderCounter,
     pub faults: EnvironmentFaults,
     pub client_id: String,
     pub service: String,
@@ -1197,6 +1204,97 @@ fn launch_error(worker_id: &Id, e: &flybus::BusError) -> DomainError {
     )
 }
 
+
+// -------------------------------------------------------------------------------------------
+// The command line between a launcher and a participant in its own process
+
+/// Every `--flag` a launched participant or a measurement child accepts, named once.
+///
+/// The launcher writes these and [`crate::cli`] reads them. Naming them in two places by
+/// convention would let a rename turn an option into a silent no-op -- a fault that never
+/// fires, a delay that is never applied -- so both sides use these constants and the parser
+/// refuses any flag outside the set for the command it is parsing.
+pub(crate) mod flags {
+    pub const SOCKET: &str = "socket";
+    pub const STORE_ROOT: &str = "store-root";
+    pub const CLIENT_ID: &str = "client-id";
+    pub const SERVICE: &str = "service";
+    pub const THREADS: &str = "threads";
+    pub const SESSION: &str = "session";
+    pub const INCARNATION: &str = "incarnation";
+
+    pub const AGENT: &str = "agent";
+    pub const PORT: &str = "port";
+    pub const TICK_NUMERATOR: &str = "tick-numerator";
+    pub const TICK_DENOMINATOR: &str = "tick-denominator";
+    pub const WARMUP_TICKS: &str = "warmup-ticks";
+    pub const PREPARE_DELAY_MS: &str = "prepare-delay-ms";
+    pub const COMMIT_DELAY_MS: &str = "commit-delay-ms";
+    pub const FAIL_COMMIT_AT_STEP: &str = "fail-commit-at-step";
+
+    pub const WORKER: &str = "worker";
+    pub const PORTS: &str = "ports";
+    pub const STEP_NUMERATOR: &str = "step-numerator";
+    pub const STEP_DENOMINATOR: &str = "step-denominator";
+    pub const ADVANCE_DELAY_MS: &str = "advance-delay-ms";
+    pub const OMIT_VIEW_AT_BOUNDARY: &str = "omit-view-at-boundary";
+    pub const OBSERVATION_DELAY_STEPS: &str = "observation-delay-steps";
+    pub const STALE_VIEW_AT_BOUNDARY: &str = "stale-view-at-boundary";
+    pub const TRUNCATED_VIEW_AT_BOUNDARY: &str = "truncated-view-at-boundary";
+    pub const OMIT_AUDIO_AT_BOUNDARY: &str = "omit-audio-at-boundary";
+    pub const OVERLAPPING_AUDIO_AT_BOUNDARY: &str = "overlapping-audio-at-boundary";
+
+    pub const MODE: &str = "mode";
+    pub const AGENTS: &str = "agents";
+    pub const STEPS: &str = "steps";
+    pub const WARMUP_STEPS: &str = "warmup-steps";
+    pub const WORKER_THREADS: &str = "worker-threads";
+    pub const MODES: &str = "modes";
+
+    /// What every launched worker is given.
+    pub const COMMON: &[&str] = &[
+        SOCKET,
+        STORE_ROOT,
+        CLIENT_ID,
+        SERVICE,
+        THREADS,
+        SESSION,
+        INCARNATION,
+    ];
+    /// What only an agent is given.
+    pub const AGENT_ONLY: &[&str] = &[
+        AGENT,
+        PORT,
+        TICK_NUMERATOR,
+        TICK_DENOMINATOR,
+        WARMUP_TICKS,
+        PREPARE_DELAY_MS,
+        COMMIT_DELAY_MS,
+        FAIL_COMMIT_AT_STEP,
+    ];
+    /// What only the environment is given, media options included.
+    pub const ENVIRONMENT_ONLY: &[&str] = &[
+        WORKER,
+        PORTS,
+        STEP_NUMERATOR,
+        STEP_DENOMINATOR,
+        ADVANCE_DELAY_MS,
+        OMIT_VIEW_AT_BOUNDARY,
+        OBSERVATION_DELAY_STEPS,
+        STALE_VIEW_AT_BOUNDARY,
+        TRUNCATED_VIEW_AT_BOUNDARY,
+        OMIT_AUDIO_AT_BOUNDARY,
+        OVERLAPPING_AUDIO_AT_BOUNDARY,
+    ];
+    /// What a measurement run or one of its row children is given.
+    pub const MEASURE: &[&str] = &[MODE, AGENTS, STEPS, WARMUP_STEPS, WORKER_THREADS, MODES];
+}
+
+/// One `--flag value` pair, so the flag name is written once and never spelled inline.
+fn arg(name: &str, value: impl std::fmt::Display) -> (String, String) {
+    (format!("--{name}"), value.to_string())
+}
+
 // -------------------------------------------------------------------------------------------
 // What a participant is
 
@@ -1220,48 +1318,50 @@ impl Started {
         match self {
             Started::Agent(spec) => {
                 let mut args = vec![
-                    ("--session".to_owned(), spec.session_id.clone()),
-                    ("--agent".to_owned(), spec.agent_id.clone()),
-                    ("--port".to_owned(), spec.port_id.clone()),
-                    ("--incarnation".to_owned(), spec.incarnation_id.clone()),
-                    ("--tick-numerator".to_owned(), spec.tick_duration.numerator.to_string()),
-                    (
-                        "--tick-denominator".to_owned(),
-                        spec.tick_duration.denominator.to_string(),
-                    ),
-                    ("--warmup-ticks".to_owned(), spec.warmup_ticks.to_string()),
-                    (
-                        "--prepare-delay-ms".to_owned(),
-                        spec.faults.prepare_delay_ms.to_string(),
-                    ),
-                    (
-                        "--commit-delay-ms".to_owned(),
-                        spec.faults.commit_delay_ms.to_string(),
-                    ),
+                    arg(flags::SESSION, &spec.session_id),
+                    arg(flags::AGENT, &spec.agent_id),
+                    arg(flags::PORT, &spec.port_id),
+                    arg(flags::INCARNATION, &spec.incarnation_id),
+                    arg(flags::TICK_NUMERATOR, spec.tick_duration.numerator),
+                    arg(flags::TICK_DENOMINATOR, spec.tick_duration.denominator),
+                    arg(flags::WARMUP_TICKS, spec.warmup_ticks),
+                    arg(flags::PREPARE_DELAY_MS, spec.faults.prepare_delay_ms),
+                    arg(flags::COMMIT_DELAY_MS, spec.faults.commit_delay_ms),
                 ];
                 if let Some(step) = spec.faults.fail_commit_at_step {
-                    args.push(("--fail-commit-at-step".to_owned(), step.to_string()));
+                    args.push(arg(flags::FAIL_COMMIT_AT_STEP, step));
                 }
                 args
             }
             Started::Environment(spec) => {
                 let mut args = vec![
-                    ("--session".to_owned(), spec.session_id.clone()),
-                    ("--worker".to_owned(), spec.worker_id.clone()),
-                    ("--incarnation".to_owned(), spec.incarnation_id.clone()),
-                    ("--step-numerator".to_owned(), spec.step_duration.numerator.to_string()),
-                    (
-                        "--step-denominator".to_owned(),
-                        spec.step_duration.denominator.to_string(),
-                    ),
-                    ("--ports".to_owned(), spec.ports.join(",")),
-                    (
-                        "--advance-delay-ms".to_owned(),
-                        spec.faults.advance_delay_ms.to_string(),
-                    ),
+                    arg(flags::SESSION, &spec.session_id),
+                    arg(flags::WORKER, &spec.worker_id),
+                    arg(flags::INCARNATION, &spec.incarnation_id),
+                    arg(flags::STEP_NUMERATOR, spec.step_duration.numerator),
+                    arg(flags::STEP_DENOMINATOR, spec.step_duration.denominator),
+                    arg(flags::PORTS, spec.ports.join(",")),
+                    arg(flags::ADVANCE_DELAY_MS, spec.faults.advance_delay_ms),
+                    // The media options a world in another process needs to be exactly this
+                    // world. Its render counter and its agents' sensor logs stay there.
+                    arg(flags::OBSERVATION_DELAY_STEPS, spec.observation_delay_steps),
                 ];
-                if let Some(boundary) = spec.faults.omit_view_at_boundary {
-                    args.push(("--omit-view-at-boundary".to_owned(), boundary.to_string()));
+                for (flag, boundary) in [
+                    (flags::OMIT_VIEW_AT_BOUNDARY, spec.faults.omit_view_at_boundary),
+                    (flags::STALE_VIEW_AT_BOUNDARY, spec.faults.stale_view_at_boundary),
+                    (
+                        flags::TRUNCATED_VIEW_AT_BOUNDARY,
+                        spec.faults.truncated_view_at_boundary,
+                    ),
+                    (flags::OMIT_AUDIO_AT_BOUNDARY, spec.faults.omit_audio_at_boundary),
+                    (
+                        flags::OVERLAPPING_AUDIO_AT_BOUNDARY,
+                        spec.faults.overlapping_audio_at_boundary,
+                    ),
+                ] {
+                    if let Some(boundary) = boundary {
+                        args.push(arg(flag, boundary));
+                    }
                 }
                 args
             }
@@ -1277,6 +1377,7 @@ pub(crate) fn agent_config(spec: &AgentLaunch, worker_threads: usize) -> AgentCo
         tick_duration: spec.tick_duration,
         warmup_ticks: spec.warmup_ticks,
         worker_threads,
+        sensors: spec.sensors.clone(),
         faults: spec.faults.clone(),
     }
 }
@@ -1289,6 +1390,8 @@ pub(crate) fn environment_config(spec: &EnvironmentLaunch) -> EnvironmentConfig 
         step_duration: spec.step_duration,
         ports: spec.ports.clone(),
         worker_threads: spec.worker_threads,
+        observation_delay_steps: spec.observation_delay_steps,
+        renders: spec.renders.clone(),
         faults: spec.faults.clone(),
     }
 }
@@ -1339,6 +1442,101 @@ pub(crate) async fn register_with_retry(
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
             Err(e) => return Err(e),
+        }
+    }
+}
+
+#[cfg(test)]
+mod flag_tests {
+    use super::*;
+
+    fn every_media_fault() -> EnvironmentFaults {
+        EnvironmentFaults {
+            advance_delay_ms: 3,
+            omit_view_at_boundary: Some(1),
+            stale_view_at_boundary: Some(2),
+            truncated_view_at_boundary: Some(3),
+            omit_audio_at_boundary: Some(4),
+            overlapping_audio_at_boundary: Some(5),
+        }
+    }
+
+    fn environment_launch() -> EnvironmentLaunch {
+        EnvironmentLaunch {
+            session_id: id("demo"),
+            worker_id: id("arena"),
+            incarnation_id: id("arena-inc-1"),
+            step_duration: RationalNs::new(1, 60).expect("a cadence"),
+            ports: vec![id("p1"), id("p2")],
+            worker_threads: 1,
+            observation_delay_steps: 2,
+            renders: crate::media::RenderCounter::new(),
+            faults: every_media_fault(),
+            client_id: "environment".to_owned(),
+            service: "env.arena".to_owned(),
+        }
+    }
+
+    fn agent_launch() -> AgentLaunch {
+        AgentLaunch {
+            session_id: id("demo"),
+            agent_id: id("fly-a"),
+            port_id: id("p1"),
+            incarnation_id: id("fly-a-inc-1"),
+            tick_duration: RationalNs::new(1, 1_000).expect("a tick"),
+            warmup_ticks: 10,
+            worker_threads: 1,
+            sensors: crate::media::SensorLog::new(),
+            faults: AgentFaults {
+                fail_commit_at_step: Some(2),
+                prepare_delay_ms: 1,
+                commit_delay_ms: 2,
+            },
+            client_id: "worker-fly-a".to_owned(),
+            service: "agent.fly-a".to_owned(),
+        }
+    }
+
+    /// Both halves of the command line name the same constants, and this proves it for every
+    /// argument a launch can produce: a flag the launcher writes that the parser does not
+    /// accept would be a silently ignored option, which is what the parser now refuses.
+    #[test]
+    fn every_flag_a_launch_writes_is_one_its_command_accepts() {
+        for (started, allowed) in [
+            (
+                Started::Environment(environment_launch()),
+                [flags::COMMON, flags::ENVIRONMENT_ONLY],
+            ),
+            (Started::Agent(agent_launch()), [flags::COMMON, flags::AGENT_ONLY]),
+        ] {
+            let arguments = started.arguments();
+            assert!(!arguments.is_empty());
+            for (flag, _value) in &arguments {
+                let name = flag.strip_prefix("--").expect("every argument is a --flag");
+                assert!(
+                    allowed.iter().any(|set| set.contains(&name)),
+                    "{} writes --{name}, which its command does not accept",
+                    started.subcommand()
+                );
+            }
+        }
+    }
+
+    /// Every media option reaches the argv when it is set, so a world in another process is
+    /// exactly the world the composition asked for.
+    #[test]
+    fn the_media_options_are_all_written_for_a_separate_process() {
+        let started = Started::Environment(environment_launch());
+        let written: Vec<String> = started.arguments().into_iter().map(|(f, _)| f).collect();
+        for flag in [
+            flags::OBSERVATION_DELAY_STEPS,
+            flags::OMIT_VIEW_AT_BOUNDARY,
+            flags::STALE_VIEW_AT_BOUNDARY,
+            flags::TRUNCATED_VIEW_AT_BOUNDARY,
+            flags::OMIT_AUDIO_AT_BOUNDARY,
+            flags::OVERLAPPING_AUDIO_AT_BOUNDARY,
+        ] {
+            assert!(written.contains(&format!("--{flag}")), "--{flag} is not written");
         }
     }
 }

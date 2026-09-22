@@ -684,3 +684,44 @@ then purge; then the stale-doc pass.
   ground with a new trap (row 54: GO FRONTIER, GO HEAL, GO ROUTE cycling, GO HEAL x204 at net 0);
   Fable shipped it anyway: the hunt criterion compares within ground both arms reach, and a trap on
   newly opened ground is a new row, not a regression. Row 54 review started at once.
+
+## 2026-09-22 - session framework wave 2
+
+Per-fly processes and native observations landed on top of the wave-1 contract and
+lockstep session.
+
+- The session runs in three execution modes that share one coordinator, one worker and
+  one router: in process, one thread per participant, and one process per fly plus one
+  for the environment over Unix sockets. The worker is a subcommand of the existing
+  binary, not a new crate. A launcher owns the thread budget, proves each participant's
+  configured identity and allocation on the wire before the coordinator pins anything,
+  polls health on its own clock, and reaps its children.
+- A caller deadline that expires no longer fails the epoch on its own. It runs the
+  contract's resolution procedure against the same request and the same incarnation, so
+  a merely slow participant completes its step, and the epoch fails only on a definite
+  refusal, a lost incarnation or an exhausted budget. Which of the two bounds ended a
+  resolution is recorded and named in the failure rather than inferred.
+- Failures name the participant, and a failed session fences its epoch: the boundary
+  stops, handles are dropped, and no further transition or publication is possible.
+  Worker death, helper death, a router restart mid-advance and stale replies after a
+  restart all have bounded, diagnosed outcomes, each proved in every mode.
+- The environment now emits native output: one shared RGBA frame per boundary reaching
+  both flies through owned attachments, and one audio chunk per transition on an exact
+  rational sample budget. Observation delay is a real queue, so nothing stale can be
+  substituted. Spectators watch a latest subscription with finite credits and cannot
+  perturb what the flies sense. Audio never enters sensory input.
+- Every media rule is enforced rather than assumed: strides, dimensions, formats,
+  lengths, producing step, timeline continuity, and the distinction between a persistent
+  asset and a transient artifact. A missing or malformed frame or chunk fails its step.
+- Three contract silences were closed by dated amendments rather than by convention: the
+  launcher's thread allocation is now on the wire in the worker's hello, the audio
+  discontinuity rule is one-directional, and a mid-step pause is defined.
+
+Measured on the development box, not capacity claims: with two flies the critical path
+per transition sat near 10 to 12 ms at the median across all three modes, so a process
+boundary costs little at the median and shows in the tail. What the split costs is
+memory, roughly 5.7 MiB per participant process, while the coordinator's own footprint
+is flat and lowest once the workers leave it.
+
+Two flaky bus tests predating this work assert timing rather than contract and are being
+rewritten separately.

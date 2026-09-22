@@ -366,6 +366,161 @@ impl DomainType for AudioRef {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Epoch audio sequencing (state-media-v1 section 2)
+
+/// One audio stream's chunk sequence within one epoch.
+///
+/// The contract's three sentences about sequencing are all here: `firstSample` identifies the
+/// sample position relative to the episode's configured audio origin; crash restore preserves
+/// that position under a new epoch and the first chunk marks `discontinuity`; within an epoch
+/// chunks cannot overlap or go backwards.
+///
+/// A timeline belongs to one epoch. A restore starts a new one with
+/// [`AudioTimeline::restored_at`], which is what makes the first chunk's discontinuity flag
+/// checkable rather than advisory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AudioTimeline {
+    stream_id: String,
+    start_sample: u64,
+    restored: bool,
+    next_sample: u64,
+    accepted: u64,
+}
+
+impl AudioTimeline {
+    /// A fresh episode: the first chunk starts at the configured audio origin. Its
+    /// discontinuity flag is free, because a reset or a recovery establishes a fresh timeline
+    /// and does publish a discontinuity.
+    pub fn fresh(descriptor: &AudioDescriptor, origin: u64) -> AudioTimeline {
+        AudioTimeline {
+            stream_id: descriptor.stream_id.clone(),
+            start_sample: origin,
+            restored: false,
+            next_sample: origin,
+            accepted: 0,
+        }
+    }
+
+    /// A new epoch after a crash restore: the sample position is preserved, and the first
+    /// chunk of this epoch must mark `discontinuity`.
+    pub fn restored_at(descriptor: &AudioDescriptor, sample: u64) -> AudioTimeline {
+        AudioTimeline {
+            stream_id: descriptor.stream_id.clone(),
+            start_sample: sample,
+            restored: true,
+            next_sample: sample,
+            accepted: 0,
+        }
+    }
+
+    /// Where the next chunk may start. A chunk starting earlier overlaps or goes backwards.
+    pub fn next_sample(&self) -> u64 {
+        self.next_sample
+    }
+
+    /// How many chunks this epoch has accepted.
+    pub fn accepted(&self) -> u64 {
+        self.accepted
+    }
+
+    /// Validates one chunk's shape and its place in the sequence, then advances the timeline.
+    ///
+    /// A rejected chunk does not advance anything, so a caller that fails its step does not
+    /// leave the timeline believing the chunk was played.
+    pub fn accept(&mut self, chunk: &AudioRef, descriptor: &AudioDescriptor) -> Result<()> {
+        if chunk.stream_id != self.stream_id {
+            return err(format!(
+                "AudioTimeline {}: chunk names stream {:?}",
+                self.stream_id, chunk.stream_id
+            ));
+        }
+        chunk.validate_against(descriptor)?;
+        if self.accepted == 0 {
+            if chunk.first_sample != self.start_sample {
+                return err(format!(
+                    "AudioTimeline {}: the first chunk of this epoch must start at sample {}, not {}",
+                    self.stream_id, self.start_sample, chunk.first_sample
+                ));
+            }
+            // Only one direction is stated: the first chunk after a restore marks the
+            // discontinuity. A fresh epoch's first chunk may mark one too -- sections 6 and 7
+            // have recovery and episode reset publishing a discontinuity on a fresh timeline --
+            // so the flag is required after a restore and left free at an origin.
+            if self.restored && !chunk.discontinuity {
+                return err(format!(
+                    "AudioTimeline {}: the first chunk after a restore marks discontinuity",
+                    self.stream_id
+                ));
+            }
+        } else {
+            if chunk.first_sample < self.next_sample {
+                return err(format!(
+                    "AudioTimeline {}: firstSample {} overlaps or goes backwards; the previous chunk ends at {}",
+                    self.stream_id, chunk.first_sample, self.next_sample
+                ));
+            }
+            // Derived from the sentence above: within an epoch the only discontinuity a chunk
+            // can carry is a gap it actually skipped. A chunk that continues the previous one
+            // exactly is continuous by construction.
+            if chunk.discontinuity && chunk.first_sample == self.next_sample {
+                return err(format!(
+                    "AudioTimeline {}: a chunk continuing the previous one is not a discontinuity",
+                    self.stream_id
+                ));
+            }
+        }
+        self.next_sample = chunk
+            .first_sample
+            .checked_add(chunk.sample_frames)
+            .ok_or_else(|| {
+                crate::scalar::wire_err(format!(
+                    "AudioTimeline {}: firstSample + sampleFrames overflows U64",
+                    self.stream_id
+                ))
+            })?;
+        self.accepted += 1;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Persistent assets against transient artifacts (state-media-v1 sections 1 and 3)
+
+/// Checks that a transient artifact carries the bytes of an installed asset.
+///
+/// Persistent [`AssetRef`](crate::workers::AssetRef) and transient
+/// [`ArtifactRef`] are different identities and never convert into one another: an asset names
+/// installed release content in a preprovisioned registry, while an artifact names live bytes
+/// in one store incarnation and resolves only through an owned handle. Importing an asset
+/// produces a **new** artifact identity, which is why this checks content rather than identity.
+///
+/// The digest is mandatory here: state-media-v1 section 1 makes content digests optional on
+/// transient live frames and mandatory on persistent asset import.
+pub fn check_imported_asset(
+    asset: &crate::workers::AssetRef,
+    imported: &ArtifactRef,
+) -> Result<()> {
+    asset.validate()?;
+    if imported.byte_length != asset.byte_length {
+        return err(format!(
+            "imported asset {}: the artifact is {} bytes, the asset is {}",
+            asset.id, imported.byte_length, asset.byte_length
+        ));
+    }
+    match &imported.digest {
+        Some(d) if *d == asset.digest => Ok(()),
+        Some(_) => err(format!(
+            "imported asset {}: the artifact's digest is not the asset's content",
+            asset.id
+        )),
+        None => err(format!(
+            "imported asset {}: a persistent asset import must carry a content digest",
+            asset.id
+        )),
+    }
+}
+
 /// Reads a bounded, unique-by-`viewId` list of view refs.
 pub fn view_list(f: &mut Fields<'_>, key: &'static str) -> Result<Vec<ViewRef>> {
     let views = list(f, key, 0, MAX_VIEWS, ViewRef::from_json)?;

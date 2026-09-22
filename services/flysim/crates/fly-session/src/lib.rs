@@ -30,6 +30,7 @@ pub mod environment;
 pub mod harness;
 pub mod launcher;
 pub mod measure;
+pub mod media;
 pub mod metrics;
 pub mod phase;
 pub mod rpc;
