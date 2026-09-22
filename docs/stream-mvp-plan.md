@@ -640,3 +640,10 @@ then purge; then the stale-doc pass.
   the party list and SWITCH the bag since v0.4.0; fixed, THROW BALL now 15/0 in the forest run.
   ROM test fails on v0.4.3 and passes here. Ethos check held. Row 41 (a nurse box answered YES
   1,278 times) is next.
+- 2026-09-22 (v0.4.5, loop review, auto): row 41. In the Pewter center the nurse's conversation is a
+  ring of 46 A presses with one YES/NO choice; the dialog pad dealt NEXT and YES unconditionally
+  (one press, two names) and TALK was bound over the counter but recorded one tile ahead, so the
+  nurse never entered the talked ledger: YES x2,142. Fixed: a readable prompt deals its answers with
+  NEXT off it, only the answer that changes something is bound, TALK is off at a rested nurse, the
+  nurse is talked after a heal or a decline, a prompt that reopens unchanged is excluded. ROM test:
+  leaves the center on frame 326. Hunt: 1 -> 437 tiles, YES 1,424 -> 4. Ethos check held.
