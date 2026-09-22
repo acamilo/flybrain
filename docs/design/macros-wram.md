@@ -145,6 +145,7 @@ forces. A battle that is neither — text, an animation, the turn resolving — 
 | a submenu | the weakest rule here, and the reason `Unknown` exists: `wListMenuID` is the bag or an elevator list, or the party list geometry outside a battle. A submenu none of those catch reads as `Unknown`, never as `Overworld`. | trace |
 | mart | `wTextBoxID` = `BUY_SELL_QUIT_MENU` (`$15`) for the BUY / SELL / QUIT choice, and `engine/events/pokemart.asm:17` is its only user in the game; the buy list is `wListMenuID` = `$02` and the sell list is the bag's own `$03`, recognised only while the mart's template is still the last one drawn. | trace |
 | PC | `wMiscFlags` bit 3, above. | trace |
+| a two-option YES/NO box | **new 2026-09-22** (`docs/design/macros.md` section 12.12). `wFontLoaded` bit 0, plus the border `DisplayTwoOptionMenu` draws at (11, 6)-(19, 11), plus the shared cursor parked at `wTopMenuItemY` 8, `wTopMenuItemX` 12 with `wMaxMenuItem` 1 and `wMenuWatchedKeys` = A\|B. **Both halves are load-bearing**: the cursor bytes survive the box closing, so all forty-six frames of a Pokémon Center nurse's conversation carry that geometry while the box is drawn on exactly one of them. It does **not** answer "is a choice open" in general — Red places a two-option menu where the script asking for it says, and a prompt drawn elsewhere reads `false`. | ROM (the rung-10 Pokémon Center checkpoint, surveyed one raw A pulse at a time: `examples/scene_probe.rs`, `FLY_PROBE_CATCH=nurse`) |
 
 ### Money and bag
 
@@ -474,6 +475,13 @@ Two facts about the emulator came out of building these and are worth keeping:
   which is two battles away from anything a fixed-seed walk reaches quickly. The trace is built
   from `ChooseNextMon` and `PartyMenuInit`, and the distinguishing byte
   (`wPartyMenuTypeOrMessageID` = `BATTLE_PARTY_MENU`) is asserted both ways.
+- **`yes_no_prompt` is "*this* two-option box is drawn", not "a choice is open".** The claim in
+  earlier revisions of this file — that pokered has no observable for a choice — stands for the
+  general question and is now narrowed rather than withdrawn: the box the Pokémon Center nurse's
+  offer is drawn in has been surveyed on the cartridge and is readable, and every other
+  two-option menu in the game is not, because `DisplayTwoOptionMenu` takes its coordinates from
+  the script that calls it. A prompt this reading misses is a plain dialog, which is the pad it
+  had before the reading existed.
 - **`text_box().waiting` is "the dialogue box is drawn", not "the game wants a button".** Pokered
   has no flag for the second thing; A is the right press either way, so the distinction has no
   consequence for the palette, but it is not what the field's name might suggest.
