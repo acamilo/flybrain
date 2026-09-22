@@ -14,13 +14,13 @@ Every normative sentence of bus-v1 sections 2 to 11 gets a row. Four statuses:
 | deviates-must-fix | It differs and the draft requires otherwise. |
 | not-implemented | Not built yet; the row names who owns it. |
 
-Counts over 195 rows: **conforms 177, deviates-allowed 10, deviates-must-fix 1 (fixed),
+Counts over 195 rows: **conforms 178, deviates-allowed 9, deviates-must-fix 1 (fixed),
 not-implemented 7**. The audit found the one deviates-must-fix — connection teardown could be
 starved for the length of a whole frame by the writer it was waiting for — and it is fixed on
 this branch, so the row for it now reads conforms and records the fix (section 9, "cannot be
 starved"). Two contradictions inside the draft are recorded at the end and left alone.
 
-Test names below are the functions in `services/flysim/crates/flybus/tests`, 235 of them in
+Test names below are the functions in `services/flysim/crates/flybus/tests`, 239 of them in
 this branch (`cargo test -p flybus`), plus the ignored measurement. Everything marked
 "(both)" is generated twice by the `both_transports!` macro, once over the in-memory transport
 and once over a Unix socket, so `tests/rpc.rs::request_reply_roundtrip` means
@@ -245,7 +245,7 @@ and once over a Unix socket, so `tests/rpc.rs::request_reply_roundtrip` means
 | --- | --- | --- | --- |
 | Every default of the table, exactly: clients/services/topics 64/256/512; subscriptions 128 per client and 1024 total; control envelope 64 KiB; active calls 64; service queued/in-flight 16/16; latest 1/2; bounded 64/16; active owners 256; store 512 MiB and 128 MiB per object; per-client queued envelope bytes 1 MiB; reserved lane 128 frames and 1 MiB | conforms | `limits.rs::Limits::default`, `wire.rs::MAX_ENVELOPE_BYTES` | `tests/conformance_wire.rs::hello_reports_the_contract_digest_and_valid_limits` (both), `tests/pubsub.rs::topic_and_retention_quotas` (both) |
 | Limits are configured explicitly and a configuration the router could not honour is refused | conforms | `limits.rs::Limits::validate`, `router/mod.rs::Router::new` | `tests/rpc.rs::active_call_limit` (both), `tests/artifacts.rs::quotas_are_enforced` (both) |
-| The per-client queued envelope byte budget counts `bounded` subscriptions only | deviates-allowed: this section's own "latest spectator subscriptions cannot hold a required session transaction indefinitely" forbids a latest subscriber from causing a rejection, so its slot cannot sit in a budget whose overflow rejects publications. The latest queue is instead bounded structurally at one envelope per subscription (section 7), so the worst case is subscriptions x 64 KiB. See contradiction 1 | `limits.rs::max_queued_bytes_per_client`, `router/state.rs::op_publish` | `tests/sol_review_races.rs::{retained_replay_obeys_bounded_queue_byte_quota, latest_replay_remains_bounded_outside_the_bounded_byte_pool}` |
+| The per-client queued envelope byte budget counts `bounded` subscriptions only, and latest slots are bounded at subscriptions x 64 KiB instead | conforms to the amended table. The draft's single row was the audit's contradiction 1: this section also forbids a latest spectator from being the reason a publication is refused, so its slot cannot sit in a budget whose overflow rejects one. The coordinator amended the row and gave latest slots their own (bus-v1 section 12, 2026-09-22) | `limits.rs::max_queued_bytes_per_client`, `router/state.rs::op_publish` | `tests/bus_acceptance.rs::a_latest_subscriber_never_refuses_a_publication` (both), `tests/sol_review_races.rs::{retained_replay_obeys_bounded_queue_byte_quota, latest_replay_remains_bounded_outside_the_bounded_byte_pool}` |
 | Reserve an owner allowance for lifecycle and results separately from ordinary telemetry | conforms | `limits.rs::reserved_owners_per_client`, `router/state.rs::{ordinary_budget_left, dispatch_rpc}` | `tests/conformance_artifacts.rs::artifact_bounds_and_owner_budget_are_enforced` (both) |
 | Memory quotas account for staging, seal copies, queued deliveries and caches | conforms | `router/state.rs::{op_allocate, op_seal, Conn::queued_bytes}` | `tests/artifacts.rs::quotas_are_enforced` (both) |
 | Ownership metadata is bounded even when many roots share one artifact | conforms: a root is a counter, and owners are bounded per client | `router/state.rs::{Art::roots, ordinary_budget_left}` | `tests/conformance_artifacts.rs::artifact_bounds_and_owner_budget_are_enforced` (both) |
@@ -254,13 +254,13 @@ and once over a Unix socket, so `tests/rpc.rs::request_reply_roundtrip` means
 | Replies, release, cancellation and route-health control cannot be starved by telemetry | conforms: control first, then RPC, then topic data, with topic data given a turn after 16 higher-priority frames | `router/state.rs::{next_frame, TOPIC_STARVATION_LIMIT}` | `tests/sol_rereview_regressions.rs::{fair_topic_insertion_preserves_router_envelope_order, sdk_accepts_fair_topic_insertion_through_saturated_control_backlog}`, `tests/pubsub.rs::saturated_subscriber_does_not_block_control` (both) |
 | ... and neither can connection teardown be starved by the frame it is waiting for | **was deviates-must-fix, fixed on this branch**. The write gate was a plain mutex held across each synchronous transport poll, so a writer sending a frame one byte per poll re-acquired it hundreds of times while teardown waited for it, and could finish a whole delivery before teardown got in: `teardown_waits_for_an_active_transport_poll_before_reclaiming` failed 6 runs out of 6 in release and about 1 in 5 in debug. The gate now separates "teardown has begun" (a flag set once, without waiting) from "a poll is in progress" (a condvar teardown waits on), so teardown's window is one poll instead of a whole frame, and no byte can follow it. No public signature changed | `router/state.rs::WriteGate`, `router/mod.rs::write_selected` | `tests/sol_rereview_regressions.rs::teardown_waits_for_an_active_transport_poll_before_reclaiming` (rewritten: a 50 KB delivery the resumed writer cannot finish, and a channel instead of a sleep) |
 | Preserve FIFO for calls to a target despite lane scheduling | conforms: the service queue is FIFO and lane choice never reorders it | `router/state.rs::dispatch_rpc` | `tests/rpc.rs::fifo_dispatch_and_out_of_order_completion` (both) |
-| Classification is an explicit generic envelope operation or policy, not a topic-name heuristic | conforms: lanes come from `Kind`/`op`, never from a name | `router/state.rs::next_frame` | `tests/sol_rereview_regressions.rs::fair_topic_insertion_preserves_router_envelope_order` |
+| Classification is an explicit generic envelope operation or policy, not a topic-name heuristic | conforms by construction: `next_frame` chooses a lane from the queue an item sits in (control, then RPC, then topic), and neither it nor `pop_control`/`dispatch_rpc`/`dispatch_topic` reads a service or topic name. A name reaches the scheduler only as opaque bytes inside an already-classified frame | `router/state.rs::{next_frame, pop_control, dispatch_rpc, dispatch_topic}` | `tests/bus_acceptance.rs::a_topic_named_like_a_notice_is_still_classified_as_topic_data` (both), and `tests/sol_rereview_regressions.rs::fair_topic_insertion_preserves_router_envelope_order` for the lane order itself |
 | No indefinite wait inside the router on subscriber readiness or artifact I/O | conforms: a slow reader stalls only its own writer task; I/O leaves the lock | `router/mod.rs::{write_loop, read_loop}` | `tests/pubsub.rs::saturated_subscriber_does_not_block_control` (both) |
 | Admission is bounded; rejected callers choose their own policy | conforms | `router/state.rs::{op_call, op_publish}` | `tests/rpc.rs::service_queue_backpressure` (both) |
 | The thirteen transport error codes exist with those names | conforms | `error.rs::ErrorCode` | `tests/wire.rs::body_errors_keep_the_connection` (both) |
 | Three more codes: `CONFLICT`, `NO_TOPIC`, `ARTIFACT_MISMATCH` | deviates-allowed: "Transport errors **include** ..." is not an exhaustive list, and each names a refusal the draft requires but leaves unnamed. Recorded as an amendment in bus-v1 section 12 | `error.rs::ErrorCode` | `tests/pubsub.rs::subscription_and_topic_validation` (both), `tests/artifacts.rs::seal_checks_length_and_digest` (both) |
 | Before admission report `not-dispatched`; once dispatch might have occurred report `dispatched` or `unknown` conservatively | conforms | `error.rs::BusError::new` (not-dispatched by default), `router/state.rs` dispatched notices, `client/reactor.rs::fail_all` (unknown) | `tests/rpc.rs::{cancellation_states, service_disconnect_fails_calls}` (both), `tests/sol_review_races.rs::writer_failure_terminates_reader_and_pending_work` |
-| Bounded subscriptions can reject a publication; latest spectators cannot hold a session transaction indefinitely | conforms: a latest subscriber never causes `BACKPRESSURE` | `router/state.rs::op_publish` (the latest branch skips every capacity check) | `tests/pubsub.rs::saturated_subscriber_does_not_block_control` (both), `tests/perf.rs` (a consumer delayed 40 ms per frame coalesces 71 of 120 frames and never refuses one) |
+| Bounded subscriptions can reject a publication; latest spectators cannot hold a session transaction indefinitely | conforms: a latest subscriber never causes `BACKPRESSURE` | `router/state.rs::op_publish` (the latest branch skips every capacity check) | `tests/bus_acceptance.rs::a_latest_subscriber_never_refuses_a_publication` (both: 100 publications of 60 KB into one unconsumed slot, six times the bounded pool, none refused, 98 coalesced), with `tests/pubsub.rs::{bounded_fifo_and_atomic_backpressure, saturated_subscriber_does_not_block_control}` (both) for the bounded half |
 | Sustained pinned-artifact quota exhaustion is surfaced as pressure, not solved by freeing live data | conforms: `QUOTA_EXCEEDED`, never eviction | `router/state.rs::{op_allocate, op_seal}` | `tests/artifacts.rs::quotas_are_enforced` (both) |
 | Session and application policies choose disconnect, pause or fail; the router does not know which | conforms by absence | `router/state.rs` | `tests/pubsub.rs::saturated_subscriber_does_not_block_control` (both) |
 
@@ -326,8 +326,10 @@ produce 29 events, identical over both transports; `FLYBUS_TRACE=1` prints them.
 | Retained replay is ordered | `tests/pubsub.rs::retained_replay_clear_delete_and_incarnations` (both), `tests/conformance_routing.rs::{latest_replay_is_ordered_ahead_of_a_racing_publish, cleared_topic_gives_no_replay_until_a_fresh_publish}` (both), `tests/sol_review_races.rs::{retained_replay_obeys_bounded_queue_byte_quota, latest_replay_remains_bounded_outside_the_bounded_byte_pool}` |
 | Stalled observers cannot starve RPC replies | `tests/pubsub.rs::saturated_subscriber_does_not_block_control` (both), `tests/sol_rereview_regressions.rs::{fair_topic_insertion_preserves_router_envelope_order, sdk_accepts_fair_topic_insertion_through_saturated_control_backlog}` |
 
-All six were already covered, so BUS-02 added no test. The equivalence trace above carries a
-pub/sub and artifact scenario, so BUS-02's behaviour is in the transport comparison too.
+All six were already covered, so BUS-02 added no test of its own. The equivalence trace above
+carries a pub/sub and artifact scenario, so BUS-02's behaviour is in the transport comparison
+too, and `a_latest_subscriber_never_refuses_a_publication` (both) proves the rule that sits
+behind "latest replaces only queued messages": the replacement never turns into a refusal.
 
 ### BUS-03 — artifact-backed messages and automatic lifetimes
 
@@ -350,11 +352,11 @@ Each of the ten differences the crate lists, kept with the sentence that allows 
 | 1. Extra error codes `CONFLICT`, `NO_TOPIC`, `ARTIFACT_MISMATCH` | Kept. Allowed by section 9: "Transport errors **include** `INVALID_ENVELOPE`, ..." — an inclusive list. Each names a refusal the draft requires without naming its code, so all three are now in the bus-v1 amendment (section 12) |
 | 2. Topics must be declared; `topic.clear` of an unknown topic is `NO_TOPIC` while `topic.delete` answers `deleted:false` | Kept. The draft is silent; section 7's "Topic count and retained bytes are capped" and `topic.declare`'s "conflicting settings fail" both presuppose a registry. See the section 7 row |
 | 3. When notices are sent | Kept. Section 5 requires the three notices but says nothing about audience or timing: "Required bounded notices are route removal, subscription closure and call failure" |
-| 4. Byte budgets: `max_queued_bytes_per_client` counts bounded subscriptions only; `max_retained_bytes` added | Kept. Section 9's "latest spectator subscriptions cannot hold a required session transaction indefinitely" excludes the latest slot from a rejecting budget (contradiction 1), and section 7's "Topic count and retained bytes are capped" requires the retained cap |
+| 4. Byte budgets: `max_queued_bytes_per_client` counts bounded subscriptions only; `max_retained_bytes` added | Kept, and no longer a difference: the section 9 table now names the bounded pool and bounds latest slots separately (amendment, contradiction 1), and section 7's "Topic count and retained bytes are capped" requires the retained cap |
 | 5. Admission sizes a delivery with the router-added ids at their longest, so an inbound envelope near 65,536 bytes can be refused although it fits | Kept, and required: section 5's "Message length includes this wrapper" plus section 4's fixed maximum mean the delivery the router would build must also fit. ipc-v1 section 2's "must not silently truncate a payload" forbids the alternative |
 | 6. One live connection per client id; a client id's last incarnation may not be reused; only `*_as` endpoints authenticate the Hello id | Kept. See the section 3 and 4 rows: section 3's per-incarnation callId uniqueness and section 4's launcher-provided privileges |
 | 7. The seal reply's ownerId is the writer's own id, now a hold | Kept. Section 8.2: "seal transfers its unique writer" — one owner token, transferred |
-| 8. No `budget` argument on calls, and no router executable | Kept. Section 1 calls the executable "optional"; section 2 is labelled "Illustrative Rust surface (not yet implemented)"; section 6 puts the deadline in the calling client. See contradiction 2 |
+| 8. No `budget` argument on calls, and no router executable | Kept. Section 1 calls the executable "optional"; section 6 puts the deadline in the calling client, and the section 2 sketch no longer shows a budget either (amendment, contradiction 2) |
 | 9. Wire strictness: unknown fields in management bodies refused, `minor` must be 0 after hello | Kept. Stricter than section 4's "unknown envelope fields", forbidden nowhere, and section 4's envelope literally fixes `minor: 0` |
 | 10. `rpc.responder.release` and its terminal `call.failed` | Kept. Section 4 allows draft schema changes ("Changes to these draft schemas change contractDigest"), and it is how section 6's "bounded call correlation metadata" stays bounded when a handler outlives its request delivery. Added to the bus-v1 amendment (section 12) |
 
@@ -412,7 +414,10 @@ What the numbers do and do not say:
 
 ## Contradictions
 
-Two, both inside bus-v1, both minor, and neither resolved by changing code in this branch.
+Two, both inside bus-v1, both minor, neither resolved by changing code. Both were referred to
+the coordinator rather than guessed at, and both now carry a dated amendment in bus-v1
+section 12; the rows above cite the amended wording. The original reading is kept here because
+it is the reason for the amendment.
 
 1. **The per-client queued envelope byte budget versus the latest-mode guarantee.** Section 9's
    table has "Per-client ordinary queued envelope bytes | 1 MiB". Section 7 requires that a
@@ -422,15 +427,17 @@ Two, both inside bus-v1, both minor, and neither resolved by changing code in th
    covered latest slots and rejected on overflow would violate the second statement; a budget
    that excludes them is not the sentence in the table. The crate excludes them, which keeps the
    normative sentence and loosens the table row: the worst case becomes subscriptions x 64 KiB
-   (8 MiB at the default 128 subscriptions per client) instead of 1 MiB. **Left as it is.** The
-   spec owner should either say the budget covers bounded subscriptions only, or give latest
-   slots their own cap.
+   (8 MiB at the default 128 subscriptions per client) instead of 1 MiB. **Resolved in the
+   spec, not the code** (2026-09-22): the table row now names the bounded pool and latest slots
+   have their own row, so the implementation conforms as written. No behaviour changed, and
+   `a_latest_subscriber_never_refuses_a_publication` now proves the guarantee directly.
 2. **A call `budget` versus a client-owned deadline.** Section 2's illustrative surface passes a
    `budget` into `bus.call(...)`, while section 6 states "A deadline belongs to the calling
    client" and gives the router no timeout behaviour, and section 5's `rpc.call` body has no
    budget field. The crate follows sections 5 and 6 and has no budget argument, which is safe
-   because section 2 is labelled illustrative. **Left as it is.** The spec owner should drop
-   `budget` from the section 2 sketch or say what the router would do with it.
+   because section 2 is labelled illustrative. **Resolved in the spec, not the code**
+   (2026-09-22): the sketch drops `budget` and shows the deadline at the caller, so the
+   illustrative surface and the wire contract now agree.
 
 Ambiguities resolved without treating them as contradictions, for the record:
 

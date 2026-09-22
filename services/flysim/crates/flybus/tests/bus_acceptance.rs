@@ -12,7 +12,8 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::time::Duration;
 
-use common::{Env, Trace, Via, env, obj, quiet, sealed, within};
+use common::{Env, Trace, Via, code, env, obj, quiet, sealed, within};
+use flybus::wire::Kind;
 use flybus::{
     CancelState, Client, Dispatch, ErrorCode, Retained, Service, ServiceConfig, SubscriptionConfig,
 };
@@ -357,6 +358,97 @@ async fn a_status_rpc_responds_while_another_handler_is_delayed(via: Via) {
         .await;
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Section 9: the two rules an audit reviewer found cited but unproven
+
+/// bus-v1 section 9: "Bounded event subscriptions can reject publication; latest spectator
+/// subscriptions cannot hold a required session transaction indefinitely."
+///
+/// A latest subscriber that never consumes must never be the reason a publication is refused,
+/// however many envelope bytes its slot would have accumulated: the slot sits outside the
+/// per-client bounded-queue byte pool. 100 publications of 60 KB are six times that pool.
+async fn a_latest_subscriber_never_refuses_a_publication(via: Via) {
+    let e = env(via).await;
+    let publisher = e.client("publisher").await;
+    let spectator = e.client("spectator").await;
+    publisher
+        .declare_topic("world.demo.frame", Retained::None)
+        .await
+        .unwrap();
+    // One credit, and nothing ever consumes it: after the first delivery every later
+    // publication meets the single replaceable slot.
+    let _stuck = spectator
+        .subscribe(
+            "world.demo.frame",
+            SubscriptionConfig::latest().in_flight(1),
+        )
+        .await
+        .unwrap();
+    e.settle("subscribed", |s| s.subscriptions == 1).await;
+
+    let blob = "s".repeat(60_000);
+    let publish = async |n: u64| {
+        within(
+            "publication",
+            publisher.publish("world.demo.frame", obj(json!({"n": n, "blob": blob})), &[]),
+        )
+        .await
+        .unwrap_or_else(|err| panic!("publication {n} was refused with {err}"))
+    };
+    publish(0).await;
+    e.settle("the only credit is in use", |s| s.owners == 1).await;
+
+    let mut replaced_total = 0;
+    for n in 1..100u64 {
+        let receipt = publish(n).await;
+        assert_eq!(receipt.subscribers, 1);
+        replaced_total += receipt.replaced;
+    }
+    // The first of those found an empty slot; the other 98 replaced an undelivered value.
+    assert_eq!(replaced_total, 98);
+    let stats = e.stats();
+    assert_eq!(stats.queued, 1, "the slot never grew: {stats:?}");
+    assert_eq!(stats.owners, 1, "no credit came back: {stats:?}");
+}
+
+/// bus-v1 section 9: "classification is an explicit generic envelope operation/policy, not a
+/// topic-name heuristic", and section 3: "The router treats names as opaque addresses."
+///
+/// A topic whose name is spelled exactly like a router notice is still declared, routed and
+/// delivered as topic data: the delivery is a `topic.message`, not the notice it is named
+/// after, and its payload arrives untouched.
+async fn a_topic_named_like_a_notice_is_still_classified_as_topic_data(via: Via) {
+    let e = env(via).await;
+    let publisher = e.client("publisher").await;
+    let mut raw = e.raw_hello("watcher").await;
+    let names = ["call.failed", "route.removed", "subscription.closed"];
+    for name in names {
+        publisher.declare_topic(name, Retained::None).await.unwrap();
+        let reply = raw
+            .call(
+                "subscribe",
+                json!({"topic": name, "mode": "bounded", "maxQueued": 4, "maxInFlight": 4, "replayLatest": false}),
+            )
+            .await;
+        assert_eq!(code(&reply), "OK", "{name} could not be subscribed to");
+    }
+    for name in names {
+        publisher
+            .publish(name, obj(json!({"named": name})), &[])
+            .await
+            .unwrap();
+        let envelope = raw.event().await;
+        assert_eq!(
+            (envelope.kind, envelope.op.as_str()),
+            (Kind::Delivery, "topic.message"),
+            "the topic name {name} changed how the router classified it"
+        );
+        assert_eq!(envelope.body["topic"], json!(name));
+        assert_eq!(envelope.body["payload"]["named"], json!(name));
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // BUS-03
 
@@ -681,5 +773,7 @@ both_transports!(
     a_retransmission_repeats_the_domain_request_under_a_fresh_call_id,
     no_automatic_retry_or_failover_onto_a_replacement_registration,
     a_status_rpc_responds_while_another_handler_is_delayed,
+    a_latest_subscriber_never_refuses_a_publication,
+    a_topic_named_like_a_notice_is_still_classified_as_topic_data,
     disconnect_releases_logical_ownership_without_mutating_open_bytes,
 );

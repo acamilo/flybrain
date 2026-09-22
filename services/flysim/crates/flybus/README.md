@@ -291,9 +291,11 @@ before admission are `not-dispatched`. A command in flight when the connection i
    - `route.removed` goes to callers with queued or dispatched calls on the removed
      registration, not to every client.
    - `connection.closing` is an extra notice that precedes every router-initiated close.
-4. **Byte budgets.**
+4. **Byte budgets.** No longer a difference: the draft's section 9 table was amended on
+   2026-09-22 to name the bounded pool and to bound latest slots separately.
    - `max_queued_bytes_per_client` counts only `bounded` subscriptions. A `latest` slot is bounded
-     by subscription count times envelope size.
+     by subscription count times envelope size, because a latest subscriber may never be the
+     reason a publication is refused.
    - `max_retained_bytes` (not in the draft's table) counts the artifact bytes pinned by
      retained values, once per topic.
 5. **Delivery size.** Admission computes the delivery's size with the router-added ids at their
@@ -305,7 +307,9 @@ before admission are `not-dispatched`. A command in flight when the connection i
    distinct client id ever seen.
 7. **Seal reply.** The reply's `ownerId` is the writer's own id, now an explicit hold.
 8. **No `budget` argument on calls, and no router executable.** Timeouts are the caller's
-   (`tokio::time::timeout` plus `cancel`). The draft's executable is optional; embed `Router`.
+   (`tokio::time::timeout` plus `cancel`); the draft's section 2 sketch was amended on
+   2026-09-22 to show the deadline there too. The draft's executable is optional; embed
+   `Router`.
 9. **Wire strictness.** Management bodies reject unknown fields. After hello, envelopes must
    carry `minor: 0`.
 10. **Reply capability release.** The SDK sends `rpc.responder.release {callId,
@@ -386,4 +390,7 @@ socket, through the same router code:
   and requires the two transports to record the same 29 behaviour events. `Trace::record`
   panics on a router-issued id, so a trace cannot drift into operational detail.
   `FLYBUS_TRACE=1` prints it.
+  It also holds the two rules an audit reviewer found cited but unproven: a latest subscriber
+  flooded with 100 publications of 60 KB never refuses one, and a topic named exactly like a
+  router notice is still delivered as topic data.
 - `tests/example_demo.rs`: runs `examples/demo.rs` and asserts every line it prints.

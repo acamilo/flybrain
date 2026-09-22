@@ -43,7 +43,7 @@ Illustrative Rust surface (not yet implemented):
 ```rust
 let bus = Client::connect(config).await?;
 let service = bus.register("agent.fly-a", service_config).await?;
-let reply = bus.call(target, "Agent.Prepare", payload, attachments, budget).await?;
+let reply = timeout(deadline, bus.call(target, "Agent.Prepare", payload, attachments)).await?;
 let subscription = bus.subscribe("session.demo.snapshots", subscription_config).await?;
 bus.publish("session.demo.snapshots", payload, attachments).await?;
 
@@ -422,7 +422,8 @@ Configure limits explicitly; these defaults are a prototype starting point, not 
 | Bounded subscription queued / in-flight deliveries | 64 / 16 |
 | Active owners per client | 256 |
 | Total artifact storage / per object | 512 MiB / 128 MiB |
-| Per-client ordinary queued envelope bytes | 1 MiB |
+| Per-client ordinary bounded queued envelope bytes | 1 MiB |
+| Latest subscription slots | subscriptions × 64 KiB |
 | Reserved management/reply lane | 128 frames and 1 MiB per client |
 
 Reserve an owner allowance for lifecycle/results separately from ordinary telemetry; memory
@@ -510,3 +511,15 @@ request delivery:
 | `rpc.responder.release` | `{callId, requestDeliveryId}` -> `{released}` | The recipient gives up reply authority for a dispatched call. The final release for an attached call retires the correlation and emits `call.failed` with dispatch `dispatched`: `CALL_GONE` while the route is live, `NO_SERVICE` after route loss. Request consumption (section 8.3) stays independent of it. |
 
 Both amendments change `contractDigest`, which section 4 already provides for.
+
+**2026-09-22, coordinator decision on the audit's contradiction 1.** Section 9's table row
+"Per-client ordinary queued envelope bytes | 1 MiB" now reads "Per-client ordinary **bounded**
+queued envelope bytes", and latest slots get their own row, "subscriptions × 64 KiB", because
+section 7's unconditional one-slot guarantee and the structural 1/2 cap outweigh one imprecise
+table row: a budget whose overflow rejects a publication cannot contain a subscription that
+this same section forbids to reject one.
+
+**2026-09-22, coordinator decision on the audit's contradiction 2.** Section 2's sketch no
+longer passes a `budget` into `bus.call` and shows the deadline at the caller instead, because
+section 5's wire contract for `rpc.call` has no budget field and section 2 is self-labelled
+illustrative.
