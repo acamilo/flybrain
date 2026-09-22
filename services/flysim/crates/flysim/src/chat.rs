@@ -30,6 +30,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::ratelimit::RateLimiter;
@@ -426,6 +427,41 @@ impl ChatLimiter {
 
 // -- the ring ---------------------------------------------------------------------------------
 
+/// The ring's sidecar file, inside `[paths] hot_dir` (`docs/control-api.md`, `[chat]`).
+///
+/// The ring is session state, not simulation state, so it deliberately does **not** travel in the
+/// `FLYSIM01` checkpoint envelope and is not in the compatibility string: a build that refuses
+/// every checkpoint in a directory still reads this file, and a checkpoint written by any build
+/// is byte-for-byte what it always was. It sits beside the hot checkpoints because it has their
+/// lifetime — the tmpfs a reboot clears — and because the deliberate reset already clears that
+/// directory (`infra/05-deploy.sh`, `FLY_RESET_STATE=1`).
+///
+/// Sharing that directory with the hot checkpoints means sharing its mtime, which the watchdog
+/// reads as flysim's liveness (`infra/bin/fly-watchdog`, check 1: hot-state mtime younger than
+/// 30 s). That is safe here only because this file is written from the sim thread, on the same
+/// command path as the line itself: a wedged loop accepts no chat, so it can never refresh the
+/// directory behind the watchdog's back. Nothing else may ever write here from another thread.
+pub const SIDECAR_FILE: &str = "chat-ring.json";
+
+/// Lines older than this are dropped when the sidecar is read: a panel coming back after a long
+/// outage should be empty rather than show a day-old conversation as if it were live.
+pub const SIDECAR_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1_000;
+
+/// The sidecar's own format version. Nothing else versions with it, which is the point.
+const SIDECAR_VERSION: u32 = 1;
+
+/// `<hot_dir>/chat-ring.json`.
+pub fn sidecar_path(hot_dir: &Path) -> PathBuf {
+    hot_dir.join(SIDECAR_FILE)
+}
+
+/// What the sidecar holds: a version and the ring, oldest first.
+#[derive(Debug, Serialize, Deserialize)]
+struct Sidecar {
+    version: u32,
+    lines: Vec<ChatLine>,
+}
+
 /// The last `capacity` accepted lines, oldest first, as every snapshot header carries them.
 #[derive(Debug, Clone)]
 pub struct ChatRing {
@@ -460,6 +496,78 @@ impl ChatRing {
 
     pub fn capacity(&self) -> usize {
         self.capacity
+    }
+
+    /// Write the ring to `<hot_dir>/chat-ring.json`: tmp file, fsync, rename over, directory
+    /// fsync — the same atomic sequence a checkpoint commit uses, so a reader never sees a
+    /// half-written ring and a crash mid-write leaves the previous one.
+    ///
+    /// Called on every accepted line, which the admission limits cap at five a second, onto
+    /// tmpfs.
+    pub fn save_sidecar(&self, hot_dir: &Path) -> anyhow::Result<()> {
+        let sidecar = Sidecar { version: SIDECAR_VERSION, lines: self.lines() };
+        let bytes = serde_json::to_vec(&sidecar)?;
+        crate::store::write_atomic(&sidecar_path(hot_dir), &bytes)
+    }
+
+    /// Read `<hot_dir>/chat-ring.json` into the ring, and answer how many lines it restored.
+    ///
+    /// Absent is silence and zero lines — the first run on a fresh box. Unreadable, unparseable
+    /// or a version this build does not know is zero lines and a logged warning: an empty panel
+    /// is exactly what a restart gives today, so nothing on this path may ever be fatal. Lines
+    /// older than [`SIDECAR_MAX_AGE_MS`] are dropped, and only the newest `capacity` survive,
+    /// whatever the file holds.
+    pub fn load_sidecar(&mut self, hot_dir: &Path, now_ms: u64) -> usize {
+        let path = sidecar_path(hot_dir);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(
+                        %error,
+                        path = %path.display(),
+                        "could not read the chat ring sidecar; the panel starts empty"
+                    );
+                }
+                return 0;
+            }
+        };
+        let sidecar: Sidecar = match serde_json::from_str(&text) {
+            Ok(sidecar) => sidecar,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    path = %path.display(),
+                    "the chat ring sidecar is not readable; ignoring it"
+                );
+                return 0;
+            }
+        };
+        if sidecar.version != SIDECAR_VERSION {
+            tracing::warn!(
+                version = sidecar.version,
+                path = %path.display(),
+                "the chat ring sidecar is a version this build does not read; ignoring it"
+            );
+            return 0;
+        }
+
+        let before = sidecar.lines.len();
+        self.lines.clear();
+        for line in sidecar.lines {
+            if now_ms.saturating_sub(line.wall_ms) >= SIDECAR_MAX_AGE_MS {
+                continue;
+            }
+            self.push(line);
+        }
+        let restored = self.lines.len();
+        if restored < before {
+            tracing::info!(
+                dropped = before - restored,
+                "dropped chat lines older than a day from the sidecar"
+            );
+        }
+        restored
     }
 }
 
@@ -609,6 +717,106 @@ mod tests {
         // The capacity is clamped to the contract's ceiling whatever the config says.
         assert_eq!(ChatRing::new(0).capacity(), 1);
         assert_eq!(ChatRing::new(999).capacity(), RING_MAX);
+    }
+
+    /// A line `wall_ms` milliseconds into the wall clock, for the sidecar tests.
+    fn line(id: u64, wall_ms: u64) -> ChatLine {
+        ChatLine {
+            id,
+            wall_ms,
+            by: format!("viewer_{id}"),
+            text: format!("line {id}"),
+            bot: None,
+        }
+    }
+
+    #[test]
+    fn the_ring_round_trips_through_its_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let now_ms = 1_757_000_000_000;
+
+        // Nothing written yet: a fresh box is an empty ring and no complaint.
+        let mut cold = ChatRing::new(12);
+        assert_eq!(cold.load_sidecar(dir.path(), now_ms), 0);
+        assert!(cold.is_empty());
+
+        let mut ring = ChatRing::new(12);
+        ring.push(line(1, now_ms - 3_000));
+        ring.push(line(2, now_ms - 2_000));
+        ring.push(ChatLine { bot: Some(true), ..line(3, now_ms - 1_000) });
+        ring.save_sidecar(dir.path()).unwrap();
+
+        // Beside the hot checkpoints, under the documented name, and nothing else is written.
+        assert!(sidecar_path(dir.path()).is_file());
+        let written: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(written, [SIDECAR_FILE]);
+
+        let mut restored = ChatRing::new(12);
+        assert_eq!(restored.load_sidecar(dir.path(), now_ms), 3);
+        assert_eq!(restored.lines(), ring.lines(), "oldest first, bot flag and all");
+
+        // A smaller ring than the file keeps the newest lines, not the first three it reads.
+        let mut small = ChatRing::new(2);
+        assert_eq!(small.load_sidecar(dir.path(), now_ms), 2);
+        assert_eq!(
+            small.lines().iter().map(|line| line.id).collect::<Vec<_>>(),
+            [2, 3]
+        );
+    }
+
+    #[test]
+    fn a_sidecar_that_will_not_parse_is_ignored_rather_than_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        let now_ms = 1_757_000_000_000;
+
+        for content in [
+            "",
+            "{ not json at all",
+            r#"{"version":1,"lines":[{"id":"not a number"}]}"#,
+            r#"{"version":1}"#,
+            // A format from some future build: readable JSON, unreadable meaning.
+            r#"{"version":99,"lines":[{"id":1,"wallMs":1757000000000,"by":"a","text":"b"}]}"#,
+        ] {
+            std::fs::write(sidecar_path(dir.path()), content).unwrap();
+            let mut ring = ChatRing::new(12);
+            assert_eq!(ring.load_sidecar(dir.path(), now_ms), 0, "{content}");
+            assert!(ring.is_empty(), "{content}");
+        }
+
+        // And the next accepted line simply writes a good one over it.
+        let mut ring = ChatRing::new(12);
+        ring.push(line(7, now_ms));
+        ring.save_sidecar(dir.path()).unwrap();
+        let mut back = ChatRing::new(12);
+        assert_eq!(back.load_sidecar(dir.path(), now_ms), 1);
+    }
+
+    #[test]
+    fn sidecar_lines_older_than_a_day_are_dropped_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let now_ms = 1_757_000_000_000;
+
+        let mut ring = ChatRing::new(12);
+        ring.push(line(1, now_ms - SIDECAR_MAX_AGE_MS - 1));
+        ring.push(line(2, now_ms - SIDECAR_MAX_AGE_MS));
+        ring.push(line(3, now_ms - SIDECAR_MAX_AGE_MS + 1));
+        ring.push(line(4, now_ms - 1_000));
+        ring.save_sidecar(dir.path()).unwrap();
+
+        let mut restored = ChatRing::new(12);
+        assert_eq!(restored.load_sidecar(dir.path(), now_ms), 2, "24 h exactly is too old");
+        assert_eq!(
+            restored.lines().iter().map(|line| line.id).collect::<Vec<_>>(),
+            [3, 4]
+        );
+
+        // A day later still, the whole file is stale and the panel starts empty.
+        let mut later = ChatRing::new(12);
+        assert_eq!(later.load_sidecar(dir.path(), now_ms + SIDECAR_MAX_AGE_MS), 0);
+        assert!(later.is_empty());
     }
 
     #[test]
