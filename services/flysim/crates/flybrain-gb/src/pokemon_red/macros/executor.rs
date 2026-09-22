@@ -421,10 +421,15 @@ struct Cursor {
     ///
     /// While the list up is a *different* one, the step waits rather than pressing at it, exactly
     /// as it waits for a list that reports no cursor at all (section 4: "never by counting
-    /// presses"). Section 12.11, measured: `THROW BALL` pressed ITEM, spent its twenty settle
-    /// frames, and then read the battle *menu*'s `max` of 3 -- so a ball at bag index 4 was
-    /// "off the end of the list" and the macro reported `blocked` on the first frame of the step,
-    /// 63 times out of 63.
+    /// presses"). Twenty settle frames is not always enough for the cartridge to draw the next
+    /// list, and a step that reads the list it has already answered is pressing blind: it takes
+    /// its length and its direction from four entries that are not the ones it is walking.
+    ///
+    /// Section 12.11 is where this came from, and it is also what *found* the reason `THROW BALL`
+    /// was 63 starts and 63 `blocked`: the step began reporting which list it had been left
+    /// looking at, and the answer was never the bag -- it was the party list, because
+    /// `battle_entry`'s `ITEM` and `PKMN` were the other way round. That is fixed at the
+    /// constants; this rule stands on its own.
     want: Option<ListKind>,
     /// The directions to try, in order, aimed at the target from where the cursor actually is.
     ///
@@ -1740,8 +1745,8 @@ fn cursor(target: u8, confirm: bool) -> Step {
 /// The press order and the budget are taken from the list on the first frame it accepts input
 /// ([`cursor_frame`]) and not from here, because a script that has just pressed A to open a list
 /// is still reading the list it pressed A *in*: twenty settle frames is not always enough for the
-/// cartridge to draw the next one, and the one it has is the wrong length and points the wrong way
-/// (section 12.11).
+/// cartridge to draw the next one, and the one it has is the wrong length and points the wrong
+/// way (section 12.11).
 fn cursor_on(target: u8, confirm: bool, want: Option<ListKind>) -> Step {
     Step::Cursor(Cursor {
         target,
