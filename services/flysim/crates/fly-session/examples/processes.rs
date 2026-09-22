@@ -63,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  behaviour trace: identical to the first run");
             }
         }
-        let reaped = harness.launcher.reap_all("example").await;
+        let reaped = harness.launcher.reap_all(&fly_session::types::id("example")).await;
         for (worker_id, outcome) in reaped {
             println!("  reaped {worker_id}: {outcome:?}");
         }

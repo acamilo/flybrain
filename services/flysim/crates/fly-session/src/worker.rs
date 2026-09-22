@@ -188,6 +188,12 @@ pub trait WorkerEndpoint: Send + 'static {
     fn capabilities(&self) -> Vec<Id>;
     fn status_cell(&self) -> StatusCell;
 
+    /// The thread allocation this worker's launcher started it within.
+    ///
+    /// `Worker.Hello` reports it, so a caller bounded by `workers-v1`'s "within launcher
+    /// allocation" can read the allocation instead of being told it out of band.
+    fn worker_threads(&self) -> u64;
+
     /// The domain methods this endpoint implements, beyond the common `Worker.*` set.
     /// Anything else returns UNSUPPORTED without entering the endpoint.
     fn methods(&self) -> Vec<&'static str>;
@@ -275,7 +281,7 @@ async fn run<E: WorkerEndpoint>(
 ) {
     // Identity and capabilities are fixed for the endpoint's lifetime, so the shell reads them
     // once and never takes the endpoint mutex to answer Hello or Status.
-    let (worker_id, incarnation_id, session_id, role, capabilities, status, methods) = {
+    let (worker_id, incarnation_id, session_id, role, capabilities, status, methods, threads) = {
         let e = endpoint.lock().await;
         (
             e.worker_id(),
@@ -285,6 +291,7 @@ async fn run<E: WorkerEndpoint>(
             e.capabilities(),
             e.status_cell(),
             e.methods(),
+            e.worker_threads(),
         )
     };
     let mut running: Vec<tokio::task::JoinHandle<()>> = Vec::new();
@@ -321,6 +328,7 @@ async fn run<E: WorkerEndpoint>(
                     &incarnation_id,
                     role,
                     &capabilities,
+                    threads,
                 );
                 let _ = responder.reply(outcome.to_outcome(), &[]).await;
                 continue;
@@ -622,6 +630,7 @@ fn failure(
     failure_outcome(request_id, worker_id, incarnation_id, scope, error)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn hello(
     request: &SessionRpcRequest,
     session_id: &Id,
@@ -629,6 +638,7 @@ fn hello(
     incarnation_id: &Id,
     role: Role,
     capabilities: &[Id],
+    worker_threads: u64,
 ) -> SessionRpcOutcome {
     let params: HelloParams = match HelloParams::from_json(&request.params) {
             Ok(params) => params,
@@ -684,6 +694,7 @@ fn hello(
         capabilities: capabilities.to_vec(),
         max_agents: MAX_AGENTS as u64,
         max_ports: MAX_PORTS as u64,
+        worker_threads,
     };
     success(
         request,

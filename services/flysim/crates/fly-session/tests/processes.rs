@@ -22,6 +22,7 @@ use fly_session::phase::Phase;
 use fly_session::types::*;
 
 all_modes!(
+    a_slow_participant_is_resolved_rather_than_failed,
     a_delayed_one_agent_result_holds_the_world,
     a_worker_death_has_a_bounded_diagnosed_outcome,
     a_helper_death_has_a_bounded_diagnosed_outcome,
@@ -79,6 +80,91 @@ async fn sequential_reversed_and_parallel_completion_agree() {
             "{name} produced a different behaviour trace from {first_name}"
         );
     }
+}
+
+// -------------------------------------------------------------------------------------------
+// ipc-v1 section 6: an uncertain call is resolved, not failed
+
+/// A participant that is merely slow -- slower than the caller's probe, faster than the
+/// resolution's budget -- finishes its step. The epoch is not lost, and the resolution adds no
+/// second operation.
+///
+/// This is the `ipc-v1` section 6 procedure on the path that actually reaches it: the probe
+/// expires, the coordinator queries the same request id against the same incarnation, the
+/// worker answers `IN_PROGRESS` while its original is still running and then replays its
+/// cached reply. `step-v1` section 7's Advance row is the same rule, so the world is slow here
+/// too and its batch is never re-sent as a new one.
+async fn a_slow_participant_is_resolved_rather_than_failed(mode: ExecutionMode) {
+    // A clean run of the same composition, to compare against.
+    let clean = {
+        let mut f = mode_fixture(mode, two_agents(mode)).await;
+        within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
+        within("run", f.harness.coordinator.run(2)).await.unwrap();
+        let environment = f.harness.environment_id();
+        let world = within("progress", f.harness.progress_of(&environment)).await.unwrap();
+        let out = (f.harness.coordinator.trace.behavior(), world);
+        f.shutdown().await;
+        out
+    };
+
+    let mut config = two_agents(mode);
+    config.agents[1].faults = AgentFaults { prepare_delay_ms: 500, ..AgentFaults::default() };
+    config.environment_faults =
+        EnvironmentFaults { advance_delay_ms: 500, ..EnvironmentFaults::default() };
+    let mut f = mode_fixture(mode, config).await;
+    // A probe well inside both delays, and a resolution budget well outside them: the point is
+    // a call that expires and an operation that is nevertheless fine.
+    f.harness.coordinator.deadlines = fly_session::Deadlines {
+        probe: Duration::from_millis(120),
+        resolve: Duration::from_secs(20),
+        resolve_attempts: 4096,
+        boot: Duration::from_secs(30),
+    };
+    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
+    let reports = within("run", f.harness.coordinator.run(2))
+        .await
+        .expect("a slow participant is resolved, not failed");
+
+    assert_eq!(reports.len(), 2);
+    assert_eq!(f.harness.coordinator.phase(), Phase::Ready(2));
+    assert!(!f.harness.coordinator.is_fenced(), "a slow answer is not a lost epoch");
+    assert!(
+        f.harness.coordinator.resolutions >= 2,
+        "both the slow Prepare and the slow Advance must have run the resolution, not {}",
+        f.harness.coordinator.resolutions
+    );
+    assert!(
+        f.harness.coordinator.in_progress_replies > 0,
+        "the resolution must have met the original still running"
+    );
+
+    // No second operation anywhere: one advance per transition, one batch id per transition,
+    // and the same behaviour as the run that never timed out.
+    assert_eq!(f.harness.coordinator.stats().advances, 2);
+    let environment = f.harness.environment_id();
+    let world = within("progress", f.harness.progress_of(&environment)).await.unwrap();
+    assert_eq!(world, clean.1, "the world moved exactly as often as in the clean run");
+    assert_eq!(
+        f.harness.coordinator.trace.behavior(),
+        clean.0,
+        "resolving an uncertain call changes no behaviour"
+    );
+    let batches: std::collections::BTreeSet<Id> = f
+        .harness
+        .coordinator
+        .trace
+        .transitions
+        .iter()
+        .map(|t| t.behaviour.batch_id.clone())
+        .collect();
+    assert_eq!(batches.len(), 2, "one batch id per transition, never a second batch");
+    // And the agents took exactly the ticks the clean run took: a resolution is a query.
+    for transition in &f.harness.coordinator.trace.transitions {
+        for agent in &transition.behaviour.agents {
+            assert!(agent.ticks_advanced == 16 || agent.ticks_advanced == 17);
+        }
+    }
+    f.shutdown().await;
 }
 
 // -------------------------------------------------------------------------------------------
@@ -339,6 +425,33 @@ async fn every_participant_answers_its_supervisor(mode: ExecutionMode) {
         let status = within("health", f.harness.launcher.health_check(&who)).await.unwrap();
         assert_eq!(status.state, WorkerState::Ready, "{who} is healthy at a boundary");
     }
+    // Every participant reports the allocation its launcher gave it, which is the wire the
+    // 2026-09-22 `workers-v1` amendment added. The launcher refused anything else at start,
+    // so a caller reads it here rather than being told it out of band.
+    for who in [fly_a(), fly_b(), environment.clone()] {
+        let worker = f.harness.coordinator.agent_ref(&who).cloned().unwrap_or_else(|| {
+            f.harness.coordinator.environment_ref().clone()
+        });
+        let params = serde_json::json!({
+            "sessionId": "demo",
+            "expectedWorkerId": who.as_str(),
+            "role": if who == environment { "environment" } else { "agent" },
+            "supportedMajors": [1],
+        });
+        let result = within(
+            "hello",
+            f.harness.coordinator.probe_raw(&worker, "Worker.Hello", None, params),
+        )
+        .await
+        .expect("a worker answers its own identity");
+        let reported = result["limits"]["workerThreads"].as_u64();
+        assert_eq!(
+            reported,
+            Some(f.harness.launcher.worker(&who).unwrap().identity.worker_threads as u64),
+            "{who} must report the allocation its launcher gave it"
+        );
+    }
+
     // The agents carry their configured port identities; the environment owns the ports.
     assert_eq!(
         f.harness.launcher.worker(&fly_a()).unwrap().identity.port_id.as_deref(),
@@ -367,9 +480,12 @@ async fn every_participant_answers_its_supervisor(mode: ExecutionMode) {
     assert_eq!(err.code, ErrorCode::IdentityMismatch);
 
     // Asking a participant to stop stops it, and the supervisor says which kind of stop it was.
-    let outcome = f.harness.launcher.reap(&fly_a(), "test").await;
+    let outcome = f.harness.launcher.reap(&fly_a(), &id("test")).await;
     assert_eq!(outcome, ReapOutcome::Stopped, "a live participant answers Worker.Shutdown");
-    assert_eq!(f.harness.launcher.reap(&fly_a(), "test").await, ReapOutcome::AlreadyGone);
+    assert_eq!(
+        f.harness.launcher.reap(&fly_a(), &id("test")).await,
+        ReapOutcome::AlreadyGone
+    );
     f.shutdown().await;
 }
 
@@ -470,6 +586,10 @@ async fn a_router_restart_during_a_world_advance_fences_the_epoch() {
     });
     within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     let boundary_before = f.harness.coordinator.observation().unwrap().boundary;
+    assert!(
+        f.harness.coordinator.live_view_handles() > 0,
+        "boundary 0's view is owned before the router goes away"
+    );
     let router = f.harness.router().clone();
     let started = Instant::now();
 
@@ -498,6 +618,11 @@ async fn a_router_restart_during_a_world_advance_fences_the_epoch() {
     assert!(
         f.harness.coordinator.is_fenced(),
         "old handles and routes are invalid from here on"
+    );
+    assert_eq!(
+        f.harness.coordinator.live_view_handles(),
+        0,
+        "the fence drops every artifact handle of the old store incarnation"
     );
     assert_eq!(f.harness.coordinator.stats().advances, 0, "no boundary was committed");
     assert_eq!(count(&f.harness.coordinator.audit, "publish:1"), 0);
@@ -557,44 +682,74 @@ async fn an_old_worker_reply_after_a_restart_is_rejected_on_stale_epoch_or_incar
     f.shutdown().await;
 }
 
-/// The other half of the same row: the replacement process is live and refuses an operation
-/// naming the epoch the old process belonged to, rather than applying it to a fresh brain.
+/// The other half of the same row, in two parts, because the two refusals are different
+/// refusals and each deserves its own exact code.
+///
+/// A restarted worker is a *fresh* process: it has no epoch at all, so the old epoch's work is
+/// refused on phase, not on timeline. The stale-epoch half of the row needs a worker that has
+/// an epoch and has left it, which in process mode is the agent that did not restart.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restarted_worker_refuses_an_operation_from_the_old_epoch() {
     let mode = ExecutionMode::Process;
     let mut f = mode_fixture(mode, two_agents(mode)).await;
     within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     within("step", f.harness.coordinator.step()).await.unwrap();
-    let restarted = f.harness.restart_agent(&fly_b()).await.unwrap();
 
+    // Part one: a live agent process, initialized under epoch e1, meets an operation from
+    // another epoch. This is the row's stale-epoch half, with a real child process.
+    let live = f.harness.coordinator.agent_ref(&fly_a()).cloned().unwrap();
+    let err = within(
+        "stale epoch",
+        f.harness.coordinator.probe_raw(
+            &live,
+            "Agent.Prepare",
+            Some(scope_at("demo", "e0", 1)),
+            prepare_params("fly-a"),
+        ),
+    )
+    .await
+    .expect_err("an old epoch cannot mutate a worker that belongs to this one");
+    assert_eq!(err.code, ErrorCode::StaleEpoch);
+    assert_eq!(err.mutation, MutationCertainty::None, "refused before any mutation");
+
+    // Part two: the replacement process. It is a fresh worker with no epoch at all, so the
+    // same request is refused on phase rather than on timeline -- and, either way, nothing
+    // from the old epoch is applied to a fresh brain.
+    let restarted = f.harness.restart_agent(&fly_b()).await.unwrap();
     let replacement = fly_session::rpc::WorkerRef::new(
         &restarted.service,
         &restarted.service_incarnation,
         &fly_b(),
     );
-    let params = serde_json::json!({
-        "agentId": "fly-b",
-        "profileDigest": digest_of_bytes(b"whatever"),
-        "interval": {"numerator": "16666667", "denominator": "1"},
-        "decisionContextDigest": digest_of_bytes(b"whatever"),
-        "preStepStimulations": [],
-    });
     let err = within(
-        "stale epoch",
+        "uninitialized replacement",
         f.harness.coordinator.probe_raw(
             &replacement,
             "Agent.Prepare",
             Some(scope_at("demo", "e1", 1)),
-            params,
+            prepare_params("fly-b"),
         ),
     )
     .await
     .expect_err("an uninitialized replacement has no epoch to prepare in");
-    assert!(
-        matches!(err.code, ErrorCode::StaleEpoch | ErrorCode::InvalidPhase),
-        "a replacement refuses the old epoch's work: {err}"
+    assert_eq!(
+        err.code,
+        ErrorCode::InvalidPhase,
+        "a fresh process has no epoch to be stale about: {err}"
     );
     assert_eq!(err.mutation, MutationCertainty::None, "nothing was applied to a fresh brain");
     assert_eq!(f.harness.coordinator.stats().advances, 1);
     f.shutdown().await;
+}
+
+/// A well-formed `Agent.Prepare` body, for a probe whose subject is the scope rather than the
+/// payload.
+fn prepare_params(agent_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "agentId": agent_id,
+        "profileDigest": digest_of_bytes(b"whatever"),
+        "interval": {"numerator": "16666667", "denominator": "1"},
+        "decisionContextDigest": digest_of_bytes(b"whatever"),
+        "preStepStimulations": [],
+    })
 }

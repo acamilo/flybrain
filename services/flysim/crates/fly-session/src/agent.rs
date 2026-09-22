@@ -650,6 +650,10 @@ impl WorkerEndpoint for FakeAgentWorker {
         self.status.clone()
     }
 
+    fn worker_threads(&self) -> u64 {
+        self.config.worker_threads as u64
+    }
+
     fn methods(&self) -> Vec<&'static str> {
         vec!["Agent.Initialize", "Agent.Prepare", "Agent.Commit"]
     }

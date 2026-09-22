@@ -35,7 +35,7 @@ const STEPS: u64 = 3;
 async fn one_world_advance_per_complete_batch(via: Via) {
     let mut f = default_fixture(via).await;
     within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
-    let before = f.harness.environment_mutations();
+    let before = f.harness.environment_mutations().expect("an in-process arena");
     let reports = within("run", f.harness.coordinator.run(STEPS)).await.unwrap();
     assert_eq!(reports.len() as u64, STEPS);
     assert_eq!(f.harness.coordinator.stats().advances, STEPS);
@@ -46,7 +46,10 @@ async fn one_world_advance_per_complete_batch(via: Via) {
         "the world is at exactly one boundary per batch"
     );
     // The environment's progress counter moves once per advance and not otherwise.
-    assert_eq!(f.harness.environment_mutations() - before, STEPS);
+    assert_eq!(
+        f.harness.environment_mutations().expect("an in-process arena") - before,
+        STEPS
+    );
     assert_eq!(count(&f.harness.coordinator.audit, "advance:0"), 1);
     assert_eq!(f.harness.coordinator.trace.transitions.len() as u64, STEPS);
     f.shutdown().await;
@@ -227,7 +230,8 @@ async fn bootstrap_cannot_advance_the_world_or_produce_a_reward(via: Via) {
     // Warm-up did run, with learning disabled, so the models did mutate.
     for agent in [fly_a(), fly_b()] {
         assert!(
-            f.harness.agent_mutations(&agent) >= f.harness.config.warmup_ticks,
+            f.harness.agent_mutations(&agent).expect("an in-process agent")
+                >= f.harness.config.warmup_ticks,
             "warm-up ticks are real mutations"
         );
     }

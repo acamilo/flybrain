@@ -94,9 +94,13 @@ interface HelloResult {
   workerId: Id; incarnationId: Id; role: "agent" | "environment" | "coordinator";
   buildDigest: Digest; contractDigest: Digest;
   capabilities: Id[];
-  limits: { maxAgents: number; maxPorts: number };
+  limits: { maxAgents: number; maxPorts: number; workerThreads: number };
 }
 ```
+
+`limits.workerThreads` is the thread allocation the worker's launcher started it within; it
+is an integer >=1 and its rule belongs to [worker interfaces](workers-v1.md) section 2, whose
+2026-09-22 amendment added it.
 
 The bus supplies caller identity; do not accept a forged caller in params. Bind a worker's
 session authority to the expected coordinator identity/incarnation during negotiation and

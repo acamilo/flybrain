@@ -33,6 +33,15 @@ both_transports!(
 const STEPS: u64 = 4;
 const INJECT_AT: u64 = 2;
 
+/// The mutation counter of a participant running in this process. These suites are all
+/// in-process compositions, so it is always there; SESSION-02's are not, and read it over the
+/// bus instead.
+fn local_mutations(f: &Fixture, agent_id: &Id) -> u64 {
+    f.harness
+        .agent_mutations(agent_id)
+        .expect("an in-process participant keeps its counter in this process")
+}
+
 /// What a run of the standard composition produced.
 struct Run {
     behaviour: Vec<String>,
@@ -51,8 +60,8 @@ async fn run_with(via: Via, injections: Injections) -> Run {
     let run = Run {
         behaviour: f.harness.coordinator.trace.behavior(),
         mutations: vec![
-            (fly_a(), f.harness.agent_mutations(&fly_a())),
-            (fly_b(), f.harness.agent_mutations(&fly_b())),
+            (fly_a(), local_mutations(&f, &fly_a())),
+            (fly_b(), local_mutations(&f, &fly_b())),
         ],
         counter: f
             .harness

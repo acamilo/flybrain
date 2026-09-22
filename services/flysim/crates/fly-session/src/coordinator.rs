@@ -107,21 +107,41 @@ impl std::error::Error for SessionFailure {}
 
 type Outcome<T> = Result<T, SessionFailure>;
 
-/// How long the coordinator waits for a participant before it calls the call uncertain.
+/// The caller-side failure-detection budgets of `ipc-v1` section 6, on the coordinator's own
+/// monotonic clock.
 ///
-/// `ipc-v1` section 6 measures these on the caller's own monotonic clock and gives the
-/// prototype values: ten seconds without progress is a failure, with a separate budget for a
-/// long boot. They are failure-detection values, not a gameplay latency goal. Without them a
-/// dead participant is a hang rather than a diagnosed outcome.
+/// Section 6 is a two-stage procedure, and these are its two stages. `probe` is how long a
+/// call may go without a terminal reply before it is *uncertain*; an uncertain call is not a
+/// failed one, so the coordinator then runs the section 6 resolution -- a fresh bus call
+/// carrying the original domain request id and body, pinned to the same incarnation -- for at
+/// most `resolve` and at most `resolve_attempts` tries. Only when that ends without a definite
+/// answer, or the incarnation is gone, or the retained result expired, is the epoch failed.
+///
+/// The prototype values follow section 6: probe at two seconds without a reply, give up at
+/// ten seconds without progress, with a separate budget for a long boot. They are
+/// failure-detection values, not a gameplay latency goal. The attempt count is explicit
+/// because section 6 forbids filling this gap with an implicit best-effort policy.
 #[derive(Clone, Copy, Debug)]
 pub struct Deadlines {
-    pub call: Duration,
+    /// Without a terminal reply for this long, the call is uncertain.
+    pub probe: Duration,
+    /// The resolution's own budget, measured from its first attempt.
+    pub resolve: Duration,
+    /// How many times the resolution may re-ask. Bounded, and never a retry of the operation:
+    /// every attempt carries the original request id and body.
+    pub resolve_attempts: u32,
+    /// A separate, larger budget for `Worker.Hello` and the `Initialize` methods.
     pub boot: Duration,
 }
 
 impl Default for Deadlines {
     fn default() -> Deadlines {
-        Deadlines { call: Duration::from_secs(10), boot: Duration::from_secs(30) }
+        Deadlines {
+            probe: Duration::from_secs(2),
+            resolve: Duration::from_secs(8),
+            resolve_attempts: 512,
+            boot: Duration::from_secs(30),
+        }
     }
 }
 
@@ -231,6 +251,8 @@ pub struct Coordinator {
     pub injection_log: Vec<InjectionOutcome>,
     /// How many times an exact duplicate met IN_PROGRESS while resolving an uncertain call.
     pub in_progress_replies: u64,
+    /// How many uncertain calls ran the `ipc-v1` section 6 resolution.
+    pub resolutions: u64,
     /// The caller-side failure-detection budgets of `ipc-v1` section 6.
     pub deadlines: Deadlines,
     /// Per-method and critical-path latency samples. Local synthetic timings, never a
@@ -289,6 +311,7 @@ impl Coordinator {
             injections: Injections::default(),
             injection_log: Vec::new(),
             in_progress_replies: 0,
+            resolutions: 0,
             deadlines: Deadlines::default(),
             metrics: Metrics::default(),
             blame: None,
@@ -429,6 +452,15 @@ impl Coordinator {
         self.fenced
     }
 
+    /// How many artifact handles this session still owns: the committed boundary's views plus
+    /// any the world has produced but not yet committed.
+    ///
+    /// A fence drops both sets, which is what "old handles are invalid" means on this side of
+    /// the router. It is exposed so that can be asserted rather than described.
+    pub fn live_view_handles(&self) -> usize {
+        self.views.len() + self.pending_views.len()
+    }
+
     fn agent(&self, agent_id: &Id) -> Option<&AgentSlot> {
         self.agents.iter().find(|a| a.agent_id == *agent_id)
     }
@@ -441,6 +473,20 @@ impl Coordinator {
     ///
     /// Nothing here advances the environment or produces a gameplay reward.
     pub async fn bootstrap(&mut self) -> Outcome<()> {
+        if self.fenced {
+            // Defence in depth: the phase machine refuses `Failed -> Ready(0)` anyway, but a
+            // fenced session should not be sending Hello and Initialize to live workers on the
+            // way to finding that out.
+            return Err(SessionFailure {
+                error: DomainError::before(
+                    ErrorCode::InvalidPhase,
+                    "the epoch is fenced; only a coherent restore resumes play",
+                ),
+                phase: self.phases.phase().label(),
+                detail: "fenced".to_owned(),
+                participant: None,
+            });
+        }
         self.hello_environment().await?;
         for index in 0..self.agents.len() {
             self.hello_agent(index).await?;
@@ -792,12 +838,28 @@ struct Job {
 
 /// Issues one domain call with owned arguments, so it can run in its own task.
 ///
+/// What one bus call came back as.
+///
+/// The expiry is its own variant rather than an error, because `ipc-v1` section 6 treats the
+/// two differently: a refusal is an answer and can fail the epoch, while an expired deadline
+/// is only an *uncertain* call and owes the resolution procedure first. Collapsing them into
+/// one error is how a merely slow participant loses an epoch.
+enum CallOutcome {
+    // Boxed: a `DomainReply` carries its artifact handles, and the other two variants are a
+    // unit and one error. Without the box every caller's `Result` is sized for the reply.
+    Answered(Box<DomainReply>),
+    /// The caller's deadline expired with no terminal reply.
+    Expired,
+    /// The bus or the reply itself refused. This is an answer, even when it is a bad one.
+    Refused(DomainError),
+}
+
+/// Issues one domain call with owned arguments, so it can run in its own task.
+///
 /// The deadline is the caller's, on the caller's monotonic clock. A participant that has died
 /// mid-call is usually reported by the bus itself, because its connection took its
 /// registration with it; this bound is what makes the remaining cases -- a live process that
-/// stopped answering -- a diagnosed outcome rather than a hang. An expired deadline is
-/// deliberately `unknown`: `ipc-v1` section 6 forbids reading a caller-side timeout as proof
-/// that nothing was mutated.
+/// stopped answering -- a diagnosed outcome rather than a hang.
 #[allow(clippy::too_many_arguments)]
 async fn call_owned(
     bus: flybus::Client,
@@ -809,30 +871,46 @@ async fn call_owned(
     request_id: DomainRequestId,
     want: Vec<String>,
     deadline: Duration,
-) -> Result<DomainReply, DomainError> {
+) -> CallOutcome {
     let refs: Vec<(&str, &flybus::Artifact)> =
         attachments.iter().map(|(n, a)| (n.as_str(), a)).collect();
     let call = rpc::call(&bus, &worker, method, scope, params, &refs, request_id, &want);
     match tokio::time::timeout(deadline, call).await {
-        Ok(result) => result,
-        Err(_) => Err(DomainError::new(
-            ErrorCode::BackendFailure,
-            format!(
-                "{method}: {} did not answer within {:?}",
-                worker.worker_id, deadline
-            ),
-            MutationCertainty::Unknown,
-        )),
+        Ok(Ok(reply)) => CallOutcome::Answered(Box::new(reply)),
+        Ok(Err(e)) => CallOutcome::Refused(e),
+        Err(_) => CallOutcome::Expired,
     }
 }
 
+/// The error an unresolved uncertain call finally becomes.
+///
+/// Deliberately `unknown`: `ipc-v1` section 6 forbids reading a caller-side timeout as proof
+/// that nothing was mutated.
+fn unresolved(method: &str, worker: &WorkerRef, budget: Duration) -> DomainError {
+    DomainError::new(
+        ErrorCode::BackendFailure,
+        format!(
+            "{method}: {} never resolved within {:?}; the operation's outcome is unknown",
+            worker.worker_id, budget
+        ),
+        MutationCertainty::Unknown,
+    )
+}
+
 /// One per-agent call's result, in the shape the phase loops read it.
+///
+/// The request is carried back beside the outcome so an uncertain call can be resolved
+/// against its *original* domain request id and body. Recomputing it would be a second
+/// operation, which `step-v1` section 7 forbids.
 struct JobResult {
     agent_id: Id,
-    reply: Result<DomainReply, DomainError>,
+    outcome: CallOutcome,
     scope: Option<Scope>,
     worker: WorkerRef,
     method: &'static str,
+    request_id: DomainRequestId,
+    params: Map<String, Value>,
+    attachments: Vec<(String, flybus::Artifact)>,
     /// How long the call took, for the section 5 percentiles.
     elapsed: Duration,
 }
@@ -859,25 +937,31 @@ impl Coordinator {
         let deadline = if method.ends_with("Initialize") || method == "Worker.Hello" {
             self.deadlines.boot
         } else {
-            self.deadlines.call
+            self.deadlines.probe
         };
         let started = Instant::now();
-        let reply = call_owned(
+        let outcome = call_owned(
             self.bus.clone(),
             worker.clone(),
             method,
             scope.clone(),
-            params,
-            owned,
-            request_id,
+            params.clone(),
+            owned.clone(),
+            request_id.clone(),
             want.to_vec(),
             deadline,
         )
         .await;
         self.metrics.record(method, started.elapsed());
-        let reply = match reply {
-            Ok(reply) => reply,
-            Err(e) => return Err(self.fail_now(e, method)),
+        let reply = match outcome {
+            CallOutcome::Answered(reply) => *reply,
+            // Uncertain, not failed: section 6 owes this call its resolution first.
+            CallOutcome::Expired => {
+                return self
+                    .resolve(worker, method, scope.clone(), params, owned, request_id, want)
+                    .await;
+            }
+            CallOutcome::Refused(e) => return Err(self.fail_now(e, method)),
         };
         self.check_reply(worker, &reply, &scope, method)?;
         match reply.result() {
@@ -945,9 +1029,22 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Resolves an uncertain operation: a fresh bus call with the original domain request id
-    /// and body, pinned to the same service incarnation. It never issues a new request id and
-    /// never recomputes a decision.
+    /// The `ipc-v1` section 6 resolution of an uncertain call.
+    ///
+    /// Step 2 of that section: while the same bus, service and worker incarnation still exist,
+    /// issue a fresh bus call carrying the **original** domain request id and body with its
+    /// retained input attachments. The worker's own deduplication answers it from the record
+    /// of the first attempt, so this queries rather than repeats: it never issues a new request
+    /// id, never recomputes a decision, and never becomes a second batch.
+    ///
+    /// Step 3: only a matching terminal result resolves it. `IN_PROGRESS` means the original is
+    /// still running and no second mutation was started, so the procedure waits and asks again.
+    /// An expiry inside the procedure is likewise not an answer.
+    ///
+    /// Step 4: the epoch fails when the routes or ownership were lost, the incarnation changed,
+    /// the retained result expired, or the procedure's own bounded budget ran out. Those bounds
+    /// are [`Deadlines`] and are explicit, because section 6 refuses an implicit best-effort
+    /// policy here.
     #[allow(clippy::too_many_arguments)]
     async fn resolve(
         &mut self,
@@ -963,9 +1060,17 @@ impl Coordinator {
         // starts no second mutation. Waiting and asking again is the resolution, not a retry
         // of the operation.
         self.blame(Some(worker.worker_id.clone()));
-        let deadline = self.deadlines.call;
-        for attempt in 0..200u32 {
-            let reply = call_owned(
+        let probe = self.deadlines.probe;
+        let budget = self.deadlines.resolve;
+        let attempts = self.deadlines.resolve_attempts;
+        let started = Instant::now();
+        self.resolutions += 1;
+        self.audit.push(format!("resolve:{}:{method}", worker.worker_id));
+        for _ in 0..attempts {
+            if started.elapsed() >= budget {
+                break;
+            }
+            let outcome = call_owned(
                 self.bus.clone(),
                 worker.clone(),
                 method,
@@ -974,12 +1079,19 @@ impl Coordinator {
                 attachments.clone(),
                 request_id.clone(),
                 want.to_vec(),
-                deadline,
+                probe,
             )
             .await;
-            let reply = match reply {
-                Ok(reply) => reply,
-                Err(e) => return Err(self.fail_now(e, method)),
+            let reply = match outcome {
+                CallOutcome::Answered(reply) => *reply,
+                // Still no answer. The original may simply be slow; asking again is the
+                // procedure, and the request id it carries is unchanged.
+                CallOutcome::Expired => {
+                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                    continue;
+                }
+                // Step 4: routes or ownership lost, or the incarnation is gone.
+                CallOutcome::Refused(e) => return Err(self.fail_now(e, method)),
             };
             self.check_reply(worker, &reply, &scope, method)?;
             match reply.result() {
@@ -988,21 +1100,14 @@ impl Coordinator {
                     return Ok(reply);
                 }
                 Err(e) if e.code == ErrorCode::InProgress => {
-                    let _ = attempt;
                     self.in_progress_replies += 1;
                     tokio::time::sleep(std::time::Duration::from_millis(2)).await;
                 }
+                // A terminal refusal, including RESULT_EXPIRED: definite, so the epoch fails.
                 Err(e) => return Err(self.fail_now(e, method)),
             }
         }
-        Err(self.fail_now(
-            DomainError::new(
-                ErrorCode::BackendFailure,
-                "the uncertain operation never resolved",
-                MutationCertainty::Unknown,
-            ),
-            method,
-        ))
+        Err(self.fail_now(unresolved(method, worker, budget), method))
     }
 
     /// Sends the same domain request again on a fresh bus call and reports what came back,
@@ -1019,7 +1124,7 @@ impl Coordinator {
         expected: Option<&Value>,
         what: &str,
     ) {
-        let deadline = self.deadlines.call;
+        let deadline = self.deadlines.probe;
         let reply = call_owned(
             self.bus.clone(),
             worker.clone(),
@@ -1033,7 +1138,7 @@ impl Coordinator {
         )
         .await;
         let outcome = match reply {
-            Ok(reply) => match reply.result() {
+            CallOutcome::Answered(reply) => match reply.result() {
                 Ok(result) => InjectionOutcome {
                     what: what.to_owned(),
                     code: None,
@@ -1045,9 +1150,16 @@ impl Coordinator {
                     identical: false,
                 },
             },
-            Err(e) => InjectionOutcome {
+            CallOutcome::Refused(e) => InjectionOutcome {
                 what: what.to_owned(),
                 code: Some(e.code),
+                identical: false,
+            },
+            // A probe is a diagnostic, not a phase of the transaction: it reports what it saw
+            // and never resolves anything on the session's behalf.
+            CallOutcome::Expired => InjectionOutcome {
+                what: what.to_owned(),
+                code: Some(ErrorCode::BackendFailure),
                 identical: false,
             },
         };
@@ -1071,7 +1183,7 @@ impl Coordinator {
             _ => Map::new(),
         };
         let request_id = self.serials.next(&worker.service);
-        let reply = call_owned(
+        let outcome = call_owned(
             self.bus.clone(),
             worker.clone(),
             method,
@@ -1080,10 +1192,14 @@ impl Coordinator {
             Vec::new(),
             request_id,
             Vec::new(),
-            self.deadlines.call,
+            self.deadlines.probe,
         )
-        .await?;
-        reply.result().cloned()
+        .await;
+        match outcome {
+            CallOutcome::Answered(reply) => reply.result().cloned(),
+            CallOutcome::Refused(e) => Err(e),
+            CallOutcome::Expired => Err(unresolved(method, worker, self.deadlines.probe)),
+        }
     }
 
     /// The sensory input one agent is permitted to consume at `boundary`.
@@ -1102,8 +1218,10 @@ impl Coordinator {
     }
 
     /// Runs one set of per-agent jobs in the configured dispatch order.
+    /// A job's deadline is the section 6 probe, not the failure point: an expiry here starts
+    /// the resolution, which the phase loops run one at a time with the session in hand.
     async fn run_jobs(&mut self, jobs: Vec<Job>, order: DispatchOrder) -> Vec<JobResult> {
-        let deadline = self.deadlines.call;
+        let deadline = self.deadlines.probe;
         let mut out = Vec::new();
         match order {
             DispatchOrder::Sequential | DispatchOrder::Reversed => {
@@ -1113,24 +1231,27 @@ impl Coordinator {
                 }
                 for job in jobs {
                     let started = Instant::now();
-                    let reply = call_owned(
+                    let outcome = call_owned(
                         self.bus.clone(),
                         job.worker.clone(),
                         job.method,
                         job.scope.clone(),
-                        job.params,
-                        job.attachments,
-                        job.request_id,
+                        job.params.clone(),
+                        job.attachments.clone(),
+                        job.request_id.clone(),
                         Vec::new(),
                         deadline,
                     )
                     .await;
                     out.push(JobResult {
                         agent_id: job.agent_id,
-                        reply,
+                        outcome,
                         scope: job.scope,
                         worker: job.worker,
                         method: job.method,
+                        request_id: job.request_id,
+                        params: job.params,
+                        attachments: job.attachments,
                         elapsed: started.elapsed(),
                     });
                 }
@@ -1145,24 +1266,27 @@ impl Coordinator {
                     let method = job.method;
                     tasks.push(tokio::spawn(async move {
                         let started = Instant::now();
-                        let reply = call_owned(
+                        let outcome = call_owned(
                             bus,
                             job.worker,
                             job.method,
                             job.scope,
-                            job.params,
-                            job.attachments,
-                            job.request_id,
+                            job.params.clone(),
+                            job.attachments.clone(),
+                            job.request_id.clone(),
                             Vec::new(),
                             deadline,
                         )
                         .await;
                         JobResult {
                             agent_id,
-                            reply,
+                            outcome,
                             scope,
                             worker,
                             method,
+                            request_id: job.request_id,
+                            params: job.params,
+                            attachments: job.attachments,
                             elapsed: started.elapsed(),
                         }
                     }));
@@ -1414,13 +1538,31 @@ impl Coordinator {
         }
         let results = self.run_jobs(jobs, self.dispatch).await;
         let mut prepared = Vec::new();
-        for JobResult { agent_id, reply, scope, worker, method, elapsed: _ } in results {
+        for job in results {
+            let JobResult {
+                agent_id,
+                outcome,
+                scope,
+                worker,
+                method,
+                request_id,
+                params,
+                attachments,
+                elapsed: _,
+            } = job;
             self.blame(Some(agent_id.clone()));
-            let reply = match reply {
-                Ok(reply) => reply,
+            let reply = match outcome {
+                CallOutcome::Answered(reply) => *reply,
+                // Uncertain: the agent may be slow rather than gone. Query the same operation
+                // against the same incarnation before the epoch is failed. A Prepare that
+                // already ran answers from its own record, so no tick is repeated.
+                CallOutcome::Expired => {
+                    self.resolve(&worker, method, scope.clone(), params, attachments, request_id, &[])
+                        .await?
+                }
                 // Some agents are already Prepared. Dispatch stops and the epoch fails; a
                 // prepared agent is never asked to prepare again.
-                Err(e) => return Err(self.fail_now(e, method)),
+                CallOutcome::Refused(e) => return Err(self.fail_now(e, method)),
             };
             self.check_reply(&worker, &reply, &scope, method)?;
             let decision: PreparedDecision = match reply.parse() {
@@ -1600,7 +1742,7 @@ impl Coordinator {
         let want = vec!["view.arena".to_owned()];
         self.audit.push(format!("advance:{k}"));
         self.blame(Some(worker.worker_id.clone()));
-        let advance_deadline = self.deadlines.call;
+        let advance_deadline = self.deadlines.probe;
         let advance_started = Instant::now();
 
         let injected = self.injections.at_step == k;
@@ -1672,7 +1814,7 @@ impl Coordinator {
             )
             .await?
         } else {
-            let reply = call_owned(
+            let outcome = call_owned(
                 self.bus.clone(),
                 worker.clone(),
                 "Environment.Advance",
@@ -1685,14 +1827,32 @@ impl Coordinator {
             )
             .await;
             self.metrics.record("Environment.Advance", advance_started.elapsed());
-            let reply = match reply {
-                Ok(reply) => reply,
-                Err(e) => return Err(self.fail_now(e, "advance")),
-            };
-            self.check_reply(&worker, &reply, &Some(scope.clone()), "advance")?;
-            match reply.result() {
-                Ok(_) => reply,
-                Err(e) => return Err(self.fail_now(e, "advance")),
+            match outcome {
+                CallOutcome::Answered(reply) => {
+                    let reply = *reply;
+                    self.check_reply(&worker, &reply, &Some(scope.clone()), "advance")?;
+                    match reply.result() {
+                        Ok(_) => reply,
+                        Err(e) => return Err(self.fail_now(e, "advance")),
+                    }
+                }
+                // `step-v1` section 7 is imperative for this row: "Advance acknowledgment
+                // lost | Query/retransmit same request to same incarnation; never new batch."
+                // The resolution carries the original batch id and controls, so the world is
+                // asked about the operation it already has rather than given another one.
+                CallOutcome::Expired => {
+                    self.resolve(
+                        &worker,
+                        "Environment.Advance",
+                        Some(scope.clone()),
+                        params.clone(),
+                        Vec::new(),
+                        request_id.clone(),
+                        &want,
+                    )
+                    .await?
+                }
+                CallOutcome::Refused(e) => return Err(self.fail_now(e, "advance")),
             }
         };
 
@@ -1957,10 +2117,44 @@ impl Coordinator {
         let mut commits = Vec::new();
         let mut first_failure = None;
         let mut blamed: Option<Id> = None;
-        for JobResult { agent_id, reply, scope, worker, method, elapsed: _ } in results {
+        for job in results {
+            let JobResult {
+                agent_id,
+                outcome,
+                scope,
+                worker,
+                method,
+                request_id,
+                params,
+                attachments: job_attachments,
+                elapsed: _,
+            } = job;
             self.blame(Some(agent_id.clone()));
-            match reply {
-                Ok(reply) => {
+            // Uncertain: resolve the same Commit against the same incarnation first. A Commit
+            // that already ran replays its cached reply, so no reward is applied twice.
+            let outcome = match outcome {
+                CallOutcome::Expired => {
+                    match self
+                        .resolve(
+                            &worker,
+                            method,
+                            scope.clone(),
+                            params,
+                            job_attachments,
+                            request_id,
+                            &[],
+                        )
+                        .await
+                    {
+                        Ok(reply) => CallOutcome::Answered(Box::new(reply)),
+                        Err(failure) => return Err(failure),
+                    }
+                }
+                other => other,
+            };
+            match outcome {
+                CallOutcome::Answered(reply) => {
+                    let reply = *reply;
                     self.check_reply(&worker, &reply, &scope, method)?;
                     match reply.result() {
                         Ok(_) => {}
@@ -2003,12 +2197,13 @@ impl Coordinator {
                     self.blame(None);
                     commits.push((agent_id, result));
                 }
-                Err(e) => {
+                CallOutcome::Refused(e) => {
                     if first_failure.is_none() {
                         blamed = Some(agent_id.clone());
                     }
                     first_failure = Some(first_failure.unwrap_or(e));
                 }
+                CallOutcome::Expired => unreachable!("an expiry was resolved just above"),
             }
         }
         if let Some(error) = first_failure {

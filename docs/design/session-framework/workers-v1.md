@@ -99,6 +99,16 @@ interface AgentInitializeResult {
 }
 ```
 
+**Amendment, 2026-09-22 (SESSION-02).** `HelloResult.limits` gains `workerThreads`, an
+integer >=1 reporting the allocation the launcher started that worker within, because
+"within launcher allocation" above had no wire-level proof: the launcher passes the number to
+the worker out of band, and a coordinator that is not also its own launcher had no contract
+path to it. Hello is where a worker already proves its identity and reports its limits, so the
+allocation belongs there. A caller asking for more than the worker reports is refused with
+`BUSY` before the model is constructed, which this section already required; the amendment
+only makes the number visible to whoever must respect it. It changes `contractDigest`, which
+[session RPC](ipc-v1.md) section 4 already provides for.
+
 The profile fixes warm-up/calibration behavior and supported schema versions. Validate inputs
 and required roles before model construction. Install the initial sensory input, warm the
 brain with learning disabled, calibrate the fixed readout and establish Ready(0). Do not

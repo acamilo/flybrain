@@ -36,6 +36,8 @@ pub struct EnvironmentConfig {
     /// The world's fixed reduced step duration. 60 Hz is `1/60` s.
     pub step_duration: RationalNs,
     pub ports: Vec<Id>,
+    /// The thread allocation the launcher started this worker within.
+    pub worker_threads: usize,
     pub faults: EnvironmentFaults,
 }
 
@@ -423,6 +425,10 @@ impl WorkerEndpoint for CounterEnvironment {
 
     fn status_cell(&self) -> StatusCell {
         self.status.clone()
+    }
+
+    fn worker_threads(&self) -> u64 {
+        self.config.worker_threads as u64
     }
 
     fn methods(&self) -> Vec<&'static str> {

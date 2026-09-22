@@ -30,6 +30,7 @@ fly-session <command> [options]
   agent          serve one agent worker on a launcher-created endpoint
   environment    serve the environment worker on a launcher-created endpoint
   measure        compare the execution modes and print the measurement table
+  measure-row    measure one row and print it as JSON (one child per row)
 
 Worker options (agent and environment):
   --socket PATH        the launcher's endpoint for this participant
@@ -48,9 +49,14 @@ Worker options (agent and environment):
 
 Measure options:
   --steps N            transitions per run (default 200)
+  --warmup-steps N     transitions run before sampling starts (default 10)
   --agents 1,2,4       agent counts to compare (default 1,2,4)
   --modes LIST         in-process, thread, process (default all three)
   --worker-threads N   within-agent worker threads (default 1)
+
+measure-row options: --mode NAME --agents N, plus the measure options above. Each row runs in
+a process of its own, so its memory peak is its own rather than the peak of the rows before
+it.
 ";
 
 /// The binary's entry point.
@@ -65,6 +71,7 @@ pub fn main() -> ExitCode {
     let result = match command.as_str() {
         "agent" | "environment" => Options::parse(&rest).and_then(|o| serve(&command, &o)),
         "measure" => Options::parse(&rest).and_then(|o| measure(&o)),
+        "measure-row" => Options::parse(&rest).and_then(|o| measure_row(&o)),
         "--help" | "-h" | "help" => {
             print!("{USAGE}");
             return ExitCode::SUCCESS;
@@ -215,10 +222,10 @@ fn parse_ports(value: &str) -> Result<Vec<Id>, String> {
         .collect()
 }
 
-/// Runs the execution-mode comparison and prints its table.
-fn measure(options: &Options) -> Result<(), String> {
+fn measure_config(options: &Options) -> Result<crate::measure::MeasureConfig, String> {
     let mut config = crate::measure::MeasureConfig {
         steps: options.u64("steps", 200)?,
+        warmup_steps: options.u64("warmup-steps", 10)?,
         worker_threads: options.usize("worker-threads", 1)?,
         ..crate::measure::MeasureConfig::default()
     };
@@ -233,19 +240,43 @@ fn measure(options: &Options) -> Result<(), String> {
         config.modes = list
             .split(',')
             .filter(|p| !p.is_empty())
-            .map(|p| match p {
-                "in-process" => Ok(ExecutionMode::InProcess),
-                "thread" => Ok(ExecutionMode::Thread),
-                "process" => Ok(ExecutionMode::Process),
-                other => Err(format!("--modes: {other:?}")),
-            })
+            .map(parse_mode)
             .collect::<Result<Vec<ExecutionMode>, String>>()?;
     }
+    Ok(config)
+}
+
+fn parse_mode(name: &str) -> Result<ExecutionMode, String> {
+    match name {
+        "in-process" => Ok(ExecutionMode::InProcess),
+        "thread" => Ok(ExecutionMode::Thread),
+        "process" => Ok(ExecutionMode::Process),
+        other => Err(format!("unknown mode {other:?}")),
+    }
+}
+
+/// Runs the execution-mode comparison and prints its table.
+///
+/// One child per row: a peak-memory figure is only that row's if nothing else ran in the
+/// process that produced it.
+fn measure(options: &Options) -> Result<(), String> {
+    let config = measure_config(options)?;
+    let program = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
+    let rows = crate::measure::run(&config, &program)?;
+    print!("{}", crate::measure::table(&rows));
+    Ok(())
+}
+
+/// Measures exactly one row and prints it as one JSON object. The parent's child.
+fn measure_row(options: &Options) -> Result<(), String> {
+    let config = measure_config(options)?;
+    let mode = parse_mode(options.required("mode")?)?;
+    let agents = options.usize("agents", 2)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("runtime: {e}"))?;
-    let rows = runtime.block_on(crate::measure::run(&config))?;
-    print!("{}", crate::measure::table(&rows));
+    let row = runtime.block_on(crate::measure::one(&config, mode, agents))?;
+    println!("{}", row.to_json());
     Ok(())
 }

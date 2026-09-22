@@ -9,10 +9,18 @@
 //! question this slice has to answer is what a process boundary costs, not how fast anything
 //! is. Pacing is switched off for the run, so a transition follows the one before it as fast
 //! as the participants answer and the samples are work rather than sleep.
+//!
+//! **Every row runs in a process of its own.** The coordinator's memory figure is a peak --
+//! `VmHWM` never falls -- so several rows sharing one process would each report where that
+//! process had already been rather than what its own mode costs, and the column would order
+//! itself by row position instead of by mode. The parent spawns one `measure-row` child per
+//! row and reads its result back, so each figure belongs to the row that produced it.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+use serde_json::{Value, json};
 
 use crate::coordinator::DispatchOrder;
 use crate::harness::{AgentSpec, HarnessConfig, SessionHarness, Via};
@@ -108,29 +116,169 @@ pub struct Row {
     pub sealed_final: usize,
     pub store_bytes_max: u64,
     pub store_bytes_final: u64,
-    /// One sealed frame per boundary, boundary zero included.
-    pub frames_produced: u64,
+    /// Frames this run actually observed, counted from the behaviour trace: every sensory
+    /// view of every transition, plus the one the environment sealed for boundary zero.
+    ///
+    /// Counted rather than calculated, so a backend that sealed two frames per boundary would
+    /// show up here instead of being hidden by arithmetic.
+    pub frames_observed: u64,
 }
 
 impl Row {
-    /// Frames the store collected: produced, minus the ones still owned at the end.
+    /// Frames the store collected: observed, minus the ones still owned at the end.
     pub fn collected(&self) -> u64 {
-        self.frames_produced.saturating_sub(self.sealed_final as u64)
+        self.frames_observed.saturating_sub(self.sealed_final as u64)
+    }
+
+    /// The row as one JSON object, for the child that measured it to hand back.
+    pub fn to_json(&self) -> Value {
+        let p = |x: &Percentiles| {
+            json!({"count": x.count, "p50": x.p50_ns, "p95": x.p95_ns, "p99": x.p99_ns,
+                   "max": x.max_ns})
+        };
+        json!({
+            "mode": self.mode.label(),
+            "agents": self.agents,
+            "workerThreads": self.worker_threads,
+            "physicalCores": self.physical_cores,
+            "budgetTotal": self.budget_total,
+            "budgetUsed": self.budget_used,
+            "steps": self.steps,
+            "prepare": p(&self.prepare),
+            "commit": p(&self.commit),
+            "advance": p(&self.advance),
+            "status": p(&self.status),
+            "step": p(&self.step),
+            "coordinatorPeakRssKib": self.coordinator_peak_rss_kib,
+            "participantsPeakRssKib": self.participants_peak_rss_kib,
+            "ownersMax": self.owners_max,
+            "ownersFinal": self.owners_final,
+            "artifactRootsMax": self.artifact_roots_max,
+            "queuedMax": self.queued_max,
+            "sealedMax": self.sealed_max,
+            "sealedFinal": self.sealed_final,
+            "storeBytesMax": self.store_bytes_max,
+            "storeBytesFinal": self.store_bytes_final,
+            "framesObserved": self.frames_observed,
+        })
+    }
+
+    /// Reads back what a `measure-row` child printed.
+    pub fn from_json(value: &Value) -> Result<Row, String> {
+        let u = |name: &str| -> Result<u64, String> {
+            value
+                .get(name)
+                .and_then(Value::as_u64)
+                .ok_or_else(|| format!("measure row: {name} is missing or not a number"))
+        };
+        let p = |name: &str| -> Result<Percentiles, String> {
+            let v = value
+                .get(name)
+                .ok_or_else(|| format!("measure row: {name} is missing"))?;
+            let f = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or_default();
+            Ok(Percentiles {
+                count: f("count") as usize,
+                p50_ns: f("p50"),
+                p95_ns: f("p95"),
+                p99_ns: f("p99"),
+                max_ns: f("max"),
+            })
+        };
+        let mode = match value.get("mode").and_then(Value::as_str) {
+            Some("in-process") => ExecutionMode::InProcess,
+            Some("thread") => ExecutionMode::Thread,
+            Some("process") => ExecutionMode::Process,
+            other => return Err(format!("measure row: unknown mode {other:?}")),
+        };
+        Ok(Row {
+            mode,
+            agents: u("agents")? as usize,
+            worker_threads: u("workerThreads")? as usize,
+            physical_cores: u("physicalCores")? as usize,
+            budget_total: u("budgetTotal")? as usize,
+            budget_used: u("budgetUsed")? as usize,
+            steps: u("steps")?,
+            prepare: p("prepare")?,
+            commit: p("commit")?,
+            advance: p("advance")?,
+            status: p("status")?,
+            step: p("step")?,
+            coordinator_peak_rss_kib: u("coordinatorPeakRssKib")?,
+            participants_peak_rss_kib: u("participantsPeakRssKib")?,
+            owners_max: u("ownersMax")? as usize,
+            owners_final: u("ownersFinal")? as usize,
+            artifact_roots_max: u("artifactRootsMax")?,
+            queued_max: u("queuedMax")? as usize,
+            sealed_max: u("sealedMax")? as usize,
+            sealed_final: u("sealedFinal")? as usize,
+            store_bytes_max: u("storeBytesMax")?,
+            store_bytes_final: u("storeBytesFinal")?,
+            frames_observed: u("framesObserved")?,
+        })
     }
 }
 
-/// Runs the comparison. Every row is one composition in one mode.
-pub async fn run(config: &MeasureConfig) -> Result<Vec<Row>, String> {
+/// Runs the comparison, one child process per row.
+///
+/// `program` is this crate's binary; each row is measured by a `measure-row` invocation of it
+/// so that the row's memory peak is its own and not the accumulated peak of the rows before
+/// it. The order of the rows therefore cannot change any of their numbers.
+pub fn run(config: &MeasureConfig, program: &std::path::Path) -> Result<Vec<Row>, String> {
     let mut rows = Vec::new();
     for mode in &config.modes {
         for agents in &config.agent_counts {
-            rows.push(one(config, *mode, *agents).await?);
+            rows.push(row_in_a_child(config, program, *mode, *agents)?);
         }
     }
     Ok(rows)
 }
 
-async fn one(config: &MeasureConfig, mode: ExecutionMode, agents: usize) -> Result<Row, String> {
+fn row_in_a_child(
+    config: &MeasureConfig,
+    program: &std::path::Path,
+    mode: ExecutionMode,
+    agents: usize,
+) -> Result<Row, String> {
+    let output = std::process::Command::new(program)
+        .arg("measure-row")
+        .arg("--mode")
+        .arg(mode.label())
+        .arg("--agents")
+        .arg(agents.to_string())
+        .arg("--steps")
+        .arg(config.steps.to_string())
+        .arg("--warmup-steps")
+        .arg(config.warmup_steps.to_string())
+        .arg("--worker-threads")
+        .arg(config.worker_threads.to_string())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("measure-row {}: {e}", mode.label()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "measure-row {} {agents}: exited {}: {}",
+            mode.label(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text
+        .lines()
+        .rev()
+        .find(|l| l.trim_start().starts_with('{'))
+        .ok_or_else(|| format!("measure-row {}: no row on stdout", mode.label()))?;
+    let value: Value = serde_json::from_str(line)
+        .map_err(|e| format!("measure-row {}: unreadable row: {e}", mode.label()))?;
+    Row::from_json(&value)
+}
+
+/// Measures exactly one row, in this process. The `measure-row` subcommand's body.
+pub async fn one(
+    config: &MeasureConfig,
+    mode: ExecutionMode,
+    agents: usize,
+) -> Result<Row, String> {
     let dir = std::env::temp_dir().join(format!(
         "fly-session-measure-{}-{agents}-{}",
         mode.label(),
@@ -247,7 +395,15 @@ async fn measure_in(
         sealed_final: harness.router_stats().sealed_artifacts,
         store_bytes_max,
         store_bytes_final: harness.router_stats().store_bytes,
-        frames_produced: config.steps + config.warmup_steps + 1,
+        // Counted from the behaviour trace: every sensory view of every transition this run
+        // recorded, plus the frame the environment sealed for boundary zero.
+        frames_observed: 1 + harness
+            .coordinator
+            .trace
+            .transitions
+            .iter()
+            .map(|t| t.behaviour.observation_boundaries.len() as u64)
+            .sum::<u64>(),
     };
     harness.shutdown().await;
     Ok(row)
@@ -261,7 +417,8 @@ pub fn table(rows: &[Row]) -> String {
     );
     if let Some(first) = rows.first() {
         out.push_str(&format!(
-            "Physical cores: {}. Coordinator reservation: 1 thread.\n\n",
+            "Physical cores: {}. Coordinator reservation: 1 thread. Every row was measured in \
+a process of its own, so no figure depends on the order of the rows.\n\n",
             first.physical_cores
         ));
     }
@@ -298,7 +455,7 @@ Commit p50/p95/p99 us | Advance p50/p95/p99 us | Status p50/p99 us | step p50/p9
     out.push('\n');
     out.push_str(
         "| mode | agents | coordinator peak RSS KiB | participant peak RSS KiB | owners max/final | \
-roots max | queued max | sealed max/final | store bytes max/final | frames produced/collected |\n",
+roots max | queued max | sealed max/final | store bytes max/final | frames observed/collected |\n",
     );
     out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
     for r in rows {
@@ -316,7 +473,7 @@ roots max | queued max | sealed max/final | store bytes max/final | frames produ
             r.sealed_final,
             r.store_bytes_max,
             r.store_bytes_final,
-            r.frames_produced,
+            r.frames_observed,
             r.collected(),
         ));
     }

@@ -2802,7 +2802,8 @@
         ],
         "limits": {
           "maxAgents": 4,
-          "maxPorts": 4
+          "maxPorts": 4,
+          "workerThreads": 1
         }
       },
       "reason": "an agent must advertise agent-step-v1"
@@ -2823,7 +2824,8 @@
         ],
         "limits": {
           "maxAgents": 5,
-          "maxPorts": 4
+          "maxPorts": 4,
+          "workerThreads": 1
         }
       },
       "reason": "the first composition allows four agents"
@@ -2844,7 +2846,8 @@
         ],
         "limits": {
           "maxAgents": 4,
-          "maxPorts": 4
+          "maxPorts": 4,
+          "workerThreads": 1
         }
       },
       "reason": "v1 selects major 1"

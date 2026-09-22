@@ -64,12 +64,15 @@ The launcher is the configured supervisor. It owns four things:
   its router, and one allocation per participant. A request the total cannot cover is refused
   as `BUSY` before anything starts. `Agent.Initialize` carries exactly the allocation the
   launcher handed out, and an agent refuses an Initialize asking for more than its own, which
-  is what `workers-v1` means by "within launcher allocation".
+  is what `workers-v1` means by "within launcher allocation". The allocation is on the wire,
+  not only in the launcher's own record: `HelloResult.limits.workerThreads` reports it, under
+  the dated 2026-09-22 amendment to `workers-v1` section 2 that this slice added, so a
+  coordinator that is not also its own launcher can read the bound it has to respect.
 - **Identity.** The bus client id, the service name, the worker id and an agent's port binding
   are launcher configuration. The launcher says `Worker.Hello` with the identity it configured
-  and refuses anything that answers as another worker, role or incarnation -- before the
-  coordinator has pinned a registration. The registration the coordinator pins is the one that
-  hello returned, never one that was assumed.
+  and refuses anything that answers as another worker, role, incarnation or thread allocation
+  -- before the coordinator has pinned a registration. The registration the coordinator pins
+  is the one that hello returned, never one that was assumed.
 - **Health.** `Worker.Status` on the supervisor's own monotonic clock, with the `ipc-v1`
   section 6 prototype budgets: probe at two seconds, fail at ten, a separate budget for boot.
   A status answer never waits for a mutation, so a busy participant is still a healthy one.
@@ -112,10 +115,19 @@ fly-session measure     --steps 300 --agents 1,2,4
   participant it is attributed to, and failing fences the session: the committed boundary
   stops moving, the artifact handles are dropped, and no further transition or publication is
   allowed. Lifting the fence is a coherent group restore, which is STATE-01's.
-- **A bounded diagnosed outcome.** A caller-side deadline on every domain call, on the
-  coordinator's own clock, so a participant that dies or stops answering produces a typed
-  failure naming it rather than a hang. An expired deadline is `unknown`, never `none`: a
-  caller-side timeout is not evidence that nothing was mutated.
+- **The `ipc-v1` section 6 procedure, on the path that reaches it.** A call that goes without
+  a terminal reply for the probe budget is *uncertain*, not failed. The coordinator then
+  queries the same operation -- a fresh bus call carrying the original domain request id and
+  body, pinned to the same incarnation, with its retained attachments -- for a bounded number
+  of attempts within a bounded budget, absorbing `IN_PROGRESS` while the original is still
+  running. Only when that ends without a definite answer, or the incarnation is gone, or the
+  retained result expired, is the epoch failed. A merely slow participant therefore finishes
+  its step, and `step-v1` section 7's "query/retransmit same request to same incarnation;
+  never new batch" is the same code path for a slow Advance.
+- **A bounded diagnosed outcome.** Those budgets are the coordinator's own, on its own clock,
+  so a participant that dies or stops answering produces a typed failure naming it rather than
+  a hang. An expired deadline is `unknown`, never `none`: a caller-side timeout is not
+  evidence that nothing was mutated.
 - **Domain deduplication over bus calls.** Same key, request and body replays its cached
   reply with fresh delivery ownership over retained artifacts; a changed body is `CONFLICT`; a
   duplicate of a running operation is `IN_PROGRESS` for that bus call while the original
@@ -192,20 +204,34 @@ machine and no host capacity claim follows from any of them**; they exist so the
 can be compared with each other. Pacing is off for the run, so the samples are work rather
 than sleep, and the run report carries the full table.
 
+Every row runs in a child process of its own. A peak-memory figure is a high-water mark that
+never falls, so rows sharing one process would each report where that process had already
+been: the column would sort itself by row position rather than by mode, and the mode ranking
+would reverse when the rows were reordered. One child per row is what makes the number belong
+to the row.
+
 What the numbers said on a four-core development box, at 300 transitions per row:
 
-- A process boundary costs little at the median and shows up in the tail. Two agents: the
-  critical path was about 7.8 ms p50 in-process, 8.6 ms on threads and 12.7 ms across
-  processes, while p99 went 12.4 / 12.7 / 26.0 ms. The medians are within a small multiple of
-  each other; the tails are where a scheduler with more runnable threads than cores appears.
+- A process boundary costs about a fifth of the critical path at the median. Two agents: 10.0
+  ms p50 in-process, 12.2 ms on threads, 12.1 ms across processes, with p99 at 21.4 / 19.4 /
+  21.4 ms. The dedicated-thread and separate-process variants are within noise of each other,
+  so what is being paid for is leaving the coordinator's runtime, not crossing a socket.
+- `Worker.Status` -- an RPC answered from a cell with no domain work behind it -- is the
+  router and transport floor: 0.60 / 0.89 / 1.17 ms p50 for the three modes at two agents.
 - Four agents needs six threads, which that box does not have, and every mode's tail widens
-  together. That is the budget being honest, not a property of the process split.
-- Memory is the clearest difference: one coordinator at about 14 MiB peak RSS plus roughly
-  5.6 MiB per participant process, against a single 11 MiB process for the threaded variant.
-- Ownership and queues stayed bounded in every mode and at every agent count: at most 15 live
-  owners, 11 artifact roots and one queue entry per agent, with the store holding two sealed
-  frames and 128 bytes at rest. Of 311 frames produced, 309 were collected -- the current and
-  previous boundary are the two that are still owned.
+  together. That is the budget being honest about oversubscription, not a property of the
+  process split.
+- Memory is where the split really shows, but not where the first version of this note said.
+  The coordinator's own peak is roughly the same in all three modes and is *lowest* in process
+  mode -- 8.9 / 9.2 / 7.9 MiB at one agent -- because the workers are no longer inside it.
+  What the split costs is the children: about 5.7 MiB per participant process, so the whole
+  composition is roughly 9 MiB on threads against 39 MiB across processes at four agents.
+- Ownership, collection and queues stayed bounded in every mode and at every agent count: at
+  most 15 live owners, 11 artifact roots and one queued entry per agent, with the store at
+  rest holding two sealed frames and 128 bytes. Of 311 frames observed, 309 were collected --
+  the two still owned are the current and previous boundary. The frame count is taken from the
+  behaviour trace's observation boundaries rather than calculated from the step count, so a
+  backend sealing two frames per boundary would show up instead of being hidden.
 
 ## Tests
 
@@ -216,10 +242,15 @@ cargo build -p fly-session --bin fly-session                 # the worker binary
 cargo run -p fly-session --example processes                 # the same session in all three modes
 ```
 
-Every integration test runs over both transports, through the same router code: all but one
-are generated twice by `both_transports!`, and
-`sequential_concurrent_and_reversed_orders_agree` walks both transports inside one test
-because it compares their behaviour traces against each other.
+The three integration suites do not all run over both transports, and cannot:
+
+- `tests/session.rs` and `tests/failures.rs` are in-process compositions and run over both,
+  through the same router code. All but one test in them is generated twice by
+  `both_transports!`; `sequential_concurrent_and_reversed_orders_agree` walks both transports
+  inside one test, because it compares their behaviour traces against each other.
+- `tests/processes.rs` runs over the Unix socket only, in all three execution modes. A
+  participant in a process of its own has no in-memory transport to reach the router by, so
+  the mode is the axis that suite varies and the transport is fixed.
 
 - `tests/session.rs`: one world advance per complete batch; every agent Prepared before the
   advance; one task evaluation per transition; every agent committed before the next Prepare or
@@ -229,7 +260,8 @@ because it compares their behaviour traces against each other.
   during a session; and sequential, concurrent and reversed dispatch producing one behaviour
   trace.
 - `tests/processes.rs`: the SESSION-02 acceptance bullets, each generated once per execution
-  mode -- a delayed one-agent result holding the world, a worker or helper death with a
+  mode -- a slow participant resolved rather than failed, a delayed one-agent result holding
+  the world, a worker or helper death with a
   bounded diagnosed outcome, an uncertain Advance that creates no second batch, a partial
   Commit that permits no next-step play, supervision and identity, and the launcher thread
   allocation -- plus the sequential/reversed/parallel trace comparison across all three modes

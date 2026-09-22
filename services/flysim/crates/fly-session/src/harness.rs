@@ -390,18 +390,19 @@ impl SessionHarness {
         id(ENV_WORKER)
     }
 
-    /// The agent worker's progress counter, which is its fake model's mutation count.
+    /// The agent worker's progress counter, which is its fake model's mutation count, when
+    /// this process is where that counter lives.
     ///
-    /// A participant in another process keeps its counter there; use
-    /// [`SessionHarness::progress_of`], which reads it over the bus in every mode.
-    pub fn agent_mutations(&self, agent_id: &Id) -> u64 {
+    /// `None` means "not observable from here", not "nothing happened": a participant with a
+    /// process of its own keeps its counter there. [`SessionHarness::progress_of`] reads it
+    /// over the bus and works in every mode.
+    pub fn agent_mutations(&self, agent_id: &Id) -> Option<u64> {
         self.launcher
             .worker(agent_id)
             .and_then(crate::launcher::LaunchedWorker::progress_counter)
-            .unwrap_or_default()
     }
 
-    pub fn environment_mutations(&self) -> u64 {
+    pub fn environment_mutations(&self) -> Option<u64> {
         self.agent_mutations(&id(ENV_WORKER))
     }
 
@@ -420,7 +421,7 @@ impl SessionHarness {
     pub async fn shutdown(self) {
         let SessionHarness { coordinator, mut launcher, observers, .. } = self;
         drop(coordinator);
-        launcher.reap_all("shutdown").await;
+        launcher.reap_all(&id("shutdown")).await;
         for observer in observers.into_inner().expect("not poisoned") {
             observer.close().await;
         }

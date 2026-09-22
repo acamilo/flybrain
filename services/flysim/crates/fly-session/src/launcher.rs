@@ -895,6 +895,20 @@ impl Launcher {
                             ),
                         ));
                     }
+                    // The 2026-09-22 `workers-v1` amendment puts the allocation on the wire,
+                    // so the launcher checks that the worker it started agrees about what it
+                    // was given rather than trusting the argv it sent.
+                    if hello.worker_threads != identity.worker_threads as u64 {
+                        return Err(DomainError::before(
+                            ErrorCode::IdentityMismatch,
+                            format!(
+                                "{} reports a {}-thread allocation; the launcher gave it {}",
+                                identity.worker_id,
+                                hello.worker_threads,
+                                identity.worker_threads
+                            ),
+                        ));
+                    }
                     return Ok((service_incarnation, hello.incarnation_id));
                 }
                 Err(e) if handover(&e) && Instant::now() < deadline => {
@@ -969,17 +983,21 @@ impl Launcher {
 
     /// Asks one participant to stop, then makes sure it has.
     ///
+    /// The reason is an `Id` rather than a string, so a caller that got it wrong is a
+    /// compile-time or `parse_id` error at its own call site instead of a substitution the
+    /// supervisor makes silently.
+    ///
     /// `Worker.Shutdown` is the supervisor's request; the operating system is its guarantee.
     /// A participant that does not stop within the budget is terminated, which is reported as
     /// such rather than as a clean stop.
-    pub async fn reap(&mut self, worker_id: &Id, reason: &str) -> ReapOutcome {
+    pub async fn reap(&mut self, worker_id: &Id, reason: &Id) -> ReapOutcome {
         let Some(worker) = self.workers.get(worker_id) else {
             return ReapOutcome::AlreadyGone;
         };
         let service = worker.identity.service.clone();
         let incarnation = worker.service_incarnation.clone();
         let request_id = DomainRequestId::from_serial(self.next_serial());
-        let params = ShutdownParams { reason: parse_id(reason).unwrap_or_else(|_| id("stop")) };
+        let params = ShutdownParams { reason: reason.clone() };
         let payload = object(
             SessionRpcRequest {
                 request_id,
@@ -1025,7 +1043,7 @@ impl Launcher {
     }
 
     /// Reaps every participant. Used at the end of a session and on every failure path.
-    pub async fn reap_all(&mut self, reason: &str) -> Vec<(Id, ReapOutcome)> {
+    pub async fn reap_all(&mut self, reason: &Id) -> Vec<(Id, ReapOutcome)> {
         let mut out = Vec::new();
         for worker_id in self.worker_ids() {
             let outcome = self.reap(&worker_id, reason).await;
@@ -1270,6 +1288,7 @@ pub(crate) fn environment_config(spec: &EnvironmentLaunch) -> EnvironmentConfig 
         incarnation_id: spec.incarnation_id.clone(),
         step_duration: spec.step_duration,
         ports: spec.ports.clone(),
+        worker_threads: spec.worker_threads,
         faults: spec.faults.clone(),
     }
 }
