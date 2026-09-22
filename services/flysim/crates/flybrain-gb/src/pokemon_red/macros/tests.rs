@@ -924,17 +924,22 @@ fn the_menu_row_is_close_confirm_back() {
 }
 
 #[test]
-fn the_battle_row_is_the_move_buttons_switch_item_and_the_backstop() {
+fn the_battle_row_is_the_move_buttons_switch_item_and_never_next() {
     let mut world = World::battle();
     world.bag = vec![(item::POTION, 1)];
     let scene = world.scene();
     // Section 13.1: `RUN` is bound only in a wild battle the fly is *losing*, and `World::battle`
     // has an eighteen-of-twenty Pokémon on the bench -- something healthier to send in, so the
     // fight is still worth having and the slot is empty.
+    //
+    // Section 12.10: **`NEXT` is gone from this row.** It was the backstop for a turn where every
+    // other button dropped, and it was an A press on the cursor -- which sits on FIGHT, so it
+    // opened the move list, whose `BACK` closed it again: `NEXT` 1264 starts and `BACK` 1241 on
+    // rung 9 after v0.4.2. `MOVE 1` is the backstop now, and it ends the turn.
     let palette = Palette::for_scene(scene, &mut world);
     assert_eq!(
         names(&palette),
-        ["NEXT", "MOVE 1", "MOVE 2", "MOVE 3", "SWITCH", "ITEM"],
+        ["MOVE 1", "MOVE 2", "MOVE 3", "SWITCH", "ITEM"],
         "three moves with PP, an empty fourth slot, a healthy bench and a potion"
     );
 
@@ -943,15 +948,17 @@ fn the_battle_row_is_the_move_buttons_switch_item_and_the_backstop() {
     let scene = world.scene();
     assert_eq!(
         names(&Palette::for_scene(scene, &mut world)),
-        ["NEXT", "MOVE 1", "MOVE 2", "MOVE 3", "ITEM", "RUN"]
+        ["MOVE 1", "MOVE 2", "MOVE 3", "ITEM", "RUN"]
     );
 }
 
 #[test]
 fn a_move_button_is_bound_by_its_own_slots_pp_and_move_one_carries_struggle() {
-    // Section 14: one button per move slot. `World::battle`'s Pokémon has three moves and an empty
-    // fourth slot, so three buttons are on the pad and the fourth never is.
+    // Section 14: one button per move slot, asked **over the open move list**, which is where a
+    // slot is a thing to aim at. `World::battle`'s Pokémon has three moves and an empty fourth
+    // slot, so three buttons are on the list's pad and the fourth never is.
     let mut world = World::battle();
+    world.list = List::Moves(3);
     assert!(move_slot_bound(&mut world, MacroKind::Move1));
     assert!(move_slot_bound(&mut world, MacroKind::Move2));
     assert!(move_slot_bound(&mut world, MacroKind::Move3));
@@ -975,12 +982,25 @@ fn a_move_button_is_bound_by_its_own_slots_pp_and_move_one_carries_struggle() {
             .is_some()
     );
 
-    // A Pokémon with no move in slot one at all is the one case that answers no. Nothing in the
-    // game reaches it, and inventing a press for it is what this crate does not do.
+    // A Pokémon with no move in slot one at all answers no over the list: there is no slot to aim
+    // at, and inventing a press for it is what this crate does not do.
     world.mons[0] = mon(0, 4, 20, &[]);
     assert!(!move_slot_bound(&mut world, MacroKind::Move1));
     let scene = world.scene();
     assert_eq!(Palette::for_scene(scene, &mut world).slot(MacroId(MacroKind::Move1.slot())), None);
+
+    // Over the **top-level menu** the question is a different one -- section 12.8's "is there a
+    // move list to open" -- and FIGHT always opens, so `MOVE 1` is bound there whatever the seam
+    // makes of the battler. That is what carries the turn now that `NEXT` is off this row
+    // (section 12.10): the script over this menu is "confirm FIGHT and stop" and reads no move.
+    world.list = List::BattleMain;
+    assert!(move_slot_bound(&mut world, MacroKind::Move1), "FIGHT is always pressable");
+    assert!(!move_slot_bound(&mut world, MacroKind::Move2), "and it is MOVE 1 that carries it");
+    world.active = None;
+    assert!(
+        move_slot_bound(&mut world, MacroKind::Move1),
+        "a battler the seam cannot read is not a reason to take the turn's one button away"
+    );
 }
 
 #[test]
@@ -1097,16 +1117,21 @@ fn a_battle_frame_that_is_not_the_players_turn_binds_next_to_advance_its_text() 
     world.list = List::None;
     let scene = world.scene();
     // Section 12.9: `NEXT` alone. Section 13.1 put `BACK` here for the bag a battle's ITEM entry
-    // opens, which reads as nobody's turn -- but on a frame of text there is no list to leave, and
+    // opens, which read as nobody's turn -- but on a frame of text there is no list to leave, and
     // a `BACK` that changes nothing is the trap of section 12.2 (live, rung 9: 135 of 183 macro
     // starts).
     let palette = Palette::for_scene(scene, &mut world);
     assert_eq!(names(&palette), ["NEXT"]);
 
-    // The bag is the one sub-state on this arm with a list open in it, and it keeps `BACK`.
+    // Section 12.10: the bag does not land on this arm any more. It is a cursor accepting input,
+    // so it is the fly's turn, and its `NEXT` would have been the A that *uses* what the cursor
+    // holds rather than the A that advances text. Nothing is open here, so nothing but `NEXT` is.
     world.list = List::BattleBag;
+    world.battle = Some((BattleKind::Wild, true, false));
+    world.scene = Scene::Battle { own_turn: true, forced_switch: false };
+    world.bag = vec![(item::POTION, 1)];
     let palette = Palette::for_scene(world.scene(), &mut world);
-    assert_eq!(names(&palette), ["NEXT", "BACK"]);
+    assert_eq!(names(&palette), ["BACK", "ITEM"], "a hurt Pokémon, a potion, and no ball");
 }
 
 #[test]
@@ -2356,10 +2381,11 @@ fn the_battle_plan_attacks_first_and_switches_only_under_a_quarter() {
     let mut healthy = World::battle();
     healthy.mons[0] = mon(0, 20, 20, &[(33, 30)]);
     assert!(!plan::failing(&mut healthy));
-    // `NEXT` is unconditional: a battle frame always has a press that advances it, which is what
-    // keeps the own-turn pad from being empty when every other button drops out (2026-09-17).
-    // `ITEM` needs a potion and low HP, so it is absent here; this Pokémon has one move.
-    assert_eq!(plan(&mut healthy), ["NEXT", "MOVE 1", "SWITCH"]);
+    // `MOVE 1` is what keeps the own-turn pad from being empty when every other button drops out:
+    // FIGHT is one of this menu's four entries and it always opens (12.8), where the `NEXT` that
+    // used to carry the job merely reopened the list `BACK` had just closed (12.10). `ITEM` needs
+    // a potion and low HP, so it is absent here; this Pokémon has one move.
+    assert_eq!(plan(&mut healthy), ["MOVE 1", "SWITCH"]);
 }
 
 #[test]
@@ -2372,7 +2398,7 @@ fn the_battle_plan_runs_from_a_wild_battle_only_when_the_whole_party_is_weak() {
     // the next hit ends the battle, which is the state section 9 puts `RUN` in.
     world.mons = vec![mon(0, 4, 20, &[(33, 30)]), mon(1, 3, 20, &[(33, 30)])];
     assert!(plan::party_weak(&mut world));
-    assert_eq!(plan(&mut world), ["NEXT", "MOVE 1", "SWITCH", "RUN"]);
+    assert_eq!(plan(&mut world), ["MOVE 1", "SWITCH", "RUN"]);
 
     // A trainer battle has no RUN at all, in the plan or in the palette.
     world.battle = Some((BattleKind::Trainer, true, false));
@@ -3244,7 +3270,11 @@ fn each_battle_menu_deals_its_own_pad() {
     let pad = names(&plan::plan_for(main.scene(), &mut main));
     assert!(pad.contains(&"MOVE 1"), "{pad:?}");
     assert!(pad.contains(&"SWITCH"), "{pad:?}");
-    assert!(pad.contains(&"NEXT"), "the top-level menu keeps its backstop: {pad:?}");
+    // Section 12.10: the top-level menu is a list accepting input too, so `NEXT` is off it as
+    // well. Its backstop is `MOVE 1`, which is bound here whatever the battler reads as, because
+    // FIGHT always opens (12.8) -- and unlike `NEXT` it ends the turn instead of opening the list
+    // that `BACK` closes again.
+    assert!(!pad.contains(&"NEXT"), "never NEXT on a menu accepting input: {pad:?}");
     // `ITEM` and `RUN` have their own preconditions -- a potion, and a party with nothing healthy
     // left -- and this fixture satisfies neither; row 7 covers the turn where all four drop.
 
@@ -3321,11 +3351,8 @@ fn back_is_on_a_battle_pad_only_where_a_list_is_open() {
     let mut party = World::battle();
     party.list = List::BattleParty;
     with_back(&mut party);
-    // The bag reads as nobody's turn (`state::battle`), so it lands on the between-turns arm --
-    // and it is the one sub-state there with a list open in it.
+    // The bag, which is the fly's own turn since section 12.10 because its cursor accepts input.
     let mut bag = World::battle();
-    bag.scene = Scene::Battle { own_turn: false, forced_switch: false };
-    bag.battle = Some((BattleKind::Wild, false, false));
     bag.list = List::BattleBag;
     with_back(&mut bag);
 
@@ -3342,6 +3369,93 @@ fn back_is_on_a_battle_pad_only_where_a_list_is_open() {
     forced.battle = Some((BattleKind::Wild, false, true));
     forced.list = List::BattleParty;
     without(&mut forced);
+}
+
+/// Section 12.10: **no battle pad deals a pair of buttons that undo each other.**
+///
+/// Live on rung 9 after v0.4.2, 71 hours in Viridian Forest: `NEXT` 1264 macro starts, `BACK`
+/// 1241, and the event log alternating `NEXT start/done, BACK start/done` every hold on map 51.
+/// The pair was split across two sub-states of one turn -- `NEXT` on the top-level menu was an A
+/// press on FIGHT, which opened the move list, and `BACK` on the move list closed it again -- so
+/// neither the pad rule of 12.9 nor the "no `BACK` without a list" rule caught it: both buttons
+/// were legitimate where they stood, and between them they were a 2-cycle that never spent a turn.
+///
+/// The rule that closes it is about the pair rather than about either button: `NEXT` is the A that
+/// advances **text**, so it belongs only on a frame with no cursor accepting input, and `BACK` is
+/// the B that leaves a **list**, so it belongs only on a frame that has one. The two conditions are
+/// exclusive, so no pad can hold both -- and the forced switch, which keeps `NEXT` as row 8's
+/// backstop, is the one arm with a cursor and no `BACK` at all, because it cannot be cancelled.
+#[test]
+fn no_battle_pad_holds_both_next_and_back() {
+    // Every battle sub-state the seam can report, on a turn where every precondition is satisfied
+    // (a potion, a ball, a hurt Pokémon, a bench) and on one where none is.
+    let sub_states = [
+        (Scene::Battle { own_turn: true, forced_switch: false }, true, false, List::BattleMain),
+        (Scene::Battle { own_turn: true, forced_switch: false }, true, false, List::Moves(3)),
+        (Scene::Battle { own_turn: true, forced_switch: false }, true, false, List::BattleParty),
+        (Scene::Battle { own_turn: true, forced_switch: false }, true, false, List::BattleBag),
+        (Scene::Battle { own_turn: false, forced_switch: false }, false, false, List::None),
+        (Scene::Battle { own_turn: false, forced_switch: true }, false, true, List::BattleParty),
+    ];
+    for stocked in [false, true] {
+        for (scene, own_turn, forced, list) in sub_states {
+            let mut world = World::battle();
+            world.scene = scene;
+            world.battle = Some((BattleKind::Wild, own_turn, forced));
+            world.list = list;
+            if stocked {
+                world.bag = vec![(item::POTION, 1), (item::POKE_BALL, 3)];
+                world.enemy = Some(EnemyMon { species: 0x99, level: 3, hp: 5, max_hp: 11 });
+            }
+            let pad = names(&plan::plan_for(world.scene(), &mut world));
+            let next = pad.contains(&"NEXT");
+            let back = pad.contains(&"BACK");
+            assert!(
+                !(next && back),
+                "{list:?} (stocked {stocked}) deals a pair that undoes itself: {pad:?}"
+            );
+            // And the pair is not the only way to waste a hold: a pad of one button that cannot
+            // end the turn is the shape row 34 had, so every sub-state is checked for having one.
+            assert!(
+                !pad.is_empty(),
+                "{list:?} (stocked {stocked}) deals nothing: {pad:?}"
+            );
+            // `NEXT` is on a frame with no cursor accepting input, or on the forced switch that
+            // has no other answer (row 8). Nowhere else.
+            if next {
+                assert!(
+                    forced || list == List::None,
+                    "NEXT on a menu accepting input: {list:?} deals {pad:?}"
+                );
+            }
+        }
+    }
+}
+
+/// Section 12.10: the bag inside a battle is the fly's turn, and its pad is the bag's answers.
+///
+/// `NEXT` on an open bag is the A press that **uses** whatever the cursor is sitting on, which is
+/// not one of the answers to a list, and `CONFIRM` beside `BACK` was the same press by another
+/// name. The two scripts that navigate this list by reading its cursor are `ITEM` and
+/// `THROW BALL`, and they are what the row deals.
+#[test]
+fn the_battle_bag_is_the_flys_turn_and_deals_its_own_two_uses() {
+    let mut world = World::battle();
+    world.list = List::BattleBag;
+    world.bag = vec![(item::POTION, 2), (item::POKE_BALL, 4)];
+    world.enemy = Some(EnemyMon { species: 0x99, level: 3, hp: 5, max_hp: 11 });
+    // `World::battle` is a wild battle with the active Pokémon on 4 of 20, so `ITEM`'s two facts
+    // hold and `THROW BALL`'s four do: a wild battle, a ball, room in a party of three, and an
+    // enemy species the party does not hold.
+    assert_eq!(
+        names(&plan::plan_for(world.scene(), &mut world)),
+        ["BACK", "ITEM", "THROW BALL"]
+    );
+    // Nothing in the bag: leaving the list is the press, and there is no `NEXT` to use a thing
+    // that is not there.
+    world.bag.clear();
+    let pad = names(&plan::plan_for(world.scene(), &mut world));
+    assert_eq!(pad, ["BACK"]);
 }
 
 #[test]
@@ -3823,6 +3937,15 @@ fn no_playable_scene_and_no_sub_state_deals_an_empty_pad() {
     cornered.mons = vec![mon(0, 20, 20, &[])];
     cornered.battle = Some((BattleKind::Trainer, true, false));
     worst(&mut cornered);
+
+    // And every battle sub-state of that same cornered turn, which since section 12.10 includes
+    // the bag: an empty bag deals `BACK` and nothing else, which is row 34a's answer -- there is
+    // nothing to choose, so leaving the list is the press, and what it leaves to is a menu with
+    // `MOVE 1` on it.
+    for list in [List::BattleMain, List::Moves(1), List::BattleParty, List::BattleBag] {
+        cornered.list = list;
+        worst(&mut cornered);
+    }
 }
 
 /// Section 13.1's pad-empty rule: an outdoor map with every ledger against it still offers a walk.

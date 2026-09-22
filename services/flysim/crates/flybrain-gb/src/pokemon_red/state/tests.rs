@@ -248,6 +248,79 @@ fn a_forced_switch_is_the_party_list_that_cannot_be_cancelled() {
     assert!(cursor(&mut wram).cancellable());
 }
 
+/// Section 12.10: **a battle frame with a cursor accepting input is the fly's turn.**
+///
+/// The four menus a battle waits on are the top-level one, the move list, the party list and the
+/// bag, and each of them is the game asking the player to choose. `own_turn` answered `false` for
+/// the bag, which put it on the between-turns row whose one button is the `NEXT` that advances
+/// text -- and on an open bag that same A press uses whatever the cursor holds.
+///
+/// The two frames that are correctly *not* the fly's turn are here too: a move list whose cursor
+/// the seam cannot place (row 30b, a battle's opening frames) and a frame with no menu at all.
+#[test]
+fn a_battle_frame_with_a_cursor_accepting_input_is_the_flys_turn() {
+    let battler = |wram: &mut Wram| {
+        wram.party_mon(0, 4, 7, 14, 22, 0, &[(10, 35)]);
+        wram.party_mon(1, 16, 8, 24, 24, 0, &[(33, 35)]);
+        wram.battle_mon(0, 4, 7, 14, 22, 0, &[(10, 35), (45, 40), (33, 30)])
+            .enemy_mon(19, 3, 5, 11)
+            .battle(1);
+    };
+
+    // The top-level menu.
+    let mut wram = Wram::overworld();
+    battler(&mut wram);
+    wram.battle_menu(false, 0);
+    assert!(battle(&mut wram).unwrap().own_turn, "the top-level menu");
+
+    // The move list, with a cursor the seam can place.
+    let mut wram = Wram::overworld();
+    battler(&mut wram);
+    wram.move_menu(1, 3);
+    assert!(battle(&mut wram).unwrap().own_turn, "the move list");
+
+    // The party list, chosen rather than forced.
+    let mut wram = Wram::overworld();
+    battler(&mut wram);
+    wram.party_list(1, false);
+    let fight = battle(&mut wram).unwrap();
+    assert!(!fight.forced_switch);
+    assert!(fight.own_turn, "the party list outside a forced switch");
+
+    // The bag, which `DisplayListMenuID` opens from the menu's ITEM entry. It is the one menu that
+    // read as nobody's turn, and it is what section 12.10 is about.
+    let mut wram = Wram::overworld();
+    battler(&mut wram);
+    wram.bag(&[(crate::pokemon_red::macros::cartridge::item::POTION, 2)]).set(ram::wListMenuID, poke::ITEM_LIST_MENU);
+    let fight = battle(&mut wram).unwrap();
+    assert_eq!(fight.menu, BattleMenu::Bag { cursor: 0, count: 1 });
+    assert!(fight.own_turn, "the battle bag is a cursor accepting input");
+
+    // And the two frames that are not a choice. A move list whose cursor cannot be placed is a
+    // battle's opening frames (row 30b), and no menu at all is text, an animation or a turn
+    // resolving.
+    let mut wram = Wram::overworld();
+    battler(&mut wram);
+    wram.move_menu(0, 3).set(ram::wCurrentMenuItem, 0);
+    let fight = battle(&mut wram).unwrap();
+    assert_eq!(fight.menu, BattleMenu::Moves { cursor: None, count: 3 });
+    assert!(!fight.own_turn, "a cursor the seam cannot place is not accepting input");
+
+    let mut wram = Wram::overworld();
+    battler(&mut wram);
+    assert_eq!(battle(&mut wram).unwrap().menu, BattleMenu::None);
+    assert!(!battle(&mut wram).unwrap().own_turn, "no menu, no turn");
+
+    // A forced switch is a cursor accepting input and it is *not* the own turn, because it has a
+    // pad of its own: the exception 12.6 named, kept here so the invariant reads honestly.
+    let mut wram = Wram::overworld();
+    battler(&mut wram);
+    wram.party_list(1, true);
+    let fight = battle(&mut wram).unwrap();
+    assert!(fight.forced_switch);
+    assert!(!fight.own_turn, "a forced switch has its own pad");
+}
+
 #[test]
 fn a_text_box_is_open_from_the_font_flag_and_waiting_from_the_box() {
     let mut wram = Wram::overworld();
