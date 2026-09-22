@@ -321,9 +321,11 @@ pub struct Coordinator {
     /// The publication boundary. Everything this session publishes goes through it, and
     /// every outcome it returns is a named one.
     publisher: crate::publish::Publisher,
-    /// The composition as published. Built once from what the live participants attested to,
+    /// The composition as published. Built from what the live participants attested to,
     /// never restated from the configuration that asked for them.
     session_descriptor: Option<SessionDescriptor>,
+    /// The revision the next descriptor publication carries.
+    descriptor_revision: u64,
     /// The read-only repair service. Held so it stops with the session.
     query: Option<crate::publish::QueryService>,
     pacing: Option<Pacing>,
@@ -417,6 +419,7 @@ impl Coordinator {
             serials: Serials::default(),
             publisher,
             session_descriptor: None,
+            descriptor_revision: DESCRIPTOR_REVISION,
             query: None,
             topics,
             pacing: None,
@@ -461,6 +464,11 @@ impl Coordinator {
     /// The composition this session published, once it has.
     pub fn session_descriptor(&self) -> Option<&SessionDescriptor> {
         self.session_descriptor.as_ref()
+    }
+
+    /// The revision the last published descriptor carried.
+    pub fn descriptor_revision(&self) -> u64 {
+        self.descriptor_revision
     }
 
     /// What this session published and what became of it: accepted, refused by an observer,
@@ -2651,11 +2659,28 @@ impl Coordinator {
     }
 
     /// Publishes the composition and starts the read-only repair service beside it.
+    /// Publishes the composition, advancing the revision when the composition changed.
+    ///
+    /// A revision identifies a composition, so republishing an unchanged one keeps its number
+    /// and a changed one takes the next: a group restore establishes a fresh epoch, which is a
+    /// new `compositionDigest`, and a consumer that held the old revision has to be told rather
+    /// than handed the same number with different contents. The publisher refuses the second
+    /// case outright, so this is where the number moves.
     async fn publish_descriptor(&mut self) -> Outcome<()> {
-        let descriptor = match self.build_descriptor(DESCRIPTOR_REVISION) {
+        let mut descriptor = match self.build_descriptor(self.descriptor_revision) {
             Ok(descriptor) => descriptor,
             Err(e) => return Err(self.fail_now(e, "descriptor")),
         };
+        if let Some(published) = &self.session_descriptor {
+            let mut same = descriptor.clone();
+            same.revision = published.revision;
+            if same != *published {
+                self.descriptor_revision += 1;
+                descriptor.revision = self.descriptor_revision;
+                self.audit
+                    .push(format!("descriptor-revision:{}", self.descriptor_revision));
+            }
+        }
         let outcome = match self.publisher.publish_descriptor(&descriptor).await {
             Ok(outcome) => outcome,
             Err(e) => return Err(self.fail_now(e, "descriptor")),

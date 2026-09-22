@@ -91,6 +91,16 @@ interface CommittedSnapshot {
 }
 ```
 
+**Amendment, 2026-09-22 (PUBLISH-01).** "Null at initial boundary 0" is the rule for a
+boundary this epoch *produced*. A group restore ([state/media](state-media-v1.md) section 5)
+re-establishes a committed boundary `k > 0` that this epoch did not run a transition into, and
+the abandoned epoch's decisions are not this session's to republish under a new epoch. So the
+rule is: `selectedDecision` and `appliedControls` are null at boundary 0 and at a boundary
+*installed* by a restore, present otherwise, and always **together** and for **every agent or
+none**. A snapshot where one fly carries an action and another does not would be two different
+boundaries in one value, and is refused. Without this, the section 6 requirement to publish the
+recovery could not be met at all: the restored boundary's snapshot would be unrepresentable.
+
 Publish only after all agent commits establish Ready(k). Decisions/controls describe the
 transition ending at that boundary, null at initial boundary 0. Health updates are separate
 and never claim an uncommitted future boundary. Every transient media reference is a declared

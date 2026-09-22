@@ -940,12 +940,12 @@ pub const SCHEMAS: &[TypeSchema] = &[
             opt(
                 "selectedDecision",
                 "TypedValue|null",
-                "null exactly at boundary 0",
+                "null at boundary 0 and at an installed boundary; null or present for every agent together",
             ),
             opt(
                 "appliedControls",
                 "PortControl|null",
-                "null exactly at boundary 0; the agent's assigned port",
+                "null with selectedDecision; the agent's assigned port",
             ),
         ],
     },

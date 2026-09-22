@@ -414,7 +414,8 @@ impl DomainType for CommittedSnapshot {
                 controls.validate()?;
             }
             // "Decisions/controls describe the transition ending at that boundary, null at
-            // initial boundary 0." (publishing-v1 section 3)
+            // initial boundary 0." (publishing-v1 section 3, and its 2026-09-22 amendment for
+            // a boundary that was installed rather than produced.)
             if self.scope.step == 0
                 && (agent.selected_decision.is_some() || agent.applied_controls.is_some())
             {
@@ -422,13 +423,23 @@ impl DomainType for CommittedSnapshot {
                     "CommittedSnapshot: at boundary 0 selectedDecision and appliedControls are null",
                 );
             }
-            if self.scope.step > 0
-                && (agent.selected_decision.is_none() || agent.applied_controls.is_none())
-            {
+            if agent.selected_decision.is_some() != agent.applied_controls.is_some() {
                 return err(
-                    "CommittedSnapshot: past boundary 0 every agent has a decision and applied controls",
+                    "CommittedSnapshot: selectedDecision and appliedControls are null together or present together",
                 );
             }
+        }
+        // A boundary is produced by a transition or installed by one, and the whole snapshot
+        // says which: every agent carries the transition that ended here, or none does. A
+        // mixture would be one fly's action beside another fly's silence at the same boundary.
+        if self
+            .agents
+            .iter()
+            .any(|a| a.selected_decision.is_some() != self.agents[0].selected_decision.is_some())
+        {
+            return err(
+                "CommittedSnapshot: either every agent carries the transition that ended here, or none does",
+            );
         }
         self.progress.validate()?;
         if self.views.len() > MAX_VIEWS {

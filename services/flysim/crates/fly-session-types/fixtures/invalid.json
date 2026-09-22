@@ -4168,7 +4168,179 @@
         },
         "eventIds": []
       },
-      "reason": "a committed transition has applied controls"
+      "reason": "selectedDecision and appliedControls are null together or present together"
+    },
+    {
+      "name": "snapshot where one agent carries the transition and another does not",
+      "type": "CommittedSnapshot",
+      "value": {
+        "descriptorRevision": "7",
+        "publisherIncarnation": "pub-1",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "42"
+        },
+        "episodeId": "episode-1",
+        "sequence": "42",
+        "worldTime": {
+          "numerator": "700000000",
+          "denominator": "1"
+        },
+        "agents": [
+          {
+            "agentId": "fly-a",
+            "telemetry": {
+              "brainTicks": "2534",
+              "populationRateHz": 12.5,
+              "rates": [
+                {
+                  "roleId": "kenyon",
+                  "hz": 3.25
+                },
+                {
+                  "roleId": "mbon",
+                  "hz": 0.0
+                }
+              ],
+              "learning": {
+                "enabled": true,
+                "updates": "4",
+                "changed": "2",
+                "signal": 0.5
+              }
+            },
+            "selectedDecision": {
+              "schema": {
+                "id": "gameboy.intent.v1",
+                "version": 1,
+                "digest": "e70451b26fb5462ec63729d8355912dad01c3963a95bec0e6a8452375717ad9d"
+              },
+              "value": {
+                "press": "a"
+              }
+            },
+            "appliedControls": {
+              "portId": "port-1",
+              "buttons": [
+                {
+                  "id": "a",
+                  "down": true
+                },
+                {
+                  "id": "b",
+                  "down": false
+                },
+                {
+                  "id": "start",
+                  "down": false
+                },
+                {
+                  "id": "select",
+                  "down": false
+                },
+                {
+                  "id": "up",
+                  "down": false
+                },
+                {
+                  "id": "down",
+                  "down": false
+                },
+                {
+                  "id": "left",
+                  "down": false
+                },
+                {
+                  "id": "right",
+                  "down": false
+                }
+              ],
+              "axes": [
+                {
+                  "id": "stick-x",
+                  "value": 0.0
+                },
+                {
+                  "id": "trigger",
+                  "value": 0.0
+                }
+              ]
+            }
+          },
+          {
+            "agentId": "fly-b",
+            "telemetry": {
+              "brainTicks": "2534",
+              "populationRateHz": 12.5,
+              "rates": [
+                {
+                  "roleId": "kenyon",
+                  "hz": 3.25
+                },
+                {
+                  "roleId": "mbon",
+                  "hz": 0.0
+                }
+              ],
+              "learning": {
+                "enabled": true,
+                "updates": "4",
+                "changed": "2",
+                "signal": 0.5
+              }
+            },
+            "selectedDecision": null,
+            "appliedControls": null
+          }
+        ],
+        "progress": {
+          "schema": {
+            "id": "pokemon.progress.v1",
+            "version": 1,
+            "digest": "80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1"
+          },
+          "value": {
+            "rank": 10
+          }
+        },
+        "media": {
+          "views": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "audio": [
+            {
+              "streamId": "mix",
+              "firstSample": "33600",
+              "sampleFrames": 800,
+              "samples": {
+                "storeId": "store-1",
+                "artifactId": "audio-1",
+                "generation": "1",
+                "byteLength": "6400",
+                "contentType": "audio/x-f32le",
+                "digest": null
+              },
+              "discontinuity": false
+            }
+          ]
+        },
+        "eventIds": [
+          "evt-1"
+        ]
+      },
+      "reason": "a boundary is produced or installed for the whole composition, never per agent"
     },
     {
       "name": "trace whose commit acknowledgment is the old boundary",

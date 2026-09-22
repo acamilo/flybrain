@@ -38,6 +38,7 @@ both_transports!(
     the_query_service_answers_reads_and_nothing_else,
     the_published_descriptor_is_what_the_workers_attested_to,
     a_stimulus_kind_the_descriptor_does_not_declare_is_refused,
+    a_restored_boundary_publishes_a_new_revision_and_no_transition,
 );
 
 all_modes!(
@@ -784,6 +785,62 @@ async fn one_snapshot_carries_every_agent_in_the_composition(via: Via) {
         assert_eq!(agent.rates[1].0, id("mbon"));
         assert!(!agent.index_digest.is_empty());
     }
+    f.shutdown().await;
+}
+
+/// A group restore re-establishes a committed boundary this epoch did not run a transition
+/// into. Two things follow, and both are published rather than inferred: the composition is a
+/// new one, because a fresh epoch is a new `compositionDigest`, so the descriptor takes the
+/// next revision; and the restored boundary carries no decision and no controls for any agent,
+/// because the abandoned epoch's actions are not this session's to republish.
+async fn a_restored_boundary_publishes_a_new_revision_and_no_transition(via: Via) {
+    let mut f = started(via).await;
+    let checkpoint = id("ck-1");
+    f.harness.coordinator.run(1).await.expect("one transition");
+    let outcome = within("checkpoint", f.harness.coordinator.checkpoint(&checkpoint))
+        .await
+        .expect("a committed checkpoint");
+    assert!(matches!(outcome, fly_session::state::SaveOutcome::Committed { .. }), "{outcome:?}");
+    let first = f.harness.coordinator.descriptor_revision();
+
+    // The snapshot of a boundary this epoch produced does carry the transition.
+    let produced = {
+        let state = f.harness.coordinator.published_state();
+        let state = state.lock().expect("not poisoned");
+        state.latest_snapshot().expect("boundary 1").clone()
+    };
+    assert_eq!(produced.scope.step, 1);
+    assert!(produced.agents.iter().all(|a| a.selected_decision.is_some()));
+
+    // Fail the epoch and restore into a fresh one.
+    f.harness.kill(&fly_a()).await;
+    f.harness.coordinator.step().await.expect_err("a dead participant fails the epoch");
+    within("replace", f.harness.replace_all_participants())
+        .await
+        .expect("replacements");
+    within(
+        "restore",
+        f.harness.coordinator.restore(Some(&checkpoint), &id("e2")),
+    )
+    .await
+    .expect("a coherent group restore");
+
+    assert_eq!(
+        f.harness.coordinator.descriptor_revision(),
+        first + 1,
+        "a fresh epoch is a new composition, so the revision advanced"
+    );
+    let restored = {
+        let state = f.harness.coordinator.published_state();
+        let state = state.lock().expect("not poisoned");
+        state.latest_snapshot().expect("the restored boundary").clone()
+    };
+    assert_eq!(restored.scope.step, 1, "the same committed boundary");
+    assert_eq!(restored.descriptor_revision, first + 1);
+    assert!(
+        restored.agents.iter().all(|a| a.selected_decision.is_none() && a.applied_controls.is_none()),
+        "an installed boundary carries no transition for any agent"
+    );
     f.shutdown().await;
 }
 
