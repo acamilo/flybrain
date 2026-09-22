@@ -649,6 +649,22 @@ impl SessionHarness {
         }
     }
 
+    /// Changes which graph one agent builds, so the replacement the next restart launches is
+    /// a fly with the same neuron count and another index.
+    ///
+    /// The same relaunch rule as a fault: the worker running now keeps what it was started
+    /// with, and the change reaches the composition through the next replacement.
+    pub fn set_agent_graph(&mut self, agent_id: &Id, graph_variant: u64) {
+        if let Some(spec) = self
+            .config
+            .agents
+            .iter_mut()
+            .find(|spec| spec.agent_id == *agent_id)
+        {
+            spec.graph_variant = graph_variant;
+        }
+    }
+
     /// Changes the environment's injected faults, with the same relaunch rule.
     pub fn set_environment_faults(&mut self, faults: EnvironmentFaults) {
         self.config.environment_faults = faults;

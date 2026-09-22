@@ -644,10 +644,13 @@ impl Publisher {
                 .publish(&topic, object(snapshot.to_json()), &refs)
                 .await,
         );
-        if outcome.is_accepted() {
-            self.sequence += 1;
-            lock(&self.state).latest = Some(snapshot.clone());
-        }
+        // The value is recorded whether or not the router admitted it, exactly as a descriptor
+        // revision is: the repair path exists for the consumer that did not receive it, and the
+        // `state-media-v1` amendment promises the exact value stays recoverable through the
+        // query service. The sequence advances with the value rather than with the delivery,
+        // so two different snapshots can never share one sequence number.
+        self.sequence += 1;
+        lock(&self.state).latest = Some(snapshot.clone());
         self.ledger.record(&outcome);
         Ok(outcome)
     }
@@ -718,6 +721,10 @@ pub const GET_SNAPSHOT: &str = "Session.GetSnapshot";
 /// advance, pause, stimulate, restore or reconfigure anything.
 pub struct QueryService {
     task: tokio::task::JoinHandle<()>,
+    /// Answers this service produced and could not deliver, because the caller was gone or
+    /// the router refused the reply. A read that nobody received is not a read that happened,
+    /// and this module drops nothing silently.
+    undeliverable: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl QueryService {
@@ -736,6 +743,8 @@ impl QueryService {
         // than a fallback name that two incarnations could share.
         let incarnation = parse_id(&format!("query-{}", client.info().connection_id))
             .map_err(|e| flybus::BusError::new(flybus::ErrorCode::InvalidEnvelope, e))?;
+        let undeliverable = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let undelivered = Arc::clone(&undeliverable);
         let task = tokio::spawn(async move {
             while let Some(request) = service.next().await {
                 let method = request.method().to_owned();
@@ -753,10 +762,17 @@ impl QueryService {
                         DomainError::invalid(format!("{method}: {e}")),
                     ),
                 };
-                let _ = responder.reply(outcome.to_outcome(), &[]).await;
+                if responder.reply(outcome.to_outcome(), &[]).await.is_err() {
+                    undelivered.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
             }
         });
-        Ok(QueryService { task })
+        Ok(QueryService { task, undeliverable })
+    }
+
+    /// How many answers this service could not deliver.
+    pub fn undeliverable(&self) -> u64 {
+        self.undeliverable.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Ends the service. Dropping one does the same thing.
@@ -1001,6 +1017,14 @@ pub struct EventBatchView {
     /// a gap the consumer has to infer.
     pub dropped_before: u64,
     pub event_ids: Vec<Id>,
+}
+
+/// What one poll of the event stream produced.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConsumerEvents {
+    Batch(EventBatchView),
+    /// A batch this consumer could not read. Distinct from the end of the stream.
+    Unreadable { detail: String },
 }
 
 /// What one poll of a consumer produced.

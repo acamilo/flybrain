@@ -471,6 +471,11 @@ impl Coordinator {
         self.descriptor_revision
     }
 
+    /// The sequence the next published snapshot will carry.
+    pub fn published_sequence(&self) -> u64 {
+        self.publisher.sequence()
+    }
+
     /// What this session published and what became of it: accepted, refused by an observer,
     /// or faulted, per topic.
     pub fn ledger(&self) -> &crate::publish::Ledger {
@@ -1656,6 +1661,25 @@ impl Coordinator {
             self.agents[index].context_digest = context.digest();
             self.agents[index].context = context;
             self.agents[index].committed_step = k + 1;
+            // The telemetry of the transition that just ended, which is what this boundary's
+            // snapshot publishes. Without this the slot would keep whatever `Agent.Initialize`
+            // reported and every snapshot would label warm-up telemetry as boundary k.
+            let telemetry = commits
+                .iter()
+                .find(|(id, _)| *id == agent_id)
+                .map(|(_, result)| result.telemetry.clone());
+            match telemetry {
+                Some(telemetry) => self.agents[index].telemetry = Some(telemetry),
+                None => {
+                    return Err(self.fail_now(
+                        DomainError::before(
+                            ErrorCode::IdentityMismatch,
+                            format!("agent {agent_id} committed without telemetry"),
+                        ),
+                        "commit",
+                    ));
+                }
+            }
         }
         // The previous boundary's handles are no longer needed; the new ones take over.
         // The references -- which are data, not ownership -- are kept for one boundary, so a

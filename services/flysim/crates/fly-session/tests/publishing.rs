@@ -36,6 +36,7 @@ both_transports!(
     application_state_and_cues_are_the_applications_own,
     a_refused_event_batch_is_held_and_counted_not_lost,
     the_query_service_answers_reads_and_nothing_else,
+    a_refused_snapshot_is_still_what_the_repair_path_answers,
     the_published_descriptor_is_what_the_workers_attested_to,
     a_stimulus_kind_the_descriptor_does_not_declare_is_refused,
     a_restored_boundary_publishes_a_new_revision_and_no_transition,
@@ -252,7 +253,6 @@ async fn a_bounded_observer_refusal_is_named_and_never_fails_the_epoch(via: Via)
         .consumer()
         .await
         .expect("a healthy consumer attaches");
-    until("the refusals stop", || true).await;
     f.harness
         .coordinator
         .run(2)
@@ -284,6 +284,7 @@ async fn every_published_snapshot_carries_its_own_boundarys_media(via: Via) {
         Some(ConsumerOutcome::Composition { .. })
     ));
     let mut seen: Vec<(u64, String)> = Vec::new();
+    let mut ticks: BTreeMap<Id, u64> = BTreeMap::new();
     for step in 1..=STEPS {
         f.harness.coordinator.run(1).await.expect("a transition");
         let at = read_until(&mut consumer, step).await;
@@ -305,10 +306,20 @@ async fn every_published_snapshot_carries_its_own_boundarys_media(via: Via) {
             seen.push((at, reference.pixels.artifact_id.clone()));
         }
         for agent in &view.agents {
-            assert!(
-                agent.brain_ticks > 0,
-                "the agent state is this boundary's, not a placeholder"
-            );
+            let previous = ticks.insert(agent.agent_id.clone(), agent.brain_ticks);
+            match previous {
+                None => assert!(agent.brain_ticks > 0, "the agent has run by boundary {at}"),
+                // Telemetry is the state of the transition that ended here. Republishing the
+                // previous boundary's numbers -- or `Agent.Initialize`'s warm-up numbers --
+                // would be old agent state labelled as this boundary, which is the same
+                // mislabelling as old media.
+                Some(before) => assert!(
+                    agent.brain_ticks > before,
+                    "the telemetry of {} advanced into boundary {at}: {before} -> {}",
+                    agent.agent_id,
+                    agent.brain_ticks
+                ),
+            }
         }
     }
     let mut ids: Vec<&String> = seen.iter().map(|(_, id)| id).collect();
@@ -460,6 +471,15 @@ async fn a_revision_that_was_never_published_is_a_named_answer(via: Via) {
 
 /// The same neuron count, another index. A consumer that has mapped geometry is told, and the
 /// new composition is not quietly cached over the one it mapped.
+///
+/// The two descriptors here come from two real sessions rather than from a restore. Driving it
+/// through a restore was tried and does not work yet, for a reason outside this slice: the
+/// coordinator's `AgentSlot.graph` is written only by `Agent.Initialize`, and a group restore
+/// installs state through `State.ActivateRestore`, so a replacement fly that built another
+/// index is published under its predecessor's `indexDigest` -- and it is not refused on the way
+/// in either, because `agent_compatibility` digests `agent::dataset_digest()` rather than the
+/// index the worker attested to. Both halves belong to the restore contract, so this test uses
+/// the compositions it can build honestly and the gap is reported rather than papered over.
 async fn a_changed_index_digest_is_named_rather_than_remapped(via: Via) {
     // Two real compositions that differ only in the graph one fly built.
     let first = started(via).await;
@@ -516,19 +536,14 @@ async fn a_changed_index_digest_is_named_rather_than_remapped(via: Via) {
         moved.neuron_count, arrived.neuron_count,
         "the same number of neurons"
     );
-    assert_ne!(
-        moved.index_digest, arrived.index_digest,
-        "and another index"
-    );
+    assert_ne!(moved.index_digest, arrived.index_digest, "and another index");
 
     let mut consumer = first.harness.consumer().await.expect("a consumer attaches");
     let held = match within("the descriptor", consumer.take_descriptor()).await {
         Some(ConsumerOutcome::Composition { revision, .. }) => revision,
         other => panic!("expected a composition, got {other:?}"),
     };
-    consumer
-        .map_geometry(held)
-        .expect("this consumer maps geometry");
+    consumer.map_geometry(held).expect("this consumer maps geometry");
     assert_eq!(consumer.mapped_index(&fly_a()), Some(&moved.index_digest));
 
     // The composition changes under it.
@@ -966,6 +981,52 @@ async fn a_refused_event_batch_is_held_and_counted_not_lost(via: Via) {
     f.shutdown().await;
 }
 
+/// A publication an observer refused is exactly the value the repair path exists to hand back.
+///
+/// The `state-media-v1` amendment promises the exact value stays recoverable through the query
+/// path, so recording it cannot depend on whether the router admitted the delivery -- that is
+/// the case the promise is about.
+async fn a_refused_snapshot_is_still_what_the_repair_path_answers(via: Via) {
+    let mut f = started(via).await;
+    let snapshots = f.harness.coordinator.topics().snapshots.clone();
+    let offender_client = f.harness.observer().await.expect("an observer client");
+    let _offender = offender_client
+        .subscribe(
+            &snapshots,
+            flybus::SubscriptionConfig::bounded().queued(1).in_flight(1),
+        )
+        .await
+        .expect("a bounded subscription");
+
+    f.harness.coordinator.run(STEPS).await.expect("the world carries on");
+    let counters = f.harness.coordinator.ledger().counters(&snapshots);
+    assert!(counters.refused > 0, "a refusal is what this test is about: {counters:?}");
+
+    let latest = {
+        let state = f.harness.coordinator.published_state();
+        let state = state.lock().expect("not poisoned");
+        state.latest_snapshot().expect("a snapshot").clone()
+    };
+    assert_eq!(
+        latest.scope.step, STEPS,
+        "the newest committed boundary is recoverable even though its delivery was refused"
+    );
+    assert_eq!(
+        latest.sequence + 1,
+        f.harness.coordinator.published_sequence(),
+        "the sequence advanced with the value, not with the delivery"
+    );
+
+    // And the query service answers it over the bus, not just the state behind it.
+    let mut consumer = f.harness.consumer().await.expect("a consumer attaches");
+    let answered = within("the repair path", consumer.repair(DESCRIPTOR_REVISION))
+        .await
+        .expect("the repair path answers");
+    assert_eq!(answered, DESCRIPTOR_REVISION);
+    offender_client.close().await;
+    f.shutdown().await;
+}
+
 /// Two reads and nothing else. There is no method on this service that could move anything.
 async fn the_query_service_answers_reads_and_nothing_else(via: Via) {
     let mut f = started(via).await;
@@ -990,7 +1051,15 @@ async fn the_query_service_answers_reads_and_nothing_else(via: Via) {
     let snapshot = CommittedSnapshot::from_json(outcome_result(&outcome).expect("a result"))
         .expect("a committed snapshot");
     assert_eq!(snapshot.scope.step, 1);
-    assert!(snapshot.views.is_empty() || !snapshot.views.is_empty());
+    assert_eq!(
+        snapshot.descriptor_revision,
+        f.harness.coordinator.descriptor_revision(),
+        "a read answers the composition the session is publishing under"
+    );
+    assert!(
+        snapshot.agents.iter().all(|a| a.selected_decision.is_some()),
+        "and the values of the transition that ended at it"
+    );
 
     // A method it does not implement is a named refusal, not a default.
     let request = SessionRpcRequest {
