@@ -944,19 +944,90 @@ pub fn map_grid(memory: &mut dyn MemoryReader) -> Result<MapGrid, GridRefusal> {
     let player = player(memory).ok_or(GridRefusal::NoPlayer)?;
     // The cross-check. `map_tile_id` reads the screen buffer at the offset
     // `_GetTileAndCoordsInFrontOfPlayer` uses, so agreeing with it on the tiles it can answer for
-    // is agreeing with the cartridge's own reading of the same ground.
-    let mut checked = 0;
-    for (x, y) in neighbourhood(player.x, player.y) {
-        let Some(screen) = map_tile_id(memory, x, y) else { continue };
-        if grid.tile_id(x, y) != Some(screen) {
-            return Err(GridRefusal::ScreenDisagrees);
-        }
-        checked += 1;
-    }
-    if checked == 0 {
+    // is agreeing with the cartridge's own reading of the same ground -- once the two readings are
+    // anchored on the same tile, which mid-step they are not ([`screen_anchor`]).
+    screen_anchor(memory, &grid, player.x, player.y)?;
+    Ok(grid)
+}
+
+/// The five tiles the screen buffer can be centred on, nearest first.
+///
+/// Standing still it is the fly's own tile; mid-step it is the tile the fly is stepping onto.
+/// `(0, 0)` is first so that a standing frame is answered by the first comparison it makes.
+const ANCHORS: [(i16, i16); 5] = [(0, 0), (0, -1), (0, 1), (-1, 0), (1, 0)];
+
+/// Which tile the screen buffer is centred on, as an offset from `wXCoord` / `wYCoord`.
+///
+/// **The mid-step refusal, measured 2026-09-22** (`infra/docs/macros-traps.md` row 54; the survey
+/// is `FLY_PROBE_CATCH=step` in `services/flysim/crates/flysim/examples/scene_probe.rs`). Holding
+/// UP out of the Pewter museum, `wYCoord` read 7 for frames 0 to 15 of a sixteen-frame step and 6
+/// from frame 16: **the coordinates change at the end of a step, not at its start.** The
+/// background scrolls throughout, and from frame 2 the buffer already held the view centred on
+/// (10, 6). So the old check compared the decode of (10, 7) against the screen's reading of
+/// (10, 6), found `$20` against `$01`, and refused -- on fourteen frames of every sixteen. Pewter
+/// City decoded on 118 of 120 standing frames and on none of the moving ones, so every walk the
+/// fly actually took was re-planned over the ten-by-nine window, which is the oscillation of
+/// `docs/design/macros.md` section 12.3's row 23.
+///
+/// Nothing in the pinned symbol table says "a step is in progress" (`docs/design/macros-wram.md`
+/// section 9), and a new address cannot be pinned without the disassembly `gen_symbols.py` reads.
+/// So the anchor is **measured rather than named**: the screen is centred on the fly's tile or on
+/// one of its four neighbours, and the one it is centred on is the one whose whole neighbourhood
+/// agrees with the decode. This keeps the property the check exists for -- a decode with a wrong
+/// stride, a wrong quadrant or a half-loaded map agrees with *none* of the five, and so does the
+/// mid-warp tear the cache check was added for, where the blocks are one map and `wCurMap` another.
+///
+/// `Err(NoScreen)` when the window can answer for none of the five tiles (a battle, a text box),
+/// `Err(ScreenDisagrees)` when no anchor agrees.
+fn screen_anchor(
+    memory: &mut dyn MemoryReader,
+    grid: &MapGrid,
+    x: u8,
+    y: u8,
+) -> Result<(i16, i16), GridRefusal> {
+    let screen: Vec<(u8, u8, u8)> = neighbourhood(x, y)
+        .into_iter()
+        .filter_map(|(tx, ty)| map_tile_id(memory, tx, ty).map(|id| (tx, ty, id)))
+        .collect();
+    if screen.is_empty() {
         return Err(GridRefusal::NoScreen);
     }
-    Ok(grid)
+    for (dx, dy) in ANCHORS {
+        let agrees = screen.iter().all(|(tx, ty, id)| {
+            let (Ok(ax), Ok(ay)) =
+                (u8::try_from(i16::from(*tx) + dx), u8::try_from(i16::from(*ty) + dy))
+            else {
+                return false;
+            };
+            grid.tile_id(ax, ay) == Some(*id)
+        });
+        if agrees {
+            return Ok((dx, dy));
+        }
+    }
+    Err(GridRefusal::ScreenDisagrees)
+}
+
+/// The tile the fly is stepping onto, or `None` while it is standing still.
+///
+/// The other half of the measurement above, and row 54's second trap. `wXCoord` / `wYCoord` are
+/// the tile the step began on until the frame it ends, so for fifteen frames of every sixteen the
+/// stood ledger records ground the fly has already left and the tile under it is still *unstood*:
+/// `path::frontier` offers it, `GO FRONTIER` is dealt aiming one tile away, and `Arrival::Step`
+/// reports `done` the instant the step it did not make lands. A macro that completes without
+/// changing anything, which is section 12.2's trap in its own words.
+///
+/// A step that has begun always finishes -- the cartridge owns the animation and no press stops it
+/// -- so the tile the screen has already centred on is ground this run has covered.
+pub fn step_destination(memory: &mut dyn MemoryReader, grid: &MapGrid) -> Option<(u8, u8)> {
+    let player = player(memory)?;
+    let (dx, dy) = screen_anchor(memory, grid, player.x, player.y).ok()?;
+    if (dx, dy) == (0, 0) {
+        return None;
+    }
+    let x = u8::try_from(i16::from(player.x) + dx).ok()?;
+    let y = u8::try_from(i16::from(player.y) + dy).ok()?;
+    Some((x, y))
 }
 
 /// [`map_grid`] without the cross-check: the blocks, the blockset and the collision list, decoded.
@@ -1049,11 +1120,15 @@ fn still_the_loaded_map(
     x: u8,
     y: u8,
 ) -> bool {
-    match map_tile_id(memory, x, y) {
+    match screen_anchor(memory, grid, x, y) {
         // The screen is not showing the map (a battle, a text box): nothing to check against, and
         // the grid was checked when it was decoded.
-        None => true,
-        Some(tile) => grid.tile_id(x, y) == Some(tile),
+        Err(GridRefusal::NoScreen) => true,
+        Err(_) => false,
+        // Agreeing under *some* anchor is agreeing: the fly's own tile while it stands still, the
+        // tile it is stepping onto while it moves (row 54). The whole neighbourhood has to agree
+        // under one of them, which a torn frame's grid cannot manage.
+        Ok(_) => true,
     }
 }
 
@@ -1392,6 +1467,18 @@ impl MacroState for PokeState<'_> {
             Some(grids) => Some(grids.store(grid)),
             None => Some(std::sync::Arc::new(grid)),
         }
+    }
+
+    /// The tile the fly is stepping onto, from the screen the grid was checked against
+    /// (`infra/docs/macros-traps.md` row 54).
+    ///
+    /// `None` on a frame with no grid, which is the same narrowing every other reading here makes:
+    /// without a decode to anchor against there is nothing that can say where the screen is
+    /// centred, and the stood ledger keeps the coordinates alone.
+    fn stepping_onto(&mut self) -> Option<Tile> {
+        let grid = self.map_grid()?;
+        let (x, y) = step_destination(self.memory, &grid)?;
+        Some(Tile::new(x, y))
     }
 
     /// What the open mart sells, in menu order (`docs/design/macros.md` section 13).
