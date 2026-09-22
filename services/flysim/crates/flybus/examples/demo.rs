@@ -99,8 +99,17 @@ pub async fn run() -> Result<Vec<String>, Box<dyn std::error::Error>> {
         "published sequence {} to {} subscriber(s)",
         receipt.topic_sequence, receipt.subscribers
     ));
-    // The producer lets go of its own hold; the delivery keeps the bytes alive.
+    // The producer lets go of its own hold; the delivery keeps the bytes alive. The release
+    // travels the control lane like any other operation, so the count below waits for it
+    // instead of reading a number that may still include it.
     drop(frame);
+    let released = Instant::now() + Duration::from_secs(10);
+    while router.stats().artifact_roots > 1 {
+        if Instant::now() > released {
+            return Err("the producer's own hold was never released".into());
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
 
     let message = frames.next().await.ok_or("the subscription closed")?;
     let image = message.artifact("frame")?;

@@ -179,7 +179,9 @@ async fn collection_waits_for_every_retained_owner(via: Via) {
         s.owners == 0 && s.sealed_artifacts == 0 && s.store_bytes == 0
     })
     .await;
-    assert_eq!(e.files("sealed"), 0);
+    // The unlink follows the registry update, outside the router lock: wait for the file to
+    // go rather than assume the two happen together.
+    e.settle_files("sealed", 0).await;
 }
 
 // -------------------------------------------------------------------------------------------
@@ -521,7 +523,7 @@ async fn disconnect_abandons_an_unsealed_writer(via: Via) {
         s.artifacts == 0 && s.store_bytes == 0 && s.owners == 0
     })
     .await;
-    assert_eq!(e.files("staging"), 0);
+    e.settle_files("staging", 0).await;
 }
 
 /// An abrupt disconnect must release an explicit hold too, when it was the object's only root.
@@ -538,7 +540,7 @@ async fn disconnect_releases_an_explicit_hold(via: Via) {
         s.sealed_artifacts == 0 && s.owners == 0 && s.store_bytes == 0
     })
     .await;
-    assert_eq!(e.files("sealed"), 0);
+    e.settle_files("sealed", 0).await;
 }
 
 /// A vanished subscriber must give up both a delivery it already holds and one still queued
