@@ -37,6 +37,7 @@ both_transports!(
     a_refused_event_batch_is_held_and_counted_not_lost,
     the_query_service_answers_reads_and_nothing_else,
     a_refused_snapshot_is_still_what_the_repair_path_answers,
+    a_replacement_that_built_another_index_cannot_install_the_checkpoint,
     the_published_descriptor_is_what_the_workers_attested_to,
     a_stimulus_kind_the_descriptor_does_not_declare_is_refused,
     a_restored_boundary_publishes_a_new_revision_and_no_transition,
@@ -469,17 +470,68 @@ async fn a_revision_that_was_never_published_is_a_named_answer(via: Via) {
     f.shutdown().await;
 }
 
+/// A graph identity does not cross a recovery.
+///
+/// The index a fly attested to at `Agent.Initialize` is part of its compatibility identity, so
+/// a replacement that built another graph -- the same dataset, the same neuron count, another
+/// index -- cannot install a checkpoint taken under the first one, and the refusal names what
+/// this worker is rather than only that two digests differ. The identical replacement still
+/// installs, so the check refuses the case it is about and nothing else.
+async fn a_replacement_that_built_another_index_cannot_install_the_checkpoint(via: Via) {
+    for (variant, refused) in [(0u64, false), (1, true)] {
+        let mut f = started(via).await;
+        let checkpoint = id("ck-graph");
+        f.harness.coordinator.run(1).await.expect("one transition");
+        within("checkpoint", f.harness.coordinator.checkpoint(&checkpoint))
+            .await
+            .expect("a committed checkpoint");
+
+        f.harness.set_agent_graph(&fly_a(), variant);
+        f.harness.kill(&fly_a()).await;
+        f.harness
+            .coordinator
+            .step()
+            .await
+            .expect_err("a dead participant fails the epoch");
+        within("replace", f.harness.replace_all_participants())
+            .await
+            .expect("replacements");
+        let outcome = within(
+            "restore",
+            f.harness.coordinator.restore(Some(&checkpoint), &id("e2")),
+        )
+        .await;
+        match (refused, outcome) {
+            (false, Ok(_)) => {}
+            (false, Err(e)) => panic!("the identical replacement must still install: {e}"),
+            (true, Ok(_)) => panic!("a fly that built another index installed the checkpoint"),
+            (true, Err(failure)) => {
+                assert_eq!(failure.error.code, ErrorCode::IncompatibleState, "{failure:?}");
+                let built = fly_session::agent::synthetic_graph(&fly_a(), 1);
+                assert!(
+                    failure.error.message.contains(&built.index_digest),
+                    "the refusal names the index this worker built: {}",
+                    failure.error.message
+                );
+                assert!(
+                    f.harness.coordinator.is_fenced(),
+                    "and the group stays fenced"
+                );
+            }
+        }
+        f.shutdown().await;
+    }
+}
+
 /// The same neuron count, another index. A consumer that has mapped geometry is told, and the
 /// new composition is not quietly cached over the one it mapped.
 ///
-/// The two descriptors here come from two real sessions rather than from a restore. Driving it
-/// through a restore was tried and does not work yet, for a reason outside this slice: the
-/// coordinator's `AgentSlot.graph` is written only by `Agent.Initialize`, and a group restore
-/// installs state through `State.ActivateRestore`, so a replacement fly that built another
-/// index is published under its predecessor's `indexDigest` -- and it is not refused on the way
-/// in either, because `agent_compatibility` digests `agent::dataset_digest()` rather than the
-/// index the worker attested to. Both halves belong to the restore contract, so this test uses
-/// the compositions it can build honestly and the gap is reported rather than papered over.
+/// The two descriptors here come from two real sessions, and deliberately not from a restore:
+/// since the index is part of an agent's compatibility identity, a restore whose replacement
+/// built another graph is now refused before it can install, which
+/// `a_replacement_that_built_another_index_cannot_install_the_checkpoint` proves. A published
+/// index therefore changes between compositions rather than across a recovery, and this is that
+/// case.
 async fn a_changed_index_digest_is_named_rather_than_remapped(via: Via) {
     // Two real compositions that differ only in the graph one fly built.
     let first = started(via).await;

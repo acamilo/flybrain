@@ -844,6 +844,7 @@ pub fn agent_compatibility_digest(
     model_version: &str,
     plasticity_version: &str,
     seed: i32,
+    index_digest: &Digest,
 ) -> Digest {
     let value = serde_json::json!({
         "agentId": agent_id.as_str(),
@@ -852,6 +853,11 @@ pub fn agent_compatibility_digest(
         "modelVersion": model_version,
         "plasticityVersion": plasticity_version,
         "seed": seed,
+        // The index the worker actually built, not a value recomputed from the dataset: the
+        // whole point is that the two can disagree. Without it a replacement fly that built
+        // another graph restores cleanly and is then published under its predecessor's
+        // `indexDigest`, which is the predecessor's graph identity crossing a recovery.
+        "indexDigest": index_digest.as_str(),
     });
     digest_of(&value).expect("an agent compatibility block canonicalizes")
 }
@@ -940,13 +946,15 @@ struct StagedAgent {
 impl FakeAgentWorker {
     /// This worker's own compatibility identity, from its configuration and a resolved seed.
     fn compatibility_digest(&self, profile: &AssetRef, seed: i32) -> Digest {
+        let graph = synthetic_graph(&self.config.agent_id, self.config.graph_variant);
         agent_compatibility_digest(
             &self.config.agent_id,
             &profile.digest,
-            &dataset_digest(),
+            &graph.dataset_digest,
             MODEL_VERSION,
             PLASTICITY_VERSION,
             seed,
+            &graph.index_digest,
         )
     }
 
@@ -1147,10 +1155,16 @@ worker; this worker is {other:?}"
         // of another agent's brain, fails here and never reaches activation.
         let computed = self.compatibility_digest(&profile, model.seed());
         if computed != params.compatibility_digest {
+            let graph = synthetic_graph(&self.config.agent_id, self.config.graph_variant);
             return Err(incompatible(format!(
-                "the staged state's compatibility {computed} is not the {} the restore \
-requires",
-                params.compatibility_digest
+                "the staged state's compatibility {} is not the {computed} this worker is: \
+profile {}, dataset {}, index {}, model {MODEL_VERSION}, plasticity {PLASTICITY_VERSION}, \
+seed {}",
+                params.compatibility_digest,
+                profile.digest,
+                graph.dataset_digest,
+                graph.index_digest,
+                model.seed()
             )));
         }
         let accumulator_value = value

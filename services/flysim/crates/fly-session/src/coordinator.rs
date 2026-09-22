@@ -3036,15 +3036,33 @@ impl Coordinator {
         }
     }
 
-    fn agent_compatibility(&self, slot: &AgentSlot) -> Digest {
-        crate::agent::agent_compatibility_digest(
+    /// One agent's compatibility identity, from what that agent attested to at
+    /// `Agent.Initialize` rather than from anything this coordinator recomputed.
+    ///
+    /// The graph belongs here because `state-media-v1`'s recovery rules say old parser or
+    /// media state must not cross a recovery, and a graph identity is exactly that: without it
+    /// a replacement fly that built another index passes the group check and is then published
+    /// under its predecessor's `indexDigest`. An agent that has not attested yet has no
+    /// compatibility, which is a refusal rather than a guessed digest.
+    fn agent_compatibility(&self, slot: &AgentSlot) -> DomainResult<Digest> {
+        let graph = slot.graph.as_ref().ok_or_else(|| {
+            DomainError::before(
+                ErrorCode::InvalidPhase,
+                format!(
+                    "agent {} has not attested to a graph, so it has no compatibility identity",
+                    slot.agent_id
+                ),
+            )
+        })?;
+        Ok(crate::agent::agent_compatibility_digest(
             &slot.agent_id,
             &slot.profile.digest,
-            &crate::agent::dataset_digest(),
+            &graph.dataset_digest,
             crate::agent::MODEL_VERSION,
             crate::agent::PLASTICITY_VERSION,
             slot.seed,
-        )
+            &graph.index_digest,
+        ))
     }
 
     /// The coordinator's own session record: what it must hold again to resume this boundary.
@@ -3233,7 +3251,10 @@ impl Coordinator {
         for index in 0..self.agents.len() {
             let slot_worker = self.agents[index].worker.clone();
             let agent_id = self.agents[index].agent_id.clone();
-            let expected = self.agent_compatibility(&self.agents[index]);
+            let expected = match self.agent_compatibility(&self.agents[index]) {
+                Ok(expected) => expected,
+                Err(e) => return Err(self.fail_now(e, "capture")),
+            };
             let reply = self
                 .call(
                     &slot_worker,
@@ -3251,10 +3272,25 @@ impl Coordinator {
             payloads.push(payload);
             acknowledge.push((slot_worker, reply.request_id.clone()));
             let slot = &self.agents[index];
+            // The graph identities come from what this agent attested to, not from a value
+            // the coordinator recomputed; that is the whole point of recording them.
+            let graph = match slot.graph.clone() {
+                Some(graph) => graph,
+                None => {
+                    return Err(self.fail_now(
+                        DomainError::before(
+                            ErrorCode::InvalidPhase,
+                            format!("agent {agent_id} has not attested to a graph"),
+                        ),
+                        "capture",
+                    ));
+                }
+            };
             agent_rows.push(crate::state::AgentEntry {
                 agent_id: agent_id.clone(),
                 profile_digest: slot.profile.digest.clone(),
-                dataset_digest: crate::agent::dataset_digest(),
+                dataset_digest: graph.dataset_digest,
+                index_digest: graph.index_digest,
                 model_version: crate::agent::MODEL_VERSION.to_owned(),
                 plasticity_version: crate::agent::PLASTICITY_VERSION.to_owned(),
                 seed: slot.seed,
@@ -3833,6 +3869,7 @@ impl Coordinator {
                     &row.model_version,
                     &row.plasticity_version,
                     row.seed,
+                    &row.index_digest,
                 ),
             ));
         }
