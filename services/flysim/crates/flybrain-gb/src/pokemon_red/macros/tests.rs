@@ -3971,6 +3971,87 @@ fn go_shop_and_go_heal_are_on_the_pad_while_their_errand_stands() {
 }
 
 #[test]
+fn an_edge_the_table_cannot_name_stops_being_somewhere_new_once_it_is_stood_on() {
+    // The rung-11 reading of row 54 (`infra/docs/macros-traps.md`). The cartridge reports Route
+    // 3's connections as north and west; `geography`'s row carries west and east, so the north
+    // edge's destination is unnameable -- and an unnameable destination counted as *unvisited*,
+    // which made those tiles first-tier for `GO ROUTE` on every hold for ever, with
+    // `GO OBJECTIVE` off the pad beside them because nothing on this map leads to the objective.
+    let mut world = World::room();
+    world.map = maps::ROUTE_3;
+    world.size = MapSize { width: 8, height: 8 };
+    world.player = Tile::new(4, 4);
+    world.connections = Connections { north: true, south: false, east: false, west: true };
+    // West is Pewter City, which the table does name and the run has stood on.
+    world.seen_maps.insert(maps::PEWTER_CITY);
+
+    let north: Vec<ExitId> = ways(&mut world, Way::Route).iter().map(|exit| exit.id).collect();
+    assert!(
+        north.iter().all(|id| *id == ExitId::Edge(Edge::North)),
+        "the unnameable north edge is the only fresh way out: {north:?}"
+    );
+
+    // Stood on, and it is no longer somewhere new -- so the walk falls to the tier that leads
+    // toward the objective instead of aiming at the same edge once per hold for ever.
+    world.visited.insert(ExitId::Edge(Edge::North));
+    let left: Vec<ExitId> = ways(&mut world, Way::Route).iter().map(|exit| exit.id).collect();
+    assert!(
+        !left.contains(&ExitId::Edge(Edge::North)),
+        "an edge nothing can name, already crossed, is not first-tier: {left:?}"
+    );
+}
+
+#[test]
+fn an_errand_does_not_settle_on_the_doormat_it_is_standing_on() {
+    // Row 54 of `infra/docs/macros-traps.md`, and section 12.2's rule: "a macro that completes
+    // without moving because its precondition is already satisfied where the fly stands is a
+    // trap". An errand's aim at a door carries no press -- the warp fires when it is stepped on --
+    // so an aim on the tile the fly is already on settles for `SETTLE_FRAMES` and reports `done`
+    // with the world exactly as it was. A completed errand walk writes the reached ledger, which
+    // `goals_toward` does not filter, so the same button was dealt on the next hold and the same
+    // nothing happened again: `GO HEAL` 204 starts at a mean net of 0.0 tiles and a mean reach of
+    // 0.0, in a cycle with `GO ROUTE` and `GO FRONTIER` over five tiles.
+    let mut world = viridian();
+    world.player = Tile::new(6, 1);
+    assert!(
+        amenity_goals(&mut world, Amenity::Center).is_empty(),
+        "the centre's own doormat is not somewhere to walk to"
+    );
+    assert!(!on_the_pad(&mut world, MacroKind::GoHeal), "so the button is not on the pad");
+
+    // The other errand is a tile away and untouched: this excludes one aim, not the walk.
+    assert_eq!(
+        amenity_goals(&mut world, Amenity::Mart).iter().map(|aim| aim.tile).collect::<Vec<_>>(),
+        vec![Tile::new(1, 1)]
+    );
+    assert!(on_the_pad(&mut world, MacroKind::GoShop));
+
+    // And one tile off the doormat the centre is a walk again.
+    world.player = Tile::new(6, 2);
+    assert_eq!(
+        amenity_goals(&mut world, Amenity::Center).iter().map(|aim| aim.tile).collect::<Vec<_>>(),
+        vec![Tile::new(6, 1)]
+    );
+    assert!(on_the_pad(&mut world, MacroKind::GoHeal));
+}
+
+#[test]
+fn an_errand_is_paid_by_a_building_this_run_has_already_been_inside() {
+    // The errand ledger is session state and the adapter's map ledger is not, so a restored run
+    // re-armed every errand in the town and walked back to a counter it had already used
+    // (`docs/design/macros.md` section 13's own residual). Asking both is asking "has this run
+    // been in there" twice, and either answer pays the errand.
+    let mut world = viridian();
+    assert_eq!(errand(&mut world, Amenity::Center), Some(maps::VIRIDIAN_POKECENTER));
+    world.seen_maps.insert(maps::VIRIDIAN_POKECENTER);
+    assert_eq!(errand(&mut world, Amenity::Center), None, "already been inside it");
+    assert!(!on_the_pad(&mut world, MacroKind::GoHeal));
+    // The mart is a different building and a different errand.
+    assert_eq!(errand(&mut world, Amenity::Mart), Some(maps::VIRIDIAN_MART));
+    assert!(on_the_pad(&mut world, MacroKind::GoShop));
+}
+
+#[test]
 fn go_shop_walks_to_the_marts_door_and_then_to_the_counter() {
     // Outside: the goal is the door, and it is the warp's own tile.
     let mut world = viridian();

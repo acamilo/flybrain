@@ -1165,12 +1165,57 @@ ROM-gated run does, and both are reported rather than one of them.
 
 **The whole-map grid is refused while the fly is moving.** `pokemon_red::state::map_grid` checks its
 decode against the screen buffer over the fly's own tile and its four neighbours, and on a frame
-mid-step the two are a tile apart: `wYCoord` is the tile being walked *to* while the background is
-still scrolling. Measured on Pewter City from the rung-10 checkpoint: standing still it decodes on
-**118 of 120** frames, and the frame the survey caught disagreed on three tiles by exactly one row
-in the direction of travel. A walk planned on such a frame is planned over the ten-by-nine window of
-section 15's "before". Naming it needs a WRAM reading of "a step is in progress" that this crate's
-reviewed symbol list does not carry, so it is reported here and by the probes rather than guessed at.
+mid-step the two are a tile apart. Measured on Pewter City from the rung-10 checkpoint: standing
+still it decodes on **118 of 120** frames, and the frame the survey caught disagreed on three tiles
+by exactly one row in the direction of travel. A walk planned on such a frame is planned over the
+ten-by-nine window of section 15's "before".
+
+*Worked in 12.17*, and the guess above was the wrong way round: the survey found the coordinates
+change at the **end** of the step, so it is the screen that is a tile ahead of `wYCoord` rather
+than `wYCoord` ahead of the screen.
+
+### 12.17 The coordinates change at the end of a step, and an errand arrives inside (2026-09-22, row 54)
+
+Section 12.16's two residuals turned out to be one fact and one old rule that had been left off one
+walk. Both were measured from the same rung-10 checkpoint, with
+`FLY_PROBE_CATCH=step` in `examples/scene_probe.rs`; the bytes are in
+`docs/design/macros-wram.md` section 9.
+
+- **`wXCoord` and `wYCoord` change at the *end* of a step, not at its start.** Holding UP out of the
+  Pewter museum, `wYCoord` read 7 for frames 0 to 15 of a sixteen-frame step and 6 from frame 16,
+  while from frame 2 the screen buffer already held the view centred on (10, 6). The grid's
+  cross-check compared the decode of (10, 7) with the screen's reading of (10, 6) -- `$20` against
+  `$01` -- and refused, on fourteen frames of every sixteen. Pewter City decoded on **118 of 120**
+  standing frames and on **none** of the moving ones, so every walk the fly actually took was
+  re-planned over the ten-by-nine window: section 15's "before", and row 23's oscillation with it.
+- **So the decode is read from the tile the screen is centred on.** Nothing in the pinned symbol
+  table says "a step is in progress" and a new address cannot be pinned without the disassembly
+  `gen_symbols.py` reads, so the anchor is *measured* rather than named: the screen is centred on
+  the fly's tile or on one of its four neighbours, and the one it is centred on is the one whose
+  whole neighbourhood agrees with the decode. The check keeps the property it exists for -- a wrong
+  stride, a wrong quadrant, a half-loaded map or the mid-warp tear agrees with **none** of the five,
+  because the whole neighbourhood has to agree under one anchor rather than each tile finding an
+  anchor of its own.
+- **The tile a step is landing on is ground the run has covered.** The other half of the same fact:
+  for fifteen frames of every sixteen the stood ledger recorded the tile the fly had already left,
+  so the ground under it stayed *unstood*, `path::frontier` kept offering it, and `GO FRONTIER` was
+  dealt aiming one tile away -- a walk that reports `done` the instant the step it did not make
+  lands. A step that has begun always finishes, and the screen has already centred on it.
+- **An errand arrives inside the building, facing the counter, never on the doormat outside it.**
+  `GO SHOP` and `GO HEAL` aim at a door, and a door's aim carries no press because the warp fires
+  when it is stepped on -- so an aim on the tile the fly is already standing on settles for
+  `SETTLE_FRAMES` and reports `done` with the world exactly as it was. Section 12.2's trap in its
+  own words, and `exit_goals` has excluded a settled goal underfoot since row 13: this was the one
+  walk that did not have the rule. A completed errand walk also writes the reached ledger, which
+  `goals_toward` does not filter, so the same button came back every hold: `GO HEAL` **204** starts
+  at a mean net of 0.0 tiles and a mean reach of 0.0.
+- **An errand is paid by a building this run has already been inside.** `areaVisited` is session
+  state, so a restore re-armed every errand in the town and walked the fly back to a counter it had
+  already used -- section 13's own residual. `MacroState::map_visited` is the adapter's lifetime
+  answer to the same question and it does survive a restore, so both are asked and either pays.
+
+Nothing here changes which button the fly presses. The decoder, the reward catalog, the adapter
+version and the compatibility string are untouched.
 
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same

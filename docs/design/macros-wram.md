@@ -649,6 +649,47 @@ is exactly the shape of mistake the cross-check below exists for.
   both are the old map — so only the *id* is wrong, and the check that catches it is one byte: does
   the cached grid still agree with the screen about the tile the fly is standing on.
 
+### The frame mid-step, which the check refused (2026-09-22, row 54)
+
+The cross-check above refused on **every frame the fly was moving**, and the reason is a fact about
+when the cartridge writes the coordinates. `FLY_PROBE_CATCH=step` in
+`services/flysim/crates/flysim/examples/scene_probe.rs` holds one direction from a checkpoint and
+prints, per frame, the coordinates, the grid's verdict, the tiles the two readings disagree on, and
+every plausible candidate for "a step is in progress". Holding UP out of the Pewter museum:
+
+| frame | `wYCoord` | the grid | the disagreement |
+| ---: | ---: | --- | --- |
+| 0 | 7 | ok | -- |
+| 1 | 7 | ok | -- |
+| 2 .. 15 | **7** | screen disagrees | (10, 7) decoded `$20`, screen `$01`; (11, 7) `$20` against `$01` |
+| 16 | **6** | ok | -- |
+| 19 .. 32 | 6 | screen disagrees | (10, 7) `$20`/`$01`; (11, 6) `$01`/`$50` |
+| 33 | 5 | ok | -- |
+
+Three readings come out of it, and the first is the one everything else follows from:
+
+1. **The coordinates change at the *end* of a step.** A step is sixteen frames; `wYCoord` reads the
+   tile it began on for all of them but the last. The background scrolls throughout, so from the
+   second frame the screen buffer is already centred one tile ahead.
+2. **`map_tile_id(x, y)` therefore answers for `(x + dx, y + dy)` mid-step**, where `(dx, dy)` is
+   the step. Verified on both arms of the trace: at frame 19 the screen's reading for (10, 7) is
+   the decode of (10, 6) and its reading for (11, 6) is the decode of (11, 5), exactly.
+3. **No pinned address says a step is in flight.** The player sprite's Y and X step deltas
+   (`wSpriteStateData1 + 3` and `+ 5`) keep their last value after the step ends -- `$ff, $00` on
+   every frame of the trace after the first -- so they cannot tell a step from the one before it.
+   `wStatusFlags5` stayed `$00`, `wMovementFlags` tracked the warp tile the fly was standing on and
+   not the step, and `rSCY` lags the coordinates by a frame of its own. The one byte that does
+   track it exactly -- counting `$07 $07 $06 $06 … $01 $01` down to `$00` on the frame the
+   coordinates catch up -- is **`$cfc5`**, and `gen_symbols.py` refuses a hand-written address while
+   the checkout `resolve_wram.py` reads is not on this box. So it is recorded here and **not used**.
+
+What the reader does instead is measure the anchor: the screen is centred on the fly's own tile or
+on one of its four neighbours, and the anchor it is centred on is the one whose **whole**
+neighbourhood agrees with the decode. `(0, 0)` is tried first, so a standing frame costs exactly
+what it did before. The refusals the check exists for all survive, because a wrong stride, a wrong
+quadrant, a half-loaded map and the mid-warp tear each disagree under every one of the five: the
+neighbourhood has to agree as a unit rather than tile by tile.
+
 ### The survey, on two maps
 
 `services/flysim/crates/flysim/tests/rom_map_grid.rs`, the method of
