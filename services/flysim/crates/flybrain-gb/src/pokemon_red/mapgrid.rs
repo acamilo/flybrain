@@ -49,6 +49,13 @@ pub const MAP_BORDER: usize = 3;
 /// which is why `wCurMapWidth` in blocks is `map_size().width` in tiles divided by this.
 pub const TILES_PER_BLOCK: u8 = 2;
 
+/// Bytes `wOverworldMap` has for the loaded map: `ds 1300` (`ram/wram.asm`).
+///
+/// A map plus its border of [`MAP_BORDER`] blocks has to fit in this, and every real map does. A
+/// header that says otherwise is a header read mid-load, which is why the bound is a refusal
+/// rather than a clamp.
+pub const OVERWORLD_MAP_BYTES: usize = 1300;
+
 /// Which of a quadrant's two rows the collision read takes its tile id from: the lower one.
 ///
 /// A map tile is a 2x2 patch of screen tiles and only one of the four is ever asked about, because

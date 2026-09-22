@@ -895,6 +895,14 @@ pub fn map_grid(memory: &mut dyn MemoryReader) -> Result<MapGrid, GridRefusal> {
     let height_blocks = read(memory, ram::wCurMapHeight);
     let stride = u16::from(width_blocks) + (mapgrid::MAP_BORDER as u16) * 2;
     let border = mapgrid::MAP_BORDER as u16;
+    // The map plus its border has to fit in `wOverworldMap`, which every real map does. One that
+    // does not is a header caught mid-load, and reading past the buffer would be reading somebody
+    // else's WRAM.
+    if usize::from(stride) * (usize::from(height_blocks) + mapgrid::MAP_BORDER * 2)
+        > mapgrid::OVERWORLD_MAP_BYTES
+    {
+        return Err(GridRefusal::NoHeader);
+    }
     let mut blocks = Vec::with_capacity(usize::from(width_blocks) * usize::from(height_blocks));
     for row in 0..u16::from(height_blocks) {
         for column in 0..u16::from(width_blocks) {
