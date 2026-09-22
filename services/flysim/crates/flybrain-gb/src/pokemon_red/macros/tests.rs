@@ -35,9 +35,9 @@ use super::path::{self, Exit, Way};
 use super::super::maps;
 use super::plan;
 use super::state::{
-    Battle, BattleKind, BattleMenu, Connections, Cursor, Facing, GameState, MapSize, Mon, Move,
-    Npc, Party, Pc, Player, Scene, Shop, ShopScreen, Sign, StartMenu, Status, TextBox, Walkable,
-    Warp,
+    Battle, BattleKind, BattleMenu, Connections, Cursor, EnemyMon, Facing, GameState, MapSize,
+    Mon, Move, Npc, Party, Pc, Player, Scene, Shop, ShopScreen, Sign, StartMenu, Status, TextBox,
+    Walkable, Warp,
 };
 
 /// `SPRITE_POKE_BALL`, the first still sprite: the picture id a fake gives an object rather than a
@@ -99,6 +99,11 @@ struct World {
     battle: Option<(BattleKind, bool, bool)>,
     mons: Vec<Mon>,
     active: Option<u8>,
+    /// The Pokémon on the other side, when a test is about which one it is.
+    ///
+    /// `None` is the seam answering nothing, which is what most of these fixtures want: the
+    /// species only matters to `THROW BALL`'s precondition (section 12.9).
+    enemy: Option<EnemyMon>,
 
     money: u32,
     bag: Vec<(u8, u8)>,
@@ -196,6 +201,7 @@ impl World {
             cursor_max: 0,
             grid: false,
             battle: None,
+            enemy: None,
             mons: vec![mon(0, 20, 20, &[(33, 30)])],
             active: None,
             money: 0,
@@ -532,7 +538,7 @@ impl GameState for World {
             _ => BattleMenu::None,
         };
         let own = self.active.and_then(|slot| self.mons.iter().find(|mon| mon.slot == slot)).copied();
-        Some(Battle { kind, own_turn, forced_switch, menu, own, enemy: None })
+        Some(Battle { kind, own_turn, forced_switch, menu, own, enemy: self.enemy })
     }
 
     fn text_box(&mut self) -> TextBox {
@@ -1084,13 +1090,22 @@ fn a_forced_switch_binds_switch_five_times_and_nothing_on_b() {
 
 #[test]
 fn a_battle_frame_that_is_not_the_players_turn_binds_next_to_advance_its_text() {
+    // 2026-09-16 hotfix: battle text waits for a press like a dialog (live deadlock on Route 1).
     let mut world = World::battle();
     world.scene = Scene::Battle { own_turn: false, forced_switch: false };
+    world.battle = Some((BattleKind::Wild, false, false));
+    world.list = List::None;
     let scene = world.scene();
-    // 2026-09-16 hotfix: battle text waits for a press like a dialog (live deadlock on Route 1).
-    // Section 13.1 adds `BACK`: the bag list a battle's ITEM entry opens is none of
-    // `BattleMenu`'s three, so it reads here, and `NEXT` alone could only press A at it.
+    // Section 12.9: `NEXT` alone. Section 13.1 put `BACK` here for the bag a battle's ITEM entry
+    // opens, which reads as nobody's turn -- but on a frame of text there is no list to leave, and
+    // a `BACK` that changes nothing is the trap of section 12.2 (live, rung 9: 135 of 183 macro
+    // starts).
     let palette = Palette::for_scene(scene, &mut world);
+    assert_eq!(names(&palette), ["NEXT"]);
+
+    // The bag is the one sub-state on this arm with a list open in it, and it keeps `BACK`.
+    world.list = List::BattleBag;
+    let palette = Palette::for_scene(world.scene(), &mut world);
     assert_eq!(names(&palette), ["NEXT", "BACK"]);
 }
 
@@ -3271,6 +3286,62 @@ fn each_battle_menu_deals_its_own_pad() {
     between.list = List::None;
     let pad = names(&plan::plan_for(between.scene(), &mut between));
     assert_eq!(pad.iter().filter(|name| **name == "NEXT").count(), 1, "{pad:?}");
+    assert!(!pad.contains(&"BACK"), "nothing is open to back out of: {pad:?}");
+}
+
+/// Section 12.9: `BACK` is on a battle's pad only where a list is open.
+///
+/// **Live on rung 9**, 69 hours in Viridian Forest: `BACK` was 135 of 183 macro starts since the
+/// restart and the event log repeated `RUN blocked, BACK start, BACK done`. Between turns there is
+/// no list to leave, so the B press changes nothing the `NEXT` beside it does not and the macro
+/// completes on the tile it started on -- section 12.2's trap, on the pad the fly spends most of a
+/// wild battle looking at.
+///
+/// The three lists keep it, because backing out of a list is one of exactly two answers to one.
+#[test]
+fn back_is_on_a_battle_pad_only_where_a_list_is_open() {
+    let with_back = |world: &mut World| {
+        let pad = names(&plan::plan_for(world.scene(), world));
+        assert!(pad.contains(&"BACK"), "a list can be left: {pad:?}");
+    };
+    let without = |world: &mut World| {
+        let pad = names(&plan::plan_for(world.scene(), world));
+        assert!(!pad.contains(&"BACK"), "nothing to back out of: {pad:?}");
+        assert!(plan::plan_for(world.scene(), world).bound() > 0, "and never an empty pad");
+    };
+
+    // The top-level menu: FIGHT, PKMN, ITEM and RUN are the four answers and B is not a fifth.
+    let mut main = World::battle();
+    without(&mut main);
+
+    // The three lists.
+    let mut moves = World::battle();
+    moves.list = List::Moves(3);
+    with_back(&mut moves);
+    let mut party = World::battle();
+    party.list = List::BattleParty;
+    with_back(&mut party);
+    // The bag reads as nobody's turn (`state::battle`), so it lands on the between-turns arm --
+    // and it is the one sub-state there with a list open in it.
+    let mut bag = World::battle();
+    bag.scene = Scene::Battle { own_turn: false, forced_switch: false };
+    bag.battle = Some((BattleKind::Wild, false, false));
+    bag.list = List::BattleBag;
+    with_back(&mut bag);
+
+    // Text, an animation, a turn resolving: no list, no `BACK`.
+    let mut between = World::battle();
+    between.scene = Scene::Battle { own_turn: false, forced_switch: false };
+    between.battle = Some((BattleKind::Wild, false, false));
+    between.list = List::None;
+    without(&mut between);
+
+    // And a forced switch, which could never be backed out of anyway (row 8).
+    let mut forced = World::battle();
+    forced.scene = Scene::Battle { own_turn: false, forced_switch: true };
+    forced.battle = Some((BattleKind::Wild, false, true));
+    forced.list = List::BattleParty;
+    without(&mut forced);
 }
 
 #[test]
@@ -3870,6 +3941,51 @@ fn throw_ball_needs_a_wild_battle_a_ball_and_room_in_the_party() {
     room.bag = vec![(item::POKE_BALL, 1)];
     assert_eq!(throw_slot(&mut room), None);
     assert!(!on_the_pad(&mut room, MacroKind::ThrowBall));
+}
+
+/// Section 12.9: a ball is not thrown at a species the party already holds.
+///
+/// **Live on rung 9**, 69 hours in Viridian Forest: `THROW BALL` was 28 of 183 macro starts, and
+/// the forest holds Caterpie, Weedle, Metapod, Kakuna and Pidgey -- the fly had caught its own and
+/// went on throwing at them. Every throw spends a ball, and a catch opens the nickname screen,
+/// which reads `Unknown` and needs a START the pad has no button for (row 14).
+///
+/// The party is the caught set: the cartridge's own lifetime record, in the same internal species
+/// numbering the enemy is read in. `wPokedexOwned` is by Pokédex number and the conversion is in a
+/// ROM bank this crate cannot read, so it is not asked.
+#[test]
+fn throw_ball_refuses_a_species_the_party_already_holds() {
+    // Two distinct internal species indices -- the forest's Weedle and Caterpie, whose exact
+    // numbers nothing below depends on.
+    let weedle = 0x70;
+    let caterpie = 0x7b;
+    let mut world = World::battle();
+    world.mons.truncate(1);
+    world.mons[0].species = caterpie;
+    world.bag = vec![(item::POKE_BALL, 5)];
+
+    // A species the party does not hold: the button is on the pad, as before.
+    world.enemy = Some(EnemyMon { species: weedle, level: 6, hp: 20, max_hp: 20 });
+    assert_eq!(throw_slot(&mut world), Some(0));
+    assert!(on_the_pad(&mut world, MacroKind::ThrowBall));
+
+    // The one that is already in the party: off the pad, whatever the bag holds.
+    world.enemy = Some(EnemyMon { species: caterpie, level: 6, hp: 20, max_hp: 20 });
+    assert_eq!(throw_slot(&mut world), None, "a Caterpie is already in the party");
+    assert!(!on_the_pad(&mut world, MacroKind::ThrowBall));
+
+    // Any party slot counts, not only the one that is out.
+    world.mons.push(mon(1, 20, 20, &[(33, 30)]));
+    world.mons[1].species = weedle;
+    world.enemy = Some(EnemyMon { species: weedle, level: 6, hp: 20, max_hp: 20 });
+    assert_eq!(throw_slot(&mut world), None, "a Weedle is on the bench");
+
+    // A species the seam could not place leaves the button where it was: an unobservable
+    // precondition is a guess, and this crate does not guess (section 13.1).
+    world.enemy = None;
+    assert_eq!(throw_slot(&mut world), Some(0), "no reading is not a refusal");
+    world.enemy = Some(EnemyMon { species: 0, level: 0, hp: 0, max_hp: 0 });
+    assert_eq!(throw_slot(&mut world), Some(0), "species 0 is not a species");
 }
 
 #[test]
