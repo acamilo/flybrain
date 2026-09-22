@@ -1767,3 +1767,177 @@ and it now has a checkpoint of its own.
 - `infra/tests/lint.sh`: all checks passed, de-PII guard included.
 - `--print-compatibility`: **648 bytes, sha256 `0d9bfde7...707fa`** -- byte-identical to v0.4.1,
   v0.4.2 and v0.4.3. Decoder, reward catalog, adapter version and roles untouched.
+
+## 2026-09-22, row 41 worked: the nurse's box is a ring, and `YES` and `NEXT` are one press
+
+Named in the rung-9 review and again by 12.11 as the next trap, and flagged live by the watchdog
+(v0.4.4, macros mode) within the hour: rank 10 (PEWTER CITY), the fly in the **Pewter Pokémon
+Center**, and since the 09:39 restart the macro starts were `YES` **2,142**, `TALK` 107,
+`GO FRONTIER` 26, `BACK` 24, with the event log's tail
+
+```
+YES start, YES done, YES start, YES done, ...
+```
+
+for ever. `docs/design/macros.md` section 12.12 is the design; this is the reproduction, the
+survey, and the before/after.
+
+### Where the fly was standing
+
+`examples/scene_probe.rs` from the live checkpoint:
+
+- map `0x3a`, **14x8**, the player at **(3, 3) facing up**, two warps at (3, 7) and (4, 7) out to
+  Pewter City (map 2);
+- two sprites: picture `0x29` (`SPRITE_NURSE`) at **(3, 1)** and picture `0x38` at (1, 3) -- so the
+  nurse is **two tiles away**, behind her counter, which is the reach
+  `IsSpriteOrSignInFrontOfPlayer` doubles over a counter tile;
+- the scene reads `Dialog` (`font=0x01`, the full-width border drawn, `textbox=0x01`) and the pad is
+  **`NEXT`, `YES`, `NO`**;
+- the objective is map `0x36` -- the Pewter gym, rung 11's BOULDER BADGE -- and `next_hop` from here
+  answers map 2, so the road out is known;
+- every overworld candidate list is empty (`ways(Exit)` `[]` because both warps are `exit_visited`,
+  `objective_goals` `[]`, `untalked_people` `[]`, `frontier_aims` `[]`), which is why `TALK` and the
+  dialog were the pad.
+
+### The survey: the conversation, one raw A pulse at a time
+
+`FLY_PROBE_CATCH=nurse` leaves the box with B and then pulses A, printing `scene`, the text box's
+two halves, the two-option menu's cursor bytes, the top-right corner's frame tiles and both lines of
+decoded text for every state the conversation passes through. **The party first**, because the
+loop's premise is that it is already full:
+
+```
+- slot 0 species 0x09 level 24 hp 70/70 status Healthy
+- `party_needs_rest` = false, `party_rested` = true
+```
+
+Then the ring, elided to the states that matter (`A#n` is the pulse):
+
+```
+at the checkpoint  Dialog  cursor=(8,12,0,1,0x03)  corner=empty  | POKeMON back to | perfect health!  v
+A#0    Dialog  cursor=(8,12,1,1,0x03)  corner=empty                       |                  |
+A#4    Dialog  cursor=(8,12,1,1,0x03)  corner=empty   | Welcome to our     | POKeMON CENTER!  v
+A#9    Dialog  cursor=(8,12,1,1,0x03)  corner=empty   | We heal your       | POKeMON back to  v
+A#12   Dialog  cursor=(8,12,1,1,0x03)  corner=empty   | POKeMON back to    | perfect health!  v
+A#13   Dialog  cursor=(8,12,0,1,0x03)  corner=BOX     | POKeMON back to    | perfect health!
+A#15   Dialog  cursor=(8,12,0,1,0x03)  corner=empty   | OK. We'll need     | your POKeMON.
+A#33   Dialog  cursor=(8,12,0,1,0x03)  corner=empty   | Thank you!         | Your POKeMON are v
+A#38   Dialog  cursor=(8,12,0,1,0x03)  corner=empty   | Your POKeMON are   | fighting fit!    v
+A#42   Dialog  cursor=(8,12,0,1,0x03)  corner=empty   | We hope to see     | you again!
+A#45   Overworld  open=false  waiting=false
+A#46   Dialog  ... the whole thing again, and again, and again
+```
+
+Five things that settles:
+
+1. **The cycle is forty-six A presses and the box is a *choice* on exactly one of them** (A#13,
+   then A#59, A#105, A#151...). The other forty-five are plain text, where `NEXT` and `YES` are the
+   same A press with two channel names and `NO`'s B advances a plain box too.
+2. **The box open at the checkpoint is the closing line, not the prompt.** So the first of the
+   brief's three candidate readings is out: the fly was not sitting on a YES/NO box re-offering
+   itself; it was walking a ring of text.
+3. **`HEAL` is not in the loop at all.** Its precondition reads the live party and
+   `party_needs_rest` answers `false`, so the button was off the pad throughout -- and `HEAL`'s
+   middle step is a *read* of the party (`Step::Rested`), not a timer, so it cannot spin on a party
+   that is already full either. The third candidate reading is out too.
+4. **The box closes for a single frame and the next A press reopens it**, because the fly is still
+   standing at (3, 3) facing the nurse over the counter. That is the ring's own door, and `TALK` is
+   what opens it from the overworld side.
+5. **The two-option menu's cursor bytes are stale on all forty-six frames**
+   (`wTopMenuItemY` 8, `wTopMenuItemX` 12, `wMaxMenuItem` 1, `wMenuWatchedKeys` `$03`) while the
+   box itself is drawn on one. So "is a choice open" needs the **drawn border** beside them, at
+   (11, 6)-(19, 11) -- which is the same construction `text_box().waiting` already makes for the
+   dialogue box. `docs/design/macros-wram.md`'s table carries the reading and its limit.
+
+### Why `TALK` fired 107 times and retired nothing
+
+`TALK`'s precondition is `palette::facing_untalked`, which reaches **over a counter** because the
+cartridge does. Its talked-ledger entry came from `executor::talk_target`, which looked **one tile
+ahead** -- at the counter tile, which holds nothing. So the macro was bound by one reading and
+recorded by a shorter one, and the ledger never learned that the nurse had been talked to: the
+button came back every hold for ever. A precondition and the ledger that answers it have to be the
+same question, and that was the second half of the trap.
+
+| # | trap | trigger | test | fix, or why it is left |
+| ---: | --- | --- | --- | --- |
+| 41 | the nurse's conversation is a ring of forty-six A presses that ends where it began, and the dialog pad deals two names for the A press that walks it | standing at a Pokémon Center's counter with a party that is already full -- which is every visit after a heal, and the state a `GO HEAL` errand leaves the fly in | `talk_is_off_the_pad_at_a_nurse_the_party_has_no_use_for`, `the_nurses_prompt_offers_only_the_answer_that_changes_something`, `a_completed_heal_writes_the_nurse_into_the_talked_ledger`, `a_declined_heal_writes_the_nurse_into_the_talked_ledger`, `the_fly_leaves_the_pokemon_center_from_the_rung_ten_checkpoint` (ROM-gated) | **fixed**: `TALK` is off the pad at a nurse the party has no use for; her prompt deals only the answer that changes something; `NEXT` is off any readable YES/NO pad, because an A press there *is* `YES`; and a completed heal or a declined prompt retires her |
+| 48 | `TALK` is bound by a reach that goes over a counter and recorded by one that does not, so a counter person is never retired | any mart clerk or centre nurse, since the counter reach was added | `a_completed_heal_writes_the_nurse_into_the_talked_ledger` (the ledger entry is the assertion) | **fixed**: the ledger entry comes from `palette::facing_target`, which is `TALK`'s own precondition |
+| 49 | a YES/NO answer that brings the same prompt straight back | any readable two-option box the answer does not settle | `a_yes_no_box_that_reopens_unchanged_takes_that_answer_off_the_pad`, `a_prompt_that_does_not_come_back_excludes_nothing` | **fixed**: `TargetKey::Answer { at, yes }` in the blocked ledger, same ten-minute window as a walk's target, armed for one hold after the answer. The exclusion narrows a pad and never empties one |
+| 50 | `MOVE n` reports `blocked` with the move list drawn and its cursor placeable but not accepting input | every battle | -- | **unchanged from v0.4.3 and v0.4.4, named again**: 222 of 224 `MOVE 4` and 162 of 171 `MOVE 2` in the ROM run below. Row 30b's unplaceable cursor inverted; the honest fix is a WRAM reading of "this list is accepting input" rather than a pad change, and it is the next brief |
+
+### The ROM-gated run, from the live checkpoint
+
+`FLY_CENTER_CHECKPOINT`, macros mode, the stub rotation, 120,000 frames (33.5 brain minutes):
+
+| measure | value |
+| --- | --- |
+| the checkpoint's map | `0x3a`, party 70/70 and healthy |
+| left map `0x3a` on | **frame 326** |
+| macros spent in the centre | **6**: `GO OBJECTIVE` 1, `NEXT` 2, `NO` 1, `YES` 2 |
+| route | `0x3a` -> Pewter City (2) -> **the Pewter gym (0x36)**, which is the objective |
+| `YES` starts in the centre | **2**, against 1,423 in the before hunt from the same room |
+| `NEXT` on a pad with a readable prompt open | **0** |
+| `TALK` on a pad at a rested nurse | **0** |
+| dialog frames / of those, a readable prompt | 19,409 / **63** |
+
+The two `YES` presses are the checkpoint's own half-finished conversation: it resumes inside a plain
+text box, whose pad is `NEXT`, `YES`, `NO` by contract, and two A presses closed the boxes that were
+left. Then the prompt came up, the party was full, the pad was `NO` alone, and the fly was out. The
+`MOVE n` blocked counts in the table above are the gym's battles and are row 50, unchanged.
+
+### The trap hunt, before and after
+
+Twenty brain minutes, seed 20260917, 4 sweep threads, the same connectome and the same cartridge,
+from the release container's own rung-10 Pokémon Center checkpoint, **driven by the brain**.
+
+| measure | before (v0.4.4) | after |
+| --- | ---: | ---: |
+| distinct (map, tile) | **1** | **437** |
+| windows flagged | 73/73 | **54/73** |
+| macros started | 1494 | 1165 |
+| `YES` starts | **1423** | 108 |
+| `YES` presses in a text box on map `0x3a` | **1424** | **4** |
+| `TALK` starts | 68 | 11 |
+| `GO HEAL` starts | 2 | 0 |
+| frames in `dialog` | **69,469** | 5,492 |
+| frames in `overworld` | 2,204 | **44,817** |
+| frames in `battle` | 0 | 10,518 |
+| worst single text box | 69,469 frames, map `0x3a` (3, 3) | 2,318 frames, map `0x02` (16, 17) |
+| the map at the end | none -- a text box over it | Pewter City, `40x36`, 879 walkable |
+
+**The before arm is row 41 whole**: one tile for twenty brain minutes, every window flagged, and
+`YES x21` in every one of them. The after arm leaves the centre in the first window, walks Pewter
+City, finds the gym and fights in it -- `YES` on map `0x3a` goes **1424 → 4**, and the four are the
+checkpoint's own half-finished conversation plus the one `NO` that answered the prompt.
+
+### Residuals, named rather than worked around
+
+- **54 of 73 windows still flag, and they are a different trap on ground the before arm never
+  reached.** In Pewter City and the gym the sequences are `GO FRONTIER` runs of up to 112, and
+  `GO OBJECTIVE, BACK, GO FRONTIER, GO FRONTIER` and `GO OUT, BACK, GO FRONTIER, GO FRONTIER` at
+  x37, with `BACK` pressed 189 times in a text box on map `0x02`. A window with 150 distinct tiles
+  in it flags on the *repeat* rule and not the tile rule, which is the detector working: the fly is
+  covering ground and still cycling four macros. That is the next brief, and it is a loop behind
+  the loop in front of it exactly as rows 1, 2b, 23, 24 and 41 were.
+- **`MOVE n` still reports `blocked` with the move list drawn and its cursor placeable but not
+  accepting input** (row 50): 24 of 27 `MOVE 2..4` in the hunt, 222 of 224 `MOVE 4` in the ROM run,
+  mean 223-238 frames, which is the cursor step spending its whole wait. Unchanged from v0.4.3 and
+  v0.4.4 and needing a WRAM reading rather than a pad change.
+- **`yes_no_prompt` reads one box and says so.** Red places a two-option menu where the script
+  asking for it says; the nurse's is at (11, 6)-(19, 11) and surveyed, and a prompt drawn elsewhere
+  reads `false` and keeps the pad it had. The reopen exclusion therefore only fires on a prompt this
+  crate can read, which is the honest half of a general rule.
+- **The declined-prompt talked entry is 12.4 inverted for one person.** It is justified by the pad:
+  `NO` is only ever offered at her prompt when the party is already full. A future macro that
+  declined a heal for some other reason would want that revisited.
+
+### Gates
+
+- `cargo test --workspace` with `FLY_ROM` set: green except
+  `flysim::integration::the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_killed`,
+  which fails identically on v0.4.4 on this box (a debug build of the service does not finish
+  booting inside the test's window here). Pre-existing and unrelated to the macro layer.
+- `cargo clippy --all-targets`: clean.
+- `infra/tests/lint.sh`: all checks passed, de-PII guard included.
+- `--print-compatibility`: **648 bytes, sha256 `0d9bfde7...707fa`** -- byte-identical to v0.4.1
+  through v0.4.4. Decoder, reward catalog, adapter version and roles untouched.
