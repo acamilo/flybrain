@@ -1,0 +1,16 @@
+[package]
+name = "fly-session-types"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Session domain scalars, closed enums, method payloads, canonical JSON digests and the step trace format (session-framework CONTRACT-01)."
+
+[dependencies]
+# The bus owns the Id/U64/Digest encodings, strict JSON and ArtifactRef; this crate reuses
+# them rather than forking their semantics.
+flybus = { path = "../flybus" }
+ryu-js.workspace = true
+serde_json = { workspace = true }
+sha2 = { workspace = true }
