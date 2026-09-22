@@ -1155,6 +1155,14 @@ hours. Two things it then does are worth naming, because neither is a bug and bo
   unstood tile on screen. It is covering ground rather than standing still, which is why it is a
   residual and not a trap.
 
+**The trap hunt does not improve.** Distinct tiles 193 -> 175 and flagged windows 59 -> 69, with
+`BACK` in a text box 295 -> 0 and battle frames 6,948 -> 20,894. What the old cycle is replaced by
+is a new one on the same five tiles -- `GO FRONTIER`, `GO HEAL`, `GO ROUTE`, x42, for seven and a
+half brain minutes -- and then four brain minutes inside one battle, which the hunt's tile rule
+flags as hard as it flags a stall. `infra/docs/macros-traps.md` has both arms whole and row 54 is
+the next brief. The ethos check's "the trap hunt improves" does not hold for this branch; the
+ROM-gated run does, and both are reported rather than one of them.
+
 **The whole-map grid is refused while the fly is moving.** `pokemon_red::state::map_grid` checks its
 decode against the screen buffer over the fly's own tile and its four neighbours, and on a frame
 mid-step the two are a tile apart: `wYCoord` is the tile being walked *to* while the background is

@@ -2020,3 +2020,69 @@ The fly is out of the museum and into the gym in the first minute, and then spen
 Pewter City's buildings: the town's errands are session state and the 11:30 restart re-armed both,
 so `GO OBJECTIVE` aims at the mart and the centre before the leader (section 13, and `BUY
 ANTIDOTE` 3, `BUY BALL` 2, `HEAL` 1 in the same run say it was paid).
+
+### The trap hunt, before and after — and it does not improve
+
+Twenty brain minutes, seed 20260917, 4 sweep threads, the same connectome and the same cartridge,
+from the release container's own rung-10 Pewter checkpoint, **driven by the brain**.
+
+| measure | before (v0.4.5) | after |
+| --- | ---: | ---: |
+| distinct (map, tile) | **193** | 175 |
+| windows flagged | **59/73** | 69/73 |
+| macros started | 1283 | 1056 |
+| `BACK` starts | **334** | 133 |
+| `BACK` in a text box on map `0x02` | **291** | **0** |
+| `BACK` on any text box | 295 | **0** |
+| `GO FRONTIER` starts | 531 | 242 |
+| `GO HEAL` starts | 0 | **204** |
+| frames in `overworld` | 43,797 | 30,861 |
+| frames in `unknown` | 16,595 | 13,990 |
+| frames in `battle` | 6,948 | **20,894** |
+| recoveries | 0 | 0 |
+| the repeated sequence | `BACK, GO FRONTIER, GO FRONTIER, GO OBJECTIVE` x16 and `GO OUT, BACK, GO FRONTIER, GO FRONTIER` x37 | `GO FRONTIER, GO HEAL, GO ROUTE` x42 |
+
+**The before arm is the live loop whole**: the two four-macro cycles it flags are the two the
+watchdog's own log named, `BACK` is 291 of them in a text box on map `0x02`, and the fly ends the
+run having covered 193 tiles of a 879-tile town.
+
+**The after arm does not improve on either of the hunt's two measures, and this says so.** `BACK`
+in a box goes 295 -> 0, which is row 51 closed; the museum is left in the first window and never
+returned to, which is rows 52 and 53. What replaces the old cycle is a *new* one on the same five
+tiles -- `GO FRONTIER, GO HEAL, GO ROUTE` x42 from brain minute 1.0 to 8.5 -- and after that the
+fly covers ground (up to 103 tiles in a window) and spends the last four brain minutes inside one
+battle, which the hunt's tile rule flags as hard as it flags a loop. Battle frames go **6,948 ->
+20,894**, and section 15 of `docs/design/macros.md` measured the same trade the same way: a fly
+that covers more ground walks into more grass, and the hunt cannot tell a long fight from a stall.
+
+| # | trap | trigger | test | fix, or why it is left |
+| ---: | --- | --- | --- | --- |
+| 54 | `GO FRONTIER`, `GO HEAL` and `GO ROUTE` cycle on five tiles: three walks that each end where they began | measured in the **after** arm only, brain minutes 1.0 to 8.5, `GO HEAL` **204** starts at a mean net of 0.0 tiles and a mean reach of 0.0, `GO ROUTE` 211 at a net of 0.2 | -- | **named, not worked, and it is the next brief.** Two readings fit and the hunt cannot separate them: the errand walking the fly in and out of a building whose door is underfoot (row 2's shape, with `GO HEAL` in `GO ROUTE`'s place), and the windowed walk oscillation of 12.3's row 23 -- which the whole-map grid was built to end and which is back **because the grid is refused on every frame the fly is mid-step** (below). Rows 1, 2b, 23, 24 and 41 were each found this way |
+
+### Residuals, named rather than worked around
+
+- **The whole-map grid is refused while the fly is moving.** `map_grid` checks its decode against
+  the screen buffer over the fly's tile and its four neighbours, and mid-step the two are one tile
+  apart: `wYCoord` is the tile being walked *to* while the background is still scrolling. Measured
+  on Pewter City from this checkpoint: standing still it decodes on **118 of 120** frames, and the
+  frame the survey caught disagreed on three tiles by exactly one row in the direction of travel.
+  A walk planned on such a frame is planned over the ten-by-nine window of section 15's "before",
+  which is what row 23's oscillation is made of. The honest fix is a WRAM reading of "a step is in
+  progress", which this crate's reviewed symbol list does not carry, so it is reported by the
+  probes and left.
+- **The town's errands are session state**, so every restart re-arms them and `GO OBJECTIVE` aims
+  at the mart and the centre before the rung's place, the gym included. Section 13's own design.
+- **`MOVE n` still reports `blocked`** with the move list drawn and its cursor placeable but not
+  accepting input (row 50): 42 of 65 in the after arm. Unchanged since v0.4.3.
+
+### Gates
+
+- `cargo test --workspace` with `FLY_ROM` set: green except
+  `flysim::integration::the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_killed`,
+  which is the known debug-build boot failure on this box -- the service took 49.2 s to its first
+  healthy `/healthz` and `/status` still read the booting header (`milestone.total` 1, the
+  placeholder `simloop.rs` uses before the adapter exists). Pre-existing and unrelated.
+- `cargo clippy --all-targets`: clean.
+- `infra/tests/lint.sh`: all checks passed, de-PII guard included.
+- `--print-compatibility`: **648 bytes, sha256 `0d9bfde7...707fa`** -- byte-identical to v0.4.1
+  through v0.4.5. Decoder, reward catalog, adapter version and roles untouched.
