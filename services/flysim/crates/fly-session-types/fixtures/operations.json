@@ -1,0 +1,667 @@
+{
+  "description": "ipc-v1 section 5: the operation key of a step mutation and the canonical body a duplicate is compared against.",
+  "keys": [
+    {
+      "name": "Agent.Prepare on fly-a at step 41",
+      "scope": {
+        "sessionId": "demo",
+        "epoch": "epoch-1",
+        "step": "41"
+      },
+      "method": "Agent.Prepare",
+      "workerId": "fly-a",
+      "digest": "eda73d62bb5d616052997ab5e9d2c4ba5872fdefb44cf706910a18a24d39225f"
+    },
+    {
+      "name": "Agent.Prepare on fly-b at step 41",
+      "scope": {
+        "sessionId": "demo",
+        "epoch": "epoch-1",
+        "step": "41"
+      },
+      "method": "Agent.Prepare",
+      "workerId": "fly-b",
+      "digest": "5a7fd15da236f3fd6343698a8cc5c4f14fa7d84683a819d5a28904d90f700c4e"
+    },
+    {
+      "name": "Agent.Commit on fly-a at step 41",
+      "scope": {
+        "sessionId": "demo",
+        "epoch": "epoch-1",
+        "step": "41"
+      },
+      "method": "Agent.Commit",
+      "workerId": "fly-a",
+      "digest": "2a89a120e5594895d024b4ffc2a7d225bd27322cfd345ebd78e80ed7b271c680"
+    },
+    {
+      "name": "Agent.Prepare on fly-a at step 42",
+      "scope": {
+        "sessionId": "demo",
+        "epoch": "epoch-1",
+        "step": "42"
+      },
+      "method": "Agent.Prepare",
+      "workerId": "fly-a",
+      "digest": "5bb184cab6c3c2d7567a7979d860a7e9b26ea52bdc92b139053b0a2f81a9ed4d"
+    },
+    {
+      "name": "Agent.Prepare on fly-a in another epoch",
+      "scope": {
+        "sessionId": "demo",
+        "epoch": "epoch-2",
+        "step": "41"
+      },
+      "method": "Agent.Prepare",
+      "workerId": "fly-a",
+      "digest": "fa1d9cf3936aaffe3cedd0e586d7763efca2d250e89dd85b849cf35fbd91a477"
+    },
+    {
+      "name": "Environment.Advance at step 41",
+      "scope": {
+        "sessionId": "demo",
+        "epoch": "epoch-1",
+        "step": "41"
+      },
+      "method": "Environment.Advance",
+      "workerId": "world",
+      "digest": "c89c390aa78ef2895d9e2b86a6000160923dc54e3be75529e0289cd18b9088b1"
+    }
+  ],
+  "bodies": [
+    {
+      "name": "Agent.Prepare body",
+      "method": "Agent.Prepare",
+      "scope": {
+        "sessionId": "demo",
+        "epoch": "epoch-1",
+        "step": "41"
+      },
+      "params": {
+        "agentId": "fly-a",
+        "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "interval": {
+          "numerator": "50000000",
+          "denominator": "3"
+        },
+        "decisionContextDigest": "ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4",
+        "preStepStimulations": [
+          {
+            "id": "stim-1",
+            "kindId": "sugar",
+            "durationMs": 50.0
+          }
+        ]
+      },
+      "digest": "74c9d5f27b2cb06922cc3ca13d87c67faea0a6c73aefbbdb21ba8f52c6d33f60"
+    },
+    {
+      "name": "Environment.Advance body",
+      "method": "Environment.Advance",
+      "scope": {
+        "sessionId": "demo",
+        "epoch": "epoch-1",
+        "step": "41"
+      },
+      "params": {
+        "batchId": "batch-41",
+        "controls": [
+          {
+            "portId": "port-1",
+            "buttons": [
+              {
+                "id": "a",
+                "down": true
+              },
+              {
+                "id": "b",
+                "down": false
+              },
+              {
+                "id": "start",
+                "down": false
+              },
+              {
+                "id": "select",
+                "down": false
+              },
+              {
+                "id": "up",
+                "down": false
+              },
+              {
+                "id": "down",
+                "down": false
+              },
+              {
+                "id": "left",
+                "down": false
+              },
+              {
+                "id": "right",
+                "down": false
+              }
+            ],
+            "axes": [
+              {
+                "id": "stick-x",
+                "value": 0.0
+              },
+              {
+                "id": "trigger",
+                "value": 0.0
+              }
+            ]
+          }
+        ]
+      },
+      "digest": "5aaae9c083336460a2ce34fb50e191f7108444a953f09b952e97a48b7962ee79"
+    },
+    {
+      "name": "Worker.Hello body with no scope",
+      "method": "Worker.Hello",
+      "scope": null,
+      "params": {
+        "sessionId": "demo",
+        "expectedWorkerId": "fly-a",
+        "role": "agent",
+        "supportedMajors": [
+          1
+        ]
+      },
+      "digest": "0c07677a45178d8680dddbeec56d4e09f6ccbfe5fe77d9d4ff2fb07b369febaf"
+    }
+  ],
+  "pairs": [
+    {
+      "name": "the same operation retried on a new bus call",
+      "left": {
+        "method": "Environment.Advance",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "41"
+        },
+        "params": {
+          "batchId": "batch-41",
+          "controls": [
+            {
+              "portId": "port-1",
+              "buttons": [
+                {
+                  "id": "a",
+                  "down": true
+                },
+                {
+                  "id": "b",
+                  "down": false
+                },
+                {
+                  "id": "start",
+                  "down": false
+                },
+                {
+                  "id": "select",
+                  "down": false
+                },
+                {
+                  "id": "up",
+                  "down": false
+                },
+                {
+                  "id": "down",
+                  "down": false
+                },
+                {
+                  "id": "left",
+                  "down": false
+                },
+                {
+                  "id": "right",
+                  "down": false
+                }
+              ],
+              "axes": [
+                {
+                  "id": "stick-x",
+                  "value": 0.0
+                },
+                {
+                  "id": "trigger",
+                  "value": 0.0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "right": {
+        "method": "Environment.Advance",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "41"
+        },
+        "params": {
+          "batchId": "batch-41",
+          "controls": [
+            {
+              "portId": "port-1",
+              "buttons": [
+                {
+                  "id": "a",
+                  "down": true
+                },
+                {
+                  "id": "b",
+                  "down": false
+                },
+                {
+                  "id": "start",
+                  "down": false
+                },
+                {
+                  "id": "select",
+                  "down": false
+                },
+                {
+                  "id": "up",
+                  "down": false
+                },
+                {
+                  "id": "down",
+                  "down": false
+                },
+                {
+                  "id": "left",
+                  "down": false
+                },
+                {
+                  "id": "right",
+                  "down": false
+                }
+              ],
+              "axes": [
+                {
+                  "id": "stick-x",
+                  "value": 0.0
+                },
+                {
+                  "id": "trigger",
+                  "value": 0.0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "workerId": "world",
+      "sameKey": true,
+      "sameBody": true,
+      "reason": "a retry reuses the requestId and body; only the callId changes, and the callId is not in either digest"
+    },
+    {
+      "name": "the same batch id with altered controls",
+      "left": {
+        "method": "Environment.Advance",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "41"
+        },
+        "params": {
+          "batchId": "batch-41",
+          "controls": [
+            {
+              "portId": "port-1",
+              "buttons": [
+                {
+                  "id": "a",
+                  "down": true
+                },
+                {
+                  "id": "b",
+                  "down": false
+                },
+                {
+                  "id": "start",
+                  "down": false
+                },
+                {
+                  "id": "select",
+                  "down": false
+                },
+                {
+                  "id": "up",
+                  "down": false
+                },
+                {
+                  "id": "down",
+                  "down": false
+                },
+                {
+                  "id": "left",
+                  "down": false
+                },
+                {
+                  "id": "right",
+                  "down": false
+                }
+              ],
+              "axes": [
+                {
+                  "id": "stick-x",
+                  "value": 0.0
+                },
+                {
+                  "id": "trigger",
+                  "value": 0.0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "right": {
+        "method": "Environment.Advance",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "41"
+        },
+        "params": {
+          "batchId": "batch-41",
+          "controls": [
+            {
+              "portId": "port-1",
+              "buttons": [
+                {
+                  "id": "a",
+                  "down": true
+                },
+                {
+                  "id": "b",
+                  "down": false
+                },
+                {
+                  "id": "start",
+                  "down": false
+                },
+                {
+                  "id": "select",
+                  "down": false
+                },
+                {
+                  "id": "up",
+                  "down": false
+                },
+                {
+                  "id": "down",
+                  "down": false
+                },
+                {
+                  "id": "left",
+                  "down": false
+                },
+                {
+                  "id": "right",
+                  "down": false
+                }
+              ],
+              "axes": [
+                {
+                  "id": "stick-x",
+                  "value": 1.0
+                },
+                {
+                  "id": "trigger",
+                  "value": 0.0
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "workerId": "world",
+      "sameKey": true,
+      "sameBody": false,
+      "reason": "same key, changed body: CONFLICT, never a second world mutation"
+    },
+    {
+      "name": "params written with their keys in another order",
+      "left": {
+        "method": "Agent.Prepare",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "41"
+        },
+        "params": {
+          "agentId": "fly-a",
+          "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+          "interval": {
+            "numerator": "50000000",
+            "denominator": "3"
+          },
+          "decisionContextDigest": "ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4",
+          "preStepStimulations": [
+            {
+              "id": "stim-1",
+              "kindId": "sugar",
+              "durationMs": 50.0
+            }
+          ]
+        }
+      },
+      "right": {
+        "method": "Agent.Prepare",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "41"
+        },
+        "params": {
+          "preStepStimulations": [
+            {
+              "id": "stim-1",
+              "kindId": "sugar",
+              "durationMs": 50.0
+            }
+          ],
+          "decisionContextDigest": "ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4",
+          "interval": {
+            "numerator": "50000000",
+            "denominator": "3"
+          },
+          "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+          "agentId": "fly-a"
+        }
+      },
+      "workerId": "fly-a",
+      "sameKey": true,
+      "sameBody": true,
+      "reason": "RFC 8785 sorts keys, so serialization order is not a body change"
+    },
+    {
+      "name": "the same body one step later",
+      "left": {
+        "method": "Agent.Prepare",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "41"
+        },
+        "params": {
+          "agentId": "fly-a",
+          "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+          "interval": {
+            "numerator": "50000000",
+            "denominator": "3"
+          },
+          "decisionContextDigest": "ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4",
+          "preStepStimulations": [
+            {
+              "id": "stim-1",
+              "kindId": "sugar",
+              "durationMs": 50.0
+            }
+          ]
+        }
+      },
+      "right": {
+        "method": "Agent.Prepare",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "42"
+        },
+        "params": {
+          "agentId": "fly-a",
+          "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+          "interval": {
+            "numerator": "50000000",
+            "denominator": "3"
+          },
+          "decisionContextDigest": "ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4",
+          "preStepStimulations": [
+            {
+              "id": "stim-1",
+              "kindId": "sugar",
+              "durationMs": 50.0
+            }
+          ]
+        }
+      },
+      "workerId": "fly-a",
+      "sameKey": false,
+      "sameBody": false,
+      "reason": "the step is part of both the key and the body"
+    },
+    {
+      "name": "the same body on another worker",
+      "left": {
+        "method": "Agent.Prepare",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "41"
+        },
+        "params": {
+          "agentId": "fly-a",
+          "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+          "interval": {
+            "numerator": "50000000",
+            "denominator": "3"
+          },
+          "decisionContextDigest": "ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4",
+          "preStepStimulations": [
+            {
+              "id": "stim-1",
+              "kindId": "sugar",
+              "durationMs": 50.0
+            }
+          ]
+        }
+      },
+      "right": {
+        "method": "Agent.Prepare",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "41"
+        },
+        "params": {
+          "agentId": "fly-a",
+          "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+          "interval": {
+            "numerator": "50000000",
+            "denominator": "3"
+          },
+          "decisionContextDigest": "ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4",
+          "preStepStimulations": [
+            {
+              "id": "stim-1",
+              "kindId": "sugar",
+              "durationMs": 50.0
+            }
+          ]
+        }
+      },
+      "workerId": "fly-a",
+      "rightWorkerId": "fly-b",
+      "sameKey": false,
+      "sameBody": true,
+      "reason": "the worker is part of the key, not of the body"
+    }
+  ],
+  "rejected": [
+    {
+      "name": "a body carrying a bus callId",
+      "method": "Agent.Prepare",
+      "scope": {
+        "sessionId": "demo",
+        "epoch": "epoch-1",
+        "step": "41"
+      },
+      "params": {
+        "callId": "call-2",
+        "agentId": "fly-a"
+      },
+      "reason": "the canonical body excludes bus callIds"
+    },
+    {
+      "name": "a body carrying a delivery id",
+      "method": "Agent.Prepare",
+      "scope": {
+        "sessionId": "demo",
+        "epoch": "epoch-1",
+        "step": "41"
+      },
+      "params": {
+        "deliveryId": "dlv-7"
+      },
+      "reason": "the canonical body excludes deliveryIds"
+    },
+    {
+      "name": "a body carrying an owner token",
+      "method": "Agent.Commit",
+      "scope": {
+        "sessionId": "demo",
+        "epoch": "epoch-1",
+        "step": "41"
+      },
+      "params": {
+        "nextInput": {
+          "frame": {
+            "ownerId": "own-3"
+          }
+        }
+      },
+      "reason": "the canonical body excludes owner tokens"
+    },
+    {
+      "name": "a body carrying a pinned service incarnation",
+      "method": "Agent.Prepare",
+      "scope": {
+        "sessionId": "demo",
+        "epoch": "epoch-1",
+        "step": "41"
+      },
+      "params": {
+        "expectedIncarnation": "svc-1"
+      },
+      "reason": "route pinning is transport state, not domain state"
+    },
+    {
+      "name": "an empty method",
+      "method": "",
+      "scope": {
+        "sessionId": "demo",
+        "epoch": "epoch-1",
+        "step": "41"
+      },
+      "params": {},
+      "reason": "methods are 1..=128 printable ASCII characters"
+    }
+  ]
+}

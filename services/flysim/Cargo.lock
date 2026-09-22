@@ -417,6 +417,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "fly-session"
+version = "0.1.1"
+dependencies = [
+ "fly-session-types",
+ "flybus",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "fly-session-types"
+version = "0.1.1"
+dependencies = [
+ "flybus",
+ "ryu-js",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "flybrain-core"
 version = "0.1.1"
 dependencies = [

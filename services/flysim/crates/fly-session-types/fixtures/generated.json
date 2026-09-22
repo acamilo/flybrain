@@ -1,0 +1,74 @@
+{
+  "description": "Boundary cases both languages build from a recipe, because the payload is too large to store.",
+  "padSchema": {
+    "id": "pad.v1",
+    "version": 1,
+    "digest": "018689202f154300eeda48ccee8cc021c36672df03f7404097613f5898fdfdcc"
+  },
+  "cases": [
+    {
+      "name": "typed value exactly at the 32 KiB cap",
+      "kind": "padded-typed-value",
+      "padCharacters": 32635,
+      "expect": "accept",
+      "reason": "32768 bytes of canonical JSON is the limit, not one byte less"
+    },
+    {
+      "name": "typed value one byte over the cap",
+      "kind": "padded-typed-value",
+      "padCharacters": 32636,
+      "expect": "reject",
+      "reason": "a TypedValue is at most 32 KiB of canonical JSON"
+    },
+    {
+      "name": "request that fills the 64 KiB envelope exactly",
+      "kind": "padded-request",
+      "padCharacters": 60000,
+      "expect": "accept",
+      "reason": "65536 bytes including the envelope wrapper is admissible",
+      "envelopeTotal": 65536
+    },
+    {
+      "name": "request one byte past the envelope ceiling",
+      "kind": "padded-request",
+      "padCharacters": 60000,
+      "expect": "reject",
+      "reason": "the complete envelope must fit Flybus's 64-KiB maximum",
+      "envelopeTotal": 65537
+    },
+    {
+      "name": "error message of 512 code points",
+      "kind": "error-message",
+      "codePoints": 512,
+      "expect": "accept",
+      "reason": "messages are <= 512 code points"
+    },
+    {
+      "name": "error message of 513 code points",
+      "kind": "error-message",
+      "codePoints": 513,
+      "expect": "reject",
+      "reason": "messages are <= 512 code points"
+    },
+    {
+      "name": "error message of 512 astral code points",
+      "kind": "error-message-astral",
+      "codePoints": 512,
+      "expect": "accept",
+      "reason": "the bound counts code points, not UTF-16 units or bytes"
+    },
+    {
+      "name": "error message of 513 astral code points",
+      "kind": "error-message-astral",
+      "codePoints": 513,
+      "expect": "reject",
+      "reason": "the bound counts code points, not UTF-16 units or bytes"
+    }
+  ],
+  "recipes": {
+    "padded-typed-value": "a TypedValue whose schema is padSchema and whose value is {\"pad\": <padCharacters> 'a' characters}; validate it",
+    "padded-request": "a SessionRpcRequest req-1 with scope null and params {\"pad\": <padCharacters> 'a' characters}; canonicalize it, then require the envelope to fit with an overhead of envelopeTotal minus that canonical length",
+    "error-message": "a SessionRpcFailure with code INTERNAL, mutation unknown and a message of <codePoints> 'x' characters",
+    "error-message-astral": "the same failure with a message of <codePoints> repetitions of U+10400, one code point and two UTF-16 units each"
+  }
+}

@@ -1,0 +1,111 @@
+{
+  "description": "Bus callId, domain requestId, artifact identity and delivery/hold owner tokens are four types, not four spellings of one string.",
+  "cases": [
+    {
+      "text": "call-0",
+      "busCallId": true,
+      "domainRequestId": false,
+      "ownerToken": null
+    },
+    {
+      "text": "call-102",
+      "busCallId": true,
+      "domainRequestId": false,
+      "ownerToken": null
+    },
+    {
+      "text": "req-41",
+      "busCallId": false,
+      "domainRequestId": true,
+      "ownerToken": null
+    },
+    {
+      "text": "dlv-7",
+      "busCallId": false,
+      "domainRequestId": false,
+      "ownerToken": "delivery"
+    },
+    {
+      "text": "own-9",
+      "busCallId": false,
+      "domainRequestId": false,
+      "ownerToken": "hold"
+    },
+    {
+      "text": "req-041",
+      "busCallId": false,
+      "domainRequestId": false,
+      "ownerToken": null
+    },
+    {
+      "text": "call-",
+      "busCallId": false,
+      "domainRequestId": false,
+      "ownerToken": null
+    },
+    {
+      "text": "call",
+      "busCallId": false,
+      "domainRequestId": false,
+      "ownerToken": null
+    },
+    {
+      "text": "callid-1",
+      "busCallId": false,
+      "domainRequestId": false,
+      "ownerToken": null
+    },
+    {
+      "text": "request-1",
+      "busCallId": false,
+      "domainRequestId": false,
+      "ownerToken": null
+    },
+    {
+      "text": "REQ-1",
+      "busCallId": false,
+      "domainRequestId": false,
+      "ownerToken": null
+    },
+    {
+      "text": "dlv-07",
+      "busCallId": false,
+      "domainRequestId": false,
+      "ownerToken": null
+    },
+    {
+      "text": "sub-1",
+      "busCallId": false,
+      "domainRequestId": false,
+      "ownerToken": null
+    },
+    {
+      "text": "svc-1",
+      "busCallId": false,
+      "domainRequestId": false,
+      "ownerToken": null
+    }
+  ],
+  "artifact": {
+    "ref": {
+      "storeId": "store-1",
+      "artifactId": "frame-1",
+      "generation": "1",
+      "byteLength": "92160",
+      "contentType": "image/x-rgba8",
+      "digest": null
+    },
+    "identity": {
+      "storeId": "store-1",
+      "artifactId": "frame-1",
+      "generation": "1"
+    },
+    "reason": "the identity is the naming half of an ArtifactRef; byteLength, contentType and digest are not identity, and an AssetRef is not an artifact at all"
+  },
+  "asset": {
+    "id": "profile-fly-a",
+    "digest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+    "byteLength": "4096",
+    "format": "flyprofile"
+  }
+}

@@ -37,6 +37,15 @@ retroactively to existing [public feed](../../feed-protocol.md),
    sentence against bus-v1, with the test that proves each row, the measurements and the
    draft's own contradictions. A review artifact, not a contract.
 
+Two derived specifications, written by CONTRACT-01 because the slices that need them cannot
+be built without them:
+
+- [Seed derivation v1](seed-derivation-v1.md) — independent per-agent seeds from one recorded
+  master seed and stable agent ids, with test vectors in both languages.
+- [Checkpoint envelope v1](checkpoint-envelope-v1.md) — the exact bytes of the new `FLYSESS1`
+  envelope and the durable commit sequence. `FLYSIM01` is unchanged and stays separately
+  readable.
+
 For context: [modular-session analysis](../malecns-modular-sessions.md) and
 [Melee audit](../melee-framework-audit.md). Each contract owns its named subject; step ordering
 wins over an informal diagram, and Flybus owns transport/resource rules. Resolve contradictions

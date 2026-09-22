@@ -1,0 +1,2085 @@
+{
+  "description": "Rules that need a descriptor in hand: complete port batches, the observation delay rule, byte shapes and descriptor agreement.",
+  "descriptor": {
+    "backendDigest": "10e08a419e850eba1ebba18fdd28eb7ec1b7e8baa9bcc3b973e2b8891ec726be",
+    "contentDigest": "ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+    "configurationDigest": "b7d64a9221007dfd5390f7df6cd5b8f3ea4f82faa1237141e35ebf161f5511a1",
+    "stepDuration": {
+      "numerator": "50000000",
+      "denominator": "3"
+    },
+    "ports": [
+      {
+        "portId": "port-1",
+        "controls": {
+          "schema": {
+            "id": "gameboy.controller.v1",
+            "version": 1,
+            "digest": "b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5"
+          },
+          "buttons": [
+            "a",
+            "b",
+            "start",
+            "select",
+            "up",
+            "down",
+            "left",
+            "right"
+          ],
+          "axes": [
+            {
+              "id": "stick-x",
+              "range": "bipolar",
+              "neutral": 0.0
+            },
+            {
+              "id": "trigger",
+              "range": "unit",
+              "neutral": 0.0
+            }
+          ]
+        }
+      }
+    ],
+    "inspectionSchema": {
+      "id": "gameboy.inspection.v1",
+      "version": 1,
+      "digest": "1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1"
+    },
+    "views": [
+      {
+        "viewId": "screen",
+        "width": 160,
+        "height": 144,
+        "format": "rgba8",
+        "rowStride": 640,
+        "pixelAspect": {
+          "numerator": 10,
+          "denominator": 11
+        },
+        "observationDelaySteps": 0
+      }
+    ],
+    "audio": [
+      {
+        "streamId": "mix",
+        "sampleRate": 48000,
+        "channels": 2,
+        "format": "f32le-interleaved"
+      }
+    ],
+    "recovery": "exact-checkpoint",
+    "determinism": "fixed-build"
+  },
+  "delayedDescriptor": {
+    "backendDigest": "10e08a419e850eba1ebba18fdd28eb7ec1b7e8baa9bcc3b973e2b8891ec726be",
+    "contentDigest": "ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+    "configurationDigest": "b7d64a9221007dfd5390f7df6cd5b8f3ea4f82faa1237141e35ebf161f5511a1",
+    "stepDuration": {
+      "numerator": "50000000",
+      "denominator": "3"
+    },
+    "ports": [
+      {
+        "portId": "port-1",
+        "controls": {
+          "schema": {
+            "id": "gameboy.controller.v1",
+            "version": 1,
+            "digest": "b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5"
+          },
+          "buttons": [
+            "a",
+            "b",
+            "start",
+            "select",
+            "up",
+            "down",
+            "left",
+            "right"
+          ],
+          "axes": [
+            {
+              "id": "stick-x",
+              "range": "bipolar",
+              "neutral": 0.0
+            },
+            {
+              "id": "trigger",
+              "range": "unit",
+              "neutral": 0.0
+            }
+          ]
+        }
+      }
+    ],
+    "inspectionSchema": {
+      "id": "gameboy.inspection.v1",
+      "version": 1,
+      "digest": "1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1"
+    },
+    "views": [
+      {
+        "viewId": "screen",
+        "width": 160,
+        "height": 144,
+        "format": "rgba8",
+        "rowStride": 640,
+        "pixelAspect": {
+          "numerator": 10,
+          "denominator": 11
+        },
+        "observationDelaySteps": 2
+      }
+    ],
+    "audio": [
+      {
+        "streamId": "mix",
+        "sampleRate": 48000,
+        "channels": 2,
+        "format": "f32le-interleaved"
+      }
+    ],
+    "recovery": "exact-checkpoint",
+    "determinism": "fixed-build"
+  },
+  "sessionDescriptor": {
+    "sessionId": "demo",
+    "revision": "7",
+    "compositionDigest": "730d725c8a59d3a7303def2bed041a577edb4255aabd4889ce12918311d952f0",
+    "schedulerId": "lockstep-v1",
+    "environment": {
+      "backendDigest": "10e08a419e850eba1ebba18fdd28eb7ec1b7e8baa9bcc3b973e2b8891ec726be",
+      "contentDigest": "ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73",
+      "configurationDigest": "b7d64a9221007dfd5390f7df6cd5b8f3ea4f82faa1237141e35ebf161f5511a1",
+      "stepDuration": {
+        "numerator": "50000000",
+        "denominator": "3"
+      },
+      "ports": [
+        {
+          "portId": "port-1",
+          "controls": {
+            "schema": {
+              "id": "gameboy.controller.v1",
+              "version": 1,
+              "digest": "b1df9d20fe1deaeb52f17cf261bf728b28143c777878b96cacfc4826903a48d5"
+            },
+            "buttons": [
+              "a",
+              "b",
+              "start",
+              "select",
+              "up",
+              "down",
+              "left",
+              "right"
+            ],
+            "axes": [
+              {
+                "id": "stick-x",
+                "range": "bipolar",
+                "neutral": 0.0
+              },
+              {
+                "id": "trigger",
+                "range": "unit",
+                "neutral": 0.0
+              }
+            ]
+          }
+        }
+      ],
+      "inspectionSchema": {
+        "id": "gameboy.inspection.v1",
+        "version": 1,
+        "digest": "1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1"
+      },
+      "views": [
+        {
+          "viewId": "screen",
+          "width": 160,
+          "height": 144,
+          "format": "rgba8",
+          "rowStride": 640,
+          "pixelAspect": {
+            "numerator": 10,
+            "denominator": 11
+          },
+          "observationDelaySteps": 0
+        }
+      ],
+      "audio": [
+        {
+          "streamId": "mix",
+          "sampleRate": 48000,
+          "channels": 2,
+          "format": "f32le-interleaved"
+        }
+      ],
+      "recovery": "exact-checkpoint",
+      "determinism": "fixed-build"
+    },
+    "taskSchema": {
+      "id": "pokemon.task.v1",
+      "version": 1,
+      "digest": "e4ca46e969a0f0e53a4f537561360851269e0b3f684eccaa634fe9672fdaabb4"
+    },
+    "agents": [
+      {
+        "agentId": "fly-a",
+        "portId": "port-1",
+        "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "datasetDigest": "6c0af1f0784ef63a393ee77d614e8246c625051360f3f1a48838374c5d355b52",
+        "indexDigest": "1bc04b5291c26a46d918139138b992d2de976d6851d0893b0476b85bfbdfc6e6",
+        "neuronCount": "139255",
+        "rateRoles": [
+          "kenyon",
+          "mbon"
+        ],
+        "supportedStimuli": [
+          "sugar"
+        ]
+      }
+    ],
+    "assets": []
+  },
+  "cases": [
+    {
+      "name": "a complete port control",
+      "kind": "portControl",
+      "value": {
+        "portId": "port-1",
+        "buttons": [
+          {
+            "id": "a",
+            "down": true
+          },
+          {
+            "id": "b",
+            "down": false
+          },
+          {
+            "id": "start",
+            "down": false
+          },
+          {
+            "id": "select",
+            "down": false
+          },
+          {
+            "id": "up",
+            "down": false
+          },
+          {
+            "id": "down",
+            "down": false
+          },
+          {
+            "id": "left",
+            "down": false
+          },
+          {
+            "id": "right",
+            "down": false
+          }
+        ],
+        "axes": [
+          {
+            "id": "stick-x",
+            "value": 0.0
+          },
+          {
+            "id": "trigger",
+            "value": 0.0
+          }
+        ]
+      },
+      "expect": "accept",
+      "reason": ""
+    },
+    {
+      "name": "a port control at both analog limits",
+      "kind": "portControl",
+      "value": {
+        "portId": "port-1",
+        "buttons": [
+          {
+            "id": "a",
+            "down": true
+          },
+          {
+            "id": "b",
+            "down": false
+          },
+          {
+            "id": "start",
+            "down": false
+          },
+          {
+            "id": "select",
+            "down": false
+          },
+          {
+            "id": "up",
+            "down": false
+          },
+          {
+            "id": "down",
+            "down": false
+          },
+          {
+            "id": "left",
+            "down": false
+          },
+          {
+            "id": "right",
+            "down": false
+          }
+        ],
+        "axes": [
+          {
+            "id": "stick-x",
+            "value": -1.0
+          },
+          {
+            "id": "trigger",
+            "value": 1.0
+          }
+        ]
+      },
+      "expect": "accept",
+      "reason": "the limits are inclusive"
+    },
+    {
+      "name": "a port control one step past a bipolar limit",
+      "kind": "portControl",
+      "value": {
+        "portId": "port-1",
+        "buttons": [
+          {
+            "id": "a",
+            "down": true
+          },
+          {
+            "id": "b",
+            "down": false
+          },
+          {
+            "id": "start",
+            "down": false
+          },
+          {
+            "id": "select",
+            "down": false
+          },
+          {
+            "id": "up",
+            "down": false
+          },
+          {
+            "id": "down",
+            "down": false
+          },
+          {
+            "id": "left",
+            "down": false
+          },
+          {
+            "id": "right",
+            "down": false
+          }
+        ],
+        "axes": [
+          {
+            "id": "stick-x",
+            "value": -1.0000000000000002
+          },
+          {
+            "id": "trigger",
+            "value": 0.0
+          }
+        ]
+      },
+      "expect": "reject",
+      "reason": "out of range is refused, never clamped"
+    },
+    {
+      "name": "a port control past a unit limit",
+      "kind": "portControl",
+      "value": {
+        "portId": "port-1",
+        "buttons": [
+          {
+            "id": "a",
+            "down": true
+          },
+          {
+            "id": "b",
+            "down": false
+          },
+          {
+            "id": "start",
+            "down": false
+          },
+          {
+            "id": "select",
+            "down": false
+          },
+          {
+            "id": "up",
+            "down": false
+          },
+          {
+            "id": "down",
+            "down": false
+          },
+          {
+            "id": "left",
+            "down": false
+          },
+          {
+            "id": "right",
+            "down": false
+          }
+        ],
+        "axes": [
+          {
+            "id": "stick-x",
+            "value": 0.0
+          },
+          {
+            "id": "trigger",
+            "value": 1.5
+          }
+        ]
+      },
+      "expect": "reject",
+      "reason": "out of range is refused, never clamped"
+    },
+    {
+      "name": "a port control with a missing button",
+      "kind": "portControl",
+      "value": {
+        "portId": "port-1",
+        "buttons": [
+          {
+            "id": "a",
+            "down": false
+          },
+          {
+            "id": "b",
+            "down": false
+          },
+          {
+            "id": "start",
+            "down": false
+          },
+          {
+            "id": "select",
+            "down": false
+          },
+          {
+            "id": "up",
+            "down": false
+          },
+          {
+            "id": "down",
+            "down": false
+          },
+          {
+            "id": "left",
+            "down": false
+          }
+        ],
+        "axes": [
+          {
+            "id": "stick-x",
+            "value": 0.0
+          },
+          {
+            "id": "trigger",
+            "value": 0.0
+          }
+        ]
+      },
+      "expect": "reject",
+      "reason": "every declared button must be present"
+    },
+    {
+      "name": "a port control with an extra button",
+      "kind": "portControl",
+      "value": {
+        "portId": "port-1",
+        "buttons": [
+          {
+            "id": "a",
+            "down": false
+          },
+          {
+            "id": "b",
+            "down": false
+          },
+          {
+            "id": "start",
+            "down": false
+          },
+          {
+            "id": "select",
+            "down": false
+          },
+          {
+            "id": "up",
+            "down": false
+          },
+          {
+            "id": "down",
+            "down": false
+          },
+          {
+            "id": "left",
+            "down": false
+          },
+          {
+            "id": "right",
+            "down": false
+          },
+          {
+            "id": "turbo",
+            "down": false
+          }
+        ],
+        "axes": [
+          {
+            "id": "stick-x",
+            "value": 0.0
+          },
+          {
+            "id": "trigger",
+            "value": 0.0
+          }
+        ]
+      },
+      "expect": "reject",
+      "reason": "no extra controls"
+    },
+    {
+      "name": "a port control with the buttons in another order",
+      "kind": "portControl",
+      "value": {
+        "portId": "port-1",
+        "buttons": [
+          {
+            "id": "right",
+            "down": false
+          },
+          {
+            "id": "left",
+            "down": false
+          },
+          {
+            "id": "down",
+            "down": false
+          },
+          {
+            "id": "up",
+            "down": false
+          },
+          {
+            "id": "select",
+            "down": false
+          },
+          {
+            "id": "start",
+            "down": false
+          },
+          {
+            "id": "b",
+            "down": false
+          },
+          {
+            "id": "a",
+            "down": false
+          }
+        ],
+        "axes": [
+          {
+            "id": "stick-x",
+            "value": 0.0
+          },
+          {
+            "id": "trigger",
+            "value": 0.0
+          }
+        ]
+      },
+      "expect": "reject",
+      "reason": "descriptor order is part of the contract"
+    },
+    {
+      "name": "a complete batch",
+      "kind": "advanceControls",
+      "value": [
+        {
+          "portId": "port-1",
+          "buttons": [
+            {
+              "id": "a",
+              "down": true
+            },
+            {
+              "id": "b",
+              "down": false
+            },
+            {
+              "id": "start",
+              "down": false
+            },
+            {
+              "id": "select",
+              "down": false
+            },
+            {
+              "id": "up",
+              "down": false
+            },
+            {
+              "id": "down",
+              "down": false
+            },
+            {
+              "id": "left",
+              "down": false
+            },
+            {
+              "id": "right",
+              "down": false
+            }
+          ],
+          "axes": [
+            {
+              "id": "stick-x",
+              "value": 0.0
+            },
+            {
+              "id": "trigger",
+              "value": 0.0
+            }
+          ]
+        }
+      ],
+      "expect": "accept",
+      "reason": ""
+    },
+    {
+      "name": "a batch that omits a declared port",
+      "kind": "advanceControls",
+      "value": [],
+      "expect": "reject",
+      "reason": "uncontrolled ports are configured neutral, not omitted"
+    },
+    {
+      "name": "a batch with the same port twice",
+      "kind": "advanceControls",
+      "value": [
+        {
+          "portId": "port-1",
+          "buttons": [
+            {
+              "id": "a",
+              "down": true
+            },
+            {
+              "id": "b",
+              "down": false
+            },
+            {
+              "id": "start",
+              "down": false
+            },
+            {
+              "id": "select",
+              "down": false
+            },
+            {
+              "id": "up",
+              "down": false
+            },
+            {
+              "id": "down",
+              "down": false
+            },
+            {
+              "id": "left",
+              "down": false
+            },
+            {
+              "id": "right",
+              "down": false
+            }
+          ],
+          "axes": [
+            {
+              "id": "stick-x",
+              "value": 0.0
+            },
+            {
+              "id": "trigger",
+              "value": 0.0
+            }
+          ]
+        },
+        {
+          "portId": "port-1",
+          "buttons": [
+            {
+              "id": "a",
+              "down": true
+            },
+            {
+              "id": "b",
+              "down": false
+            },
+            {
+              "id": "start",
+              "down": false
+            },
+            {
+              "id": "select",
+              "down": false
+            },
+            {
+              "id": "up",
+              "down": false
+            },
+            {
+              "id": "down",
+              "down": false
+            },
+            {
+              "id": "left",
+              "down": false
+            },
+            {
+              "id": "right",
+              "down": false
+            }
+          ],
+          "axes": [
+            {
+              "id": "stick-x",
+              "value": 0.0
+            },
+            {
+              "id": "trigger",
+              "value": 0.0
+            }
+          ]
+        }
+      ],
+      "expect": "reject",
+      "reason": "reject duplicates and missing ports"
+    },
+    {
+      "name": "a batch naming an undeclared port",
+      "kind": "advanceControls",
+      "value": [
+        {
+          "portId": "port-9",
+          "buttons": [
+            {
+              "id": "a",
+              "down": true
+            },
+            {
+              "id": "b",
+              "down": false
+            },
+            {
+              "id": "start",
+              "down": false
+            },
+            {
+              "id": "select",
+              "down": false
+            },
+            {
+              "id": "up",
+              "down": false
+            },
+            {
+              "id": "down",
+              "down": false
+            },
+            {
+              "id": "left",
+              "down": false
+            },
+            {
+              "id": "right",
+              "down": false
+            }
+          ],
+          "axes": [
+            {
+              "id": "stick-x",
+              "value": 0.0
+            },
+            {
+              "id": "trigger",
+              "value": 0.0
+            }
+          ]
+        }
+      ],
+      "expect": "reject",
+      "reason": "all ids must match exactly"
+    },
+    {
+      "name": "sensory input at its boundary with no declared delay",
+      "kind": "sensoryInput",
+      "value": {
+        "boundary": "42",
+        "views": [
+          {
+            "viewId": "screen",
+            "producedStep": "42",
+            "pixels": {
+              "storeId": "store-1",
+              "artifactId": "frame-1",
+              "generation": "1",
+              "byteLength": "92160",
+              "contentType": "image/x-rgba8",
+              "digest": null
+            }
+          }
+        ],
+        "structured": null
+      },
+      "expect": "accept",
+      "reason": ""
+    },
+    {
+      "name": "sensory input one boundary stale with no declared delay",
+      "kind": "sensoryInput",
+      "value": {
+        "boundary": "42",
+        "views": [
+          {
+            "viewId": "screen",
+            "producedStep": "41",
+            "pixels": {
+              "storeId": "store-1",
+              "artifactId": "frame-1",
+              "generation": "1",
+              "byteLength": "92160",
+              "contentType": "image/x-rgba8",
+              "digest": null
+            }
+          }
+        ],
+        "structured": null
+      },
+      "expect": "reject",
+      "reason": "missing or extra delay is a step failure, not an arbitrary latest frame"
+    },
+    {
+      "name": "sensory input for an undeclared view",
+      "kind": "sensoryInput",
+      "value": {
+        "boundary": "42",
+        "views": [
+          {
+            "viewId": "hud",
+            "producedStep": "42",
+            "pixels": {
+              "storeId": "store-1",
+              "artifactId": "frame-1",
+              "generation": "1",
+              "byteLength": "92160",
+              "contentType": "image/x-rgba8",
+              "digest": null
+            }
+          }
+        ],
+        "structured": null
+      },
+      "expect": "reject",
+      "reason": "the environment declares its views"
+    },
+    {
+      "name": "sensory input with the wrong frame length",
+      "kind": "sensoryInput",
+      "value": {
+        "boundary": "42",
+        "views": [
+          {
+            "viewId": "screen",
+            "producedStep": "42",
+            "pixels": {
+              "storeId": "store-1",
+              "artifactId": "frame-short",
+              "generation": "1",
+              "byteLength": "92156",
+              "contentType": "image/x-rgba8",
+              "digest": null
+            }
+          }
+        ],
+        "structured": null
+      },
+      "expect": "reject",
+      "reason": "artifact length equals rowStride x height"
+    },
+    {
+      "name": "sensory input honouring a two step pipeline delay",
+      "kind": "sensoryInputDelayed",
+      "value": {
+        "boundary": "42",
+        "views": [
+          {
+            "viewId": "screen",
+            "producedStep": "40",
+            "pixels": {
+              "storeId": "store-1",
+              "artifactId": "frame-1",
+              "generation": "1",
+              "byteLength": "92160",
+              "contentType": "image/x-rgba8",
+              "digest": null
+            }
+          }
+        ],
+        "structured": null
+      },
+      "expect": "accept",
+      "reason": "producedStep is max(0, boundary - observationDelaySteps)"
+    },
+    {
+      "name": "sensory input ignoring a two step pipeline delay",
+      "kind": "sensoryInputDelayed",
+      "value": {
+        "boundary": "42",
+        "views": [
+          {
+            "viewId": "screen",
+            "producedStep": "42",
+            "pixels": {
+              "storeId": "store-1",
+              "artifactId": "frame-1",
+              "generation": "1",
+              "byteLength": "92160",
+              "contentType": "image/x-rgba8",
+              "digest": null
+            }
+          }
+        ],
+        "structured": null
+      },
+      "expect": "reject",
+      "reason": "a fresher frame than the declared pipeline is also a failure"
+    },
+    {
+      "name": "bootstrap repeating boundary zero under a delay",
+      "kind": "sensoryInputDelayed",
+      "value": {
+        "boundary": "1",
+        "views": [
+          {
+            "viewId": "screen",
+            "producedStep": "0",
+            "pixels": {
+              "storeId": "store-1",
+              "artifactId": "frame-1",
+              "generation": "1",
+              "byteLength": "92160",
+              "contentType": "image/x-rgba8",
+              "digest": null
+            }
+          }
+        ],
+        "structured": null
+      },
+      "expect": "accept",
+      "reason": "max(0, 1 - 2) is 0: bootstrap may repeat O[0]"
+    },
+    {
+      "name": "a world observation",
+      "kind": "worldObservation",
+      "value": {
+        "boundary": "42",
+        "worldTime": {
+          "numerator": "50000000",
+          "denominator": "3"
+        },
+        "engineFrame": "1",
+        "sensoryViews": [
+          {
+            "viewId": "screen",
+            "producedStep": "42",
+            "pixels": {
+              "storeId": "store-1",
+              "artifactId": "frame-1",
+              "generation": "1",
+              "byteLength": "92160",
+              "contentType": "image/x-rgba8",
+              "digest": null
+            }
+          }
+        ],
+        "inspection": {
+          "schema": {
+            "id": "gameboy.inspection.v1",
+            "version": 1,
+            "digest": "1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1"
+          },
+          "value": {
+            "map": 40,
+            "x": 5,
+            "y": 7
+          }
+        },
+        "broadcastViews": [
+          {
+            "viewId": "screen",
+            "producedStep": "42",
+            "pixels": {
+              "storeId": "store-1",
+              "artifactId": "frame-1",
+              "generation": "1",
+              "byteLength": "92160",
+              "contentType": "image/x-rgba8",
+              "digest": null
+            }
+          }
+        ],
+        "audio": [
+          {
+            "streamId": "mix",
+            "firstSample": "33600",
+            "sampleFrames": 800,
+            "samples": {
+              "storeId": "store-1",
+              "artifactId": "audio-1",
+              "generation": "1",
+              "byteLength": "6400",
+              "contentType": "audio/x-f32le",
+              "digest": null
+            },
+            "discontinuity": false
+          }
+        ]
+      },
+      "expect": "accept",
+      "reason": ""
+    },
+    {
+      "name": "a world observation with a mismatched audio length",
+      "kind": "worldObservation",
+      "value": {
+        "boundary": "42",
+        "worldTime": {
+          "numerator": "50000000",
+          "denominator": "3"
+        },
+        "engineFrame": "1",
+        "sensoryViews": [
+          {
+            "viewId": "screen",
+            "producedStep": "42",
+            "pixels": {
+              "storeId": "store-1",
+              "artifactId": "frame-1",
+              "generation": "1",
+              "byteLength": "92160",
+              "contentType": "image/x-rgba8",
+              "digest": null
+            }
+          }
+        ],
+        "inspection": {
+          "schema": {
+            "id": "gameboy.inspection.v1",
+            "version": 1,
+            "digest": "1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1"
+          },
+          "value": {
+            "map": 40,
+            "x": 5,
+            "y": 7
+          }
+        },
+        "broadcastViews": [
+          {
+            "viewId": "screen",
+            "producedStep": "42",
+            "pixels": {
+              "storeId": "store-1",
+              "artifactId": "frame-1",
+              "generation": "1",
+              "byteLength": "92160",
+              "contentType": "image/x-rgba8",
+              "digest": null
+            }
+          }
+        ],
+        "audio": [
+          {
+            "streamId": "mix",
+            "firstSample": "0",
+            "sampleFrames": 800,
+            "samples": {
+              "storeId": "store-1",
+              "artifactId": "audio-short",
+              "generation": "1",
+              "byteLength": "6396",
+              "contentType": "audio/x-f32le",
+              "digest": null
+            },
+            "discontinuity": false
+          }
+        ]
+      },
+      "expect": "reject",
+      "reason": "artifact length is sampleFrames x channels x 4"
+    },
+    {
+      "name": "a world observation with another inspection schema",
+      "kind": "worldObservation",
+      "value": {
+        "boundary": "42",
+        "worldTime": {
+          "numerator": "50000000",
+          "denominator": "3"
+        },
+        "engineFrame": "1",
+        "sensoryViews": [
+          {
+            "viewId": "screen",
+            "producedStep": "42",
+            "pixels": {
+              "storeId": "store-1",
+              "artifactId": "frame-1",
+              "generation": "1",
+              "byteLength": "92160",
+              "contentType": "image/x-rgba8",
+              "digest": null
+            }
+          }
+        ],
+        "inspection": {
+          "schema": {
+            "id": "other.inspection.v1",
+            "version": 1,
+            "digest": "8d6ebfb7599aaa93eeeb14acb64a6842e700174be22a5c6a5a5994ee9a54229b"
+          },
+          "value": {}
+        },
+        "broadcastViews": [
+          {
+            "viewId": "screen",
+            "producedStep": "42",
+            "pixels": {
+              "storeId": "store-1",
+              "artifactId": "frame-1",
+              "generation": "1",
+              "byteLength": "92160",
+              "contentType": "image/x-rgba8",
+              "digest": null
+            }
+          }
+        ],
+        "audio": [
+          {
+            "streamId": "mix",
+            "firstSample": "33600",
+            "sampleFrames": 800,
+            "samples": {
+              "storeId": "store-1",
+              "artifactId": "audio-1",
+              "generation": "1",
+              "byteLength": "6400",
+              "contentType": "audio/x-f32le",
+              "digest": null
+            },
+            "discontinuity": false
+          }
+        ]
+      },
+      "expect": "reject",
+      "reason": "inspection uses the descriptor's schema"
+    },
+    {
+      "name": "a step result that advances world time by one step duration",
+      "kind": "stepResult",
+      "value": {
+        "batchId": "batch-41",
+        "appliedFromStep": "41",
+        "nextStep": "42",
+        "appliedControlsDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+        "observation": {
+          "boundary": "42",
+          "worldTime": {
+            "numerator": "100000000",
+            "denominator": "3"
+          },
+          "engineFrame": "1",
+          "sensoryViews": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "inspection": {
+            "schema": {
+              "id": "gameboy.inspection.v1",
+              "version": 1,
+              "digest": "1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1"
+            },
+            "value": {
+              "map": 40,
+              "x": 5,
+              "y": 7
+            }
+          },
+          "broadcastViews": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "audio": [
+            {
+              "streamId": "mix",
+              "firstSample": "33600",
+              "sampleFrames": 800,
+              "samples": {
+                "storeId": "store-1",
+                "artifactId": "audio-1",
+                "generation": "1",
+                "byteLength": "6400",
+                "contentType": "audio/x-f32le",
+                "digest": null
+              },
+              "discontinuity": false
+            }
+          ]
+        }
+      },
+      "expect": "accept",
+      "reason": "two steps of 50000000/3 ns"
+    },
+    {
+      "name": "a step result that advances world time by two step durations",
+      "kind": "stepResult",
+      "value": {
+        "batchId": "batch-41",
+        "appliedFromStep": "41",
+        "nextStep": "42",
+        "appliedControlsDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+        "observation": {
+          "boundary": "42",
+          "worldTime": {
+            "numerator": "50000000",
+            "denominator": "1"
+          },
+          "engineFrame": "1",
+          "sensoryViews": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "inspection": {
+            "schema": {
+              "id": "gameboy.inspection.v1",
+              "version": 1,
+              "digest": "1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1"
+            },
+            "value": {
+              "map": 40,
+              "x": 5,
+              "y": 7
+            }
+          },
+          "broadcastViews": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "audio": [
+            {
+              "streamId": "mix",
+              "firstSample": "33600",
+              "sampleFrames": 800,
+              "samples": {
+                "storeId": "store-1",
+                "artifactId": "audio-1",
+                "generation": "1",
+                "byteLength": "6400",
+                "contentType": "audio/x-f32le",
+                "digest": null
+              },
+              "discontinuity": false
+            }
+          ]
+        }
+      },
+      "expect": "reject",
+      "reason": "an emulator cannot hide two framework steps behind one result"
+    },
+    {
+      "name": "a snapshot that agrees with its descriptor",
+      "kind": "snapshot",
+      "value": {
+        "descriptorRevision": "7",
+        "publisherIncarnation": "pub-1",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "42"
+        },
+        "episodeId": "episode-1",
+        "sequence": "42",
+        "worldTime": {
+          "numerator": "700000000",
+          "denominator": "1"
+        },
+        "agents": [
+          {
+            "agentId": "fly-a",
+            "telemetry": {
+              "brainTicks": "2534",
+              "populationRateHz": 12.5,
+              "rates": [
+                {
+                  "roleId": "kenyon",
+                  "hz": 3.25
+                },
+                {
+                  "roleId": "mbon",
+                  "hz": 0.0
+                }
+              ],
+              "learning": {
+                "enabled": true,
+                "updates": "4",
+                "changed": "2",
+                "signal": 0.5
+              }
+            },
+            "selectedDecision": {
+              "schema": {
+                "id": "gameboy.intent.v1",
+                "version": 1,
+                "digest": "e70451b26fb5462ec63729d8355912dad01c3963a95bec0e6a8452375717ad9d"
+              },
+              "value": {
+                "press": "a"
+              }
+            },
+            "appliedControls": {
+              "portId": "port-1",
+              "buttons": [
+                {
+                  "id": "a",
+                  "down": true
+                },
+                {
+                  "id": "b",
+                  "down": false
+                },
+                {
+                  "id": "start",
+                  "down": false
+                },
+                {
+                  "id": "select",
+                  "down": false
+                },
+                {
+                  "id": "up",
+                  "down": false
+                },
+                {
+                  "id": "down",
+                  "down": false
+                },
+                {
+                  "id": "left",
+                  "down": false
+                },
+                {
+                  "id": "right",
+                  "down": false
+                }
+              ],
+              "axes": [
+                {
+                  "id": "stick-x",
+                  "value": 0.0
+                },
+                {
+                  "id": "trigger",
+                  "value": 0.0
+                }
+              ]
+            }
+          }
+        ],
+        "progress": {
+          "schema": {
+            "id": "pokemon.progress.v1",
+            "version": 1,
+            "digest": "80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1"
+          },
+          "value": {
+            "rank": 10
+          }
+        },
+        "media": {
+          "views": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "audio": []
+        },
+        "eventIds": []
+      },
+      "expect": "accept",
+      "reason": ""
+    },
+    {
+      "name": "a snapshot naming an agent outside the composition",
+      "kind": "snapshot",
+      "value": {
+        "descriptorRevision": "7",
+        "publisherIncarnation": "pub-1",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "42"
+        },
+        "episodeId": "episode-1",
+        "sequence": "42",
+        "worldTime": {
+          "numerator": "700000000",
+          "denominator": "1"
+        },
+        "agents": [
+          {
+            "agentId": "fly-z",
+            "telemetry": {
+              "brainTicks": "2534",
+              "populationRateHz": 12.5,
+              "rates": [
+                {
+                  "roleId": "kenyon",
+                  "hz": 3.25
+                },
+                {
+                  "roleId": "mbon",
+                  "hz": 0.0
+                }
+              ],
+              "learning": {
+                "enabled": true,
+                "updates": "4",
+                "changed": "2",
+                "signal": 0.5
+              }
+            },
+            "selectedDecision": {
+              "schema": {
+                "id": "gameboy.intent.v1",
+                "version": 1,
+                "digest": "e70451b26fb5462ec63729d8355912dad01c3963a95bec0e6a8452375717ad9d"
+              },
+              "value": {
+                "press": "a"
+              }
+            },
+            "appliedControls": {
+              "portId": "port-1",
+              "buttons": [
+                {
+                  "id": "a",
+                  "down": true
+                },
+                {
+                  "id": "b",
+                  "down": false
+                },
+                {
+                  "id": "start",
+                  "down": false
+                },
+                {
+                  "id": "select",
+                  "down": false
+                },
+                {
+                  "id": "up",
+                  "down": false
+                },
+                {
+                  "id": "down",
+                  "down": false
+                },
+                {
+                  "id": "left",
+                  "down": false
+                },
+                {
+                  "id": "right",
+                  "down": false
+                }
+              ],
+              "axes": [
+                {
+                  "id": "stick-x",
+                  "value": 0.0
+                },
+                {
+                  "id": "trigger",
+                  "value": 0.0
+                }
+              ]
+            }
+          }
+        ],
+        "progress": {
+          "schema": {
+            "id": "pokemon.progress.v1",
+            "version": 1,
+            "digest": "80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1"
+          },
+          "value": {
+            "rank": 10
+          }
+        },
+        "media": {
+          "views": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "audio": []
+        },
+        "eventIds": []
+      },
+      "expect": "reject",
+      "reason": "descriptor and snapshot must agree"
+    },
+    {
+      "name": "a snapshot driving another agent's port",
+      "kind": "snapshot",
+      "value": {
+        "descriptorRevision": "7",
+        "publisherIncarnation": "pub-1",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "42"
+        },
+        "episodeId": "episode-1",
+        "sequence": "42",
+        "worldTime": {
+          "numerator": "700000000",
+          "denominator": "1"
+        },
+        "agents": [
+          {
+            "agentId": "fly-a",
+            "telemetry": {
+              "brainTicks": "2534",
+              "populationRateHz": 12.5,
+              "rates": [
+                {
+                  "roleId": "kenyon",
+                  "hz": 3.25
+                },
+                {
+                  "roleId": "mbon",
+                  "hz": 0.0
+                }
+              ],
+              "learning": {
+                "enabled": true,
+                "updates": "4",
+                "changed": "2",
+                "signal": 0.5
+              }
+            },
+            "selectedDecision": {
+              "schema": {
+                "id": "gameboy.intent.v1",
+                "version": 1,
+                "digest": "e70451b26fb5462ec63729d8355912dad01c3963a95bec0e6a8452375717ad9d"
+              },
+              "value": {
+                "press": "a"
+              }
+            },
+            "appliedControls": {
+              "portId": "port-2",
+              "buttons": [
+                {
+                  "id": "a",
+                  "down": true
+                },
+                {
+                  "id": "b",
+                  "down": false
+                },
+                {
+                  "id": "start",
+                  "down": false
+                },
+                {
+                  "id": "select",
+                  "down": false
+                },
+                {
+                  "id": "up",
+                  "down": false
+                },
+                {
+                  "id": "down",
+                  "down": false
+                },
+                {
+                  "id": "left",
+                  "down": false
+                },
+                {
+                  "id": "right",
+                  "down": false
+                }
+              ],
+              "axes": [
+                {
+                  "id": "stick-x",
+                  "value": 0.0
+                },
+                {
+                  "id": "trigger",
+                  "value": 0.0
+                }
+              ]
+            }
+          }
+        ],
+        "progress": {
+          "schema": {
+            "id": "pokemon.progress.v1",
+            "version": 1,
+            "digest": "80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1"
+          },
+          "value": {
+            "rank": 10
+          }
+        },
+        "media": {
+          "views": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "audio": []
+        },
+        "eventIds": []
+      },
+      "expect": "reject",
+      "reason": "the coordinator assigns the port, and it is the assigned one"
+    },
+    {
+      "name": "a snapshot with telemetry roles in another order",
+      "kind": "snapshot",
+      "value": {
+        "descriptorRevision": "7",
+        "publisherIncarnation": "pub-1",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "42"
+        },
+        "episodeId": "episode-1",
+        "sequence": "42",
+        "worldTime": {
+          "numerator": "700000000",
+          "denominator": "1"
+        },
+        "agents": [
+          {
+            "agentId": "fly-a",
+            "telemetry": {
+              "brainTicks": "2534",
+              "populationRateHz": 12.5,
+              "rates": [
+                {
+                  "roleId": "mbon",
+                  "hz": 0.0
+                },
+                {
+                  "roleId": "kenyon",
+                  "hz": 3.25
+                }
+              ],
+              "learning": {
+                "enabled": true,
+                "updates": "4",
+                "changed": "2",
+                "signal": 0.5
+              }
+            },
+            "selectedDecision": {
+              "schema": {
+                "id": "gameboy.intent.v1",
+                "version": 1,
+                "digest": "e70451b26fb5462ec63729d8355912dad01c3963a95bec0e6a8452375717ad9d"
+              },
+              "value": {
+                "press": "a"
+              }
+            },
+            "appliedControls": {
+              "portId": "port-1",
+              "buttons": [
+                {
+                  "id": "a",
+                  "down": true
+                },
+                {
+                  "id": "b",
+                  "down": false
+                },
+                {
+                  "id": "start",
+                  "down": false
+                },
+                {
+                  "id": "select",
+                  "down": false
+                },
+                {
+                  "id": "up",
+                  "down": false
+                },
+                {
+                  "id": "down",
+                  "down": false
+                },
+                {
+                  "id": "left",
+                  "down": false
+                },
+                {
+                  "id": "right",
+                  "down": false
+                }
+              ],
+              "axes": [
+                {
+                  "id": "stick-x",
+                  "value": 0.0
+                },
+                {
+                  "id": "trigger",
+                  "value": 0.0
+                }
+              ]
+            }
+          }
+        ],
+        "progress": {
+          "schema": {
+            "id": "pokemon.progress.v1",
+            "version": 1,
+            "digest": "80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1"
+          },
+          "value": {
+            "rank": 10
+          }
+        },
+        "media": {
+          "views": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "audio": []
+        },
+        "eventIds": []
+      },
+      "expect": "reject",
+      "reason": "rates are in profile-defined order"
+    },
+    {
+      "name": "a snapshot for another descriptor revision",
+      "kind": "snapshot",
+      "value": {
+        "descriptorRevision": "6",
+        "publisherIncarnation": "pub-1",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "42"
+        },
+        "episodeId": "episode-1",
+        "sequence": "42",
+        "worldTime": {
+          "numerator": "700000000",
+          "denominator": "1"
+        },
+        "agents": [
+          {
+            "agentId": "fly-a",
+            "telemetry": {
+              "brainTicks": "2534",
+              "populationRateHz": 12.5,
+              "rates": [
+                {
+                  "roleId": "kenyon",
+                  "hz": 3.25
+                },
+                {
+                  "roleId": "mbon",
+                  "hz": 0.0
+                }
+              ],
+              "learning": {
+                "enabled": true,
+                "updates": "4",
+                "changed": "2",
+                "signal": 0.5
+              }
+            },
+            "selectedDecision": {
+              "schema": {
+                "id": "gameboy.intent.v1",
+                "version": 1,
+                "digest": "e70451b26fb5462ec63729d8355912dad01c3963a95bec0e6a8452375717ad9d"
+              },
+              "value": {
+                "press": "a"
+              }
+            },
+            "appliedControls": {
+              "portId": "port-1",
+              "buttons": [
+                {
+                  "id": "a",
+                  "down": true
+                },
+                {
+                  "id": "b",
+                  "down": false
+                },
+                {
+                  "id": "start",
+                  "down": false
+                },
+                {
+                  "id": "select",
+                  "down": false
+                },
+                {
+                  "id": "up",
+                  "down": false
+                },
+                {
+                  "id": "down",
+                  "down": false
+                },
+                {
+                  "id": "left",
+                  "down": false
+                },
+                {
+                  "id": "right",
+                  "down": false
+                }
+              ],
+              "axes": [
+                {
+                  "id": "stick-x",
+                  "value": 0.0
+                },
+                {
+                  "id": "trigger",
+                  "value": 0.0
+                }
+              ]
+            }
+          }
+        ],
+        "progress": {
+          "schema": {
+            "id": "pokemon.progress.v1",
+            "version": 1,
+            "digest": "80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1"
+          },
+          "value": {
+            "rank": 10
+          }
+        },
+        "media": {
+          "views": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "audio": []
+        },
+        "eventIds": []
+      },
+      "expect": "reject",
+      "reason": "descriptor/index mismatch is visible"
+    }
+  ],
+  "stepResultPrevious": {
+    "boundary": "41",
+    "worldTime": {
+      "numerator": "50000000",
+      "denominator": "3"
+    },
+    "engineFrame": "1",
+    "sensoryViews": [
+      {
+        "viewId": "screen",
+        "producedStep": "41",
+        "pixels": {
+          "storeId": "store-1",
+          "artifactId": "frame-1",
+          "generation": "1",
+          "byteLength": "92160",
+          "contentType": "image/x-rgba8",
+          "digest": null
+        }
+      }
+    ],
+    "inspection": {
+      "schema": {
+        "id": "gameboy.inspection.v1",
+        "version": 1,
+        "digest": "1883cee6532d0bfbb28854b82db8450d525c2e4fcec01567b4aa6d99917eafb1"
+      },
+      "value": {
+        "map": 40,
+        "x": 5,
+        "y": 7
+      }
+    },
+    "broadcastViews": [
+      {
+        "viewId": "screen",
+        "producedStep": "41",
+        "pixels": {
+          "storeId": "store-1",
+          "artifactId": "frame-1",
+          "generation": "1",
+          "byteLength": "92160",
+          "contentType": "image/x-rgba8",
+          "digest": null
+        }
+      }
+    ],
+    "audio": [
+      {
+        "streamId": "mix",
+        "firstSample": "32800",
+        "sampleFrames": 800,
+        "samples": {
+          "storeId": "store-1",
+          "artifactId": "audio-1",
+          "generation": "1",
+          "byteLength": "6400",
+          "contentType": "audio/x-f32le",
+          "digest": null
+        },
+        "discontinuity": false
+      }
+    ]
+  }
+}
