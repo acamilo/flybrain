@@ -210,6 +210,10 @@ impl Ratchet {
     ///
     /// Nothing in this module knows what the signal means, which is the same bargain `coverage`
     /// is: the ladder, the map graph and the objective all belong to the adapter.
+    // One argument past clippy's seven, and the argument is the point: this is the whole of one
+    // sample. A struct for it would be a type that exists only to be destructured at the one
+    // call site the sim loop has, which is the same idiom `decoder.rs` and `lif.rs` take here.
+    #[allow(clippy::too_many_arguments)]
     pub fn observe_with_progress<F>(
         &mut self,
         safe: bool,

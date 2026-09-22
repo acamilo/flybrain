@@ -1941,3 +1941,81 @@ checkpoint's own half-finished conversation plus the one `NO` that answered the 
 - `infra/tests/lint.sh`: all checks passed, de-PII guard included.
 - `--print-compatibility`: **648 bytes, sha256 `0d9bfde7...707fa`** -- byte-identical to v0.4.1
   through v0.4.4. Decoder, reward catalog, adapter version and roles untouched.
+
+## 2026-09-22, rows 51 to 53: the road the museum had no row for, and a `BACK` with no box under it
+
+Flagged live by the watchdog within the hour of v0.4.5 going out: rank 10 (PEWTER CITY) for five
+and a half hours, the objective rung 11's BOULDER BADGE whose place is the gym leader in map
+`0x36`, and since the 11:30 restart the macro starts were `GO FRONTIER` **1,235**, `BACK` **678**,
+`GO OBJECTIVE` 267, `GO OUT` 242, `YES` 169. Between 11:46 and 12:17 the ratchet fired **two**
+"Stuck: rolled back to PEWTER CITY" recoveries, attempts 0 -> 2. The fly was on map 52, the Pewter
+museum's ground floor. This is the residual the row-41 review named: `BACK` 189 times "in a text
+box" on map `0x02`, surrounded by `GO OBJECTIVE` and `GO FRONTIER`, with `GO FRONTIER` runs of 112.
+
+`docs/design/macros.md` sections 12.13 to 12.16 are the design; this is the reproduction, the
+surveys and the before/after.
+
+### Where the fly was standing
+
+`examples/scene_probe.rs` from the live checkpoint:
+
+- map `0x34` (52), **20x8**, the player at **(10, 7)** facing up -- standing on the museum's own
+  front doormat, one of four `LAST_MAP` warps on the south wall;
+- the scene reads **`Unknown`**, not `Dialog`: `font=0x00` and **no text box at all**
+  (`corners=(0x10,0x10,0x10,0x10)`), with `flags5=0x24` -- the cartridge holding the joypad. The
+  pad is **`NEXT`, `BACK`**;
+- the objective is map `0x36` and `next_hop(Region { map: 52 }, 0x36)` answers **`None`**, because
+  `neighbours(52)` is **empty**: the museum has no row on the map graph. So
+  `objective_goals` is `[]`, `GO OBJECTIVE` is off the pad, and so are `GO SHOP` and `GO HEAL`;
+- the map grid decodes: **98 walkable tiles, 62 reachable from the door, 39 never stood on** --
+  and `frontier_aims` offers **40** of them, almost all behind the admission desk on the east side.
+
+### The three mechanisms, and none of them is the text box
+
+1. **`BACK` was never in a text box.** It is on no overworld pad and on no dialog pad, so every one
+   of the 678 was dealt by `Scene::Unknown` -- which is two states under one name. A screen this
+   crate cannot name (the Pokedex, the trainer card, OPTION) is one, and the hunt's own attribution
+   counts `unknown` frames as "a text box" (`dialog_map`), which is what made the residual read the
+   way it did. The other is a frame of the **overworld** with the cartridge driving: `detect`'s
+   overworld branch needs `controllable`, and a warp in flight, a scripted push-back or a guide
+   walking the fly through a door all fail it. `NEXT` and `BACK` there are an A and a B pressed into
+   somebody else's script.
+2. **The museum is not on the map graph**, which the row-41 review named as a residual and left:
+   "adding the row would give the fly the road to the gym from indoors". Both rows come from the
+   cartridge's own warp table rather than from counting: Pewter City names `0x34` at (14, 7) and at
+   (19, 5) -- the museum's two doors -- and `0x34` names `0x35` at (7, 7), the staircase.
+3. **The museum's frontier is unreachable and the blocked ledger is a window.** A `GO FRONTIER`
+   that can reach none of its goals refuses `no route` and writes all forty tiles to the ledger;
+   ten brain minutes later they are candidates again and it refuses again, once per hold.
+
+And the ratchet's two rollbacks were the ratchet working to contract: its stall window is restarted
+by *exploration*, and two museum floors and a town the run had already covered earn none. Entering
+a map for the first time does count -- a new map is a map's worth of tiles nobody has stood on --
+which is the half of the 2026-09-17 rule that already held and is now pinned by a test of its own.
+
+| # | trap | trigger | test | fix, or why it is left |
+| ---: | --- | --- | --- | --- |
+| 51 | `Scene::Unknown` deals `NEXT` and `BACK` on a frame of the overworld the cartridge is driving, where an A and a B press are presses into a script | every warp, every scripted push-back, every guide that walks the fly somewhere -- `BACK` 678 starts in 47 live minutes, 189 of them on map `0x02` | `an_unknown_frame_with_no_box_on_it_deals_nothing`, `an_unknown_scene_is_dialog_with_advance_only`, `the_fly_reaches_the_pewter_gym_from_the_rung_ten_checkpoint` (ROM-gated: `BACK` in a box 0, unknown pads with no box 0) | **fixed**: the pad is dealt on whether a box is drawn. A scripted overworld frame is an empty pad the fly waits out, and it is the one empty pad that ends itself -- the cartridge gives the buttons back within a few frames |
+| 52 | a building with no row on the map graph has no neighbours, so from inside it there is no road to the objective and no errand either | the whole rung-10 stall: `GO OBJECTIVE`, `GO SHOP` and `GO HEAL` all off the pad on maps `0x34` and `0x35` | `the_museums_two_floors_know_the_road_to_the_gym`, `the_hop_count_is_the_road_measured_rather_than_named`, the ROM run below | **fixed**: two rows, both surveyed from the cartridge's warp table. The upper floor has no *area* -- no front door of its own, like a bedroom -- so it offers no errand, and its road out is the staircase |
+| 53 | a frontier the route search cannot reach is excluded by a ten brain minute window, so it comes back every ten minutes for ever | `GO FRONTIER` 1,235 starts in 47 minutes over two museum floors and a covered town; 39 unstood tiles on map `0x34`, almost all behind the admission desk | `a_frontier_no_walk_can_reach_takes_go_frontier_off_the_pad_and_keeps_it_off`, `a_frontier_mark_is_the_stood_ledgers_to_clear`, `standing_on_new_ground_is_what_clears_a_maps_frontier_mark` | **fixed**: the refusal is remembered per map with no window, beside the pushed-tile ledger of row 37, and cleared by the fly standing on ground of that map it had not stood on before -- the only event that can change which tiles it can reach |
+
+### The ROM-gated run, from the live checkpoint
+
+`FLY_PEWTER_CHECKPOINT`, macros mode, the stub rotation, 200,000 frames (55.8 brain minutes):
+
+| measure | value |
+| --- | --- |
+| the checkpoint's map | `0x34`, the museum's ground floor, on its doormat |
+| reached **map `0x36`**, the gym's interior | **frame 2,423, on 15 macros** |
+| `TALK` on the pad inside the gym | yes -- and 15 `TALK` starts on map `0x36` |
+| `GO OBJECTIVE` bound on the gym's own pad | yes |
+| `BACK` on a `dialog` or `unknown` frame | **0** (189 in the before hunt, on map `0x02` alone) |
+| pads dealt on an `unknown` frame with nothing drawn | **0** |
+| `GO FRONTIER` starts on the museum's two floors | **0** (1,235 live over those floors and the town) |
+| `GO FRONTIER` starts overall | 1,247 -- 649 of them in Pewter City itself |
+| route | `0x34` -> Pewter City -> the gym, then the town's shops and houses |
+
+The fly is out of the museum and into the gym in the first minute, and then spends the run in
+Pewter City's buildings: the town's errands are session state and the 11:30 restart re-armed both,
+so `GO OBJECTIVE` aims at the mart and the centre before the leader (section 13, and `BUY
+ANTIDOTE` 3, `BUY BALL` 2, `HEAL` 1 in the same run say it was paid).
