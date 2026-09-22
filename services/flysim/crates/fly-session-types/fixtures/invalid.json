@@ -2746,6 +2746,19 @@
             "changed": "2",
             "signal": 0.5
           }
+        },
+        "graph": {
+          "datasetDigest": "6c0af1f0784ef63a393ee77d614e8246c625051360f3f1a48838374c5d355b52",
+          "indexDigest": "52a7a9b441f686ebea398e3d65dbaa87b4fde4f8b2231fff951700548f6a4e42",
+          "neuronCount": "139255",
+          "rateRoles": [
+            "kenyon",
+            "mbon"
+          ],
+          "supportedStimuli": [
+            "sugar",
+            "shock"
+          ]
         }
       },
       "reason": "initialization establishes Ready(0)"
@@ -2782,9 +2795,255 @@
             "changed": "2",
             "signal": 0.5
           }
+        },
+        "graph": {
+          "datasetDigest": "6c0af1f0784ef63a393ee77d614e8246c625051360f3f1a48838374c5d355b52",
+          "indexDigest": "52a7a9b441f686ebea398e3d65dbaa87b4fde4f8b2231fff951700548f6a4e42",
+          "neuronCount": "139255",
+          "rateRoles": [
+            "kenyon",
+            "mbon"
+          ],
+          "supportedStimuli": [
+            "sugar",
+            "shock"
+          ]
         }
       },
       "reason": "durations are positive"
+    },
+    {
+      "name": "agent initialize result without a graph identity",
+      "type": "AgentInitializeResult",
+      "value": {
+        "agentId": "fly-a",
+        "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "tickDuration": {
+          "numerator": "1000000",
+          "denominator": "1"
+        },
+        "warmupTicks": "2500",
+        "committedStep": "0",
+        "decisionContextDigest": "ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4",
+        "telemetry": {
+          "brainTicks": "2500",
+          "populationRateHz": 12.5,
+          "rates": [
+            {
+              "roleId": "kenyon",
+              "hz": 3.25
+            },
+            {
+              "roleId": "mbon",
+              "hz": 0.0
+            }
+          ],
+          "learning": {
+            "enabled": true,
+            "updates": "4",
+            "changed": "2",
+            "signal": 0.5
+          }
+        }
+      },
+      "reason": "publishing-v1 3 needs datasetDigest, indexDigest, neuronCount, rateRoles and supportedStimuli, and only the worker knows them"
+    },
+    {
+      "name": "agent initialize result whose index digest is not a digest",
+      "type": "AgentInitializeResult",
+      "value": {
+        "agentId": "fly-a",
+        "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "tickDuration": {
+          "numerator": "1000000",
+          "denominator": "1"
+        },
+        "warmupTicks": "2500",
+        "committedStep": "0",
+        "decisionContextDigest": "ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4",
+        "telemetry": {
+          "brainTicks": "2500",
+          "populationRateHz": 12.5,
+          "rates": [
+            {
+              "roleId": "kenyon",
+              "hz": 3.25
+            },
+            {
+              "roleId": "mbon",
+              "hz": 0.0
+            }
+          ],
+          "learning": {
+            "enabled": true,
+            "updates": "4",
+            "changed": "2",
+            "signal": 0.5
+          }
+        },
+        "graph": {
+          "datasetDigest": "6c0af1f0784ef63a393ee77d614e8246c625051360f3f1a48838374c5d355b52",
+          "indexDigest": "not-a-digest",
+          "neuronCount": "139255",
+          "rateRoles": [
+            "kenyon",
+            "mbon"
+          ],
+          "supportedStimuli": [
+            "sugar",
+            "shock"
+          ]
+        }
+      },
+      "reason": "digests are 64 lowercase hex digits"
+    },
+    {
+      "name": "agent initialize result whose rates are not in the declared role order",
+      "type": "AgentInitializeResult",
+      "value": {
+        "agentId": "fly-a",
+        "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "tickDuration": {
+          "numerator": "1000000",
+          "denominator": "1"
+        },
+        "warmupTicks": "2500",
+        "committedStep": "0",
+        "decisionContextDigest": "ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4",
+        "telemetry": {
+          "brainTicks": "2500",
+          "populationRateHz": 12.5,
+          "rates": [
+            {
+              "roleId": "kenyon",
+              "hz": 3.25
+            },
+            {
+              "roleId": "mbon",
+              "hz": 0.0
+            }
+          ],
+          "learning": {
+            "enabled": true,
+            "updates": "4",
+            "changed": "2",
+            "signal": 0.5
+          }
+        },
+        "graph": {
+          "datasetDigest": "6c0af1f0784ef63a393ee77d614e8246c625051360f3f1a48838374c5d355b52",
+          "indexDigest": "52a7a9b441f686ebea398e3d65dbaa87b4fde4f8b2231fff951700548f6a4e42",
+          "neuronCount": "139255",
+          "rateRoles": [
+            "mbon",
+            "kenyon"
+          ],
+          "supportedStimuli": [
+            "sugar",
+            "shock"
+          ]
+        }
+      },
+      "reason": "AgentTelemetry.rates is in graph.rateRoles order"
+    },
+    {
+      "name": "agent initialize result declaring a role it reports no rate for",
+      "type": "AgentInitializeResult",
+      "value": {
+        "agentId": "fly-a",
+        "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "tickDuration": {
+          "numerator": "1000000",
+          "denominator": "1"
+        },
+        "warmupTicks": "2500",
+        "committedStep": "0",
+        "decisionContextDigest": "ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4",
+        "telemetry": {
+          "brainTicks": "2500",
+          "populationRateHz": 12.5,
+          "rates": [
+            {
+              "roleId": "kenyon",
+              "hz": 3.25
+            },
+            {
+              "roleId": "mbon",
+              "hz": 0.0
+            }
+          ],
+          "learning": {
+            "enabled": true,
+            "updates": "4",
+            "changed": "2",
+            "signal": 0.5
+          }
+        },
+        "graph": {
+          "datasetDigest": "6c0af1f0784ef63a393ee77d614e8246c625051360f3f1a48838374c5d355b52",
+          "indexDigest": "52a7a9b441f686ebea398e3d65dbaa87b4fde4f8b2231fff951700548f6a4e42",
+          "neuronCount": "139255",
+          "rateRoles": [
+            "kenyon",
+            "mbon",
+            "pn"
+          ],
+          "supportedStimuli": [
+            "sugar",
+            "shock"
+          ]
+        }
+      },
+      "reason": "AgentTelemetry.rates is exactly graph.rateRoles"
+    },
+    {
+      "name": "agent initialize result repeating a supported stimulus",
+      "type": "AgentInitializeResult",
+      "value": {
+        "agentId": "fly-a",
+        "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+        "tickDuration": {
+          "numerator": "1000000",
+          "denominator": "1"
+        },
+        "warmupTicks": "2500",
+        "committedStep": "0",
+        "decisionContextDigest": "ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4",
+        "telemetry": {
+          "brainTicks": "2500",
+          "populationRateHz": 12.5,
+          "rates": [
+            {
+              "roleId": "kenyon",
+              "hz": 3.25
+            },
+            {
+              "roleId": "mbon",
+              "hz": 0.0
+            }
+          ],
+          "learning": {
+            "enabled": true,
+            "updates": "4",
+            "changed": "2",
+            "signal": 0.5
+          }
+        },
+        "graph": {
+          "datasetDigest": "6c0af1f0784ef63a393ee77d614e8246c625051360f3f1a48838374c5d355b52",
+          "indexDigest": "52a7a9b441f686ebea398e3d65dbaa87b4fde4f8b2231fff951700548f6a4e42",
+          "neuronCount": "139255",
+          "rateRoles": [
+            "kenyon",
+            "mbon"
+          ],
+          "supportedStimuli": [
+            "sugar",
+            "sugar"
+          ]
+        }
+      },
+      "reason": "supportedStimuli is unique"
     },
     {
       "name": "hello result for an agent without agent-step-v1",
@@ -3909,7 +4168,179 @@
         },
         "eventIds": []
       },
-      "reason": "a committed transition has applied controls"
+      "reason": "selectedDecision and appliedControls are null together or present together"
+    },
+    {
+      "name": "snapshot where one agent carries the transition and another does not",
+      "type": "CommittedSnapshot",
+      "value": {
+        "descriptorRevision": "7",
+        "publisherIncarnation": "pub-1",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "42"
+        },
+        "episodeId": "episode-1",
+        "sequence": "42",
+        "worldTime": {
+          "numerator": "700000000",
+          "denominator": "1"
+        },
+        "agents": [
+          {
+            "agentId": "fly-a",
+            "telemetry": {
+              "brainTicks": "2534",
+              "populationRateHz": 12.5,
+              "rates": [
+                {
+                  "roleId": "kenyon",
+                  "hz": 3.25
+                },
+                {
+                  "roleId": "mbon",
+                  "hz": 0.0
+                }
+              ],
+              "learning": {
+                "enabled": true,
+                "updates": "4",
+                "changed": "2",
+                "signal": 0.5
+              }
+            },
+            "selectedDecision": {
+              "schema": {
+                "id": "gameboy.intent.v1",
+                "version": 1,
+                "digest": "e70451b26fb5462ec63729d8355912dad01c3963a95bec0e6a8452375717ad9d"
+              },
+              "value": {
+                "press": "a"
+              }
+            },
+            "appliedControls": {
+              "portId": "port-1",
+              "buttons": [
+                {
+                  "id": "a",
+                  "down": true
+                },
+                {
+                  "id": "b",
+                  "down": false
+                },
+                {
+                  "id": "start",
+                  "down": false
+                },
+                {
+                  "id": "select",
+                  "down": false
+                },
+                {
+                  "id": "up",
+                  "down": false
+                },
+                {
+                  "id": "down",
+                  "down": false
+                },
+                {
+                  "id": "left",
+                  "down": false
+                },
+                {
+                  "id": "right",
+                  "down": false
+                }
+              ],
+              "axes": [
+                {
+                  "id": "stick-x",
+                  "value": 0.0
+                },
+                {
+                  "id": "trigger",
+                  "value": 0.0
+                }
+              ]
+            }
+          },
+          {
+            "agentId": "fly-b",
+            "telemetry": {
+              "brainTicks": "2534",
+              "populationRateHz": 12.5,
+              "rates": [
+                {
+                  "roleId": "kenyon",
+                  "hz": 3.25
+                },
+                {
+                  "roleId": "mbon",
+                  "hz": 0.0
+                }
+              ],
+              "learning": {
+                "enabled": true,
+                "updates": "4",
+                "changed": "2",
+                "signal": 0.5
+              }
+            },
+            "selectedDecision": null,
+            "appliedControls": null
+          }
+        ],
+        "progress": {
+          "schema": {
+            "id": "pokemon.progress.v1",
+            "version": 1,
+            "digest": "80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1"
+          },
+          "value": {
+            "rank": 10
+          }
+        },
+        "media": {
+          "views": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "audio": [
+            {
+              "streamId": "mix",
+              "firstSample": "33600",
+              "sampleFrames": 800,
+              "samples": {
+                "storeId": "store-1",
+                "artifactId": "audio-1",
+                "generation": "1",
+                "byteLength": "6400",
+                "contentType": "audio/x-f32le",
+                "digest": null
+              },
+              "discontinuity": false
+            }
+          ]
+        },
+        "eventIds": [
+          "evt-1"
+        ]
+      },
+      "reason": "a boundary is produced or installed for the whole composition, never per agent"
     },
     {
       "name": "trace whose commit acknowledgment is the old boundary",

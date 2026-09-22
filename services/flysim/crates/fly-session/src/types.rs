@@ -32,9 +32,12 @@ pub use fly_session_types::schema::contract_digest;
 pub use fly_session_types::trace::{
     TraceAgent, TraceBehaviour, TraceObservation, TraceOperational, TraceRequest, TransitionTrace,
 };
+pub use fly_session_types::publishing::{
+    AgentDescriptor, CommittedSnapshot, SessionDescriptor, SnapshotAgent,
+};
 pub use fly_session_types::workers::{
     AcknowledgeParams, AcknowledgeResult, AdvanceParams, AgentCommitResult, AgentInitializeParams,
-    AgentInitializeResult, AgentTelemetry, AssetRef, AxisRange, AxisSchema, AxisValue, ButtonState,
+    AgentGraph, AgentInitializeResult, AgentTelemetry, AssetRef, AxisRange, AxisSchema, AxisValue, ButtonState,
     CommitParams, ControllerSchema, Determinism, EnvironmentDescriptor,
     EnvironmentInitializeParams, EnvironmentInitializeResult, EpisodeRequest, HelloParams,
     HelloResult, LearningTelemetry, MAX_ACKNOWLEDGE, MAX_AGENTS, MAX_PORTS, MAX_RATE_ROLES,

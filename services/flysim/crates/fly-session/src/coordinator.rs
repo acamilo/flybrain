@@ -16,6 +16,7 @@ use serde_json::{Map, Value, json};
 
 use crate::clock::Pacing;
 use crate::media::{self, AudioTimelines};
+use crate::publish::PublicationOutcome;
 use crate::metrics::Metrics;
 use crate::phase::{Phase, PhaseMachine};
 use crate::rpc::{self, DomainReply, Serials, WorkerRef};
@@ -54,6 +55,14 @@ pub struct Injections {
     pub altered_advance_controls: bool,
     /// Read and release the Advance result's frame, then replay the same operation.
     pub consume_advance_artifact_then_retry: bool,
+    /// Publish this boundary's snapshot naming the previous boundary's frame: new agent
+    /// state beside an older observation.
+    pub stale_published_view: bool,
+    /// Publish this boundary's snapshot with a handle that is not the artifact the snapshot
+    /// references: the same name, the same shape, another object.
+    pub substituted_published_handle: bool,
+    /// Ask an agent to apply a stimulus kind its published descriptor does not declare.
+    pub undeclared_stimulus: bool,
 }
 
 /// What an injection produced, for a test to assert on.
@@ -183,6 +192,14 @@ impl Default for Deadlines {
     }
 }
 
+/// The descriptor revision this slice publishes.
+///
+/// A revision changes when the composition does -- a replaced fly with another index, a
+/// different port assignment -- and the only in-session path to that is a group restore into
+/// a fresh epoch, which is STATE-01's. So a session establishes revision 1 and the repair
+/// path, not a revision counter with nothing to count.
+pub const DESCRIPTOR_REVISION: u64 = 1;
+
 /// The bus addresses this session publishes on. Chosen by the composition, not the router.
 #[derive(Clone, Debug)]
 pub struct Topics {
@@ -217,6 +234,11 @@ pub struct AgentSlot {
     pub tick_duration: RationalNs,
     pub warmup_ticks: u64,
     pub committed_step: u64,
+    /// The graph this fly attested to at `Agent.Initialize`, which is what the published
+    /// descriptor says about it. `None` before initialization.
+    pub graph: Option<AgentGraph>,
+    /// The telemetry of the last committed boundary, which is what the snapshot publishes.
+    pub telemetry: Option<AgentTelemetry>,
     /// The tick count and remainder this agent last reported, which are what the checkpoint
     /// manifest records for it. They are metadata about the payload, never a substitute for
     /// it: the agent's own capture is the state that is restored.
@@ -246,6 +268,8 @@ impl AgentSlot {
             tick_duration: RationalNs::ZERO,
             warmup_ticks: 0,
             committed_step: 0,
+            graph: None,
+            telemetry: None,
             brain_ticks: 0,
             remainder: RationalNs::ZERO,
             context: TypedValue::new(crate::task::context_schema(), Value::Object(Map::new()))
@@ -294,6 +318,16 @@ pub struct Coordinator {
     media_names: Vec<String>,
     serials: Serials,
     topics: Topics,
+    /// The publication boundary. Everything this session publishes goes through it, and
+    /// every outcome it returns is a named one.
+    publisher: crate::publish::Publisher,
+    /// The composition as published. Built from what the live participants attested to,
+    /// never restated from the configuration that asked for them.
+    session_descriptor: Option<SessionDescriptor>,
+    /// The revision the next descriptor publication carries.
+    descriptor_revision: u64,
+    /// The read-only repair service. Held so it stops with the session.
+    query: Option<crate::publish::QueryService>,
     pacing: Option<Pacing>,
     /// Set by whoever asks for a normal pause, possibly while a transition is in flight.
     pause: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -331,6 +365,17 @@ pub struct Coordinator {
     started: std::time::Instant,
     last_advance_request: Option<DomainRequestId>,
     last_commit_requests: Vec<TraceRequest>,
+    /// The previous committed boundary's broadcast references. Data only: no handle, no owner,
+    /// no retention, and nothing reads it but the publication fault injections.
+    previous_broadcast_views: Vec<ViewRef>,
+}
+
+/// The broadcast references of an observation, or none when there is no observation yet.
+fn observation_views_of(observation: &Option<WorldObservation>) -> Vec<ViewRef> {
+    observation
+        .as_ref()
+        .map(|o| o.broadcast_views.clone())
+        .unwrap_or_default()
 }
 
 impl Coordinator {
@@ -349,6 +394,7 @@ impl Coordinator {
         // Sorted agent-id order is the executor and control order, so it is fixed here once.
         agents.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
         let topics = Topics::for_session(&session_id);
+        let publisher = crate::publish::Publisher::new(bus.clone(), &session_id, &epoch, &topics);
         Coordinator {
             bus,
             session_id,
@@ -371,6 +417,10 @@ impl Coordinator {
                 media::audio_attachment(crate::environment::AUDIO_STREAM_ID),
             ],
             serials: Serials::default(),
+            publisher,
+            session_descriptor: None,
+            descriptor_revision: DESCRIPTOR_REVISION,
+            query: None,
             topics,
             pacing: None,
             pause: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -395,6 +445,7 @@ impl Coordinator {
             started: std::time::Instant::now(),
             last_advance_request: None,
             last_commit_requests: Vec::new(),
+            previous_broadcast_views: Vec::new(),
         }
     }
 
@@ -408,6 +459,37 @@ impl Coordinator {
 
     pub fn topics(&self) -> &Topics {
         &self.topics
+    }
+
+    /// The composition this session published, once it has.
+    pub fn session_descriptor(&self) -> Option<&SessionDescriptor> {
+        self.session_descriptor.as_ref()
+    }
+
+    /// The revision the last published descriptor carried.
+    pub fn descriptor_revision(&self) -> u64 {
+        self.descriptor_revision
+    }
+
+    /// The sequence the next published snapshot will carry.
+    pub fn published_sequence(&self) -> u64 {
+        self.publisher.sequence()
+    }
+
+    /// What this session published and what became of it: accepted, refused by an observer,
+    /// or faulted, per topic.
+    pub fn ledger(&self) -> &crate::publish::Ledger {
+        self.publisher.ledger()
+    }
+
+    /// The events the bounded batch is still holding because an observer refused them.
+    pub fn pending_events(&self) -> usize {
+        self.publisher.outbox().len()
+    }
+
+    /// The read-only state the repair service answers from.
+    pub fn published_state(&self) -> crate::publish::SharedState {
+        self.publisher.state()
     }
 
     pub fn epoch(&self) -> &Id {
@@ -665,26 +747,14 @@ impl Coordinator {
         Ok(())
     }
 
+    /// Declares every framework topic under the delivery policy the publisher holds.
     async fn declare_topics(&mut self) -> Outcome<()> {
-        for (name, retained) in [
-            (self.topics.descriptor.clone(), flybus::Retained::Latest),
-            (self.topics.snapshots.clone(), flybus::Retained::Latest),
-            (self.topics.events.clone(), flybus::Retained::None),
-            // Checkpoint events are a stream of distinct facts, not a latest value: a
-            // "committed" that replaced a "queued" would erase the distinction the durable
-            // commit rules are built on.
-            (self.topics.checkpoints.clone(), flybus::Retained::None),
-        ] {
-            self.bus.declare_topic(&name, retained).await.map_err(|e| {
-                let error = DomainError::new(
-                    ErrorCode::BackendFailure,
-                    format!("declaring {name}: {}", e.message),
-                    MutationCertainty::None,
-                );
-                self.fail_now(error, "declare-topic")
-            })?;
+        // Every framework topic, including the checkpoint stream, is declared in one place
+        // under the delivery policy the publisher holds.
+        match self.publisher.declare().await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(self.fail_now(e, "declare-topic")),
         }
-        Ok(())
     }
 
     async fn initialize_environment(&mut self) -> Outcome<()> {
@@ -864,6 +934,10 @@ impl Coordinator {
             .telemetry
             .validate()
             .map_err(|e| self.fail_now(DomainError::invalid(e), "agent-initialize"))?;
+        // What the fly says it built. The descriptor publishes this, so a composition that
+        // loaded another index is visible in the descriptor rather than only in a log line.
+        self.agents[index].graph = Some(result.graph.clone());
+        self.agents[index].telemetry = Some(result.telemetry.clone());
         self.agents[index].tick_duration = result.tick_duration;
         self.agents[index].warmup_ticks = result.warmup_ticks;
         self.agents[index].committed_step = 0;
@@ -1587,8 +1661,30 @@ impl Coordinator {
             self.agents[index].context_digest = context.digest();
             self.agents[index].context = context;
             self.agents[index].committed_step = k + 1;
+            // The telemetry of the transition that just ended, which is what this boundary's
+            // snapshot publishes. Without this the slot would keep whatever `Agent.Initialize`
+            // reported and every snapshot would label warm-up telemetry as boundary k.
+            let telemetry = commits
+                .iter()
+                .find(|(id, _)| *id == agent_id)
+                .map(|(_, result)| result.telemetry.clone());
+            match telemetry {
+                Some(telemetry) => self.agents[index].telemetry = Some(telemetry),
+                None => {
+                    return Err(self.fail_now(
+                        DomainError::before(
+                            ErrorCode::IdentityMismatch,
+                            format!("agent {agent_id} committed without telemetry"),
+                        ),
+                        "commit",
+                    ));
+                }
+            }
         }
         // The previous boundary's handles are no longer needed; the new ones take over.
+        // The references -- which are data, not ownership -- are kept for one boundary, so a
+        // publication fault injection can name an older frame without retaining it.
+        self.previous_broadcast_views = observation_views_of(&self.observation);
         self.views = new_views;
         self.audio = new_audio;
         self.pending_views.clear();
@@ -2250,13 +2346,23 @@ impl Coordinator {
                 .expect("every agent prepared");
             let outcome = outcomes.get(&agent_id).cloned().unwrap_or_default();
             let next_context = next_contexts.get(&agent_id).cloned().expect("checked");
+            let mut task_stimulations = outcome.stimulations.clone();
+            if self.injections.undeclared_stimulus && self.injections.at_step == k {
+                // A kind outside the agent's published `supportedStimuli`. The declaration is
+                // only worth publishing if the worker enforces it.
+                task_stimulations.push(Stimulus {
+                    id: parse_id(&format!("stim-undeclared-{k}")).expect("a serial makes an Id"),
+                    kind_id: id("arena.undeclared"),
+                    duration_ms: 1.0,
+                });
+            }
             let params = CommitParams {
                 agent_id: agent_id.clone(),
                 prepared_request_id: prepared_request.clone(),
                 next_input: self.sensory_input(observation, k + 1),
                 next_decision_context: next_context,
                 rewards: outcome.rewards.clone(),
-                task_stimulations: outcome.stimulations.clone(),
+                task_stimulations,
             };
             let params = match params.to_json() {
                 Value::Object(m) => m,
@@ -2513,59 +2619,115 @@ impl Coordinator {
     // -----------------------------------------------------------------------------------
     // Publication
 
-    async fn publish(
-        &mut self,
-        topic: &str,
-        payload: Map<String, Value>,
-        attachments: Vec<(String, flybus::Artifact)>,
-    ) -> Outcome<()> {
-        let refs: Vec<(&str, &flybus::Artifact)> =
-            attachments.iter().map(|(n, a)| (n.as_str(), a)).collect();
-        match self.bus.publish(topic, payload, &refs).await {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                // A disconnected or backpressured observer never stalls the world; only a
-                // real resource fault reaches here, and it fails the epoch honestly.
-                let error = DomainError::new(
-                    ErrorCode::BackendFailure,
-                    format!("publishing {topic}: {}", e.message),
-                    MutationCertainty::None,
-                );
-                Err(self.fail_now(error, "publish"))
+    /// Sends one publication and turns its outcome into the session's response to it.
+    ///
+    /// An observer's refusal is counted and the world carries on: "ordinary snapshot
+    /// publication is latest/bounded and never waits for a spectator to consume it"
+    /// (publishing-v1 section 3), and `bus-v1` section 6 allows a bounded subscriber to reject
+    /// a publication. A session resource fault is not an observer and fails the epoch.
+    fn settle(&mut self, outcome: PublicationOutcome, detail: &str) -> Outcome<PublicationOutcome> {
+        match outcome.fault() {
+            Some(error) => Err(self.fail_now(error, detail)),
+            None => {
+                if outcome.is_refused() {
+                    self.audit.push(format!("refused:{}", outcome.topic()));
+                }
+                Ok(outcome)
             }
         }
     }
 
+    /// The composition as the live participants attested to it.
+    ///
+    /// Every agent row comes from that agent's own `Agent.Initialize` reply, so a descriptor
+    /// can disagree with the configuration that asked for the composition. One restated from
+    /// the configuration never could, and `publishing-v1` section 3 needs the disagreement to
+    /// be visible: "geometry/spike mapping requires indexDigest, not merely the same number
+    /// of neurons".
+    fn build_descriptor(&self, revision: u64) -> DomainResult<SessionDescriptor> {
+        let environment = self.descriptor.clone().ok_or_else(|| {
+            DomainError::before(ErrorCode::InvalidPhase, "no environment descriptor")
+        })?;
+        let mut agents = Vec::new();
+        let mut assets = Vec::new();
+        for slot in &self.agents {
+            let graph = slot.graph.clone().ok_or_else(|| {
+                DomainError::before(
+                    ErrorCode::InvalidPhase,
+                    format!("agent {} has not attested to a graph", slot.agent_id),
+                )
+            })?;
+            agents.push(AgentDescriptor {
+                agent_id: slot.agent_id.clone(),
+                port_id: slot.port_id.clone(),
+                profile_digest: slot.profile.digest.clone(),
+                dataset_digest: graph.dataset_digest,
+                index_digest: graph.index_digest,
+                neuron_count: graph.neuron_count,
+                rate_roles: graph.rate_roles,
+                supported_stimuli: graph.supported_stimuli,
+            });
+            assets.push(slot.profile.clone());
+        }
+        let descriptor = SessionDescriptor {
+            session_id: self.session_id.clone(),
+            revision,
+            composition_digest: self.composition_digest(),
+            environment,
+            task_schema: self.task.schema(),
+            agents,
+            assets,
+        };
+        descriptor.validate().map_err(DomainError::invalid)?;
+        Ok(descriptor)
+    }
+
+    /// Publishes the composition and starts the read-only repair service beside it.
+    /// Publishes the composition, advancing the revision when the composition changed.
+    ///
+    /// A revision identifies a composition, so republishing an unchanged one keeps its number
+    /// and a changed one takes the next: a group restore establishes a fresh epoch, which is a
+    /// new `compositionDigest`, and a consumer that held the old revision has to be told rather
+    /// than handed the same number with different contents. The publisher refuses the second
+    /// case outright, so this is where the number moves.
     async fn publish_descriptor(&mut self) -> Outcome<()> {
-        let descriptor = self.descriptor.clone().expect("bootstrapped");
-        let agents: Vec<Value> = self
-            .agents
-            .iter()
-            .map(|slot| {
-                json!({
-                    "agentId": slot.agent_id.as_str(),
-                    "portId": slot.port_id.as_str(),
-                    "profileDigest": slot.profile.digest.as_str(),
-                    "tickDuration": slot.tick_duration.to_json(),
-                    "warmupTicks": slot.warmup_ticks.to_string(),
-                })
-            })
-            .collect();
-        let payload = json!({
-            "sessionId": self.session_id.as_str(),
-            "revision": "1",
-            "compositionDigest": self.composition_digest().as_str(),
-            "schedulerId": "lockstep-v1",
-            "environment": descriptor.to_json(),
-            "taskSchema": self.task.schema().to_json(),
-            "agents": agents,
-        });
-        let topic = self.topics.descriptor.clone();
-        self.publish(&topic, match payload {
-            Value::Object(m) => m,
-            _ => Map::new(),
-        }, Vec::new())
-        .await
+        let mut descriptor = match self.build_descriptor(self.descriptor_revision) {
+            Ok(descriptor) => descriptor,
+            Err(e) => return Err(self.fail_now(e, "descriptor")),
+        };
+        if let Some(published) = &self.session_descriptor {
+            let mut same = descriptor.clone();
+            same.revision = published.revision;
+            if same != *published {
+                self.descriptor_revision += 1;
+                descriptor.revision = self.descriptor_revision;
+                self.audit
+                    .push(format!("descriptor-revision:{}", self.descriptor_revision));
+            }
+        }
+        let outcome = match self.publisher.publish_descriptor(&descriptor).await {
+            Ok(outcome) => outcome,
+            Err(e) => return Err(self.fail_now(e, "descriptor")),
+        };
+        self.settle(outcome, "descriptor")?;
+        self.session_descriptor = Some(descriptor);
+        if self.query.is_none() {
+            let state = self.publisher.state();
+            let service =
+                crate::publish::QueryService::start(self.bus.clone(), &self.session_id, state)
+                    .await
+                    .map_err(|e| {
+                        let error = DomainError::new(
+                            ErrorCode::BackendFailure,
+                            format!("registering the session query service: {}", e.message),
+                            MutationCertainty::None,
+                        );
+                        self.fail_now(error, "query-service")
+                    })?;
+            self.query = Some(service);
+        }
+        self.audit.push("publish:descriptor".to_owned());
+        Ok(())
     }
 
     /// The composition identity: session, epoch, agents, ports and the contract revision.
@@ -2585,22 +2747,15 @@ impl Coordinator {
         digest_of_bytes(text.as_bytes())
     }
 
+    /// Offers this boundary's events to the bounded batch and publishes what it holds.
     async fn publish_events(&mut self, source_step: u64, events: &[TaskEvent]) -> Outcome<()> {
-        if events.is_empty() {
-            return Ok(());
+        match self.publisher.publish_events(source_step, events).await {
+            None => Ok(()),
+            Some(outcome) => {
+                self.settle(outcome, "events")?;
+                Ok(())
+            }
         }
-        let payload = json!({
-            "sessionId": self.session_id.as_str(),
-            "epoch": self.epoch.as_str(),
-            "sourceStep": source_step.to_string(),
-            "events": Value::Array(events.iter().map(DomainType::to_json).collect()),
-        });
-        let topic = self.topics.events.clone();
-        self.publish(&topic, match payload {
-            Value::Object(m) => m,
-            _ => Map::new(),
-        }, Vec::new())
-        .await
     }
 
     /// Publishes the committed boundary. Never an in-progress mix of new agent state and an
@@ -2621,55 +2776,180 @@ impl Coordinator {
                 "publish",
             ));
         }
+        let descriptor = match self.session_descriptor.clone() {
+            Some(descriptor) => descriptor,
+            None => {
+                return Err(self.fail_now(
+                    DomainError::before(ErrorCode::InvalidPhase, "no descriptor was published"),
+                    "publish",
+                ));
+            }
+        };
         let observation = self.observation.clone().expect("bootstrapped");
-        let agents: Vec<Value> = self
-            .agents
-            .iter()
-            .map(|slot| {
-                let control = controls
-                    .iter()
-                    .find(|c| c.port_id == slot.port_id)
-                    .map(|c| c.to_json());
-                json!({
-                    "agentId": slot.agent_id.as_str(),
-                    "selectedDecision": decisions
-                        .get(&slot.agent_id)
-                        .map(|d| d.to_json()),
-                    "appliedControls": control,
-                    "committedStep": slot.committed_step.to_string(),
-                })
-            })
-            .collect();
-        let payload = json!({
-            "descriptorRevision": "1",
-            "publisherIncarnation": self.bus.info().connection_id.clone(),
-            "scope": self.scope(boundary).to_json(),
-            "episodeId": self.episode_id.as_str(),
-            "sequence": self.stats.publications.to_string(),
-            "worldTime": observation.world_time.to_json(),
-            "agents": agents,
-            "progress": self.task.progress().to_json(),
-            "media": json!({
-                "views": Value::Array(observation.broadcast_views.iter().map(DomainType::to_json).collect()),
-                "audio": Value::Array(observation.audio.iter().map(DomainType::to_json).collect()),
-            }),
-            "eventIds": event_ids.iter().map(Id::as_str).collect::<Vec<_>>(),
-        });
-        // The same owned handles the agents were given, published once for presentation.
-        let mut attachments = self.view_attachments();
-        attachments.extend(self.audio.iter().map(|(n, a)| (n.clone(), a.clone())));
-        let topic = self.topics.snapshots.clone();
-        self.publish(
-            &topic,
-            match payload {
-                Value::Object(m) => m,
-                _ => Map::new(),
-            },
-            attachments,
-        )
-        .await?;
-        self.stats.publications += 1;
-        self.audit.push(format!("publish:{boundary}"));
+        let mut agents = Vec::new();
+        for slot in &self.agents {
+            if slot.committed_step != boundary {
+                // A snapshot names one boundary. An agent that is not at it would be future
+                // state beside this world, which is the thing this check exists to refuse.
+                return Err(self.fail_now(
+                    DomainError::before(
+                        ErrorCode::IdentityMismatch,
+                        format!(
+                            "agent {} is committed at {} and the snapshot is boundary {boundary}",
+                            slot.agent_id, slot.committed_step
+                        ),
+                    ),
+                    "publish",
+                ));
+            }
+            let telemetry = match slot.telemetry.clone() {
+                Some(telemetry) => telemetry,
+                None => {
+                    return Err(self.fail_now(
+                        DomainError::before(
+                            ErrorCode::InvalidPhase,
+                            format!("agent {} reported no telemetry", slot.agent_id),
+                        ),
+                        "publish",
+                    ));
+                }
+            };
+            agents.push(SnapshotAgent {
+                agent_id: slot.agent_id.clone(),
+                telemetry,
+                // "Decisions/controls describe the transition ending at that boundary, null at
+                // initial boundary 0." These are the decisions of the transition that ended
+                // here, never the ones prepared for the transition about to start.
+                selected_decision: decisions.get(&slot.agent_id).cloned(),
+                applied_controls: controls.iter().find(|c| c.port_id == slot.port_id).cloned(),
+            });
+        }
+        let mut views = observation.broadcast_views.clone();
+        if self.injections.stale_published_view && self.injections.at_step + 1 == boundary {
+            // The injection of "new agent state with old media": the agents are at this
+            // boundary and the frame is the previous one's.
+            let stale = self.previous_broadcast_views.clone();
+            if stale.is_empty() {
+                return Err(self.fail_now(
+                    DomainError::invalid("no previous boundary to take a stale view from"),
+                    "publish",
+                ));
+            }
+            views = stale;
+            self.injection_log.push(InjectionOutcome {
+                what: "stale-published-view".to_owned(),
+                code: None,
+                identical: false,
+            });
+        }
+        let snapshot = CommittedSnapshot {
+            descriptor_revision: descriptor.revision,
+            publisher_incarnation: self.publisher.incarnation(),
+            scope: self.scope(boundary),
+            episode_id: self.episode_id.clone(),
+            sequence: self.publisher.sequence(),
+            world_time: observation.world_time,
+            agents,
+            progress: self.task.progress(),
+            views,
+            audio: observation.audio.clone(),
+            event_ids: event_ids.to_vec(),
+        };
+        // The same owned handles the agents were given, published once for presentation. A
+        // referenced frame with no handle, or a handle that is another boundary's object, is
+        // refused by `check_publication` before anything reaches a subscriber.
+        let mut attachments = Vec::new();
+        for view in &snapshot.views {
+            let name = media::view_attachment(&view.view_id);
+            match self.views.get(&name) {
+                Some(artifact) => attachments.push((name, artifact.clone())),
+                None => {
+                    return Err(self.fail_now(
+                        DomainError::new(
+                            ErrorCode::BufferInvalid,
+                            format!("this boundary holds no handle for view {}", view.view_id),
+                            MutationCertainty::None,
+                        ),
+                        "publish",
+                    ));
+                }
+            }
+        }
+        for chunk in &snapshot.audio {
+            let name = media::audio_attachment(&chunk.stream_id);
+            match self.audio.get(&name) {
+                Some(artifact) => attachments.push((name, artifact.clone())),
+                None => {
+                    return Err(self.fail_now(
+                        DomainError::new(
+                            ErrorCode::BufferInvalid,
+                            format!(
+                                "this boundary holds no handle for stream {}",
+                                chunk.stream_id
+                            ),
+                            MutationCertainty::None,
+                        ),
+                        "publish",
+                    ));
+                }
+            }
+        }
+        if self.injections.substituted_published_handle && self.injections.at_step + 1 == boundary {
+            // The same attachment name and the same bytes, a different object. Only the
+            // artifact identity sees it, which is why the check compares that and not names.
+            let (name, artifact) = match attachments.first() {
+                Some(first) => first.clone(),
+                None => {
+                    return Err(self.fail_now(
+                        DomainError::invalid("no attachment to substitute"),
+                        "publish",
+                    ));
+                }
+            };
+            let bytes = match artifact.read_all().await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    return Err(self.fail_now(
+                        DomainError::new(
+                            ErrorCode::BufferInvalid,
+                            e.message,
+                            MutationCertainty::None,
+                        ),
+                        "publish",
+                    ));
+                }
+            };
+            let copy = match media::seal_copy(
+                &self.bus,
+                artifact.reference().content_type.clone(),
+                &bytes,
+            )
+            .await
+            {
+                Ok(copy) => copy,
+                Err(e) => return Err(self.fail_now(e, "publish")),
+            };
+            attachments[0] = (name, copy);
+            self.injection_log.push(InjectionOutcome {
+                what: "substituted-published-handle".to_owned(),
+                code: None,
+                identical: false,
+            });
+        }
+        let positions = self.timelines.positions();
+        let outcome = match self
+            .publisher
+            .publish_snapshot(&descriptor, &snapshot, &attachments, &positions)
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(e) => return Err(self.fail_now(e, "publish")),
+        };
+        let outcome = self.settle(outcome, "publish")?;
+        if outcome.is_accepted() {
+            self.stats.publications += 1;
+            self.audit.push(format!("publish:{boundary}"));
+        }
         Ok(())
     }
 }
@@ -2756,15 +3036,33 @@ impl Coordinator {
         }
     }
 
-    fn agent_compatibility(&self, slot: &AgentSlot) -> Digest {
-        crate::agent::agent_compatibility_digest(
+    /// One agent's compatibility identity, from what that agent attested to at
+    /// `Agent.Initialize` rather than from anything this coordinator recomputed.
+    ///
+    /// The graph belongs here because `state-media-v1`'s recovery rules say old parser or
+    /// media state must not cross a recovery, and a graph identity is exactly that: without it
+    /// a replacement fly that built another index passes the group check and is then published
+    /// under its predecessor's `indexDigest`. An agent that has not attested yet has no
+    /// compatibility, which is a refusal rather than a guessed digest.
+    fn agent_compatibility(&self, slot: &AgentSlot) -> DomainResult<Digest> {
+        let graph = slot.graph.as_ref().ok_or_else(|| {
+            DomainError::before(
+                ErrorCode::InvalidPhase,
+                format!(
+                    "agent {} has not attested to a graph, so it has no compatibility identity",
+                    slot.agent_id
+                ),
+            )
+        })?;
+        Ok(crate::agent::agent_compatibility_digest(
             &slot.agent_id,
             &slot.profile.digest,
-            &crate::agent::dataset_digest(),
+            &graph.dataset_digest,
             crate::agent::MODEL_VERSION,
             crate::agent::PLASTICITY_VERSION,
             slot.seed,
-        )
+            &graph.index_digest,
+        ))
     }
 
     /// The coordinator's own session record: what it must hold again to resume this boundary.
@@ -2953,7 +3251,10 @@ impl Coordinator {
         for index in 0..self.agents.len() {
             let slot_worker = self.agents[index].worker.clone();
             let agent_id = self.agents[index].agent_id.clone();
-            let expected = self.agent_compatibility(&self.agents[index]);
+            let expected = match self.agent_compatibility(&self.agents[index]) {
+                Ok(expected) => expected,
+                Err(e) => return Err(self.fail_now(e, "capture")),
+            };
             let reply = self
                 .call(
                     &slot_worker,
@@ -2971,10 +3272,25 @@ impl Coordinator {
             payloads.push(payload);
             acknowledge.push((slot_worker, reply.request_id.clone()));
             let slot = &self.agents[index];
+            // The graph identities come from what this agent attested to, not from a value
+            // the coordinator recomputed; that is the whole point of recording them.
+            let graph = match slot.graph.clone() {
+                Some(graph) => graph,
+                None => {
+                    return Err(self.fail_now(
+                        DomainError::before(
+                            ErrorCode::InvalidPhase,
+                            format!("agent {agent_id} has not attested to a graph"),
+                        ),
+                        "capture",
+                    ));
+                }
+            };
             agent_rows.push(crate::state::AgentEntry {
                 agent_id: agent_id.clone(),
                 profile_digest: slot.profile.digest.clone(),
-                dataset_digest: crate::agent::dataset_digest(),
+                dataset_digest: graph.dataset_digest,
+                index_digest: graph.index_digest,
                 model_version: crate::agent::MODEL_VERSION.to_owned(),
                 plasticity_version: crate::agent::PLASTICITY_VERSION.to_owned(),
                 seed: slot.seed,
@@ -3262,8 +3578,9 @@ impl Coordinator {
             "boundary": boundary.to_string(),
             "detail": detail.map_or(Value::Null, |d| Value::String(d.to_owned())),
         });
-        let topic = self.topics.checkpoints.clone();
-        self.publish(&topic, object(payload), Vec::new()).await
+        let outcome = self.publisher.publish_checkpoint(object(payload)).await;
+        self.settle(outcome, "checkpoint-event")?;
+        Ok(())
     }
 
     // ---------------------------------------------------------------------------------------
@@ -3552,6 +3869,7 @@ impl Coordinator {
                     &row.model_version,
                     &row.plasticity_version,
                     row.seed,
+                    &row.index_digest,
                 ),
             ));
         }

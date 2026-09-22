@@ -96,8 +96,28 @@ interface AgentInitializeResult {
   warmupTicks: U64; committedStep: U64; // committedStep == "0"
   decisionContextDigest: Digest;
   telemetry: AgentTelemetry;
+  graph: AgentGraph;
+}
+interface AgentGraph {
+  datasetDigest: Digest; indexDigest: Digest; neuronCount: U64;
+  rateRoles: Id[];          // <=64, unique; AgentTelemetry.rates is in this order
+  supportedStimuli: Id[];   // <=64, unique; an undeclared kind is UNSUPPORTED
 }
 ```
+
+**Amendment, 2026-09-22 (PUBLISH-01).** `AgentInitializeResult` gains `graph`, because
+[publishing-v1](publishing-v1.md) section 3 requires `datasetDigest`, `indexDigest`,
+`neuronCount`, `rateRoles` and `supportedStimuli` in every published `AgentDescriptor` and no
+worker method carried any of them. Without this the only available source is the composition
+that asked for the agent, so a descriptor could only ever agree with itself and the section 3
+rule that "geometry/spike mapping requires indexDigest, not merely the same number of neurons"
+would have nothing to compare. Initialize is where the agent has just loaded its dataset and
+built its index, so the attestation belongs there. `rateRoles` is the "profile-defined order"
+section 1 already requires `AgentTelemetry.rates` to be in, and the result is refused when the
+two disagree; `supportedStimuli` is the profile capability section 1 already requires a
+stimulus kind to resolve through, and a kind outside it is refused with `UNSUPPORTED` before
+the model is touched. It changes `contractDigest`, which [session RPC](ipc-v1.md) section 4
+already provides for.
 
 **Amendment, 2026-09-22 (SESSION-02).** `HelloResult.limits` gains `workerThreads`, an
 integer >=1 reporting the allocation the launcher started that worker within, because

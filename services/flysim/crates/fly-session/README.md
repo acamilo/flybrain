@@ -39,6 +39,7 @@ Ready(k) ─ Prepare all agents concurrently ───────────�
 | `environment` | The counter arena: one complete batch per advance, one native frame |
 | `task` | The task and executor traits, the deterministic counter task, the identity executor |
 | `rpc` | Domain calls: `req-<U64>` serials, incarnation pinning, the retry rule |
+| `publish` | The publication boundary: declared delivery policies, named publication outcomes, the bounded event batch, the read-only repair service, an application channel and a fake multi-agent consumer |
 | `coordinator` | The transaction, the trace, the failure rules and the publication boundary |
 | `launcher` | The supervisor: thread budget, identities, start, health check, reap |
 | `metrics` | Latency percentiles and the machine's core and memory counters |
@@ -231,6 +232,29 @@ The durable store is `state`, over the `FLYSESS1` layout the contract crate owns
   it takes -- the transition finishes, then the session pauses at the boundary it just
   committed -- is now written into the section 2 machine as a dated amendment.
 
+## The publication boundary
+
+`publishing-v1` on the same bus, with nothing added to the router:
+
+| Address | Delivery | Contents |
+| --- | --- | --- |
+| `session.<id>.descriptor` | retained latest | `SessionDescriptor`, built from what each participant attested to |
+| `session.<id>.snapshots` | retained latest | `CommittedSnapshot` plus the boundary's media handles |
+| `session.<id>.events` | bounded, depth 64 | the transition's task events, with a `droppedBefore` count |
+| `session.<id>.query` | RPC, read-only | `Session.GetDescriptor`, `Session.GetSnapshot` |
+| `<app>.state`, `<app>.cues` | the application's own | whatever the experience needs, under the application's schema |
+
+Every publication returns a named outcome: `Accepted`, `RefusedByObserver` or `Faulted`. Only
+`BACKPRESSURE` is an observer's refusal, and a refusal takes no world step, stalls nothing and
+fences no epoch -- it is counted per topic in the ledger and the exact value stays readable
+through the query service. Anything else is the session's own fault and fails the epoch. A
+snapshot is checked before it is published and again when it is read: every frame comes from
+the boundary its declared delay implies, every handle is the artifact its reference names,
+audio never goes backwards, and the snapshot agrees with the descriptor revision it names.
+
+What is **not** here: the approved public v2 wire schemas and the stage adapters that speak
+them. `implementation.md` sequences those after this slice and together with each other.
+
 ## Limitations
 
 - **Fake workers.** There is no neural model and no emulator. What is modelled exactly is the
@@ -239,6 +263,14 @@ The durable store is `state`, over the `FLYSESS1` layout the contract crate owns
   restore refuses one taken under another backend, content, patch, controller or parser
   identity. It does not migrate between compositions, and it does not try.
 - **No audience input.** The admitted pre-step stimulation list exists and is always empty.
+- **One descriptor revision.** A revision changes when the composition does, and the only
+  in-session path to that is a group restore into a fresh epoch, which is STATE-01's. The
+  session publishes revision 1; the repair path, the revision cache and the index-change rule
+  are exercised against a second revision published by a `Publisher` of a second composition.
+- **No per-subscriber eviction.** A bounded subscriber may refuse a publication, and Flybus v1
+  has no operation to drop that one subscriber, so the refusal costs every subscriber that
+  boundary's delivery on a stream whose contract is "latest". See the 2026-09-22 amendment to
+  `state-media-v1` section 3.
 - **Pacing is coarse.** The pacing deadline rounds one step to whole nanoseconds for sleeping
   only; simulation time stays rational and that rounding never re-enters the accumulator.
 
@@ -298,9 +330,13 @@ The three integration suites do not all run over both transports, and cannot:
 - `tests/processes.rs` runs over the Unix socket only, in all three execution modes. A
   participant in a process of its own has no in-memory transport to reach the router by, so
   the mode is the axis that suite varies and the transport is fixed.
-- `tests/media.rs` and `tests/state.rs` run over both transports *and* in all three execution
-  modes: each acceptance body is written once and registered twice, by `both_transports!` in
-  the in-process composition and by `all_modes!` over the socket.
+- `tests/media.rs`, `tests/state.rs` and `tests/publishing.rs` run over both transports *and*
+  in the execution modes: each acceptance body is written once and registered twice, by
+  `both_transports!` in the in-process composition and by `all_modes!` over the socket.
+  `tests/publishing.rs` registers a subset that way rather than all of it, because the
+  publication boundary lives in the coordinator: unlike the render counter and the sensor log
+  it crosses no process boundary and stays fully observable in all three modes, which
+  `the_publication_boundary_holds_in_every_execution_mode` asserts rather than assumes.
 
 - `tests/session.rs`: one world advance per complete batch; every agent Prepared before the
   advance; one task evaluation per transition; every agent committed before the next Prepare or
@@ -317,6 +353,14 @@ The three integration suites do not all run over both transports, and cannot:
   allocation -- plus the sequential/reversed/parallel trace comparison across all three modes
   and the two process-mode section 4 rows: a router restart during a world advance, and an old
   worker's reply after a restart.
+- `tests/publishing.rs`: the PUBLISH-01 acceptance bullets over both transports -- a consumer
+  that disconnects and one that stops consuming, a bounded observer's named refusal, every
+  boundary's media belonging to that boundary, a frame and a handle from another boundary
+  refused, an unheld revision repaired rather than inferred, a revision that was never
+  published, an index that moved under a mapped consumer, boundary 0's null decision, the
+  committed action being the transition that just ended, one snapshot carrying every agent,
+  application-owned state and cues, a held event batch, and the read-only query service --
+  plus the first two generated once per execution mode by `all_modes!`.
 - `tests/state.rs`: the STATE-01 acceptance bullets -- an uninterrupted run and a resumed run
   committing the same behaviour once the epoch metadata is rebased, a corrupt payload failing
   the install as a group for every participant and for the coordinator's own ledger, a lost

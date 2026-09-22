@@ -204,6 +204,7 @@ fn serve(role: &str, options: &Options) -> Result<(), String> {
             tick_duration: options.rational(flags::TICK_NUMERATOR, flags::TICK_DENOMINATOR)?,
             warmup_ticks: options.u64(flags::WARMUP_TICKS, 0)?,
             worker_threads: threads,
+            graph_variant: options.u64(flags::GRAPH_VARIANT, 0)?,
             // This process's own log. The supervisor reads what crosses the bus, not this.
             sensors: crate::media::SensorLog::new(),
             faults: AgentFaults {

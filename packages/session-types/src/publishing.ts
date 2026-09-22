@@ -16,6 +16,7 @@ import {
   type EnvironmentDescriptor,
   MAX_AGENTS,
   MAX_RATE_ROLES,
+  MAX_SUPPORTED_STIMULI,
   type PortControl,
   findPort,
   readAgentTelemetry,
@@ -26,8 +27,9 @@ import {
   validateTelemetryRoles,
 } from './workers';
 
+export { MAX_SUPPORTED_STIMULI } from './workers';
+
 /** Not stated by a document; this crate's choices, published in the schema set. */
-export const MAX_SUPPORTED_STIMULI = 64;
 export const MAX_ASSETS = 64;
 export const MAX_SNAPSHOT_EVENTS = 64;
 
@@ -166,15 +168,23 @@ export function readCommittedSnapshot(value: unknown): CommittedSnapshot {
   const atBoundaryZero = u64(scope.step) === 0n;
   for (const agent of agents) {
     // "Decisions/controls describe the transition ending at that boundary, null at initial
-    // boundary 0." (publishing-v1 section 3)
+    // boundary 0." (publishing-v1 section 3, and its 2026-09-22 amendment for a boundary that
+    // was installed rather than produced.)
     if (atBoundaryZero && (agent.selectedDecision !== null || agent.appliedControls !== null)) {
       fail('CommittedSnapshot: at boundary 0 selectedDecision and appliedControls are null');
     }
-    if (!atBoundaryZero && (agent.selectedDecision === null || agent.appliedControls === null)) {
+    if ((agent.selectedDecision === null) !== (agent.appliedControls === null)) {
       fail(
-        'CommittedSnapshot: past boundary 0 every agent has a decision and applied controls',
+        'CommittedSnapshot: selectedDecision and appliedControls are null together or present together',
       );
     }
+  }
+  // A boundary is produced by a transition or installed by one, and the whole snapshot says
+  // which: every agent carries the transition that ended here, or none does.
+  if (agents.some((a) => (a.selectedDecision === null) !== (agents[0].selectedDecision === null))) {
+    fail(
+      'CommittedSnapshot: either every agent carries the transition that ended here, or none does',
+    );
   }
   return {
     descriptorRevision,

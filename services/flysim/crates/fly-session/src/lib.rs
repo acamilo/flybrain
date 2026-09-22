@@ -33,6 +33,7 @@ pub mod measure;
 pub mod media;
 pub mod metrics;
 pub mod phase;
+pub mod publish;
 pub mod rpc;
 pub mod state;
 pub mod task;
