@@ -2057,23 +2057,92 @@ that covers more ground walks into more grass, and the hunt cannot tell a long f
 
 | # | trap | trigger | test | fix, or why it is left |
 | ---: | --- | --- | --- | --- |
-| 54 | `GO FRONTIER`, `GO HEAL` and `GO ROUTE` cycle on five tiles: three walks that each end where they began | measured in the **after** arm only, brain minutes 1.0 to 8.5, `GO HEAL` **204** starts at a mean net of 0.0 tiles and a mean reach of 0.0, `GO ROUTE` 211 at a net of 0.2 | -- | **named, not worked, and it is the next brief.** Two readings fit and the hunt cannot separate them: the errand walking the fly in and out of a building whose door is underfoot (row 2's shape, with `GO HEAL` in `GO ROUTE`'s place), and the windowed walk oscillation of 12.3's row 23 -- which the whole-map grid was built to end and which is back **because the grid is refused on every frame the fly is mid-step** (below). Rows 1, 2b, 23, 24 and 41 were each found this way |
+| 54 | `GO FRONTIER`, `GO HEAL` and `GO ROUTE` cycle on five tiles: three walks that each end where they began | rung 10: brain minutes 1.0 to 8.5, `GO HEAL` **204** starts at a mean net of 0.0 tiles and a mean reach of 0.0, `GO ROUTE` 211 at a net of 0.2. Rung 11, the same cycle one town on: **14 distinct tiles in six brain minutes**, 17 of 17 windows flagged, `GO FRONTIER` 122 / `GO HEAL` 129 / `GO ROUTE` 126, **every one `done` at a mean net of 0.0**, printed as `GO ROUTE, GO FRONTIER, GO HEAL` x34 to x42 | `an_errand_does_not_settle_on_the_doormat_it_is_standing_on`, `an_errand_is_paid_by_a_building_this_run_has_already_been_inside`, `a_frame_mid_step_is_read_from_the_tile_the_screen_is_centred_on`, `a_decode_the_screen_disagrees_with_is_refused_mid_step_too`, `the_tile_a_step_is_landing_on_is_ground_the_run_has_covered`, `an_edge_the_table_cannot_name_stops_being_somewhere_new_once_it_is_stood_on`, and both ROM runs below | **fixed, and both readings were right.** Four facts, all measured: the coordinates change at the **end** of a step, so the grid was refused on every moving frame and every walk was planned over the ten-by-nine window; the tile a step is landing on was unrecorded for fifteen frames of every sixteen, so the fly's own next tile was a frontier it arrived at without moving; an errand's aim at a door the fly was standing on settled where it stood, and a completed errand walk writes the reached ledger, so the button came back every hold; and the errand ledger is session state, so a restore re-armed a town the run had already shopped and healed in. `docs/design/macros.md` section 12.17 |
+| 54b | an **edge** the geography table has no row for is "somewhere new" for ever | Route 3: the cartridge reports its connections as **north and west** (`wCurMapConnections`; `warps: []`), the table carries west and **east**, so the seven walkable tiles of its north edge answered "leads somewhere this run has not stood on" on every hold, with `GO OBJECTIVE` off the pad beside them because nothing on that map leads to the objective | `an_edge_the_table_cannot_name_stops_being_somewhere_new_once_it_is_stood_on` | **fixed, narrowly.** A warp's destination is a byte the cartridge publishes, so `None` there is the `LAST_MAP` case row 2 already handles; an edge's comes only from `geography::connected`, so `None` there means the table cannot name it and never will. The only record left is the adapter's boundary ledger, and an edge the run has already stood on is not somewhere new. **The table row itself is not guessed at**: which map is north of Route 3 is a survey nobody has run, and it is a residual below |
 
 ### Residuals, named rather than worked around
 
-- **The whole-map grid is refused while the fly is moving.** `map_grid` checks its decode against
-  the screen buffer over the fly's tile and its four neighbours, and mid-step the two are one tile
-  apart: `wYCoord` is the tile being walked *to* while the background is still scrolling. Measured
-  on Pewter City from this checkpoint: standing still it decodes on **118 of 120** frames, and the
-  frame the survey caught disagreed on three tiles by exactly one row in the direction of travel.
-  A walk planned on such a frame is planned over the ten-by-nine window of section 15's "before",
-  which is what row 23's oscillation is made of. The honest fix is a WRAM reading of "a step is in
-  progress", which this crate's reviewed symbol list does not carry, so it is reported by the
-  probes and left.
-- **The town's errands are session state**, so every restart re-arms them and `GO OBJECTIVE` aims
-  at the mart and the centre before the rung's place, the gym included. Section 13's own design.
+- ~~**The whole-map grid is refused while the fly is moving.**~~ **Worked, 2026-09-22 (row 54).**
+  The guess was the wrong way round: `FLY_PROBE_CATCH=step` in `examples/scene_probe.rs` found the
+  coordinates change at the **end** of a sixteen-frame step, so it is the screen that is one tile
+  ahead of `wYCoord` and not `wYCoord` ahead of the screen. The reader now measures which tile the
+  screen is centred on. `docs/design/macros-wram.md` section 9 has the frame-by-frame trace and the
+  candidates; `$cfc5` tracks a step exactly and is recorded there **unused**, because
+  `gen_symbols.py` refuses a hand-written address and the checkout `resolve_wram.py` reads is not
+  on this box.
+- ~~**The town's errands are session state**~~, so every restart re-armed them. **Worked,
+  2026-09-22 (row 54):** the adapter's lifetime `map_visited` is asked beside the session ledger,
+  and a building this run has already been inside pays the errand whichever one remembers it.
 - **`MOVE n` still reports `blocked`** with the move list drawn and its cursor placeable but not
-  accepting input (row 50): 42 of 65 in the after arm. Unchanged since v0.4.3.
+  accepting input (row 50). It is now **the largest thing in the way**: after row 54 the fly wins
+  the Boulder Badge and then spends 30,809 frames in one battle on the rung-10 arm and 13,251 on
+  the rung-11 arm, and the hunt flags every window of both because its tile rule cannot tell a long
+  battle from a stall. Unchanged since v0.4.3.
+- **Which map is north of Route 3.** The cartridge says that edge is connected and the geography
+  table has no row for it (row 54b). Naming it is a survey -- walk the fly off that edge with real
+  presses and read `wCurMap` back, the method of `docs/design/macros-wram.md` -- and nothing here
+  guesses at it. Until then that edge is walked once and then falls out of the first tier.
+
+## Row 54: the two arms, and the ROM runs (2026-09-22, v0.4.6)
+
+Two checkpoints, because the loop was found twice: the rung-10 one the previous review left it in,
+and the rung-11 one the stream fell into forty minutes after the badge was won. Same seed, same
+ground, `main` at `cb9a88c` against this branch.
+
+**The rung-10 checkpoint, twenty brain minutes.**
+
+| measure | before (`main`, v0.4.6) | after |
+| --- | ---: | ---: |
+| rung reached | 10 | **11 (BOULDER BADGE at 10.78 brain minutes)** |
+| distinct (map, tile) | **175** | 165 |
+| windows flagged | **69 / 73** | 73 / 73 |
+| macros started | 1,056 | 1,211 |
+| `GO HEAL` starts | **204**, every one `done` at a net of 0.0 | **0** |
+| `GO FRONTIER` starts | 242 | 34 |
+| `GO ROUTE` starts | 211, mean net 0.2 | 7, mean net 6.1, max 30 |
+| the repeated sequence | `GO FRONTIER, GO HEAL, GO ROUTE` | no walk cycle at all |
+| frames in `battle` | 20,894 | **58,687** (longest run 30,809) |
+| wall clock | 7,515 s | **3,086 s** |
+
+**The cycle is gone and the fly wins the badge, and the hunt still flags every window.** Both are
+true and both are reported. Eighty-two per cent of the after arm is inside battles and the longest
+single battle is 30,809 frames, so the tile rule -- fewer than four distinct tiles in two brain
+minutes -- flags a fly that is fighting exactly as hard as a fly that is stuck. That is section
+15's own measurement in `docs/design/macros.md`, and the second branch running into it.
+**The ethos check's "fewer flagged windows, more distinct tiles" does not hold on this arm**, and
+the merge is Fable's call. The wall clock is the grid fix seen from outside: `main` re-decodes the
+whole map on most frames because the cross-check refuses them, and this branch serves the cache.
+
+**The rung-11 checkpoint, six brain minutes.** This is the arm the fix is about, on ground with no
+gym leader in it.
+
+| measure | before (`main`, v0.4.6) | after |
+| --- | ---: | ---: |
+| distinct (map, tile) | **14** | **88** |
+| windows flagged | 17 / 17 | 17 / 17 |
+| macros started | 378, every one `done` | 314 |
+| `GO HEAL` starts | **129**, every one at a net of 0.0 | **0** |
+| `GO FRONTIER` starts | 122, net 0.0 | 9 |
+| `GO ROUTE` starts | 126, net 0.0 | **4, mean net 4.8, mean reach 19.5** |
+| the repeated sequence | `GO ROUTE, GO FRONTIER, GO HEAL` x34 to x42 | `NEXT` and `BACK` in a battle's move list |
+| the fly leaves Pewter City | **never** | **at 0.85 brain minutes**, and it ends the run on Route 3 |
+| frames in `battle` | 0 | 15,619 (longest run 13,251, from minute 1.09) |
+
+**Six times the ground, and the same seventeen flagged windows.** No walk completes at a net of
+zero tiles any more, and from brain minute 1.09 the fly is inside a single 13,251-frame battle,
+which the tile rule flags exactly as hard as the cycle it replaced. What makes that battle last is
+row 50.
+
+**ROM-gated, from both checkpoints** (`services/flysim/crates/flysim/tests/rom_macros_mode.rs`,
+skipped cleanly without `FLY_ROM` and the checkpoint):
+
+- `the_fly_reaches_the_pewter_gym_from_the_rung_ten_checkpoint` -- the gym's own interior on frame
+  **3,163** on **25 macros**, `BACK` in a box **0**, unknown pads with no box **0**, `GO FRONTIER`
+  on the museum's two floors **0**, and the new claim: **the longest chain of walks that completed
+  at a net of zero tiles is 1**, against a bound of three.
+- `the_fly_leaves_pewter_from_the_rung_eleven_checkpoint` -- the fly reaches Route 3, the same
+  net-zero bound holds, and neither errand is offered in a town the run has already shopped and
+  healed in.
 
 ### Gates
 
