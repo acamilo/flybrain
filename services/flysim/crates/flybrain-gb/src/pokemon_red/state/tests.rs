@@ -371,7 +371,9 @@ fn a_mart_reports_which_of_its_screens_is_up() {
     wram.set(ram::wListMenuID, poke::ITEM_LIST_MENU);
     assert_eq!(shop(&mut wram).map(|shop| shop.screen), Some(ShopScreen::Selling));
 
-    wram.set(ram::wListMenuID, poke::PRICED_ITEM_LIST_MENU);
+    // The priced list byte with the item window drawn is the buy list.
+    wram.set(ram::wListMenuID, poke::PRICED_ITEM_LIST_MENU)
+        .screen_tile(poke::MART_NAME_COLUMN, poke::MART_NAME_ROW, poke::CHAR_UPPER_A);
     assert_eq!(shop(&mut wram).map(|shop| shop.screen), Some(ShopScreen::Buying));
 
     // The bag list on its own is the start menu's, not a mart's.
@@ -379,6 +381,45 @@ fn a_mart_reports_which_of_its_screens_is_up() {
     wram.set(ram::wFontLoaded, poke::BIT_FONT_LOADED)
         .set(ram::wListMenuID, poke::ITEM_LIST_MENU);
     assert!(shop(&mut wram).is_none());
+}
+
+/// Row 55: the byte that says "the priced buy list" outlives the list, so which screen is up is
+/// read from what is drawn.
+///
+/// Surveyed in the Pewter mart from the live checkpoint: `wListMenuID` held
+/// `PRICEDITEMLISTMENU` on **every frame of the visit** -- the counter menu and the clerk's own
+/// text boxes included -- because the mart prints its text from inside
+/// `DisplayPokemartDialogue_` rather than through `DisplayTextIDInit`. The two things that do
+/// change are the figure on screen: the full-width dialogue box for the clerk, and the item
+/// window for the list.
+#[test]
+fn the_clerks_text_box_is_not_the_marts_buy_list() {
+    // The frame the stream looped on: the counter open, the priced-list byte stale, and the
+    // clerk's "Here you are! Thank you!" waiting for a press.
+    let mut wram = Wram::overworld();
+    wram.set(ram::wListMenuID, poke::PRICED_ITEM_LIST_MENU)
+        .screen_tile(poke::MART_NAME_COLUMN, poke::MART_NAME_ROW, poke::CHAR_UPPER_A)
+        .dialogue_box();
+    assert_eq!(
+        shop(&mut wram).map(|shop| shop.screen),
+        Some(ShopScreen::Talking),
+        "a dialogue box waiting for a press is the clerk, whatever the list byte says"
+    );
+
+    // The same counter with the box gone and the item window drawn: the buy list.
+    let mut wram = Wram::overworld();
+    wram.set(ram::wFontLoaded, poke::BIT_FONT_LOADED)
+        .set(ram::wListMenuID, poke::PRICED_ITEM_LIST_MENU)
+        .screen_tile(poke::MART_NAME_COLUMN, poke::MART_NAME_ROW, poke::CHAR_UPPER_A);
+    assert_eq!(shop(&mut wram).map(|shop| shop.screen), Some(ShopScreen::Buying));
+
+    // And with the item window blank: the BUY / SELL / QUIT menu underneath it.
+    wram.screen_tile(poke::MART_NAME_COLUMN, poke::MART_NAME_ROW, poke::frame::HORIZONTAL);
+    assert_eq!(
+        shop(&mut wram).map(|shop| shop.screen),
+        Some(ShopScreen::BuySellQuit),
+        "no item name in the window means the list is not the thing on screen"
+    );
 }
 
 #[test]

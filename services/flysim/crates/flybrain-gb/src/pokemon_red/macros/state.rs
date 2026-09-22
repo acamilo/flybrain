@@ -309,6 +309,16 @@ pub enum ShopScreen {
     Buying,
     /// The bag list, for selling.
     Selling,
+    /// The clerk is talking: the counter is open, and the thing on screen is a dialogue box
+    /// waiting for a press rather than a list waiting for a cursor.
+    ///
+    /// Row 55 of `infra/docs/macros-traps.md`. `wListMenuID` is not cleared while the mart prints
+    /// its own text -- "Here you are! Thank you!" goes through `PrintText` inside
+    /// `DisplayPokemartDialogue_` and not through `DisplayTextIDInit` -- so the byte that says
+    /// "the priced buy list" outlives the list by the whole of the clerk's conversation, while the
+    /// cursor bytes hold a two-option box's leftovers. A purchase started on one of those frames
+    /// navigates a list that is not there.
+    Talking,
 }
 
 /// A mart, when one is open.

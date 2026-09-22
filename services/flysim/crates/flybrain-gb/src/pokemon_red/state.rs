@@ -119,6 +119,21 @@ pub mod poke {
     /// One count byte, then the ids, then `$ff`, so at most fourteen items can be both counted
     /// and terminated inside the buffer. The real marts carry four to nine.
     pub const MART_LIST_BYTES: u8 = 16;
+    /// Where the mart's priced item window writes its first item name, and the letter range a
+    /// name starts with -- the figure [`super::mart_item_window_drawn`] reads.
+    ///
+    /// Screen coordinates rather than a symbol, for the reason [`YES_NO_BOX`] gives: what tells
+    /// the buy list from the counter menu is what is drawn, and the bytes that would name it are
+    /// not rewritten between the two. Surveyed in the Pewter mart from the live checkpoint
+    /// (`infra/docs/macros-traps.md` row 55): the counter menu left this cell at `HORIZONTAL`'s
+    /// neighbour `$7f`, and every frame the list was drawn held `P` of `POKE BALL` there, with the
+    /// shared cursor one column to its left.
+    pub const MART_NAME_ROW: u16 = 4;
+    pub const MART_NAME_COLUMN: u16 = 6;
+    /// Red's charmap: `$80`-`$99` are `A`-`Z`.
+    pub const CHAR_UPPER_A: u8 = 0x80;
+    pub const CHAR_UPPER_Z: u8 = 0x99;
+
     /// `data/tilesets/tileset_headers.asm`: three counter tile ids per tileset, `-1` for none.
     pub const COUNTER_TILES: u16 = 3;
     /// The `-1` a tileset with fewer than three counter tiles pads its header with.
@@ -648,6 +663,23 @@ pub fn submenu(memory: &mut dyn MemoryReader) -> bool {
 /// is the only user of that template in the game; the buy list is `PRICEDITEMLISTMENU` and the
 /// sell list is the bag's own `ITEMLISTMENU`, which is why selling is only recognised while the
 /// mart's choice is still the last template drawn.
+///
+/// **`wListMenuID` says the counter is open, not which of its screens is up** (row 55 of
+/// `infra/docs/macros-traps.md`, surveyed in the Pewter mart). The doc's claim that the byte is
+/// "zeroed by `DisplayTextIDInit` at the start of every text display, so a stale value cannot
+/// outlive one" holds for text the *overworld* displays and not for the mart's own: the clerk's
+/// "Here you are! Thank you!" is printed from inside `DisplayPokemartDialogue_`, so `$cf94` keeps
+/// `PRICEDITEMLISTMENU` across the whole visit. Measured on the cartridge from the live
+/// checkpoint: every frame of a mart visit read `Buying`, the counter menu and the clerk's text
+/// boxes included, and `wTextBoxID` on the counter menu reads `MONEY_BOX` rather than
+/// `BUY_SELL_QUIT_MENU` because the money box is the last template drawn.
+///
+/// So which screen is up is read from the figure the game draws, the same construction
+/// [`text_box`]'s `waiting` and [`yes_no_prompt`] already make:
+///
+/// - the full-width dialogue box drawn and waiting is the clerk, [`ShopScreen::Talking`];
+/// - otherwise the item window drawn is the buy list and the item window blank is the counter
+///   menu ([`mart_item_window_drawn`]).
 pub fn shop(memory: &mut dyn MemoryReader) -> Option<Shop> {
     if read(memory, ram::wFontLoaded) & poke::BIT_FONT_LOADED == 0 {
         return None;
@@ -655,7 +687,15 @@ pub fn shop(memory: &mut dyn MemoryReader) -> Option<Shop> {
     let cursor = cursor(memory);
     let list = read(memory, ram::wListMenuID);
     if list == poke::PRICED_ITEM_LIST_MENU {
-        return Some(Shop { screen: ShopScreen::Buying, cursor });
+        if text_box(memory).waiting {
+            return Some(Shop { screen: ShopScreen::Talking, cursor });
+        }
+        let screen = if mart_item_window_drawn(memory) {
+            ShopScreen::Buying
+        } else {
+            ShopScreen::BuySellQuit
+        };
+        return Some(Shop { screen, cursor });
     }
     if read(memory, ram::wTextBoxID) != poke::BUY_SELL_QUIT_MENU {
         return None;
@@ -663,6 +703,25 @@ pub fn shop(memory: &mut dyn MemoryReader) -> Option<Shop> {
     let screen =
         if list == poke::ITEM_LIST_MENU { ShopScreen::Selling } else { ShopScreen::BuySellQuit };
     Some(Shop { screen, cursor })
+}
+
+/// Whether the mart's priced item window is the thing drawn over the counter menu.
+///
+/// `DisplayListMenuID` writes the item names down a fixed column of the window
+/// ([`poke::MART_NAME_COLUMN`], from [`poke::MART_NAME_ROW`]) with the shared cursor in the column
+/// to their left, and leaves that cell blank while only the BUY / SELL / QUIT box is up. Every
+/// item a mart sells has a name that starts with a letter, so the test is "is there a letter
+/// there": measured on the cartridge, the cell held `$7f` on the counter menu and the first
+/// letter of the counter's first item on every frame the list was drawn.
+///
+/// A figure test rather than a byte, for the reason [`shop`] gives: the bytes that would name the
+/// screen are not rewritten between the two, so they cannot tell them apart.
+fn mart_item_window_drawn(memory: &mut dyn MemoryReader) -> bool {
+    let tile = read(
+        memory,
+        ram::wTileMap + poke::MART_NAME_ROW * poke::SCREEN_WIDTH + poke::MART_NAME_COLUMN,
+    );
+    (poke::CHAR_UPPER_A..=poke::CHAR_UPPER_Z).contains(&tile)
 }
 
 /// The PC, when one is open. `ActivatePC` sets `wMiscFlags`' generic-PC bit and `LogOff` clears
