@@ -526,7 +526,20 @@ pub fn scene_set(scene: Scene, state: &mut dyn MacroState) -> Vec<MacroKind> {
         // between them. Two buttons that undo each other with nothing else changing are section
         // 12.2's trap spread over two sub-states of one turn.
         Scene::Battle { own_turn: true, .. } => match battle_menu(state) {
-            BattleMenu::Moves { .. } => vec![Move1, Move2, Move3, Move4, Back],
+            // The move list. `BACK` is a button here because there is a list to leave (12.9) --
+            // but only while the moves can be *read*: a battler the seam cannot place leaves all
+            // four `MOVE n` unbound, and a pad of `BACK` alone closes the list that `MOVE 1` on
+            // the menu underneath had just opened. That is 12.10's pair again, with `MOVE 1` in
+            // `NEXT`'s place. With nothing readable the pad is `MOVE 1` alone and its script
+            // confirms wherever the cursor stands, which is the press that ends the turn
+            // (section 12.11).
+            BattleMenu::Moves { .. } => {
+                if state.battle().and_then(|battle| battle.own).is_some() {
+                    vec![Move1, Move2, Move3, Move4, Back]
+                } else {
+                    vec![Move1]
+                }
+            }
             BattleMenu::Party { .. } => vec![Switch, Back],
             // The bag, which is the fly's turn since 12.10. Its three answers: use the thing the
             // cursor is on (`ITEM`), throw the ball (`THROW BALL`), or leave the list (`BACK`).
@@ -1643,7 +1656,14 @@ pub fn move_slot_bound(state: &mut dyn MacroState, kind: MacroKind) -> bool {
     if index == 0 && matches!(battle.menu, BattleMenu::Main { .. }) {
         return true;
     }
-    let Some(own) = battle.own else { return false };
+    // And the same backstop over an **open move list** whose battler the seam cannot read
+    // (section 12.11). That frame used to deal `BACK` alone -- the only button on it closed the
+    // list `MOVE 1` on the menu underneath had just opened, which is 12.10's pair with `MOVE 1` in
+    // `NEXT`'s place. `MOVE 1`'s script over an open list confirms wherever the cursor stands, so
+    // it reads no move either, and confirming a move is what ends a turn.
+    let Some(own) = battle.own else {
+        return index == 0 && matches!(battle.menu, BattleMenu::Moves { cursor: Some(_), .. });
+    };
     let holds = |slot: usize| -> Option<&Move> {
         own.moves.get(slot).and_then(|entry| entry.as_ref()).filter(|entry| entry.id != 0)
     };

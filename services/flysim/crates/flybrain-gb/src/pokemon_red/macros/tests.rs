@@ -4318,6 +4318,34 @@ fn an_overworld_pad_is_never_one_button_that_undoes_itself() {
     }
 }
 
+/// Section 12.11: the move list deals `BACK` only where the moves can be read.
+///
+/// The v0.4.3 residual (`infra/docs/macros-traps.md`): `BACK` was 263 of 797 macro starts, every
+/// one over an open move list, and 142 of the run's `NEXT` starts were on a move list whose cursor
+/// the seam could not place. A move list the seam cannot read the battler for binds no `MOVE n` at
+/// all, so its pad was `BACK` alone -- and the only thing that button does is close the list that
+/// `MOVE 1` on the menu underneath had just opened. That is 12.10's pair with `MOVE 1` in `NEXT`'s
+/// place. `MOVE 1` alone confirms wherever the cursor stands, which is the press that ends a turn.
+#[test]
+fn the_move_list_deals_back_only_where_the_moves_can_be_read() {
+    let mut world = World::battle();
+    world.list = List::Moves(3);
+    world.grid = false;
+    world.cursor_max = 2;
+    assert_eq!(pad_of(&mut world), ["BACK", "MOVE 1", "MOVE 2", "MOVE 3"]);
+
+    // The battler the seam cannot place: no active slot, so `battle.own` is `None`.
+    world.active = None;
+    let pad = pad_of(&mut world);
+    assert_eq!(pad, ["MOVE 1"], "one button, and it ends the turn: {pad:?}");
+    assert!(move_slot_bound(&mut world, MacroKind::Move1));
+    assert!(!move_slot_bound(&mut world, MacroKind::Move2));
+    // And it really presses: the cursor is confirmed where it stands, which is Struggle's own
+    // path (row 30a) and the only reading available here.
+    assert_eq!(run(&mut world, MacroKind::Move1).unwrap(), MacroAbort::Done);
+    assert_eq!(world.pulses.last(), Some(&buttons::A));
+}
+
 /// Row 37 of `infra/docs/macros-traps.md`: a tile the cartridge pushes the fly off is not a tile
 /// to stand on, and the ground beside a villager is not the villager's fault.
 ///
