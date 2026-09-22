@@ -610,6 +610,327 @@ fn step_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64) 
     println!("```");
 }
 
+/// Ground truth for "this menu is accepting input", measured rather than read off a flag.
+///
+/// The emulator exports its own state, one directional pulse is issued into it, and
+/// `wCurrentMenuItem` is read: `HandleMenuInput` moves the cursor on UP and DOWN before it even
+/// looks at `wMenuWatchedKeys`, so a cursor that moves is a menu that is running its input loop and
+/// a cursor that does not is a menu nobody is reading. The state goes straight back afterwards, so
+/// the run this is measured inside is not perturbed by the measurement.
+fn press_honoured(gb: &mut Emulator) -> bool {
+    let save = gb.export_state().expect("the emulator should export its own state");
+    let before = gb.read8(ram::wCurrentMenuItem);
+    let mask = if before < gb.read8(ram::wMaxMenuItem) {
+        flybrain_gb::buttons::DOWN
+    } else {
+        flybrain_gb::buttons::UP
+    };
+    // Released first, and that is not cosmetic. `JoypadLowSensitivity` acts on a key's *edge*, so a
+    // direction the fly is already holding when this pulse begins produces no press at all and the
+    // frame reads as refused for a reason that is the measurement's and not the cartridge's. The
+    // first survey of row 50 measured 187 such frames before this line existed.
+    for phase in 0..ACCEPT_PULSE {
+        gb.set_buttons(if (8..22).contains(&phase) { mask } else { 0 });
+        gb.run_frame().expect("a frame should complete");
+    }
+    let moved = gb.read8(ram::wCurrentMenuItem) != before;
+    gb.import_state(&save).expect("the emulator should take its own state back");
+    moved
+}
+
+/// Frames of the rollback pulse [`press_honoured`] issues: released, held, released.
+const ACCEPT_PULSE: usize = 30;
+
+/// Whether the cursor bytes say "the move list", which is all the seam read before row 50.
+fn move_cursor_geometry(gb: &mut Emulator) -> bool {
+    gb.read8(ram::wTopMenuItemY) == 12 && gb.read8(ram::wTopMenuItemX) == 5
+}
+
+/// Every byte of WRAM and HRAM, as two sets of values per address.
+///
+/// The question row 50 asks is "which byte flips exactly when a press is honoured", and the honest
+/// way to answer it is not to nominate candidates but to let every address answer: an address whose
+/// values on accepting frames never once overlap its values on refusing frames *is* the reading,
+/// and one that overlaps is not, however plausible its name.
+struct Separator {
+    seen: BTreeMap<u16, [[u64; 4]; 2]>,
+    counts: [usize; 2],
+}
+
+impl Separator {
+    fn new() -> Self {
+        Self { seen: BTreeMap::new(), counts: [0, 0] }
+    }
+
+    fn observe(&mut self, gb: &mut Emulator, honoured: bool) {
+        let class = usize::from(honoured);
+        self.counts[class] += 1;
+        for address in (0xc000u16..0xe000).chain(0xff80u16..0xffff) {
+            let value = gb.read8(address);
+            let bits = self.seen.entry(address).or_insert([[0; 4]; 2]);
+            bits[class][usize::from(value) / 64] |= 1u64 << (u32::from(value) % 64);
+        }
+    }
+
+    /// The addresses whose two value sets never overlap, smallest sets first.
+    fn disjoint(&self) -> Vec<(u16, Vec<u8>, Vec<u8>)> {
+        let mut out: Vec<(u16, Vec<u8>, Vec<u8>)> = self
+            .seen
+            .iter()
+            .filter(|(_, bits)| {
+                (0..4).all(|word| bits[0][word] & bits[1][word] == 0)
+                    && bits[0].iter().any(|word| *word != 0)
+                    && bits[1].iter().any(|word| *word != 0)
+            })
+            .map(|(address, bits)| (*address, values(&bits[0]), values(&bits[1])))
+            .collect();
+        out.sort_by_key(|(address, refused, honoured)| {
+            (refused.len() + honoured.len(), *address)
+        });
+        out
+    }
+}
+
+/// A 256-bit set back as the byte values in it, capped so a report line stays a line.
+fn values(bits: &[u64; 4]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for value in 0..=255u16 {
+        if bits[usize::from(value) / 64] & (1u64 << (u32::from(value) % 64)) != 0 {
+            out.push(value as u8);
+        }
+        if out.len() >= 9 {
+            break;
+        }
+    }
+    out
+}
+
+/// What the seam makes of this battle frame, in the shape the pad is dealt from.
+fn battle_reading(gb: &mut Emulator, adapter: &PokemonRedReward) -> Option<(String, bool, bool)> {
+    use flybrain_gb::pokemon_red::macros::state::BattleMenu;
+
+    let ledger = AdapterLedger(adapter);
+    let mut poke = flybrain_gb::pokemon_red::state::PokeState::with_ledger(gb, &ledger);
+    let battle = flybrain_gb::pokemon_red::macros::state::GameState::battle(&mut poke)?;
+    let name = match battle.menu {
+        BattleMenu::None => "none".to_string(),
+        BattleMenu::Main { cursor } => format!("main[{cursor}]"),
+        BattleMenu::Moves { cursor: Some(slot), count } => format!("moves[{slot}/{count}]"),
+        BattleMenu::Moves { cursor: None, count } => format!("moves[?/{count}]"),
+        BattleMenu::Party { cursor } => format!("party[{cursor}]"),
+        BattleMenu::Bag { cursor, count } => format!("bag[{cursor}/{count}]"),
+    };
+    Some((name, battle.own_turn, battle.forced_switch))
+}
+
+/// Whether the move list's own box is on screen, by the two tiles only it draws.
+///
+/// `MoveSelectionMenu`'s regular menu is a `TextBoxBorder` at (4, 12) fourteen wide, with the
+/// junction tile written over (10, 12) afterwards. A plain battle text box is the full width of the
+/// screen, so (10, 12) is a horizontal run and (4, 13) is inside it; the top-level battle menu's
+/// own box starts at column 8. Either mark alone is ambiguous; together they are the move list.
+fn move_box_drawn(gb: &mut Emulator) -> bool {
+    let corner = gb.read8(ram::wTileMap + 12 * 20 + 10);
+    let wall = gb.read8(ram::wTileMap + 13 * 20 + 4);
+    matches!(corner, 0x79 | 0x7b | 0x7d | 0x7e) && wall == 0x7c
+}
+
+/// The whole screen as border tiles, the menu cursor and "some text", one row per line.
+fn screen_rows(gb: &mut Emulator) -> String {
+    (0..18u16)
+        .map(|y| {
+            let row: String = (0..20u16)
+                .map(|x| match gb.read8(ram::wTileMap + y * 20 + x) {
+                    0x7f => '.',
+                    0x79 | 0x7b | 0x7d | 0x7e => '+',
+                    0x7a => '-',
+                    0x7c => '|',
+                    0xed => '>',
+                    _ => 'x',
+                })
+                .collect();
+            format!("    {y:>2} {row}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The tiles of the six rows a battle's bottom boxes are drawn in, as one line.
+fn box_rows(gb: &mut Emulator) -> String {
+    (12..18u16)
+        .map(|y| {
+            (0..20u16)
+                .map(|x| match gb.read8(ram::wTileMap + y * 20 + x) {
+                    0x7f => '.',
+                    0x79 | 0x7b | 0x7d | 0x7e => '+',
+                    0x7a => '-',
+                    0x7c => '|',
+                    0xed => '>',
+                    _ => 'x',
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Row 50's survey: which reading says a battle menu is accepting input, and which only says it is
+/// drawn.
+///
+/// `infra/docs/macros-traps.md` row 50: `MOVE n` reports `blocked` 890 times in 1,431 macros, every
+/// one of them on a move list the seam could place a cursor in. Two readings fit that -- a list
+/// that is up and busy, or cursor bytes that outlive the list they were written for -- and they are
+/// told apart by pressing at it, so this presses at it: every battle frame is classified by whether
+/// a real directional press moves the cursor, and every byte of WRAM and HRAM is asked whether it
+/// separates the two classes.
+fn accept_survey(
+    gb: &mut Emulator,
+    adapter: &mut PokemonRedReward,
+    ms: &mut f64,
+    layer: &mut flysim::macros::MacroLayer,
+    decoder: &mut PopulationDecoder,
+    channels: &[String],
+    hold_ms: f64,
+) {
+    let budget = env_usize("FLY_PROBE_FRAMES", 200_000);
+    let samples = env_usize("FLY_PROBE_SAMPLES", 3_000);
+    let trace = env_usize("FLY_PROBE_TRACE", 160);
+    let mut next_burst = *ms;
+    let mut burst = 0usize;
+    let mut separators: BTreeMap<&'static str, Separator> = BTreeMap::new();
+    let mut tally: BTreeMap<(String, bool), [usize; 2]> = BTreeMap::new();
+    let mut shown: BTreeMap<(String, bool), String> = BTreeMap::new();
+    let mut traced = 0usize;
+    let mut tested = 0usize;
+    // [box not drawn, box drawn] x [press refused, press honoured], over every frame whose cursor
+    // bytes say "the move list" -- which is the whole of what the seam read before row 50.
+    let mut readings = [[0usize; 2]; 2];
+
+    println!("\n## Row 50: every battle frame, pressed at\n");
+    println!("```");
+    println!(
+        "frame  seam                turn  honoured  ccyx/cur/max/keys  d125 cf94 cd6c cfc4  boxes"
+    );
+    for _ in 0..budget {
+        let bursting = *ms < next_burst + BURST_MS;
+        let hot = bursting.then(|| channels[(burst / HOLDS_PER_SLOT) % channels.len()].as_str());
+        if *ms >= next_burst + hold_ms {
+            next_burst = *ms;
+            burst += 1;
+        }
+        let bound = layer.bound_channels();
+        let active = decoder.decode_bound(&rates(hot), *ms, false, None, Some(&bound));
+        let mask = {
+            let ledger = AdapterLedger(adapter);
+            layer.decide(&active, 0, *ms, gb, &ledger).mask
+        };
+        gb.set_buttons(mask as u8);
+        gb.run_frame().expect("a frame should complete");
+        *ms += MS_PER_FRAME;
+        adapter.sample(gb, *ms);
+        {
+            let ledger = AdapterLedger(adapter);
+            let _ = layer.observe(gb, &ledger, *ms);
+        }
+
+        let Some((name, own_turn, forced)) = battle_reading(gb, adapter) else { continue };
+        let geom = move_cursor_geometry(gb);
+        if (name == "none" && !geom) || forced {
+            continue;
+        }
+        if tested >= samples {
+            break;
+        }
+        tested += 1;
+        let honoured = press_honoured(gb);
+        let drawn = move_box_drawn(gb);
+        if geom {
+            readings[usize::from(drawn)][usize::from(honoured)] += 1;
+        }
+        let key = (format!("{name} drawn={drawn}"), own_turn);
+        tally.entry(key.clone()).or_insert([0, 0])[usize::from(honoured)] += 1;
+        let kind = if name.starts_with("moves") {
+            "the move list"
+        } else if name.starts_with("main") {
+            "the top-level menu"
+        } else if name.starts_with("bag") {
+            "the bag"
+        } else {
+            "the party list"
+        };
+        separators.entry(kind).or_insert_with(Separator::new).observe(gb, honoured);
+        let boxes = box_rows(gb);
+        shown.entry((name.clone(), honoured)).or_insert_with(|| screen_rows(gb));
+        if traced < trace {
+            traced += 1;
+            println!(
+                "{tested:>5}  {name:<18}  {:<4}  {:<8}  {:>2},{:>2},{:>2},{:>2},{:#04x}  \
+                 {:02x}   {:02x}   {:02x}   {:02x}    {boxes}",
+                own_turn,
+                honoured,
+                gb.read8(ram::wTopMenuItemY),
+                gb.read8(ram::wTopMenuItemX),
+                gb.read8(ram::wCurrentMenuItem),
+                gb.read8(ram::wMaxMenuItem),
+                gb.read8(ram::wMenuWatchedKeys),
+                gb.read8(ram::wTextBoxID),
+                gb.read8(ram::wListMenuID),
+                gb.read8(ram::wNumMovesMinusOne),
+                gb.read8(ram::wFontLoaded),
+            );
+        }
+    }
+    println!("```");
+
+    let (stale, live) = (readings[0], readings[1]);
+    println!("\n## The move list, by which reading says it is up\n");
+    println!("| the reading | press refused | press honoured |");
+    println!("| --- | ---: | ---: |");
+    println!(
+        "| the cursor bytes alone (what the seam read before row 50) | {} | {} |",
+        stale[0] + live[0],
+        stale[1] + live[1],
+    );
+    println!("| the cursor bytes **and** the box on screen | {} | {} |", live[0], live[1]);
+    println!("| the cursor bytes with no box drawn | {} | {} |", stale[0], stale[1]);
+
+    println!("\n## What the seam reads against what the cartridge honours\n");
+    println!("| the seam's menu | `own_turn` | press refused | press honoured |");
+    println!("| --- | --- | ---: | ---: |");
+    for ((name, own_turn), counts) in &tally {
+        println!("| `{name}` | {own_turn} | {} | {} |", counts[0], counts[1]);
+    }
+
+    for (kind, separator) in &separators {
+        println!(
+            "\n## The bytes that separate a honoured press from a refused one, on {kind}\n\n\
+             {} refusing frames, {} accepting.\n",
+            separator.counts[0], separator.counts[1]
+        );
+        let disjoint = separator.disjoint();
+        if disjoint.is_empty() {
+            println!("No single byte of WRAM or HRAM separates the two classes here.");
+            continue;
+        }
+        println!("| address | when refused | when honoured |");
+        println!("| ---: | --- | --- |");
+        for (address, refused, honoured) in disjoint.iter().take(40) {
+            println!(
+                "| `{address:#06x}` | {} | {} |",
+                refused.iter().map(|v| format!("{v:02x}")).collect::<Vec<_>>().join(" "),
+                honoured.iter().map(|v| format!("{v:02x}")).collect::<Vec<_>>().join(" "),
+            );
+        }
+        println!("\n{} addresses separate in all.", disjoint.len());
+    }
+
+    println!("\n## One screen of each class\n\n```");
+    for ((name, honoured), boxes) in &shown {
+        println!("{name} honoured={honoured}\n{boxes}");
+    }
+    println!("```");
+}
+
 fn main() {
     let Some(path) = std::env::var_os("FLY_ROM") else {
         println!("FLY_ROM is not set, so there is nothing to probe.");
@@ -659,6 +980,22 @@ fn main() {
     // coordinates and every candidate for "a step is in progress" across a whole step.
     if std::env::var("FLY_PROBE_CATCH").is_ok_and(|value| value == "step") {
         step_survey(&mut gb, &mut adapter, &mut ms);
+        return;
+    }
+
+    // Row 50's survey: drive real battles and press at every battle menu the seam reads, to tell a
+    // list that is accepting input from cursor bytes that outlived their list.
+    if std::env::var("FLY_PROBE_CATCH").is_ok_and(|value| value == "accept") {
+        let channels: Vec<String> = channels.iter().map(|name| (*name).to_string()).collect();
+        accept_survey(
+            &mut gb,
+            &mut adapter,
+            &mut ms,
+            &mut layer,
+            &mut decoder,
+            &channels,
+            hold_ms,
+        );
         return;
     }
 
