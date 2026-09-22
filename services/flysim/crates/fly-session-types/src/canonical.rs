@@ -5,9 +5,12 @@
 //! sorted tree produces the same bytes), strings escaped the way `JSON.stringify` escapes
 //! them, no insignificant whitespace. A digest is the SHA-256 of those bytes, lowercase hex.
 //!
-//! Numbers outside the exactly representable double range are refused rather than rounded:
-//! every counter and clock in these contracts is a `U64` decimal string, so a JSON number
-//! larger than 2^53-1 is a schema error, not something to canonicalize approximately.
+//! A JSON number is canonicalizable when it is finite and, if it is integral, no larger in
+//! magnitude than 2^53-1. Integers past that range are refused rather than rounded: every
+//! counter and clock in these contracts is a `U64` decimal string, so a large JSON number is
+//! a schema error. The rule is stated on the value, not on how it was written, because
+//! `JSON.parse` cannot tell `1e21` from `1000000000000000000000`, and two implementations
+//! that disagree about one number do not agree about any digest.
 
 use serde_json::{Number, Value};
 use sha2::{Digest as _, Sha256};
@@ -20,15 +23,14 @@ pub const MAX_EXACT_INTEGER: i64 = 9_007_199_254_740_991;
 /// The bus envelope ceiling every domain message must also fit (bus-v1 section 4).
 pub const MAX_ENVELOPE_BYTES: usize = flybus::wire::MAX_ENVELOPE_BYTES;
 
-/// The `f64` a JSON number denotes, or `None` if it is not a finite exactly representable one.
+/// The `f64` a JSON number denotes, or `None` if it is not canonicalizable: not finite, or an
+/// integral value outside the exactly representable integer range.
 pub fn finite_double(n: &Number) -> Option<f64> {
-    if let Some(u) = n.as_u64() {
-        return (u <= MAX_EXACT_INTEGER as u64).then_some(u as f64);
+    let value = n.as_f64().filter(|v| v.is_finite())?;
+    if value.fract() == 0.0 && value.abs() > MAX_EXACT_INTEGER as f64 {
+        return None;
     }
-    if let Some(i) = n.as_i64() {
-        return (i >= -MAX_EXACT_INTEGER).then_some(i as f64);
-    }
-    n.as_f64().filter(|v| v.is_finite())
+    Some(value)
 }
 
 /// `String(number)` for a finite double, the ECMAScript algorithm RFC 8785 requires.

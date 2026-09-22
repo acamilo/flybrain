@@ -102,22 +102,28 @@
       "reason": "an integral double prints without a fraction"
     },
     {
-      "value": 0.1,
-      "canonical": "0.1",
+      "value": -17.0,
+      "canonical": "-17",
       "accept": true,
       "reason": ""
     },
     {
-      "value": 1e+21,
-      "canonical": "1e+21",
+      "value": 0.1,
+      "canonical": "0.1",
       "accept": true,
-      "reason": "ECMAScript switches to exponent notation at 1e21"
+      "reason": "the shortest round-tripping form"
+    },
+    {
+      "value": 0.30000000000000004,
+      "canonical": "0.30000000000000004",
+      "accept": true,
+      "reason": "shortest round-tripping form, not a rounded one"
     },
     {
       "value": 1e-07,
       "canonical": "1e-7",
       "accept": true,
-      "reason": ""
+      "reason": "ECMAScript switches to exponent notation below 1e-6"
     },
     {
       "value": 5e-324,
@@ -126,10 +132,10 @@
       "reason": "the smallest subnormal double"
     },
     {
-      "value": 1.7976931348623157e+308,
-      "canonical": "1.7976931348623157e+308",
+      "value": 1234.5678,
+      "canonical": "1234.5678",
       "accept": true,
-      "reason": "the largest finite double"
+      "reason": "a fractional value of any magnitude is canonicalizable"
     },
     {
       "value": 9007199254740991,
@@ -138,16 +144,34 @@
       "reason": "the largest exactly representable integer"
     },
     {
+      "value": -9007199254740991,
+      "canonical": "-9007199254740991",
+      "accept": true,
+      "reason": ""
+    },
+    {
       "value": 9007199254740993,
       "canonical": null,
       "accept": false,
-      "reason": "past the exact integer range, canonical JSON refuses it"
+      "reason": "an integral value past the exact range; counters are U64 strings"
     },
     {
-      "value": 0.30000000000000004,
-      "canonical": "0.30000000000000004",
-      "accept": true,
-      "reason": "shortest round-tripping form, not a rounded one"
+      "value": 1e+21,
+      "canonical": null,
+      "accept": false,
+      "reason": "integral and far past the exact range; JSON.parse cannot tell it from the same digits written out"
+    },
+    {
+      "value": 1.7976931348623157e+308,
+      "canonical": null,
+      "accept": false,
+      "reason": "integral and far past the exact range"
+    },
+    {
+      "value": 1.5e+20,
+      "canonical": null,
+      "accept": false,
+      "reason": "1.5e20 is integral as a double, so it falls under the same rule as 1e21"
     }
   ]
 }
