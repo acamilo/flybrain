@@ -685,7 +685,19 @@ fn run_with(
     kind: MacroKind,
 ) -> Result<MacroAbort, MacroRefused> {
     let (palette, slot) = pick(world, kind);
-    if let Err(refused) = machine.start(&palette, slot, world) {
+    drive(machine, &palette, slot, world)
+}
+
+/// [`run_with`], on a palette the caller dealt: start the slot, drive to the outcome, and do the
+/// driver's own bookkeeping after it.
+fn drive(
+    machine: &mut MacroMachine,
+    palette: &Palette,
+    slot: MacroId,
+    world: &mut World,
+) -> Result<MacroAbort, MacroRefused> {
+    let kind = palette.slot(slot).expect("the caller dealt this slot").kind;
+    if let Err(refused) = machine.start(palette, slot, world) {
         // The driver drains the ledgers after every `start`, refusal included: a `no route`
         // refusal earns blocked entries and presses nothing, so nothing else would collect them
         // (`PokemonPalette::start`).
@@ -724,6 +736,19 @@ fn run_with(
         world.talked.insert(target);
     }
     Ok(machine.outcome().expect("a finished macro has an outcome").1)
+}
+
+/// A palette of exactly one button, for a script whose macro no scene binds any more.
+///
+/// `MENU` is the only one (section 12.11): it is still a type, a population, a tag and a script --
+/// the roles and `--print-compatibility` depend on the type list -- and it is on no pad, so
+/// [`pick`] cannot find it. Its script is exercised here rather than deleted, because what took it
+/// off the pad is that the start menu has nothing in it for the fly and not that pressing START is
+/// wrong.
+fn forced(kind: MacroKind, world: &mut World) -> (Palette, MacroId) {
+    let mut slots = [None; super::palette::SLOTS];
+    slots[usize::from(kind.slot())] = Some(super::palette::MacroSpec::of(kind));
+    (Palette { scene: world.scene(), slots }, MacroId(kind.slot()))
 }
 
 fn pick(world: &mut World, kind: MacroKind) -> (Palette, MacroId) {
@@ -781,7 +806,8 @@ fn the_indoor_overworld_row_is_section_nine_ones_row() {
     let palette = Palette::for_scene(Scene::Overworld, &mut world);
     assert_eq!(
         names(&palette),
-        ["GO OUT", "GO WARP", "GO ITEM", "GO NPC", "GO FRONTIER", "TALK", "MENU"]
+        ["GO OUT", "GO WARP", "GO ITEM", "GO NPC", "GO FRONTIER", "TALK"],
+        "and no `MENU`, which section 12.11 took off this row"
     );
 }
 
@@ -794,7 +820,7 @@ fn the_outdoor_overworld_row_has_the_route_and_no_passage_in_it() {
     world.connections.south = true;
     world.npcs = vec![Npc { slot: 1, picture: 1, x: 4, y: 3, facing: Facing::Down }];
     let palette = Palette::for_scene(Scene::Overworld, &mut world);
-    assert_eq!(names(&palette), ["GO ROUTE", "GO NPC", "GO FRONTIER", "MENU"]);
+    assert_eq!(names(&palette), ["GO ROUTE", "GO NPC", "GO FRONTIER"]);
 }
 
 #[test]
@@ -802,7 +828,7 @@ fn an_overworld_with_no_way_out_leaves_the_leaving_buttons_unbound() {
     let mut world = World::room();
     let palette = Palette::for_scene(Scene::Overworld, &mut world);
     assert_eq!(palette.slot(MacroId(MacroKind::GoOut.slot())), None, "a sealed room binds no way out");
-    assert_eq!(names(&palette), ["GO FRONTIER", "MENU"], "and there is always ground to cover");
+    assert_eq!(names(&palette), ["GO FRONTIER"], "and there is always ground to cover");
 }
 
 #[test]
@@ -1715,7 +1741,11 @@ fn go_frontier_is_unbound_once_every_reachable_tile_has_been_stood_on() {
 fn menu_holds_start_until_the_start_menu_opens() {
     let mut world = World::room();
     world.start_to_open = 2;
-    assert_eq!(run(&mut world, MacroKind::Menu).unwrap(), MacroAbort::Done);
+    // Off every pad since section 12.11, so the palette is built by hand: the script is what is
+    // under test here and no scene offers the button any more.
+    let mut machine = MacroMachine::new(0x1234_5678);
+    let (palette, slot) = forced(MacroKind::Menu, &mut world);
+    assert_eq!(drive(&mut machine, &palette, slot, &mut world).unwrap(), MacroAbort::Done);
     assert_eq!(world.pulses, vec![buttons::START, buttons::START]);
     assert_eq!(world.scene, Scene::Menu);
 }
@@ -1724,7 +1754,9 @@ fn menu_holds_start_until_the_start_menu_opens() {
 fn menu_reports_blocked_when_the_start_menu_never_opens() {
     let mut world = World::room();
     world.start_to_open = u8::MAX;
-    assert_eq!(run(&mut world, MacroKind::Menu).unwrap(), MacroAbort::Blocked);
+    let mut machine = MacroMachine::new(0x1234_5678);
+    let (palette, slot) = forced(MacroKind::Menu, &mut world);
+    assert_eq!(drive(&mut machine, &palette, slot, &mut world).unwrap(), MacroAbort::Blocked);
 }
 
 #[test]
@@ -2268,7 +2300,7 @@ fn the_indoor_pad_is_section_nine_ones_set() {
     let mut world = populated();
     assert_eq!(
         plan(&mut world),
-        ["GO OUT", "GO WARP", "GO ITEM", "GO NPC", "GO FRONTIER", "MENU"],
+        ["GO OUT", "GO WARP", "GO ITEM", "GO NPC", "GO FRONTIER"],
         "no objective is known, so `GO OBJECTIVE` is not on the pad"
     );
 }
@@ -2277,7 +2309,7 @@ fn the_indoor_pad_is_section_nine_ones_set() {
 fn the_outdoor_pad_has_the_route_and_no_passage_in_it() {
     let mut world = populated();
     world.map = 0x00;
-    assert_eq!(plan(&mut world), ["GO ROUTE", "GO ITEM", "GO NPC", "GO FRONTIER", "MENU"]);
+    assert_eq!(plan(&mut world), ["GO ROUTE", "GO ITEM", "GO NPC", "GO FRONTIER"]);
 }
 
 #[test]
@@ -2304,7 +2336,7 @@ fn a_rung_on_another_floor_of_this_building_is_reached_through_the_passage() {
     assert!(plan::passage_to_objective(&mut world));
     assert_eq!(
         plan(&mut world),
-        ["GO OBJECTIVE", "GO OUT", "GO WARP", "GO ITEM", "GO NPC", "GO FRONTIER", "MENU"]
+        ["GO OBJECTIVE", "GO OUT", "GO WARP", "GO ITEM", "GO NPC", "GO FRONTIER"]
     );
     // And the objective's own goal is the staircase, because that is the warp that names it.
     let goals: Vec<Tile> = objective_goals(&mut world).into_iter().map(|aim| aim.tile).collect();
@@ -2324,14 +2356,14 @@ fn an_objective_on_this_map_with_no_finer_place_falls_through() {
     // *ledger* half of that fix (`ways`' tiers), and it is unchanged.
     assert_eq!(
         plan(&mut world),
-        ["GO OUT", "GO WARP", "GO ITEM", "GO NPC", "GO FRONTIER", "MENU"]
+        ["GO OUT", "GO WARP", "GO ITEM", "GO NPC", "GO FRONTIER"]
     );
 
     // A rung the catalog does know a tile for is walked to instead.
     world.objective = Some(Objective { map: world.map, tile: Some(Tile::new(6, 3)), warp: None, edge: None, target: None });
     assert_eq!(
         plan(&mut world),
-        ["GO OBJECTIVE", "GO OUT", "GO WARP", "GO ITEM", "GO NPC", "GO FRONTIER", "MENU"]
+        ["GO OBJECTIVE", "GO OUT", "GO WARP", "GO ITEM", "GO NPC", "GO FRONTIER"]
     );
     let aims = objective_goals(&mut world);
     assert_eq!(aims.iter().map(|aim| (aim.tile, aim.press)).collect::<Vec<_>>(), vec![
@@ -2351,14 +2383,14 @@ fn a_thing_this_session_has_talked_to_leaves_the_plan() {
     world.talked.insert(TalkTarget::Sprite(1));
     assert_eq!(
         plan(&mut world),
-        ["GO OUT", "GO WARP", "GO ITEM", "GO FRONTIER", "MENU"],
+        ["GO OUT", "GO WARP", "GO ITEM", "GO FRONTIER"],
         "the person drops out and the object stays"
     );
     assert!(!precondition(MacroKind::GoNpc, &mut world), "and the button is gone");
 
     // The object is the other half, keyed by its own sprite slot.
     world.talked.insert(TalkTarget::Sprite(2));
-    assert_eq!(plan(&mut world), ["GO OUT", "GO WARP", "GO FRONTIER", "MENU"]);
+    assert_eq!(plan(&mut world), ["GO OUT", "GO WARP", "GO FRONTIER"]);
 
     // Palette mode reads the same ledger: an unbound slot is dim rather than aimed at a villager
     // the fly has already heard out.
@@ -2953,22 +2985,65 @@ fn a_no_route_refusal_records_what_it_could_not_reach() {
 }
 
 #[test]
-fn the_overworld_plan_never_truncates_the_frontier_or_the_menu_away() {
-    // Eleven buttons and six rows: the entries that used to be cut were the last ones, which are
-    // the fallback that always has somewhere to go while any ground is unexplored and -- since
-    // section 13.1 -- the unconditional `MENU` that makes an empty pad impossible.
+fn the_overworld_plan_never_truncates_the_frontier_away() {
+    // Eleven buttons and six rows: the entry that used to be cut was the last one, which is the
+    // fallback that always has somewhere to go while any ground is unexplored. `MENU` was the
+    // other, and section 12.11 took it off the row rather than rescuing it again.
     let mut world = populated();
     world.objective = Some(Objective { map: 0x00, tile: None, warp: None, edge: None, target: None });
     world.signs = vec![Sign { x: 6, y: 6, text_id: 3 }];
     let rows = plan(&mut world);
-    assert!(rows.len() >= 7, "a full overworld pad is more than six buttons: {rows:?}");
-    // Section 14: nothing is truncated at all any more, so the two that used to have to be
-    // rescued from the cut are simply there, in their own places at the end of the type order.
+    assert!(rows.len() >= 6, "a full overworld pad is more than five buttons: {rows:?}");
     assert_eq!(
-        &rows[rows.len() - 2..],
-        ["GO FRONTIER", "MENU"],
-        "the explorer and the start menu are both dealt: {rows:?}"
+        rows.last(),
+        Some(&"GO FRONTIER"),
+        "the explorer is dealt last and is never cut: {rows:?}"
     );
+}
+
+/// Section 12.11: `MENU` is on no scene's pad, in any state of any scene.
+///
+/// **What was live** (2026-09-22, rung 10, thirty minutes inside the Pewter museum's upper floor):
+/// macro starts `MENU` 82, `BACK` 82, `GO FRONTIER` 8, the event log alternating `MENU
+/// start/done, BACK start/done`. `MENU` pressed START, the start menu opened, its pad is `CLOSE`,
+/// `CONFIRM` and `BACK`, and `BACK` pressed B and closed it again -- two buttons that undo each
+/// other with nothing else changing, which is section 12.10's rule one scene wider than a battle.
+///
+/// `MENU` was there as the overworld's *unconditional* button, the one that made an empty pad
+/// impossible. It is also section 12.2's trap by definition -- a precondition satisfied wherever
+/// the fly stands, and a macro that completes without moving -- and nothing in the vocabulary uses
+/// the start menu for anything, so there is nothing behind it worth pressing it for. What keeps the
+/// pad from being empty instead is the never-empty way out of [`ways`](super::palette::ways).
+#[test]
+fn menu_is_on_no_scenes_pad() {
+    let mut world = populated();
+    for scene in [
+        Scene::Overworld,
+        Scene::Dialog,
+        Scene::Unknown,
+        Scene::Menu,
+        Scene::Shop,
+        Scene::Pc,
+        Scene::Title,
+        Scene::Battle { own_turn: true, forced_switch: false },
+        Scene::Battle { own_turn: false, forced_switch: false },
+        Scene::Battle { own_turn: false, forced_switch: true },
+    ] {
+        world.scene = scene;
+        world.battle = matches!(scene, Scene::Battle { .. })
+            .then_some((BattleKind::Wild, true, false));
+        assert!(
+            !super::palette::scene_set(scene, &mut world).contains(&MacroKind::Menu),
+            "{} deals MENU",
+            scene.label()
+        );
+        assert!(!plan(&mut world).contains(&"MENU"), "{} binds MENU", scene.label());
+    }
+    // The start menu is still reachable and still has its own pad: the fly's raw START reaches the
+    // cartridge in macros mode (section 13.1), and what is on that pad is what leaves it.
+    world.scene = Scene::Menu;
+    world.list = List::Start;
+    assert_eq!(pad_of(&mut world), ["CLOSE", "CONFIRM", "BACK"]);
 }
 
 #[test]
@@ -3891,6 +3966,13 @@ fn every_macro_type_has_a_population_a_tag_and_a_gloss() {
 ///
 /// The sweep that catches an empty pad, which is the one state the doctrine cannot recover from on
 /// its own: nothing presses for the fly, so a scene with no buttons waits for ever.
+///
+/// **What the overworld's half rests on since section 12.11** is the way out and no longer the
+/// unconditional `MENU`: every map in the game has one -- an interior's front door or its
+/// staircase, an outdoor map's connection -- and `ways`' last resort offers it regardless of the
+/// ledgers when the map holds nothing else worth walking to. So the fixtures below have their
+/// doors, where the old ones did not need them, and the map with *no way out at all* is the named
+/// residual at the end of this test rather than a case the rule covers.
 #[test]
 fn no_playable_scene_and_no_sub_state_deals_an_empty_pad() {
     let worst = |world: &mut World| {
@@ -3902,12 +3984,17 @@ fn no_playable_scene_and_no_sub_state_deals_an_empty_pad() {
         );
     };
 
-    // The overworld, in all three of its rows, on a map with nothing on it and nowhere to go.
-    let mut bare = World::room();
+    // The overworld, in all three of its rows, on a map with nothing on it but its own door.
+    let mut bare = World::ground_floor();
+    bare.seen_maps.insert(0x00);
+    bare.seen_maps.insert(0x26);
     bare.stood = (0..8).flat_map(|y| (0..8).map(move |x| Tile::new(x, y))).collect();
+    assert!(super::palette::stranded(&mut bare), "nothing on this floor to walk to");
     worst(&mut bare);
     let mut outdoors = viridian();
     outdoors.warps.clear();
+    outdoors.connections = Connections { north: true, south: false, east: false, west: false };
+    outdoors.seen_maps.insert(maps::ROUTE_2);
     outdoors.areas.insert((Amenity::Mart, maps::VIRIDIAN_CITY));
     outdoors.areas.insert((Amenity::Center, maps::VIRIDIAN_CITY));
     outdoors.stood = (0..8).flat_map(|y| (0..8).map(move |x| Tile::new(x, y))).collect();
@@ -3946,6 +4033,16 @@ fn no_playable_scene_and_no_sub_state_deals_an_empty_pad() {
         cornered.list = list;
         worst(&mut cornered);
     }
+
+    // And the one overworld that still deals nothing, said out loud rather than papered over: a
+    // map with **no way out at all**, every tile stood on and nothing on it. No map in Red is
+    // that -- an interior has its front door or its staircase and an outdoor map has its
+    // connections -- so this is a shape the cartridge does not hold, and `game.padEmptyMs` is what
+    // would report it if one ever did (section 13.1).
+    let mut sealed = World::room();
+    sealed.stood = (0..8).flat_map(|y| (0..8).map(move |x| Tile::new(x, y))).collect();
+    assert!(path::exits(&mut sealed).is_empty(), "the fixture really has no way out");
+    assert_eq!(plan::plan_for(Scene::Overworld, &mut sealed).bound(), 0);
 }
 
 /// Section 13.1's pad-empty rule: an outdoor map with every ledger against it still offers a walk.
@@ -4130,6 +4227,95 @@ fn throw_ball_opens_the_bag_and_moves_the_cursor_to_the_ball_by_reading_it() {
     // The script stops at the confirmation: the throw animation, the shake count and the result
     // text are the between-turns `NEXT`'s, and a nickname prompt is the dialog's `NO`.
     assert_eq!(world.pulses.last(), Some(&buttons::A));
+}
+
+/// Section 12.11: a room whose one way out every ledger is resting still offers it.
+///
+/// **What was live** (2026-09-22, rung 10, `ct150-rank10` checkpoint): the fly on **map 0x35, the
+/// Pewter museum's upper floor** -- fourteen blocks by eight, one warp at (7, 7) down to the floor
+/// below (0x34), two signs and three exhibits. The reproduction is in
+/// `infra/docs/macros-traps.md`; the shape of it is that every candidate list on that map empties:
+///
+/// - `geography` has no row for the museum, so `next_hop` from it answers `None` and
+///   `GO OBJECTIVE` has nothing to aim at -- the objective itself is fine (map 0x36, the gym
+///   leader, rung 11's BOULDER BADGE);
+/// - the three exhibits and two signs are *reached* by `GO NPC` and `GO ITEM`, which retires them
+///   for the session;
+/// - the four unstood tiles are walked or excluded, and `GO FRONTIER` empties for the window;
+/// - the one warp out is classified a **passage** and not an exit -- it is a staircase -- and
+///   `unexcluded_exits` drops it while the blocked ledger rests it.
+///
+/// That left `MENU` and nothing else, and `MENU` opened the start menu whose `BACK` closed it
+/// again: 82 starts each in thirty minutes. With `MENU` gone the same state has to deal a walk, and
+/// the walk is the staircase **although the ledger is resting it** -- a target the ledger has
+/// parked is still the only place to go.
+#[test]
+fn a_room_whose_only_way_out_the_ledger_rests_still_offers_it() {
+    let mut world = World::room();
+    // One staircase, no front door: the museum's upper floor, and Red's bedroom, and every other
+    // map whose only way anywhere is a passage.
+    world.warps = vec![Warp { x: 7, y: 1, destination_warp: 2, destination_map: 0x26 }];
+    world.seen_maps.insert(0x26);
+    world.stood = (0..8).flat_map(|y| (0..8).map(move |x| Tile::new(x, y))).collect();
+    assert_eq!(
+        path::exits(&mut world).iter().map(|exit| exit.way).collect::<Vec<_>>(),
+        vec![Way::Passage],
+        "a staircase and no front door"
+    );
+    // With the staircase unexcluded the pad is the ordinary indoor one.
+    assert!(on_the_pad(&mut world, MacroKind::GoWarp));
+
+    // Now rest it, which is what a refused walk does for ten brain minutes.
+    world.targets.record_blocked(world.map, TargetKey::Exit(ExitId::Warp(0)));
+    assert!(super::palette::stranded(&mut world), "nothing else on this floor to walk to");
+    assert!(
+        on_the_pad(&mut world, MacroKind::GoWarp),
+        "the resting staircase comes back as the last resort"
+    );
+    let pad = pad_of(&mut world);
+    assert_eq!(pad, ["GO WARP"], "and it is the whole pad: {pad:?}");
+
+    // And it is *only* a last resort: one unstood tile and the resting staircase goes away again,
+    // because "the nearest door, once per hold" is row 2's own loop.
+    world.stood.remove(&Tile::new(0, 0));
+    assert!(!super::palette::stranded(&mut world));
+    assert!(!on_the_pad(&mut world, MacroKind::GoWarp));
+    assert!(on_the_pad(&mut world, MacroKind::GoFrontier));
+}
+
+/// Section 12.11, stated at the pad: no overworld pad is one button that undoes itself.
+///
+/// The test the museum loop would have failed. `MENU` on the overworld and `BACK` on the start
+/// menu are a pair across two scenes, so a per-pad rule cannot see it -- what can is that `MENU`
+/// is on no pad at all, and that what is left when every ledger is against the map is a *walk*.
+#[test]
+fn an_overworld_pad_is_never_one_button_that_undoes_itself() {
+    // The museum shape, indoors, and the town shape, outdoors: both stranded, both dealt a walk.
+    let mut indoors = World::ground_floor();
+    indoors.seen_maps.insert(0x00);
+    indoors.seen_maps.insert(0x26);
+    indoors.stood = (0..8).flat_map(|y| (0..8).map(move |x| Tile::new(x, y))).collect();
+    for exit in path::exits(&mut indoors) {
+        indoors.targets.record_blocked(indoors.map, TargetKey::Exit(exit.id));
+    }
+    let mut outdoors = viridian();
+    outdoors.warps.clear();
+    outdoors.connections = Connections { north: true, south: false, east: false, west: false };
+    outdoors.seen_maps.insert(maps::ROUTE_2);
+    outdoors.areas.insert((Amenity::Mart, maps::VIRIDIAN_CITY));
+    outdoors.areas.insert((Amenity::Center, maps::VIRIDIAN_CITY));
+    outdoors.stood = (0..8).flat_map(|y| (0..8).map(move |x| Tile::new(x, y))).collect();
+    outdoors.targets.record_blocked(outdoors.map, TargetKey::Exit(ExitId::Edge(Edge::North)));
+
+    for world in [&mut indoors, &mut outdoors] {
+        let pad = pad_of(world);
+        assert!(!pad.is_empty(), "an overworld with a way out deals something");
+        assert!(!pad.contains(&"MENU"), "MENU is on no pad: {pad:?}");
+        assert!(
+            pad.iter().any(|name| name.starts_with("GO ")),
+            "what is left is a walk rather than a screen to open and close: {pad:?}"
+        );
+    }
 }
 
 /// Row 37 of `infra/docs/macros-traps.md`: a tile the cartridge pushes the fly off is not a tile
