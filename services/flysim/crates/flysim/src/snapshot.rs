@@ -241,8 +241,8 @@ pub struct FeedMacroOutcome {
 }
 
 /// Reward categories the feed reports counts for. The adapter's own interned kinds
-/// (`milestone`, `exploration`, `map`, `species`, `trainer`, `battle`, `badge`, `boundary`) map
-/// onto these.
+/// (`milestone`, `exploration`, `map`, `species`, `trainer`, `battle`, `badge`, `boundary`,
+/// `catch`) map onto these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RewardKind {
@@ -282,6 +282,15 @@ impl RewardKind {
             // protocol is concerned: finding a door is finding somewhere new, and the design asks
             // for no new feed kind.
             "boundary" => Self::Explore,
+            // `catch` is a wild battle the fly won by keeping the Pokémon, so it publishes on
+            // the same counter a wild KO does. The feed's kinds are a closed set
+            // (`docs/feed-protocol.md`) and this rule asked for no new one.
+            //
+            // Deliberately *not* `pokedex`: on a catch of a species this run has never owned,
+            // the cartridge sets the Pokédex bit and the adapter's existing `species` rule pays
+            // for it on the same frame, so the `pokedex` counter already moves. Mapping `catch`
+            // there as well would count one event twice.
+            "catch" => Self::Wildwin,
             // The platformer.
             "band" => Self::Explore,
             "coin" => Self::Wildwin,
@@ -739,6 +748,7 @@ mod tests {
         }
         assert_eq!(RewardKind::from_adapter("nonsense"), None);
         assert_eq!(RewardKind::from_adapter("boundary"), Some(RewardKind::Explore));
+        assert_eq!(RewardKind::from_adapter("catch"), Some(RewardKind::Wildwin));
     }
 
     #[test]

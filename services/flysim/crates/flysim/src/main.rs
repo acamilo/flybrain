@@ -42,6 +42,15 @@ struct Args {
     /// the "nothing to compare" case for a fresh container.
     #[arg(long, value_name = "DIR")]
     print_state_compatibility: Option<std::path::PathBuf>,
+
+    /// Restart the run from the milestone archive for this ladder rung, and exit.
+    ///
+    /// Run with flysim stopped: it rewrites both checkpoint stores.
+    /// `infra/bin/fly-reset-to-milestone` is the operator-facing wrapper and the sequence
+    /// around it is in `infra/docs/runbook.md`. The current state is copied to a dated
+    /// directory first, so this is reversible by hand.
+    #[arg(long, value_name = "RANK")]
+    reset_to_milestone: Option<u32>,
 }
 
 fn main() -> Result<()> {
@@ -62,6 +71,17 @@ fn main() -> Result<()> {
     if let Some(dir) = args.print_state_compatibility.as_deref() {
         if let Some(found) = flysim::store::state_compatibility(dir) {
             println!("{found}");
+        }
+        return Ok(());
+    }
+
+    if let Some(rank) = args.reset_to_milestone {
+        let stamp = flysim::reset::utc_stamp(flysim::eventlog::now_wall_ms());
+        let durable = config.paths.save_dir.clone();
+        let hot = config.paths.hot_dir.clone();
+        let archive = flysim::reset::default_archive_dir(&durable, &stamp);
+        for line in flysim::reset::reset_to_milestone(&durable, &hot, rank, &archive)? {
+            println!("{line}");
         }
         return Ok(());
     }

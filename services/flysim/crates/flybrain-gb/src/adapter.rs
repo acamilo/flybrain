@@ -56,7 +56,7 @@ impl MemoryReader for &mut dyn MemoryReader {
 /// One reward payout in one frame.
 ///
 /// `kind` is an adapter-owned interned name (Pokémon: `milestone`,
-/// `exploration`, `map`, `species`, `trainer`, `battle`, `badge`, `boundary`); it is the
+/// `exploration`, `map`, `species`, `trainer`, `battle`, `badge`, `boundary`, `catch`); it is the
 /// key the statistics counters and the on-screen ticker group by. Field names
 /// serialize exactly as the prototype's `RewardEvent` did, so a checkpoint
 /// written by either implementation reads in the other.
@@ -241,8 +241,20 @@ impl std::error::Error for AdapterError {}
 /// A game, as the sim loop sees it.
 pub trait GameAdapter: Send {
     /// Adapter version string, pinned into the checkpoint compatibility string.
-    /// Pokémon: `pokered-unique8-v5`.
+    /// Pokémon: `pokered-unique8-v6`.
     fn id(&self) -> &'static str;
+
+    /// Earlier [`GameAdapter::id`]s whose checkpoints this build can read, by a migration
+    /// this adapter has written down and tested.
+    ///
+    /// The default is empty: an adapter migrates from nothing unless it says otherwise, which
+    /// is the behaviour every adapter had before this existed. It is only half of the gate --
+    /// [`crate::compatibility::decide`] also requires the operator to have named the same id in
+    /// `FLY_ACCEPT_ADAPTERS` for that deploy -- so listing an id here never migrates a live run
+    /// on its own.
+    fn migrates_from(&self) -> &'static [&'static str] {
+        &[]
+    }
 
     /// Whether semantic rewards are enabled for this cartridge. An adapter that
     /// says no must still sample without paying anything, so the stream keeps
@@ -470,6 +482,10 @@ mod tests {
         let platformer =
             adapter_for_with_rom_pin("platformer", Some(&"a".repeat(64))).unwrap();
         assert_ne!(pokemon.id(), platformer.id());
+        assert!(
+            !platformer.migrates_from().contains(&pokemon.id()),
+            "a migration never crosses games"
+        );
         assert_ne!(pokemon.symbol_provenance(), platformer.symbol_provenance());
         // And two ROM revisions of the same game cannot either.
         let other = adapter_for_with_rom_pin("platformer", Some(&"b".repeat(64))).unwrap();
