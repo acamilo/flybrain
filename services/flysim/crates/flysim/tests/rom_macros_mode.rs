@@ -67,6 +67,8 @@ const MUSEUM_2F: u32 = 0x35;
 const PEWTER_CITY: u32 = 0x02;
 const MUSEUM_1F: u32 = 0x34;
 const PEWTER_GYM: u32 = 0x36;
+const PEWTER_MART: u32 = 0x38;
+const ROUTE_3: u32 = 0x0e;
 /// The forest's *northern* gate, which is the first hop from the forest toward Pewter
 /// (`macros::geography`, and rung 10's own road).
 const VIRIDIAN_FOREST_NORTH_GATE: u32 = 0x2f;
@@ -2321,6 +2323,88 @@ fn pewter_checkpoint() -> Option<flysim::store::Checkpoint> {
         flysim::store::load(std::path::Path::new(&path))
             .expect("the checkpoint should be a FLYSIM01 envelope")
     })
+}
+
+/// The rung-11 Pewter checkpoint, or `None` to skip.
+fn rank_eleven_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_RANK11_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// From the rung-11 Pewter checkpoint: the fly leaves the town it has finished with.
+///
+/// **What was live** (2026-09-22 15:52 UTC, the badge won, rank 11 with `MT. MOON` next): the
+/// overworld pad had shrunk to `GO ROUTE` alone and `GO ROUTE` completed every ~420 ms at a net of
+/// zero tiles, start and done back to back for minutes, with an occasional `GO FRONTIER` and a
+/// `GO OUT` bounce of 180 ms. The trap hunt from this checkpoint on `main` is row 54 verbatim:
+/// **`GO FRONTIER` 122, `GO HEAL` 129, `GO ROUTE` 126, every one of them `done` at a mean net of
+/// 0.0 tiles**, over **14 distinct tiles** in six brain minutes, 17 of 17 windows flagged, and the
+/// repeated sequence printed as `GO ROUTE, GO FRONTIER, GO HEAL` x34 to x42.
+///
+/// The mechanism is row 54's, one town further on: a restore clears the errand ledger, so Pewter's
+/// mart and centre are outstanding again although the run has been inside both; `objective_place`
+/// puts the errand ahead of the rung, so `GO ROUTE`'s second tier aimed at the mart's door; and the
+/// errand's own aim at a door the fly was standing on settled where it stood. The badge was already
+/// won, so the objective was two maps away and none of it moved the fly.
+///
+/// The claims: the fly **leaves Pewter City** for Route 3, no chain of walks completes at a net of
+/// zero tiles more than three times in a row, and neither errand is offered in a town the run has
+/// already shopped and healed in.
+#[test]
+fn the_fly_leaves_pewter_from_the_rung_eleven_checkpoint() {
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = rank_eleven_checkpoint() else {
+        eprintln!("skipped: no FLY_RANK11_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert_eq!(run.map(), PEWTER_CITY, "the checkpoint is the town the stream stalled in");
+
+    let mut left = None;
+    for frame in 0..200_000u32 {
+        run.frame();
+        if left.is_none() && run.map() == ROUTE_3 {
+            left = Some(frame);
+        }
+    }
+    eprintln!(
+        "from Pewter in {:.1} brain minutes: route {:?}, macros {:?}, the longest chain of walks          that completed at a net of zero tiles {} ({:?})",
+        run.ms / 60_000.0,
+        run.route,
+        run.started,
+        run.worst_net_zero_streak,
+        run.worst_net_zero_chain
+    );
+    assert!(
+        left.is_some(),
+        "the fly never left Pewter City (map {:#04x}, route {:?}, macros {:?})",
+        run.map(),
+        run.route,
+        run.started
+    );
+    assert!(
+        run.worst_net_zero_streak <= 3,
+        "{} walks in a row completed without moving the fly: {:?}",
+        run.worst_net_zero_streak,
+        run.worst_net_zero_chain
+    );
+    // Section 13's errand, paid by a building this run has already been inside: both of Pewter's
+    // are in the adapter's lifetime map ledger at this checkpoint, so neither button is dealt and
+    // the objective is the rung's own place two maps away.
+    let errands = run.started.get("GO HEAL").copied().unwrap_or(0)
+        + run.started.get("GO SHOP").copied().unwrap_or(0);
+    assert!(
+        errands < 10,
+        "{errands} errand walks in a town the run has already shopped and healed in: {:?}",
+        run.started
+    );
+    assert!(
+        !run.route.contains(&PEWTER_MART) || run.route.iter().filter(|map| **map == PEWTER_MART).count() < 3,
+        "the fly walked in and out of the mart: {:?}",
+        run.route
+    );
 }
 
 /// From the rung-10 Pewter checkpoint: the fly gets out of the museum and into the gym.
