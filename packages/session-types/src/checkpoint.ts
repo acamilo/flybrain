@@ -223,7 +223,12 @@ export function decode(input: Uint8Array): Envelope {
   };
 }
 
-/** The manifest fields state-media-v1 section 4 requires. */
+/**
+ * The manifest fields state-media-v1 section 4 requires.
+ *
+ * `helperState` and `environment` join the list under the 2026-09-22 amendment to
+ * checkpoint-envelope-v1 section 3.
+ */
 export const REQUIRED_MANIFEST_FIELDS = [
   'envelopeVersion',
   'checkpointId',
@@ -236,6 +241,8 @@ export const REQUIRED_MANIFEST_FIELDS = [
   'compatibility',
   'agents',
   'coordinator',
+  'environment',
+  'helperState',
   'payloads',
 ] as const;
 

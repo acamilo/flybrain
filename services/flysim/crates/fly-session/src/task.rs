@@ -39,6 +39,16 @@ pub fn episode_schema() -> SchemaRef {
     synthetic_schema("arena.episode.v1", 1)
 }
 
+/// The schema of a captured task ledger.
+pub fn ledger_schema() -> SchemaRef {
+    synthetic_schema("arena.ledger.v1", 1)
+}
+
+/// The schema of a captured action-executor state.
+pub fn executor_schema() -> SchemaRef {
+    synthetic_schema("arena.executor.v1", 1)
+}
+
 pub fn controller_schema_ref() -> SchemaRef {
     synthetic_schema("arena.controller.v1", 1)
 }
@@ -86,6 +96,29 @@ pub trait Task: Send {
 
     /// How many times `evaluate_transition` has run. A transition must evaluate once.
     fn evaluations(&self) -> u64;
+
+    /// The checkpointable ledger at a committed boundary (`workers-v1` section 4).
+    fn capture(&self) -> DomainResult<TypedValue>;
+
+    /// Validates a captured ledger without installing it, so a group install can fail before
+    /// anything is changed.
+    fn validate_restore(&self, state: &TypedValue) -> DomainResult<()>;
+
+    /// Installs a validated ledger under `epoch`. Event identity is derived from the epoch,
+    /// so the new one is part of the install rather than something the ledger keeps from the
+    /// epoch it was captured in.
+    fn install_restore(&mut self, epoch: &Id, state: &TypedValue) -> DomainResult<()>;
+
+    /// Every event identity this ledger has issued, mapped onto the identity it would have
+    /// under `to_epoch`.
+    ///
+    /// `workers-v1` section 4 derives an event id from the epoch, so a trace recorded in one
+    /// epoch cannot be compared with a trace recorded in another until these are rebased.
+    /// The ledger owns the derivation, so it is the only thing that can do it.
+    fn rebase_ids(&self, to_epoch: &Id) -> DomainResult<BTreeMap<Id, Id>>;
+
+    /// How far event identity has reached: the highest source step and the number issued.
+    fn event_watermarks(&self) -> (u64, u64);
 }
 
 /// Translates one selected decision into a controller intent, with no port assignment.
@@ -98,6 +131,15 @@ pub trait ActionExecutor: Send {
         progress: &TypedValue,
         clock: &RationalNs,
     ) -> DomainResult<(ControllerIntent, Vec<TaskEvent>)>;
+
+    /// Per-executor state at a committed boundary (`workers-v1` section 4).
+    fn capture(&self) -> DomainResult<TypedValue>;
+
+    /// Validates a captured executor state without installing it.
+    fn validate_restore(&self, state: &TypedValue) -> DomainResult<()>;
+
+    /// Installs a validated executor state.
+    fn install_restore(&mut self, state: &TypedValue) -> DomainResult<()>;
 }
 
 /// The only executor v1 supports: it passes a direct-control decision through unchanged.
@@ -123,6 +165,37 @@ impl ActionExecutor for IdentityExecutor {
             .map_err(|e| DomainError::invalid(format!("decision: {e}")))?;
         Ok((intent, Vec::new()))
     }
+
+    /// The identity executor is stateless, and says so rather than capturing nothing.
+    ///
+    /// An empty object would be indistinguishable from a stateful executor whose capture went
+    /// missing, so the capture names the executor it came from and a restore refuses any
+    /// other one.
+    fn capture(&self) -> DomainResult<TypedValue> {
+        TypedValue::new(executor_schema(), json!({"executor": "identity-v1"}))
+            .map_err(|e| DomainError::invalid(e.0))
+    }
+
+    fn validate_restore(&self, state: &TypedValue) -> DomainResult<()> {
+        if state.schema != executor_schema() {
+            return Err(DomainError::before(
+                ErrorCode::IncompatibleState,
+                "the captured executor state does not carry the executor schema",
+            ));
+        }
+        match state.value.get("executor").and_then(Value::as_str) {
+            Some("identity-v1") => Ok(()),
+            other => Err(DomainError::before(
+                ErrorCode::IncompatibleState,
+                format!("the captured executor is {other:?}, not the identity executor"),
+            )),
+        }
+    }
+
+    fn install_restore(&mut self, state: &TypedValue) -> DomainResult<()> {
+        // Stateless: validation is the whole of the install, and it is not skipped.
+        self.validate_restore(state)
+    }
 }
 
 /// When the counter task asks for a terminal episode transition.
@@ -146,6 +219,10 @@ pub struct CounterTask {
     evaluations: u64,
     total_reward: f64,
     counter: i64,
+    /// The highest source step any issued event belongs to, and how many were issued. These
+    /// are the event watermarks a checkpoint records and a resumed epoch continues from.
+    last_source_step: u64,
+    issued_events: u64,
     terminal: Terminal,
 }
 
@@ -159,6 +236,8 @@ impl CounterTask {
             evaluations: 0,
             total_reward: 0.0,
             counter: 0,
+            last_source_step: 0,
+            issued_events: 0,
             terminal,
         }
     }
@@ -239,6 +318,7 @@ impl Task for CounterTask {
             payload: TypedValue::new(event_schema(), json!({"counter": self.counter}))
                     .expect("a synthetic typed value fits the contract"),
         }];
+        self.issued_events += events.len() as u64;
         Ok(Bootstrap { contexts, progress: self.progress_value(), events })
     }
 
@@ -314,6 +394,8 @@ impl Task for CounterTask {
             ));
         }
 
+        self.last_source_step = self.last_source_step.max(source_step);
+        self.issued_events += events.len() as u64;
         let next_contexts = self
             .agents
             .iter()
@@ -345,6 +427,173 @@ impl Task for CounterTask {
 
     fn evaluations(&self) -> u64 {
         self.evaluations
+    }
+
+    fn capture(&self) -> DomainResult<TypedValue> {
+        TypedValue::new(
+            ledger_schema(),
+            json!({
+                "epoch": self.epoch.as_str(),
+                "agents": self.agents.iter().map(String::as_str).collect::<Vec<_>>(),
+                "bindings": self
+                    .bindings
+                    .iter()
+                    .map(|b| json!({"portId": b.port_id.as_str(), "agentId": b.agent_id.as_str()}))
+                    .collect::<Vec<_>>(),
+                "transitions": self.transitions,
+                "evaluations": self.evaluations,
+                "totalReward": self.total_reward,
+                "counter": self.counter,
+                "lastSourceStep": self.last_source_step,
+                "issuedEvents": self.issued_events,
+            }),
+        )
+        .map_err(|e| DomainError::invalid(e.0))
+    }
+
+    fn validate_restore(&self, state: &TypedValue) -> DomainResult<()> {
+        if state.schema != ledger_schema() {
+            return Err(DomainError::before(
+                ErrorCode::IncompatibleState,
+                "the captured ledger does not carry this task's schema",
+            ));
+        }
+        for field in [
+            "epoch",
+            "agents",
+            "bindings",
+            "transitions",
+            "evaluations",
+            "totalReward",
+            "counter",
+            "lastSourceStep",
+            "issuedEvents",
+        ] {
+            if state.value.get(field).is_none() {
+                return Err(DomainError::before(
+                    ErrorCode::IncompatibleState,
+                    format!("the captured ledger has no {field}"),
+                ));
+            }
+        }
+        let bindings = state
+            .value
+            .get("bindings")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                DomainError::before(
+                    ErrorCode::IncompatibleState,
+                    "the captured ledger's bindings are not a list",
+                )
+            })?;
+        if bindings.len() != self.bindings.len() && !self.bindings.is_empty() {
+            return Err(DomainError::before(
+                ErrorCode::IncompatibleState,
+                "the captured ledger binds another number of ports",
+            ));
+        }
+        Ok(())
+    }
+
+    fn install_restore(&mut self, epoch: &Id, state: &TypedValue) -> DomainResult<()> {
+        self.validate_restore(state)?;
+        let number = |key: &str| -> DomainResult<u64> {
+            state.value.get(key).and_then(Value::as_u64).ok_or_else(|| {
+                DomainError::before(
+                    ErrorCode::IncompatibleState,
+                    format!("the captured ledger's {key} is not a whole number"),
+                )
+            })
+        };
+        let mut agents = Vec::new();
+        for value in state.value["agents"].as_array().expect("validated") {
+            let agent = value.as_str().ok_or_else(|| {
+                DomainError::before(
+                    ErrorCode::IncompatibleState,
+                    "the captured ledger names an agent that is not a string",
+                )
+            })?;
+            agents.push(parse_id(agent).map_err(|e| {
+                DomainError::before(ErrorCode::IncompatibleState, format!("ledger: {e}"))
+            })?);
+        }
+        let mut bindings = Vec::new();
+        for value in state.value["bindings"].as_array().expect("validated") {
+            let port_id = value.get("portId").and_then(Value::as_str).ok_or_else(|| {
+                DomainError::before(
+                    ErrorCode::IncompatibleState,
+                    "the captured ledger has a binding with no portId",
+                )
+            })?;
+            let agent_id = value.get("agentId").and_then(Value::as_str).ok_or_else(|| {
+                DomainError::before(
+                    ErrorCode::IncompatibleState,
+                    "the captured ledger has a binding with no agentId",
+                )
+            })?;
+            bindings.push(PortBinding {
+                port_id: parse_id(port_id).map_err(|e| {
+                    DomainError::before(ErrorCode::IncompatibleState, format!("ledger: {e}"))
+                })?,
+                agent_id: parse_id(agent_id).map_err(|e| {
+                    DomainError::before(ErrorCode::IncompatibleState, format!("ledger: {e}"))
+                })?,
+            });
+        }
+        let counter = state.value.get("counter").and_then(Value::as_i64).ok_or_else(|| {
+            DomainError::before(
+                ErrorCode::IncompatibleState,
+                "the captured ledger's counter is not an integer",
+            )
+        })?;
+        let total_reward = state
+            .value
+            .get("totalReward")
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite())
+            .ok_or_else(|| {
+                DomainError::before(
+                    ErrorCode::IncompatibleState,
+                    "the captured ledger's totalReward is not a finite number",
+                )
+            })?;
+        // The epoch is the caller's, not the capture's: event identity belongs to the epoch
+        // the ledger is being installed into.
+        self.epoch = epoch.clone();
+        self.agents = agents;
+        self.bindings = bindings;
+        self.transitions = number("transitions")?;
+        self.evaluations = number("evaluations")?;
+        self.total_reward = total_reward;
+        self.counter = counter;
+        self.last_source_step = number("lastSourceStep")?;
+        self.issued_events = number("issuedEvents")?;
+        Ok(())
+    }
+
+    fn rebase_ids(&self, to_epoch: &Id) -> DomainResult<BTreeMap<Id, Id>> {
+        let mut out = BTreeMap::new();
+        out.insert(
+            event_id(&self.epoch, 0, "bootstrap", 0),
+            event_id(to_epoch, 0, "bootstrap", 0),
+        );
+        // The counter task issues exactly one `counter-delta` event per bound port per
+        // evaluated transition, in descriptor port order, so every identity it has ever
+        // issued is re-derivable from its ledger without keeping a list of them.
+        let ports = self.bindings.len() as u32;
+        for source_step in 1..=self.last_source_step {
+            for ordinal in 0..ports {
+                out.insert(
+                    event_id(&self.epoch, source_step, "counter-delta", ordinal),
+                    event_id(to_epoch, source_step, "counter-delta", ordinal),
+                );
+            }
+        }
+        Ok(out)
+    }
+
+    fn event_watermarks(&self) -> (u64, u64) {
+        (self.last_source_step, self.issued_events)
     }
 }
 

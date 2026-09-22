@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::clock::Pacing;
 use crate::media::{self, AudioTimelines};
@@ -150,6 +150,16 @@ pub struct Deadlines {
     pub resolve_attempts: u32,
     /// A separate, larger budget for `Worker.Hello` and the `Initialize` methods.
     pub boot: Duration,
+    /// A separate budget for the `State.*` methods, which `ipc-v1` section 6 gives one:
+    /// a capture serializes a participant and a restore validates and installs one, and
+    /// neither is a step whose latency the probe was chosen for.
+    pub capture: Duration,
+    /// How long a caller waits for a *durable* acknowledgment.
+    ///
+    /// It is not [`Deadlines::capture`]: that one bounds a call to a participant, and this
+    /// one bounds two `fsync`s, a queue the caller shares with other captures and a disk.
+    /// Reusing the call budget here would make a slow disk look like an unresponsive worker.
+    pub durable: Duration,
 }
 
 /// How long the resolution waits between attempts.
@@ -176,6 +186,8 @@ impl Default for Deadlines {
             // Over sixteen seconds of pauses: the budget above is what terminates.
             resolve_attempts: 8192,
             boot: Duration::from_secs(30),
+            capture: Duration::from_secs(30),
+            durable: Duration::from_secs(60),
         }
     }
 }
@@ -194,6 +206,8 @@ pub struct Topics {
     pub descriptor: String,
     pub snapshots: String,
     pub events: String,
+    /// Where the distinct captured/queued/committed/failed/superseded checkpoint events go.
+    pub checkpoints: String,
 }
 
 impl Topics {
@@ -202,6 +216,7 @@ impl Topics {
             descriptor: format!("session.{session_id}.descriptor"),
             snapshots: format!("session.{session_id}.snapshots"),
             events: format!("session.{session_id}.events"),
+            checkpoints: format!("session.{session_id}.checkpoints"),
         }
     }
 }
@@ -224,6 +239,11 @@ pub struct AgentSlot {
     pub graph: Option<AgentGraph>,
     /// The telemetry of the last committed boundary, which is what the snapshot publishes.
     pub telemetry: Option<AgentTelemetry>,
+    /// The tick count and remainder this agent last reported, which are what the checkpoint
+    /// manifest records for it. They are metadata about the payload, never a substitute for
+    /// it: the agent's own capture is the state that is restored.
+    pub brain_ticks: u64,
+    pub remainder: RationalNs,
     context: TypedValue,
     context_digest: Digest,
     prepared: Option<PreparedDecision>,
@@ -250,6 +270,8 @@ impl AgentSlot {
             committed_step: 0,
             graph: None,
             telemetry: None,
+            brain_ticks: 0,
+            remainder: RationalNs::ZERO,
             context: TypedValue::new(crate::task::context_schema(), Value::Object(Map::new()))
                 .expect("an empty context object is a valid typed value"),
             context_digest: digest_of_bytes(b""),
@@ -332,6 +354,12 @@ pub struct Coordinator {
     /// Set when the epoch failed: every old handle, route and reply is invalid from here on
     /// and only a coherent restore may lift it.
     fenced: bool,
+    /// The durable store's bounded writer, when this composition has one.
+    writer: Option<crate::state::CheckpointWriter>,
+    /// The last checkpoint whose saved acknowledgment arrived, and its boundary.
+    durable: Option<(Id, u64)>,
+    /// Participants that installed a restore a group install then abandoned.
+    tainted: BTreeSet<Id>,
     started: std::time::Instant,
     last_advance_request: Option<DomainRequestId>,
     last_commit_requests: Vec<TraceRequest>,
@@ -408,6 +436,9 @@ impl Coordinator {
             metrics: Metrics::default(),
             blame: None,
             fenced: false,
+            writer: None,
+            durable: None,
+            tainted: BTreeSet::new(),
             started: std::time::Instant::now(),
             last_advance_request: None,
             last_commit_requests: Vec::new(),
@@ -558,8 +589,16 @@ impl Coordinator {
         let (from, to) = self.phases.fail();
         self.trace.phase(from, to);
         self.fenced = true;
+        // Whatever replies this session still owed an acknowledgment for belong to
+        // participants of an invalid epoch. Carrying them across a recovery would send
+        // `Worker.Acknowledge` to a registration that is gone.
+        self.lifecycle_acks.clear();
+        // Every handle this session held on the old epoch's media goes with the fence: a
+        // recovery imports fresh artifacts and never expects one of these back.
         self.views.clear();
         self.pending_views.clear();
+        self.audio.clear();
+        self.pending_audio.clear();
         match &participant {
             Some(who) => self.audit.push(format!("fail:{detail}:{who}")),
             None => self.audit.push(format!("fail:{detail}")),
@@ -697,6 +736,8 @@ impl Coordinator {
 
     /// Declares every framework topic under the delivery policy the publisher holds.
     async fn declare_topics(&mut self) -> Outcome<()> {
+        // Every framework topic, including the checkpoint stream, is declared in one place
+        // under the delivery policy the publisher holds.
         match self.publisher.declare().await {
             Ok(()) => Ok(()),
             Err(e) => Err(self.fail_now(e, "declare-topic")),
@@ -773,6 +814,15 @@ impl Coordinator {
             return Err(self.fail_now(e, "observation-0"));
         }
         if let Err(e) = media::check_required_views(&result.descriptor, &result.observation) {
+            return Err(self.fail_now(e, "observation-0"));
+        }
+        // O[0] ran no transition either, so it carries no chunk, and that is checked rather
+        // than assumed from its boundary number.
+        if let Err(e) = media::check_required_audio(
+            &result.descriptor,
+            &result.observation,
+            media::ObservationOrigin::Installed,
+        ) {
             return Err(self.fail_now(e, "observation-0"));
         }
         self.descriptor = Some(result.descriptor);
@@ -878,6 +928,10 @@ impl Coordinator {
         self.agents[index].tick_duration = result.tick_duration;
         self.agents[index].warmup_ticks = result.warmup_ticks;
         self.agents[index].committed_step = 0;
+        // At boundary 0 the agent has executed exactly its warm-up, with no interval
+        // consumed, so the remainder is zero.
+        self.agents[index].brain_ticks = result.telemetry.brain_ticks;
+        self.agents[index].remainder = RationalNs::ZERO;
         self.lifecycle_acks.push((slot_worker, reply.request_id.clone()));
         let agent_id = self.agents[index].agent_id.clone();
         self.audit.push(format!("agent.initialize:{agent_id}"));
@@ -1076,6 +1130,8 @@ impl Coordinator {
         self.blame(Some(worker.worker_id.clone()));
         let deadline = if method.ends_with("Initialize") || method == "Worker.Hello" {
             self.deadlines.boot
+        } else if method.starts_with("State.") {
+            self.deadlines.capture
         } else {
             self.deadlines.probe
         };
@@ -1758,6 +1814,12 @@ impl Coordinator {
                     method,
                 ));
             }
+            if let Some(slot) = self.agents.iter_mut().find(|slot| slot.agent_id == agent_id) {
+                // What the agent will be at once this transition commits: Prepare is the only
+                // phase that advances the accumulator.
+                slot.brain_ticks = decision.brain_ticks;
+                slot.remainder = decision.remainder;
+            }
             self.audit.push(format!("prepared:{agent_id}@{k}"));
             self.stats.prepares += 1;
             self.blame(None);
@@ -2176,7 +2238,11 @@ impl Coordinator {
         }
         // Audio has no sensory role here, but its chunks still cannot overlap or go backwards
         // inside an epoch, and a stale one must not reach presentation as current.
-        if let Err(e) = media::check_required_audio(descriptor, &result.observation) {
+        if let Err(e) = media::check_required_audio(
+            descriptor,
+            &result.observation,
+            media::ObservationOrigin::Transition,
+        ) {
             return Err(self.fail_now(e, "step-result"));
         }
         if let Err(e) = self.timelines.accept(descriptor, &result.observation) {
@@ -2839,3 +2905,1432 @@ impl Coordinator {
     }
 }
 
+// -------------------------------------------------------------------------------------------
+// STATE-01: coherent all-participant capture and recovery
+
+/// A capture that exists and has been queued, whose durable outcome has not arrived yet.
+///
+/// `State.Capture` completes when an immutable capture exists, not when a backend save was
+/// requested, and only durable completion produces a saved acknowledgment. Those are two
+/// events, so they are two calls.
+#[derive(Debug)]
+pub struct CaptureTicket {
+    pub checkpoint_id: Id,
+    pub boundary: u64,
+    receiver: tokio::sync::oneshot::Receiver<crate::state::SaveOutcome>,
+}
+
+/// What one completed group restore installed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestoreReport {
+    pub checkpoint_id: Id,
+    pub boundary: u64,
+    pub epoch: Id,
+    /// Every participant that staged, in the order they were asked.
+    pub staged: Vec<Id>,
+    /// Every participant that activated, in the order they were asked.
+    pub activated: Vec<Id>,
+    /// The once-only token each participant staged under, so a caller can prove a token
+    /// activates once rather than being told so.
+    pub tokens: Vec<(Id, Id)>,
+    /// The artifacts the payloads were imported as. None of them existed before this restore.
+    pub imported: Vec<String>,
+}
+
+/// The payload name the coordinator's own session record travels under.
+impl Coordinator {
+    /// Attaches the durable store's bounded writer. Without one this session captures nothing
+    /// and says so, rather than pretending to.
+    pub fn attach_store(&mut self, writer: crate::state::CheckpointWriter) {
+        self.writer = Some(writer);
+    }
+
+    pub fn writer(&self) -> Option<&crate::state::CheckpointWriter> {
+        self.writer.as_ref()
+    }
+
+    /// Stops the checkpoint writer and waits for its task.
+    pub async fn shutdown_store(&mut self) {
+        if let Some(writer) = self.writer.take() {
+            writer.shutdown().await;
+        }
+    }
+
+    /// The last checkpoint whose *saved acknowledgment* this coordinator received, and its
+    /// boundary. It moves on durable completion and on nothing else.
+    pub fn durable(&self) -> Option<(Id, u64)> {
+        self.durable.clone()
+    }
+
+    /// Participants that installed a restore in a group install that then failed.
+    ///
+    /// They hold state no group ever resumed. A further restore is refused until each one has
+    /// been replaced, which is how "a failure during activation cannot resume half a world"
+    /// survives the next attempt as well as this one.
+    pub fn tainted(&self) -> Vec<Id> {
+        self.tainted.iter().cloned().collect()
+    }
+
+    /// The live composition's compatibility identities.
+    pub fn compatibility(&self) -> Outcome<crate::state::Compatibility> {
+        match &self.descriptor {
+            Some(descriptor) => Ok(crate::state::Compatibility::of(descriptor)),
+            None => Err(SessionFailure {
+                error: DomainError::before(
+                    ErrorCode::InvalidPhase,
+                    "the session has no environment descriptor to take compatibility from",
+                ),
+                phase: self.phases.phase().label(),
+                detail: "compatibility".to_owned(),
+                participant: None,
+            }),
+        }
+    }
+
+    fn agent_compatibility(&self, slot: &AgentSlot) -> Digest {
+        crate::agent::agent_compatibility_digest(
+            &slot.agent_id,
+            &slot.profile.digest,
+            &crate::agent::dataset_digest(),
+            crate::agent::MODEL_VERSION,
+            crate::agent::PLASTICITY_VERSION,
+            slot.seed,
+        )
+    }
+
+    /// The coordinator's own session record: what it must hold again to resume this boundary.
+    ///
+    /// `state-media-v1` section 4 puts the next decision state, the admission state and the
+    /// event watermarks in the coordinator's own payloads. This is that payload: the
+    /// composition has no audience input, so the admission record says so explicitly rather
+    /// than being absent.
+    fn coordinator_record(&self, boundary: u64) -> Value {
+        let (last_source_step, issued) = self.task.event_watermarks();
+        json!({
+            "payloadVersion": 1,
+            "kind": "coordinator",
+            "committedStep": boundary.to_string(),
+            "admission": {
+                "audienceInput": "none-configured",
+                "admitted": Value::Array(Vec::new()),
+            },
+            "eventWatermarks": {
+                "lastSourceStep": last_source_step.to_string(),
+                "issued": issued.to_string(),
+            },
+            "audioPositions": Value::Object(
+                self.timelines
+                    .positions()
+                    .into_iter()
+                    .map(|(stream, sample)| (stream, Value::String(sample.to_string())))
+                    .collect(),
+            ),
+            "agents": Value::Array(
+                self.agents
+                    .iter()
+                    .map(|slot| json!({
+                        "agentId": slot.agent_id.as_str(),
+                        "portId": slot.port_id.as_str(),
+                        "profile": slot.profile.to_json(),
+                        "seed": slot.seed,
+                        "workerThreads": slot.worker_threads.to_string(),
+                        "committedStep": slot.committed_step.to_string(),
+                        "brainTicks": slot.brain_ticks.to_string(),
+                        "remainder": slot.remainder.to_json(),
+                        "context": slot.context.to_json(),
+                    }))
+                    .collect(),
+            ),
+        })
+    }
+
+    /// Seals one coordinator-owned payload as an immutable artifact.
+    async fn seal_own(&mut self, name: &str, value: &Value) -> Outcome<crate::state::CapturedPayload> {
+        let bytes = match canonicalize(value) {
+            Ok(text) => text.into_bytes(),
+            Err(e) => {
+                return Err(self.fail_now(
+                    DomainError::invalid(format!("checkpoint payload {name}: {}", e.0)),
+                    "capture",
+                ));
+            }
+        };
+        let digest = digest_of_bytes(&bytes);
+        let artifact = match crate::state::seal_payload(&self.bus, &bytes, &digest).await {
+            Ok(artifact) => artifact,
+            Err(e) => return Err(self.fail_now(e, "capture")),
+        };
+        Ok(crate::state::CapturedPayload {
+            name: name.to_owned(),
+            byte_length: bytes.len() as u64,
+            digest,
+            artifact,
+        })
+    }
+
+    /// Takes one coherent all-participant capture at the committed boundary and queues it.
+    ///
+    /// The queue slot is taken *first*: a saturated writer refuses before a single
+    /// `State.Capture` is sent, which is the only way "reject or defer before capture" can be
+    /// true rather than aspirational.
+    pub async fn capture(&mut self, checkpoint_id: &Id, replaceable: bool) -> Outcome<CaptureTicket> {
+        if self.fenced {
+            return Err(SessionFailure {
+                error: DomainError::before(
+                    ErrorCode::InvalidPhase,
+                    "the epoch is fenced; a fenced session captures nothing",
+                ),
+                phase: self.phases.phase().label(),
+                detail: "fenced".to_owned(),
+                participant: None,
+            });
+        }
+        // A capture that arrives while a transition is in flight is a race, not a bug in the
+        // transaction: the supervisor asking for one does not know where the session is. It
+        // is refused by name and the epoch is untouched, unlike a phase edge the machine
+        // itself takes.
+        let Some(boundary) = self.phases.phase().committed_boundary() else {
+            self.audit.push(format!("capture-refused:{checkpoint_id}"));
+            return Err(SessionFailure {
+                error: DomainError::before(
+                    ErrorCode::InvalidPhase,
+                    "a coherent checkpoint is taken at a committed boundary only",
+                ),
+                phase: self.phases.phase().label(),
+                detail: "capture".to_owned(),
+                participant: None,
+            });
+        };
+        let origin = self.phases.phase();
+        if self.writer.is_none() {
+            return Err(SessionFailure {
+                error: DomainError::before(
+                    ErrorCode::Unsupported,
+                    "this session has no checkpoint store attached",
+                ),
+                phase: self.phases.phase().label(),
+                detail: "capture".to_owned(),
+                participant: None,
+            });
+        }
+        // Before anything is captured.
+        let reservation = match self.writer.as_ref().expect("checked").reserve() {
+            Ok(reservation) => reservation,
+            Err(e) => {
+                // A refused capture is not a session failure: the boundary stands, the
+                // session keeps stepping and the caller is told the queue is full.
+                self.audit.push(format!("capture-refused:{checkpoint_id}"));
+                return Err(SessionFailure {
+                    error: e,
+                    phase: self.phases.phase().label(),
+                    detail: "capture".to_owned(),
+                    participant: None,
+                });
+            }
+        };
+        self.transition(Phase::Capturing(boundary))?;
+        let result = self
+            .capture_group(checkpoint_id, boundary, replaceable, reservation)
+            .await;
+        match result {
+            Ok(ticket) => {
+                self.transition(origin)?;
+                self.audit.push(format!("captured:{checkpoint_id}@{boundary}"));
+                Ok(ticket)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn capture_group(
+        &mut self,
+        checkpoint_id: &Id,
+        boundary: u64,
+        replaceable: bool,
+        reservation: crate::state::Reservation,
+    ) -> Outcome<CaptureTicket> {
+        let scope = self.scope(boundary);
+        let compatibility = self.compatibility()?;
+        let params = object(CaptureParams { checkpoint_id: checkpoint_id.clone() }.to_json());
+        let want = vec![crate::state::PAYLOAD_ATTACHMENT.to_owned()];
+        let mut payloads = Vec::new();
+        let mut acknowledge: Vec<(WorkerRef, DomainRequestId)> = Vec::new();
+
+        // The world first, then the agents in sorted order: one boundary, every participant.
+        let environment = self.environment.clone();
+        let reply = self
+            .call(
+                &environment,
+                "State.Capture",
+                Some(scope.clone()),
+                params.clone(),
+                &[],
+                &want,
+            )
+            .await?;
+        let world: CaptureResult = reply.parse().map_err(|e| self.fail_now(e, "capture"))?;
+        let world_payload = self.accept_capture(
+            &reply,
+            &world,
+            checkpoint_id,
+            boundary,
+            &compatibility.digest(),
+            crate::state::WORLD_PAYLOAD,
+        )?;
+        payloads.push(world_payload);
+        acknowledge.push((environment, reply.request_id.clone()));
+
+        let mut agent_rows = Vec::new();
+        for index in 0..self.agents.len() {
+            let slot_worker = self.agents[index].worker.clone();
+            let agent_id = self.agents[index].agent_id.clone();
+            let expected = self.agent_compatibility(&self.agents[index]);
+            let reply = self
+                .call(
+                    &slot_worker,
+                    "State.Capture",
+                    Some(scope.clone()),
+                    params.clone(),
+                    &[],
+                    &want,
+                )
+                .await?;
+            let captured: CaptureResult = reply.parse().map_err(|e| self.fail_now(e, "capture"))?;
+            let name = crate::state::agent_payload(&agent_id);
+            let payload =
+                self.accept_capture(&reply, &captured, checkpoint_id, boundary, &expected, &name)?;
+            payloads.push(payload);
+            acknowledge.push((slot_worker, reply.request_id.clone()));
+            let slot = &self.agents[index];
+            agent_rows.push(crate::state::AgentEntry {
+                agent_id: agent_id.clone(),
+                profile_digest: slot.profile.digest.clone(),
+                dataset_digest: crate::agent::dataset_digest(),
+                model_version: crate::agent::MODEL_VERSION.to_owned(),
+                plasticity_version: crate::agent::PLASTICITY_VERSION.to_owned(),
+                seed: slot.seed,
+                brain_ticks: slot.brain_ticks,
+                remainder: slot.remainder,
+                payload: name,
+            });
+        }
+
+        // The coordinator's own ledgers, sealed the same way so the writer treats every
+        // payload alike.
+        let ledger = self.task.capture().map_err(|e| self.fail_now(e, "capture"))?;
+        payloads.push(
+            self.seal_own(crate::state::TASK_LEDGER_PAYLOAD, &ledger.to_json())
+                .await?,
+        );
+        let inspection = self
+            .observation
+            .as_ref()
+            .map(|observation| observation.inspection.to_json())
+            .ok_or_else(|| {
+                DomainError::before(ErrorCode::InvalidPhase, "the session never bootstrapped")
+            });
+        let inspection = match inspection {
+            Ok(value) => value,
+            Err(e) => return Err(self.fail_now(e, "capture")),
+        };
+        payloads.push(
+            self.seal_own(crate::state::PRIOR_INSPECTION_PAYLOAD, &inspection)
+                .await?,
+        );
+        let mut executor_rows = Vec::new();
+        for agent_id in self.agent_ids() {
+            let state = {
+                let executor = self.executors.get(&agent_id).ok_or_else(|| {
+                    DomainError::before(
+                        ErrorCode::IdentityMismatch,
+                        format!("{agent_id} has no configured action executor"),
+                    )
+                });
+                match executor {
+                    Ok(executor) => executor.capture().map_err(|e| (e, agent_id.clone())),
+                    Err(e) => Err((e, agent_id.clone())),
+                }
+            };
+            let state = match state {
+                Ok(state) => state,
+                Err((e, who)) => {
+                    self.blame(Some(who));
+                    return Err(self.fail_now(e, "capture"));
+                }
+            };
+            let name = crate::state::executor_payload(&agent_id);
+            payloads.push(self.seal_own(&name, &state.to_json()).await?);
+            executor_rows.push((agent_id, name));
+        }
+        let record = self.coordinator_record(boundary);
+        payloads.push(
+            self.seal_own(crate::state::ADMISSION_PAYLOAD, &record)
+                .await?,
+        );
+
+        let (last_source_step, issued) = self.task.event_watermarks();
+        let world_time = match self.observation.as_ref().map(|o| o.world_time) {
+            Some(world_time) => Ok(world_time),
+            None => Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::InvalidPhase,
+                    "the session has no observation, so it is at no world time to record",
+                ),
+                "capture",
+            )),
+        };
+        let manifest = crate::state::CheckpointManifest {
+            checkpoint_id: checkpoint_id.clone(),
+            source_scope: scope.clone(),
+            episode_id: self.episode_id.clone(),
+            world_time: world_time?,
+            scheduler_id: "lockstep-v1".to_owned(),
+            composition_digest: self.composition_digest(),
+            port_map: self
+                .agents
+                .iter()
+                .map(|slot| (slot.port_id.clone(), slot.agent_id.clone()))
+                .collect(),
+            compatibility: compatibility.clone(),
+            agents: agent_rows,
+            coordinator: crate::state::CoordinatorEntry {
+                task_ledger: crate::state::TASK_LEDGER_PAYLOAD.to_owned(),
+                prior_inspection: crate::state::PRIOR_INSPECTION_PAYLOAD.to_owned(),
+                executor_state: executor_rows,
+                admission_state: crate::state::ADMISSION_PAYLOAD.to_owned(),
+                event_watermarks: crate::state::EventWatermarks {
+                    last_source_step,
+                    issued,
+                },
+            },
+            environment: crate::state::EnvironmentEntry {
+                worker_id: self.environment.worker_id.clone(),
+                payload: crate::state::WORLD_PAYLOAD.to_owned(),
+            },
+            // No external helper takes part in this composition, and the manifest says so
+            // rather than leaving the field out.
+            helper_state: Vec::new(),
+            payloads: payloads
+                .iter()
+                .map(|p| (p.name.clone(), p.byte_length, p.digest.clone()))
+                .collect(),
+        };
+
+        let submission = crate::state::CaptureSubmission {
+            checkpoint_id: checkpoint_id.clone(),
+            boundary,
+            session_id: self.session_id.clone(),
+            epoch: self.epoch.clone(),
+            episode_id: self.episode_id.clone(),
+            compatibility_digest: compatibility.digest(),
+            manifest: manifest.to_json(),
+            payloads,
+            replaceable,
+        };
+        // The writer takes its own ownership of every payload here. Only then are the
+        // workers' cached capture replies released.
+        let receiver = {
+            let writer = self.writer.as_ref().expect("checked");
+            match writer.submit(reservation, submission).await {
+                Ok(receiver) => receiver,
+                Err(e) => return Err(self.fail_now(e, "capture")),
+            }
+        };
+        self.publish_checkpoint_event("captured", checkpoint_id, boundary, None).await?;
+        for (worker, request_id) in acknowledge {
+            self.lifecycle_acks.push((worker, request_id));
+        }
+        self.acknowledge_lifecycle().await?;
+        Ok(CaptureTicket {
+            checkpoint_id: checkpoint_id.clone(),
+            boundary,
+            receiver,
+        })
+    }
+
+    /// Checks one participant's capture and turns it into a payload the writer can own.
+    fn accept_capture(
+        &mut self,
+        reply: &DomainReply,
+        result: &CaptureResult,
+        checkpoint_id: &Id,
+        boundary: u64,
+        expected_compatibility: &Digest,
+        name: &str,
+    ) -> Outcome<crate::state::CapturedPayload> {
+        if result.checkpoint_id != *checkpoint_id {
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::IdentityMismatch,
+                    "a capture names another checkpoint",
+                ),
+                "capture",
+            ));
+        }
+        if result.boundary != boundary {
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::IdentityMismatch,
+                    "a capture names another boundary; one checkpoint is one boundary",
+                ),
+                "capture",
+            ));
+        }
+        if result.compatibility_digest != *expected_compatibility {
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::IncompatibleState,
+                    "a capture reports a compatibility identity the composition does not hold",
+                ),
+                "capture",
+            ));
+        }
+        let digest = match &result.payload.digest {
+            Some(digest) => digest.clone(),
+            None => {
+                return Err(self.fail_now(
+                    DomainError::before(
+                        ErrorCode::BufferInvalid,
+                        "a checkpoint payload must carry a content digest",
+                    ),
+                    "capture",
+                ));
+            }
+        };
+        let artifact = match reply.artifacts.get(crate::state::PAYLOAD_ATTACHMENT) {
+            Some(artifact) if artifact.reference() == &result.payload => artifact.clone(),
+            _ => {
+                return Err(self.fail_now(
+                    DomainError::before(
+                        ErrorCode::BufferInvalid,
+                        "a capture arrived without a live owned handle on its payload",
+                    ),
+                    "capture",
+                ));
+            }
+        };
+        Ok(crate::state::CapturedPayload {
+            name: name.to_owned(),
+            byte_length: result.payload.byte_length,
+            digest,
+            artifact,
+        })
+    }
+
+    /// Waits for one capture's durable outcome and moves the durable mark only on a commit.
+    ///
+    /// A lost reply is an outcome here, not a hang and not a save: the high-water mark stays
+    /// where it was until [`Coordinator::resolve_durable`] asks the store about the same
+    /// operation.
+    pub async fn await_durable(&mut self, ticket: CaptureTicket) -> Outcome<crate::state::SaveOutcome> {
+        let CaptureTicket { checkpoint_id, boundary, receiver } = ticket;
+        let budget = self.deadlines.durable;
+        let outcome =
+            crate::state::CheckpointWriter::wait(receiver, &checkpoint_id, budget).await;
+        if outcome.is_durable() {
+            self.durable = Some((checkpoint_id.clone(), boundary));
+            self.audit.push(format!("durable:{checkpoint_id}@{boundary}"));
+        } else {
+            // Named rather than lumped together: a failed write, a superseded capture, a lost
+            // reply and an expired caller budget are four different things to have to explain.
+            self.audit
+                .push(format!("not-durable:{}:{checkpoint_id}@{boundary}", outcome.event()));
+        }
+        Ok(outcome)
+    }
+
+    /// Resolves a save whose reply was lost, by asking the store's durable metadata about the
+    /// *same* checkpoint. It never saves again.
+    ///
+    /// `Some(boundary)` means the store manifest lists that generation, which is the durable
+    /// commit point; `None` means it does not, and an unreferenced generation file stays
+    /// unreferenced.
+    pub async fn resolve_durable(&mut self, checkpoint_id: &Id) -> Outcome<Option<u64>> {
+        let Some(writer) = self.writer.as_ref() else {
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::Unsupported,
+                    "this session has no checkpoint store attached",
+                ),
+                "resolve-durable",
+            ));
+        };
+        let wanted = checkpoint_id.clone();
+        let found = writer
+            .with_store(move |store| store.lookup(&wanted).map(|g| g.boundary))
+            .await;
+        match found {
+            Some(boundary) => {
+                self.durable = Some((checkpoint_id.clone(), boundary));
+                self.audit.push(format!("durable:{checkpoint_id}@{boundary}"));
+                Ok(Some(boundary))
+            }
+            None => {
+                self.audit.push(format!("not-durable:{checkpoint_id}"));
+                Ok(None)
+            }
+        }
+    }
+
+    /// Captures and waits for the durable outcome, which is what an ordinary caller wants.
+    pub async fn checkpoint(&mut self, checkpoint_id: &Id) -> Outcome<crate::state::SaveOutcome> {
+        let ticket = self.capture(checkpoint_id, false).await?;
+        self.await_durable(ticket).await
+    }
+
+    async fn publish_checkpoint_event(
+        &mut self,
+        event: &str,
+        checkpoint_id: &Id,
+        boundary: u64,
+        detail: Option<&str>,
+    ) -> Outcome<()> {
+        let payload = json!({
+            "event": event,
+            "sessionId": self.session_id.as_str(),
+            "epoch": self.epoch.as_str(),
+            "checkpointId": checkpoint_id.as_str(),
+            "boundary": boundary.to_string(),
+            "detail": detail.map_or(Value::Null, |d| Value::String(d.to_owned())),
+        });
+        let outcome = self.publisher.publish_checkpoint(object(payload)).await;
+        self.settle(outcome, "checkpoint-event")?;
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Recovery
+
+    /// Points the coordinator at a replacement participant while the epoch is fenced.
+    ///
+    /// A replacement is the only way a fenced participant comes back: `step-v1` section 7's
+    /// incarnation row says every live participant of a failed epoch belongs to an invalid
+    /// one, so the reference is exchanged deliberately here and never repaired in place.
+    pub fn replace_participant(&mut self, worker_id: &Id, worker: WorkerRef) -> Outcome<()> {
+        if !self.fenced {
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::InvalidPhase,
+                    "participants are replaced while the epoch is fenced, not during play",
+                ),
+                "replace",
+            ));
+        }
+        if worker.worker_id != *worker_id {
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::IdentityMismatch,
+                    "the replacement reference names another worker",
+                ),
+                "replace",
+            ));
+        }
+        if self.environment.worker_id == *worker_id {
+            self.environment = worker;
+            self.tainted.remove(worker_id);
+            self.audit.push(format!("replaced:{worker_id}"));
+            return Ok(());
+        }
+        match self.agents.iter_mut().find(|slot| slot.agent_id == *worker_id) {
+            Some(slot) => {
+                slot.worker = worker;
+                self.tainted.remove(worker_id);
+                self.audit.push(format!("replaced:{worker_id}"));
+                Ok(())
+            }
+            None => Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::IdentityMismatch,
+                    format!("{worker_id} is not a participant of this composition"),
+                ),
+                "replace",
+            )),
+        }
+    }
+
+    /// Installs a coherent checkpoint into a fresh epoch and lifts the fence.
+    ///
+    /// The whole of `state-media-v1` section 6 in order: select a complete compatible durable
+    /// checkpoint, import its payloads as *new* artifacts, stage every participant, activate
+    /// every participant, install the coordinator's own staged state, verify identity and
+    /// boundary, flush the old media and parser state, and establish `Paused(k)`. A failure
+    /// at any point leaves the fence exactly where it was.
+    pub async fn restore(
+        &mut self,
+        checkpoint_id: Option<&Id>,
+        new_epoch: &Id,
+    ) -> Outcome<RestoreReport> {
+        if self.phases.phase() != Phase::Failed {
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::InvalidPhase,
+                    "a coherent restore starts from a failed epoch",
+                ),
+                "restore",
+            ));
+        }
+        if *new_epoch == self.epoch {
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::StaleEpoch,
+                    "a restore installs a fresh epoch, never the one that failed",
+                ),
+                "restore",
+            ));
+        }
+        if !self.tainted.is_empty() {
+            let who: Vec<&str> = self.tainted.iter().map(String::as_str).collect();
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::InvalidPhase,
+                    format!(
+                        "{} installed a restore that no group resumed and must be replaced first",
+                        who.join(", ")
+                    ),
+                ),
+                "restore",
+            ));
+        }
+        let Some(writer) = self.writer.as_ref() else {
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::Unsupported,
+                    "this session has no checkpoint store attached",
+                ),
+                "restore",
+            ));
+        };
+        let wanted = checkpoint_id.cloned();
+        let read = writer
+            .with_store(move |store| {
+                let record = store.select(wanted.as_ref())?;
+                let envelope = store.read(&record)?;
+                Ok::<_, DomainError>((record, envelope))
+            })
+            .await;
+        let (record, envelope) = match read {
+            Ok(pair) => pair,
+            Err(e) => return Err(self.fail_now(e, "restore")),
+        };
+        let manifest = match crate::state::CheckpointManifest::from_json(&envelope.manifest) {
+            Ok(manifest) => manifest,
+            Err(e) => {
+                return Err(self.fail_now(
+                    DomainError::before(ErrorCode::IncompatibleState, e),
+                    "restore",
+                ));
+            }
+        };
+        if let Err(e) = self.check_restore_identity(&manifest, &record) {
+            return Err(self.fail_now(e, "restore"));
+        }
+        let boundary = manifest.source_scope.step;
+        self.transition(Phase::Restoring(boundary))?;
+        let outcome = self.restore_group(&envelope, &manifest, new_epoch, boundary).await;
+        match outcome {
+            Ok(report) => Ok(report),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Marks every participant of an abandoned group install as one that must be replaced.
+    ///
+    /// A participant that staged holds a replacement state nothing installed; one that
+    /// activated holds installed state no group resumed. Neither is a participant this
+    /// session may reuse, and `ipc-v1` section 6's last paragraph is explicit that v1 does
+    /// not silently reattach one.
+    fn taint_group(&mut self, staged: &[(Id, WorkerRef, Id)]) {
+        for (who, _, _) in staged {
+            self.tainted.insert(who.clone());
+        }
+    }
+
+    /// Every identity a restore checks before a single participant is asked to stage.
+    fn check_restore_identity(
+        &self,
+        manifest: &crate::state::CheckpointManifest,
+        record: &crate::state::GenerationRecord,
+    ) -> DomainResult<()> {
+        if manifest.source_scope.session_id != self.session_id {
+            return Err(DomainError::before(
+                ErrorCode::IdentityMismatch,
+                "the checkpoint belongs to another session",
+            ));
+        }
+        if manifest.episode_id != self.episode_id {
+            return Err(DomainError::before(
+                ErrorCode::IdentityMismatch,
+                "the checkpoint belongs to another episode",
+            ));
+        }
+        if manifest.scheduler_id != "lockstep-v1" {
+            return Err(DomainError::before(
+                ErrorCode::IncompatibleState,
+                format!(
+                    "the checkpoint was scheduled by {}, not lockstep-v1",
+                    manifest.scheduler_id
+                ),
+            ));
+        }
+        if record.compatibility_digest != manifest.compatibility.digest() {
+            return Err(DomainError::before(
+                ErrorCode::IncompatibleState,
+                "the store manifest and the envelope disagree about compatibility",
+            ));
+        }
+        let live = match &self.descriptor {
+            Some(descriptor) => crate::state::Compatibility::of(descriptor),
+            None => {
+                return Err(DomainError::before(
+                    ErrorCode::InvalidPhase,
+                    "the session has no environment descriptor to compare compatibility with",
+                ));
+            }
+        };
+        // Names the identity that differs -- backend, content, patch, controller, parser or
+        // state format -- rather than one opaque digest mismatch.
+        manifest
+            .compatibility
+            .compare(&live)
+            .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e))?;
+        let live_ports: Vec<(Id, Id)> = self
+            .agents
+            .iter()
+            .map(|slot| (slot.port_id.clone(), slot.agent_id.clone()))
+            .collect();
+        if manifest.port_map != live_ports {
+            return Err(DomainError::before(
+                ErrorCode::IdentityMismatch,
+                "the checkpoint's port map is not this composition's",
+            ));
+        }
+        if manifest.environment.worker_id != self.environment.worker_id {
+            return Err(DomainError::before(
+                ErrorCode::IdentityMismatch,
+                "the checkpoint's world is not this composition's environment",
+            ));
+        }
+        let recorded: Vec<Id> = manifest.agents.iter().map(|a| a.agent_id.clone()).collect();
+        if recorded != self.agent_ids() {
+            return Err(DomainError::before(
+                ErrorCode::IdentityMismatch,
+                "the checkpoint's agents are not this composition's",
+            ));
+        }
+        for (row, slot) in manifest.agents.iter().zip(&self.agents) {
+            if row.profile_digest != slot.profile.digest || row.seed != slot.seed {
+                return Err(DomainError::before(
+                    ErrorCode::IncompatibleState,
+                    format!(
+                        "{}'s checkpoint was taken under another profile or seed",
+                        row.agent_id
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn restore_group(
+        &mut self,
+        envelope: &fly_session_types::checkpoint::Envelope,
+        manifest: &crate::state::CheckpointManifest,
+        new_epoch: &Id,
+        boundary: u64,
+    ) -> Outcome<RestoreReport> {
+        let scope = scope_at(&self.session_id, new_epoch, boundary);
+        // Step 3: import the payloads as *new* artifacts. Nothing the fence dropped is asked
+        // to come back, and a router that restarted has none of the old roots anyway.
+        let mut imported: BTreeMap<String, (flybus::Artifact, Digest, u64)> = BTreeMap::new();
+        for (name, bytes) in &envelope.payloads {
+            let digest = digest_of_bytes(bytes);
+            let artifact = match crate::state::seal_payload(&self.bus, bytes, &digest).await {
+                Ok(artifact) => artifact,
+                Err(e) => return Err(self.fail_now(e, "restore")),
+            };
+            imported.insert(name.clone(), (artifact, digest, bytes.len() as u64));
+        }
+        let imported_ids: Vec<String> = imported
+            .values()
+            .map(|(artifact, _, _)| artifact.reference().artifact_id.clone())
+            .collect();
+
+        // Step 3, continued: stage every participant. A refusal anywhere leaves nothing
+        // staged that will ever be activated, because the whole install is abandoned.
+        let mut staged: Vec<(Id, WorkerRef, Id)> = Vec::new();
+        let mut order: Vec<(Id, WorkerRef, String, Digest)> = Vec::new();
+        order.push((
+            self.environment.worker_id.clone(),
+            self.environment.clone(),
+            manifest.environment.payload.clone(),
+            manifest.compatibility.digest(),
+        ));
+        for index in 0..self.agents.len() {
+            let slot = &self.agents[index];
+            let row = manifest
+                .agents
+                .iter()
+                .find(|row| row.agent_id == slot.agent_id)
+                .expect("the agent set was checked");
+            order.push((
+                slot.agent_id.clone(),
+                slot.worker.clone(),
+                row.payload.clone(),
+                crate::agent::agent_compatibility_digest(
+                    &row.agent_id,
+                    &row.profile_digest,
+                    &row.dataset_digest,
+                    &row.model_version,
+                    &row.plasticity_version,
+                    row.seed,
+                ),
+            ));
+        }
+        for (who, worker, payload_name, compatibility_digest) in &order {
+            let Some((artifact, _, _)) = imported.get(payload_name) else {
+                return Err(self.fail_now(
+                    DomainError::before(
+                        ErrorCode::IncompatibleState,
+                        format!("the checkpoint has no payload {payload_name} for {who}"),
+                    ),
+                    "stage-restore",
+                ));
+            };
+            let params = StageRestoreParams {
+                checkpoint_id: manifest.checkpoint_id.clone(),
+                source_scope: manifest.source_scope.clone(),
+                compatibility_digest: compatibility_digest.clone(),
+                payload: artifact.reference().clone(),
+            };
+            let attachments = [(crate::state::PAYLOAD_ATTACHMENT, artifact)];
+            let reply = match self
+                .call(
+                    worker,
+                    "State.StageRestore",
+                    Some(scope.clone()),
+                    object(params.to_json()),
+                    &attachments,
+                    &[],
+                )
+                .await
+            {
+                Ok(reply) => reply,
+                Err(failure) => {
+                    // Whoever already staged is holding a replacement state this group will
+                    // never install. Nothing is resumed, and none of them is reused.
+                    for (done, _, _) in &staged {
+                        self.tainted.insert(done.clone());
+                    }
+                    return Err(failure);
+                }
+            };
+            let result: StageRestoreResult = match reply.parse() {
+                Ok(result) => result,
+                Err(e) => {
+                    for (done, _, _) in &staged {
+                        self.tainted.insert(done.clone());
+                    }
+                    return Err(self.fail_now(e, "stage-restore"));
+                }
+            };
+            if result.checkpoint_id != manifest.checkpoint_id {
+                for (done, _, _) in &staged {
+                    self.tainted.insert(done.clone());
+                }
+                return Err(self.fail_now(
+                    DomainError::before(
+                        ErrorCode::IdentityMismatch,
+                        "a staged restore names another checkpoint",
+                    ),
+                    "stage-restore",
+                ));
+            }
+            self.lifecycle_acks.push((worker.clone(), reply.request_id.clone()));
+            self.audit.push(format!("staged:{who}"));
+            staged.push((who.clone(), worker.clone(), result.restore_token));
+        }
+
+        // `state-media-v1` section 5: activation happens "after every participant **and
+        // coordinator** state validates". The coordinator's own staged ledgers are checked
+        // here, before a single token is activated, so a checkpoint whose task ledger or
+        // executor state is unreadable installs nothing anywhere.
+        let payloads: BTreeMap<String, Vec<u8>> = envelope
+            .payloads
+            .iter()
+            .map(|(name, bytes)| (name.clone(), bytes.clone()))
+            .collect();
+        let descriptor = match &self.descriptor {
+            Some(descriptor) => descriptor.clone(),
+            None => {
+                self.taint_group(&staged);
+                return Err(self.fail_now(
+                    DomainError::before(
+                        ErrorCode::InvalidPhase,
+                        "the session has no environment descriptor to restore against",
+                    ),
+                    "restore",
+                ));
+            }
+        };
+        if let Err(e) = Coordinator::validate_coordinator_state(
+            manifest,
+            &payloads,
+            &descriptor,
+            self.agents.len(),
+            &*self.task,
+            &self.executors,
+        ) {
+            self.taint_group(&staged);
+            return Err(self.fail_now(e, "restore"));
+        }
+
+        // Step 3, last part: activate. Anything that activates before a failure holds state
+        // no group resumed, so it is recorded as tainted and must be replaced.
+        let mut activated: Vec<Id> = Vec::new();
+        let mut restored_observation: Option<(WorldObservation, BTreeMap<String, flybus::Artifact>)> =
+            None;
+        for (who, worker, token) in &staged {
+            let params = ActivateRestoreParams { restore_token: token.clone() };
+            let want = if *who == self.environment.worker_id {
+                self.media_names.clone()
+            } else {
+                Vec::new()
+            };
+            let reply = match self
+                .call(
+                    worker,
+                    "State.ActivateRestore",
+                    Some(scope.clone()),
+                    object(params.to_json()),
+                    &[],
+                    &want,
+                )
+                .await
+            {
+                Ok(reply) => reply,
+                Err(failure) => {
+                    self.taint_group(&staged);
+                    return Err(failure);
+                }
+            };
+            let result: ActivateRestoreResult = match reply.parse() {
+                Ok(result) => result,
+                Err(e) => {
+                    self.taint_group(&staged);
+                    return Err(self.fail_now(e, "activate-restore"));
+                }
+            };
+            let role = if *who == self.environment.worker_id {
+                Role::Environment
+            } else {
+                Role::Agent
+            };
+            if let Err(e) = result.validate_for_role(role) {
+                self.taint_group(&staged);
+                return Err(self.fail_now(DomainError::invalid(e.0), "activate-restore"));
+            }
+            if result.committed_step != boundary || result.checkpoint_id != manifest.checkpoint_id {
+                self.taint_group(&staged);
+                return Err(self.fail_now(
+                    DomainError::before(
+                        ErrorCode::IdentityMismatch,
+                        "an activation names another boundary or checkpoint",
+                    ),
+                    "activate-restore",
+                ));
+            }
+            if let Some(observation) = result.observation {
+                let (views, audio) = media::split_attachments(reply.artifacts);
+                if !audio.is_empty() {
+                    self.taint_group(&staged);
+                    return Err(self.fail_now(
+                        DomainError::new(
+                            ErrorCode::BufferInvalid,
+                            "a restored observation carried an audio chunk; no interval was played",
+                            MutationCertainty::Unknown,
+                        ),
+                        "activate-restore",
+                    ));
+                }
+                restored_observation = Some((observation, views));
+            }
+            self.lifecycle_acks.push((worker.clone(), reply.request_id.clone()));
+            self.audit.push(format!("activated:{who}"));
+            activated.push(who.clone());
+        }
+
+        // Step 4: verify identity and boundary, and flush the old media and parser state.
+        let Some((observation, views)) = restored_observation else {
+            self.taint_group(&staged);
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::IncompatibleState,
+                    "no participant returned the restored world observation",
+                ),
+                "activate-restore",
+            ));
+        };
+        let install = self.install_restored(
+            manifest,
+            new_epoch,
+            boundary,
+            &descriptor,
+            observation,
+            views,
+            &payloads,
+        );
+        if let Err(e) = install {
+            self.taint_group(&staged);
+            return Err(self.fail_now(e, "restore"));
+        }
+
+        // Step 5: Paused(k), and only now is the fence lifted.
+        self.epoch = new_epoch.clone();
+        self.transition(Phase::Paused(boundary))?;
+        self.fenced = false;
+        self.acknowledge_lifecycle().await?;
+        self.publish_checkpoint_event("restored", &manifest.checkpoint_id, boundary, None)
+            .await?;
+        self.publish_descriptor().await?;
+        self.publish_snapshot(boundary, &BTreeMap::new(), &[], &[]).await?;
+        self.audit.push(format!("restored:{}@{boundary}", manifest.checkpoint_id));
+        Ok(RestoreReport {
+            checkpoint_id: manifest.checkpoint_id.clone(),
+            boundary,
+            epoch: new_epoch.clone(),
+            staged: staged.iter().map(|(who, _, _)| who.clone()).collect(),
+            tokens: staged
+                .iter()
+                .map(|(who, _, token)| (who.clone(), token.clone()))
+                .collect(),
+            activated,
+            imported: imported_ids,
+        })
+    }
+
+    /// Reads one of the checkpoint's payloads as JSON, or says which one is unreadable.
+    fn read_payload(payloads: &BTreeMap<String, Vec<u8>>, name: &str) -> DomainResult<Value> {
+        let bytes = payloads.get(name).ok_or_else(|| {
+            DomainError::before(
+                ErrorCode::IncompatibleState,
+                format!("the checkpoint has no payload {name}"),
+            )
+        })?;
+        serde_json::from_slice(bytes).map_err(|e| {
+            DomainError::before(
+                ErrorCode::IncompatibleState,
+                format!("payload {name} is not JSON: {e}"),
+            )
+        })
+    }
+
+    /// Validates every coordinator-owned payload, changing nothing.
+    ///
+    /// This runs after the group has staged and before anything activates, which is the order
+    /// `state-media-v1` section 5 sets. It is a separate pass from the install below on
+    /// purpose: a group that cannot be resumed coherently must not have resumed some of it.
+    fn validate_coordinator_state(
+        manifest: &crate::state::CheckpointManifest,
+        payloads: &BTreeMap<String, Vec<u8>>,
+        descriptor: &EnvironmentDescriptor,
+        agents: usize,
+        task: &dyn crate::task::Task,
+        executors: &BTreeMap<Id, Box<dyn ActionExecutor>>,
+    ) -> DomainResult<()> {
+        let ledger = TypedValue::from_json(&Coordinator::read_payload(
+            payloads,
+            &manifest.coordinator.task_ledger,
+        )?)
+        .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;
+        task.validate_restore(&ledger)?;
+        for (agent_id, name) in &manifest.coordinator.executor_state {
+            let state = TypedValue::from_json(&Coordinator::read_payload(payloads, name)?)
+                .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;
+            let executor = executors.get(agent_id).ok_or_else(|| {
+                DomainError::before(
+                    ErrorCode::IdentityMismatch,
+                    format!("{agent_id} has no configured action executor"),
+                )
+            })?;
+            executor.validate_restore(&state)?;
+        }
+        let inspection = TypedValue::from_json(&Coordinator::read_payload(
+            payloads,
+            &manifest.coordinator.prior_inspection,
+        )?)
+        .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;
+        if inspection.schema != descriptor.inspection_schema {
+            return Err(DomainError::before(
+                ErrorCode::IncompatibleState,
+                "the recorded prior inspection is not the declared inspection schema",
+            ));
+        }
+        let record =
+            Coordinator::read_payload(payloads, &manifest.coordinator.admission_state)?;
+        let recorded = record
+            .get("agents")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                DomainError::before(
+                    ErrorCode::IncompatibleState,
+                    "the coordinator record has no agent list",
+                )
+            })?;
+        if recorded.len() != agents {
+            return Err(DomainError::before(
+                ErrorCode::IncompatibleState,
+                "the coordinator record names another number of agents",
+            ));
+        }
+        if record.get("audioPositions").and_then(Value::as_object).is_none() {
+            return Err(DomainError::before(
+                ErrorCode::IncompatibleState,
+                "the coordinator record has no audio positions",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Installs the coordinator's own staged state, after every participant activated.
+    #[allow(clippy::too_many_arguments)]
+    fn install_restored(
+        &mut self,
+        manifest: &crate::state::CheckpointManifest,
+        new_epoch: &Id,
+        boundary: u64,
+        descriptor: &EnvironmentDescriptor,
+        observation: WorldObservation,
+        views: BTreeMap<String, flybus::Artifact>,
+        payloads: &BTreeMap<String, Vec<u8>>,
+    ) -> DomainResult<()> {
+        if observation.boundary != boundary {
+            return Err(DomainError::before(
+                ErrorCode::IdentityMismatch,
+                "the restored observation is not at the restored boundary",
+            ));
+        }
+        if observation.world_time != manifest.world_time {
+            return Err(DomainError::before(
+                ErrorCode::IncompatibleState,
+                "the restored observation's world time is not the checkpoint's",
+            ));
+        }
+        observation
+            .validate_against(descriptor)
+            .map_err(|e| DomainError::new(ErrorCode::BufferInvalid, e, MutationCertainty::Unknown))?;
+        media::check_required_views(descriptor, &observation)?;
+        // An installed observation ran no transition, so it carries no chunk. Old epoch audio
+        // arriving as current is exactly what this refuses.
+        media::check_required_audio(descriptor, &observation, media::ObservationOrigin::Installed)?;
+        for view in &observation.sensory_views {
+            let name = media::view_attachment(&view.view_id);
+            match views.get(&name) {
+                Some(artifact) if artifact.reference() == &view.pixels => {}
+                _ => {
+                    return Err(DomainError::new(
+                        ErrorCode::BufferInvalid,
+                        format!(
+                            "the restored view {} arrived without a live owned handle",
+                            view.view_id
+                        ),
+                        MutationCertainty::Unknown,
+                    ));
+                }
+            }
+        }
+
+        let read = |name: &str| Coordinator::read_payload(payloads, name);
+
+        let ledger = TypedValue::from_json(&read(&manifest.coordinator.task_ledger)?)
+            .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;
+        self.task.validate_restore(&ledger)?;
+        for (agent_id, name) in &manifest.coordinator.executor_state {
+            let state = TypedValue::from_json(&read(name)?)
+                .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;
+            let executor = self.executors.get(agent_id).ok_or_else(|| {
+                DomainError::before(
+                    ErrorCode::IdentityMismatch,
+                    format!("{agent_id} has no configured action executor"),
+                )
+            })?;
+            executor.validate_restore(&state)?;
+        }
+        let record = read(&manifest.coordinator.admission_state)?;
+        let inspection = TypedValue::from_json(&read(&manifest.coordinator.prior_inspection)?)
+            .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;
+        if inspection.schema != descriptor.inspection_schema {
+            return Err(DomainError::before(
+                ErrorCode::IncompatibleState,
+                "the recorded prior inspection is not the declared inspection schema",
+            ));
+        }
+        let agents = record
+            .get("agents")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                DomainError::before(
+                    ErrorCode::IncompatibleState,
+                    "the coordinator record has no agent list",
+                )
+            })?
+            .clone();
+        if agents.len() != self.agents.len() {
+            return Err(DomainError::before(
+                ErrorCode::IncompatibleState,
+                "the coordinator record names another number of agents",
+            ));
+        }
+        let positions = record
+            .get("audioPositions")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                DomainError::before(
+                    ErrorCode::IncompatibleState,
+                    "the coordinator record has no audio positions",
+                )
+            })?;
+        let mut audio_positions = BTreeMap::new();
+        for (stream, value) in positions {
+            let sample: u64 = value
+                .as_str()
+                .ok_or_else(|| {
+                    DomainError::before(
+                        ErrorCode::IncompatibleState,
+                        "a recorded audio position is not a canonical U64",
+                    )
+                })?
+                .parse()
+                .map_err(|_| {
+                    DomainError::before(
+                        ErrorCode::IncompatibleState,
+                        "a recorded audio position is not a canonical U64",
+                    )
+                })?;
+            audio_positions.insert(stream.clone(), sample);
+        }
+        // Everything above validated. From here the coordinator installs, in one pass.
+        self.task.install_restore(new_epoch, &ledger)?;
+        for (agent_id, name) in &manifest.coordinator.executor_state {
+            let state = TypedValue::from_json(&read(name)?)
+                .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;
+            let executor = self
+                .executors
+                .get_mut(agent_id)
+                .expect("checked immediately above");
+            executor.install_restore(&state)?;
+        }
+        for value in &agents {
+            let agent_id = value.get("agentId").and_then(Value::as_str).ok_or_else(|| {
+                DomainError::before(
+                    ErrorCode::IncompatibleState,
+                    "a coordinator agent record has no agentId",
+                )
+            })?;
+            let slot = self
+                .agents
+                .iter_mut()
+                .find(|slot| slot.agent_id == agent_id)
+                .ok_or_else(|| {
+                    DomainError::before(
+                        ErrorCode::IdentityMismatch,
+                        format!("the coordinator record names {agent_id}, which is not configured"),
+                    )
+                })?;
+            let context = TypedValue::from_json(value.get("context").ok_or_else(|| {
+                DomainError::before(
+                    ErrorCode::IncompatibleState,
+                    "a coordinator agent record has no decision context",
+                )
+            })?)
+            .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;
+            let committed: u64 = value
+                .get("committedStep")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    DomainError::before(
+                        ErrorCode::IncompatibleState,
+                        "a coordinator agent record has no committedStep",
+                    )
+                })?
+                .parse()
+                .map_err(|_| {
+                    DomainError::before(
+                        ErrorCode::IncompatibleState,
+                        "a recorded committed step is not a canonical U64",
+                    )
+                })?;
+            if committed != boundary {
+                return Err(DomainError::before(
+                    ErrorCode::IncompatibleState,
+                    "a coordinator agent record is at another boundary",
+                ));
+            }
+            let brain_ticks: u64 = value
+                .get("brainTicks")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    DomainError::before(
+                        ErrorCode::IncompatibleState,
+                        "a coordinator agent record has no brainTicks",
+                    )
+                })?
+                .parse()
+                .map_err(|_| {
+                    DomainError::before(
+                        ErrorCode::IncompatibleState,
+                        "a recorded tick count is not a canonical U64",
+                    )
+                })?;
+            let remainder = RationalNs::from_json(value.get("remainder").ok_or_else(|| {
+                DomainError::before(
+                    ErrorCode::IncompatibleState,
+                    "a coordinator agent record has no remainder",
+                )
+            })?)
+            .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;
+            slot.context_digest = context.digest();
+            slot.context = context;
+            slot.committed_step = committed;
+            slot.brain_ticks = brain_ticks;
+            slot.remainder = remainder;
+            slot.prepared = None;
+            slot.prepare_request = None;
+        }
+        // Old media and old parser state are replaced, never carried: the previous epoch's
+        // handles were dropped by the fence and the timelines start again at their preserved
+        // sample positions with a discontinuity.
+        self.views = views;
+        self.pending_views.clear();
+        self.audio.clear();
+        self.pending_audio.clear();
+        self.timelines = AudioTimelines::restored(descriptor, &audio_positions)?;
+        self.observation = Some(observation);
+        self.episode = None;
+        self.last_advance_request = None;
+        self.last_commit_requests.clear();
+        self.pacing = Some(Pacing::new(descriptor.step_duration));
+        Ok(())
+    }
+
+    /// The epoch-derived identities of this session's behaviour trace, mapped onto `to_epoch`.
+    ///
+    /// `step-v1` section 8 compares behaviour across runs. A resumed run runs in a new epoch,
+    /// and scope, batch identity and every task event identity are derived from it, so a
+    /// comparison either accounts for that or compares nothing. This is what "accounting for
+    /// new epoch metadata" is: an explicit, total rewrite of the epoch-derived fields, which
+    /// fails rather than passing anything through it does not recognise.
+    pub fn rebase(&self, to_epoch: &Id) -> Outcome<EpochRebase> {
+        let events = self.task.rebase_ids(to_epoch).map_err(|e| SessionFailure {
+            error: e,
+            phase: self.phases.phase().label(),
+            detail: "rebase".to_owned(),
+            participant: None,
+        })?;
+        Ok(EpochRebase {
+            from: self.epoch.clone(),
+            to: to_epoch.clone(),
+            events,
+        })
+    }
+}

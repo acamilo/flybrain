@@ -1235,6 +1235,8 @@ pub(crate) mod flags {
     pub const COMMIT_DELAY_MS: &str = "commit-delay-ms";
     pub const FAIL_COMMIT_AT_STEP: &str = "fail-commit-at-step";
     pub const GRAPH_VARIANT: &str = "graph-variant";
+    pub const FAIL_STAGE_RESTORE: &str = "fail-stage-restore";
+    pub const FAIL_ACTIVATE_RESTORE: &str = "fail-activate-restore";
 
     pub const WORKER: &str = "worker";
     pub const PORTS: &str = "ports";
@@ -1276,6 +1278,8 @@ pub(crate) mod flags {
         COMMIT_DELAY_MS,
         FAIL_COMMIT_AT_STEP,
         GRAPH_VARIANT,
+        FAIL_STAGE_RESTORE,
+        FAIL_ACTIVATE_RESTORE,
     ];
     /// What only the environment is given, media options included.
     pub const ENVIRONMENT_ONLY: &[&str] = &[
@@ -1290,6 +1294,8 @@ pub(crate) mod flags {
         TRUNCATED_VIEW_AT_BOUNDARY,
         OMIT_AUDIO_AT_BOUNDARY,
         OVERLAPPING_AUDIO_AT_BOUNDARY,
+        FAIL_STAGE_RESTORE,
+        FAIL_ACTIVATE_RESTORE,
     ];
     /// What a measurement run or one of its row children is given.
     pub const MEASURE: &[&str] = &[MODE, AGENTS, STEPS, WARMUP_STEPS, WORKER_THREADS, MODES];
@@ -1333,6 +1339,11 @@ impl Started {
                     arg(flags::PREPARE_DELAY_MS, spec.faults.prepare_delay_ms),
                     arg(flags::COMMIT_DELAY_MS, spec.faults.commit_delay_ms),
                     arg(flags::GRAPH_VARIANT, spec.graph_variant),
+                    arg(flags::FAIL_STAGE_RESTORE, u64::from(spec.faults.fail_stage_restore)),
+                    arg(
+                        flags::FAIL_ACTIVATE_RESTORE,
+                        u64::from(spec.faults.fail_activate_restore),
+                    ),
                 ];
                 if let Some(step) = spec.faults.fail_commit_at_step {
                     args.push(arg(flags::FAIL_COMMIT_AT_STEP, step));
@@ -1351,6 +1362,11 @@ impl Started {
                     // The media options a world in another process needs to be exactly this
                     // world. Its render counter and its agents' sensor logs stay there.
                     arg(flags::OBSERVATION_DELAY_STEPS, spec.observation_delay_steps),
+                    arg(flags::FAIL_STAGE_RESTORE, u64::from(spec.faults.fail_stage_restore)),
+                    arg(
+                        flags::FAIL_ACTIVATE_RESTORE,
+                        u64::from(spec.faults.fail_activate_restore),
+                    ),
                 ];
                 for (flag, boundary) in [
                     (flags::OMIT_VIEW_AT_BOUNDARY, spec.faults.omit_view_at_boundary),
@@ -1465,6 +1481,8 @@ mod flag_tests {
             truncated_view_at_boundary: Some(3),
             omit_audio_at_boundary: Some(4),
             overlapping_audio_at_boundary: Some(5),
+            fail_stage_restore: true,
+            fail_activate_restore: true,
         }
     }
 
@@ -1499,6 +1517,8 @@ mod flag_tests {
                 fail_commit_at_step: Some(2),
                 prepare_delay_ms: 1,
                 commit_delay_ms: 2,
+                fail_stage_restore: true,
+                fail_activate_restore: true,
             },
             client_id: "worker-fly-a".to_owned(),
             service: "agent.fly-a".to_owned(),
@@ -1543,6 +1563,8 @@ mod flag_tests {
             flags::TRUNCATED_VIEW_AT_BOUNDARY,
             flags::OMIT_AUDIO_AT_BOUNDARY,
             flags::OVERLAPPING_AUDIO_AT_BOUNDARY,
+            flags::FAIL_STAGE_RESTORE,
+            flags::FAIL_ACTIVATE_RESTORE,
         ] {
             assert!(written.contains(&format!("--{flag}")), "--{flag} is not written");
         }

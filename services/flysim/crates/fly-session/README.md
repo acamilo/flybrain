@@ -45,6 +45,7 @@ Ready(k) ─ Prepare all agents concurrently ───────────�
 | `metrics` | Latency percentiles and the machine's core and memory counters |
 | `measure` | The execution-mode comparison of the guide's section 5 |
 | `cli` | The binary's subcommands: `agent`, `environment`, `measure` |
+| `state` | The durable checkpoint store over `FLYSESS1`: compatibility, generations, the bounded writer |
 | `harness` | The runnable composition: router, the flies, one arena, one coordinator |
 
 ## Execution modes and the launcher
@@ -179,6 +180,44 @@ harness.shutdown().await;
   event ids derived from epoch, source step, rule and ordinal.
 - **Executors.** The stateless identity executor only, as v1 specifies.
 
+## Checkpoints and recovery
+
+The durable store is `state`, over the `FLYSESS1` layout the contract crate owns.
+
+- **One boundary, every participant.** `Coordinator::capture` runs at `Ready(k)` or
+  `Paused(k)` only. It takes its queue slot *before* the first `State.Capture`, so a saturated
+  writer refuses the capture rather than queueing it without bound, and the refusal is a
+  `BUSY` a stepping session survives rather than an epoch failure.
+- **Capture and durability are two events.** `State.Capture` completes when an immutable
+  capture exists; `Coordinator::await_durable` completes when the store manifest rename has
+  happened, which is the durable commit point. Only the second moves the durable mark, and the
+  three ways it can end without one are told apart: `Failed` (the write stopped),
+  `ReplyLost` (the write finished and the acknowledgment did not arrive) and
+  `DeadlineExpired` (the caller's own budget ran out while the save was still going).
+  `Coordinator::resolve_durable` then asks the store about the *same* checkpoint instead of
+  saving again.
+- **The writer is bounded twice**, and the two bounds refuse at different moments. The
+  outstanding-capture bound is taken before a capture is requested; the byte budget cannot be,
+  because a capture's size is not known until it exists, so it refuses at submit and releases
+  the payloads with the refusal. The writer owns its payload handles until the bytes are
+  committed or the job fails. A queued *replaceable* capture is superseded by a later one,
+  releasing its holds; a durable one never is.
+- **The install is a group.** A restore selects a complete compatible generation, imports its
+  payloads as fresh artifacts, stages every participant, validates the coordinator's own
+  ledgers, and only then activates. A failure anywhere leaves the fence closed, and every
+  participant that got as far as staging is recorded as one that must be replaced before
+  another restore is attempted.
+- **The fence lifts once.** `Failed -> Restoring(k) -> Paused(k)`, at the end of a complete
+  install and nowhere else. A fenced session takes no step, publishes nothing, captures
+  nothing and holds no artifact handle.
+- **Nothing old crosses.** The fence drops every media handle; the restore imports fresh
+  artifacts; the environment re-renders its pending sensor pipeline from recorded
+  reconstruction inputs; and the new epoch's first audio chunk resumes the preserved sample
+  position and marks the discontinuity.
+- **Epoch metadata in a trace.** `scope.epoch`, the batch id and every task event id are
+  derived from the epoch, so a resumed run's behaviour is compared through
+  `EpochRebase`, which rewrites exactly those and fails on anything it does not recognise.
+
 ## Where this crate narrows or adds to the contract crate
 
 - **Required views.** `WorldObservation::validate_against` checks the views a result carries
@@ -220,9 +259,9 @@ them. `implementation.md` sequences those after this slice and together with eac
 
 - **Fake workers.** There is no neural model and no emulator. What is modelled exactly is the
   ordering, the identity rules and the retry rules, not any numerical behaviour.
-- **No state methods.** `State.Capture`, `State.StageRestore` and `State.ActivateRestore` are
-  STATE-01. The phase machine has their edges (`Capturing`, `Restoring`) and the workers do not
-  advertise them as implemented methods.
+- **One environment, one task.** A checkpoint records the composition it was taken from, and a
+  restore refuses one taken under another backend, content, patch, controller or parser
+  identity. It does not migrate between compositions, and it does not try.
 - **No audience input.** The admitted pre-step stimulation list exists and is always empty.
 - **One descriptor revision.** A revision changes when the composition does, and the only
   in-session path to that is a group restore into a fresh epoch, which is STATE-01's. The
@@ -291,11 +330,13 @@ The three integration suites do not all run over both transports, and cannot:
 - `tests/processes.rs` runs over the Unix socket only, in all three execution modes. A
   participant in a process of its own has no in-memory transport to reach the router by, so
   the mode is the axis that suite varies and the transport is fixed.
-- `tests/media.rs` and `tests/publishing.rs` run over both transports, and each also generates
-  a subset once per execution mode. The publication boundary lives in the coordinator, so
-  unlike the render counter and the sensor log it crosses no process boundary and stays fully
-  observable in all three modes; `the_publication_boundary_holds_in_every_execution_mode`
-  asserts that rather than assuming it.
+- `tests/media.rs`, `tests/state.rs` and `tests/publishing.rs` run over both transports *and*
+  in the execution modes: each acceptance body is written once and registered twice, by
+  `both_transports!` in the in-process composition and by `all_modes!` over the socket.
+  `tests/publishing.rs` registers a subset that way rather than all of it, because the
+  publication boundary lives in the coordinator: unlike the render counter and the sensor log
+  it crosses no process boundary and stays fully observable in all three modes, which
+  `the_publication_boundary_holds_in_every_execution_mode` asserts rather than assumes.
 
 - `tests/session.rs`: one world advance per complete batch; every agent Prepared before the
   advance; one task evaluation per transition; every agent committed before the next Prepare or
@@ -320,6 +361,14 @@ The three integration suites do not all run over both transports, and cannot:
   committed action being the transition that just ended, one snapshot carrying every agent,
   application-owned state and cues, a held event batch, and the read-only query service --
   plus the first two generated once per execution mode by `all_modes!`.
+- `tests/state.rs`: the STATE-01 acceptance bullets -- an uninterrupted run and a resumed run
+  committing the same behaviour once the epoch metadata is rebased, a corrupt payload failing
+  the install as a group for every participant and for the coordinator's own ledger, a lost
+  save reply and an uncommitted store manifest both leaving the durable mark where it was, a
+  refused activation resuming no part of the world, the capture queue staying bounded under a
+  stalled writer, and old media and another parser's state failing to cross a recovery --
+  plus the once-only restore token, the superseded replaceable capture, and the fence that
+  lifts only through a complete restore.
 - `tests/failures.rs`: a duplicate Prepare after a lost reply; a duplicate Commit; the same
   batch with altered controls; a lost Advance result; a cached artifact consumed by its first
   caller; one Commit failing after another succeeded; a replaced registration; a reply from

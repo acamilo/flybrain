@@ -296,6 +296,11 @@ pub fn decode(bytes: &[u8]) -> Result<Envelope> {
 
 /// The manifest fields state-media-v1 section 4 requires, checked as a set: a manifest that
 /// omits one of them is not a complete checkpoint.
+///
+/// `helperState` and `environment` join the list under the 2026-09-22 amendment to
+/// checkpoint-envelope-v1 section 3: the first has been in that section's table from the
+/// start and was missing here, and the second is the holder of the world's own payload, which
+/// the table named for every other participant and not for the environment.
 pub const REQUIRED_MANIFEST_FIELDS: &[&str] = &[
     "envelopeVersion",
     "checkpointId",
@@ -308,6 +313,8 @@ pub const REQUIRED_MANIFEST_FIELDS: &[&str] = &[
     "compatibility",
     "agents",
     "coordinator",
+    "environment",
+    "helperState",
     "payloads",
 ];
 

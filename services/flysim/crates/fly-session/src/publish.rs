@@ -500,6 +500,10 @@ pub struct Publisher {
     descriptor_topic: TopicPolicy,
     snapshot_topic: TopicPolicy,
     event_topic: TopicPolicy,
+    /// The STATE-01 checkpoint stream. A stream of distinct facts, so it is a bounded
+    /// delivery and never a latest value: a "committed" that replaced a "queued" would erase
+    /// the distinction the durable commit rules are built on.
+    checkpoint_topic: TopicPolicy,
     outbox: EventOutbox,
     state: SharedState,
     ledger: Ledger,
@@ -520,6 +524,7 @@ impl Publisher {
             descriptor_topic: TopicPolicy::latest(&topics.descriptor),
             snapshot_topic: TopicPolicy::latest(&topics.snapshots),
             event_topic: TopicPolicy::bounded(&topics.events, EVENT_BATCH_DEPTH),
+            checkpoint_topic: TopicPolicy::bounded(&topics.checkpoints, EVENT_BATCH_DEPTH),
             outbox: EventOutbox::new(EVENT_BATCH_DEPTH),
             state: Arc::new(Mutex::new(PublishedState::default())),
             ledger: Ledger::default(),
@@ -533,6 +538,7 @@ impl Publisher {
             self.descriptor_topic.clone(),
             self.snapshot_topic.clone(),
             self.event_topic.clone(),
+            self.checkpoint_topic.clone(),
         ]
     }
 
@@ -672,6 +678,22 @@ impl Publisher {
         }
         self.ledger.record(&outcome);
         Some(outcome)
+    }
+}
+
+impl Publisher {
+    /// Publishes one checkpoint fact on the checkpoint stream.
+    ///
+    /// It goes through the same named outcomes as everything else: a durable-commit fact that
+    /// an observer refuses is counted and does not fail the session, because the durable
+    /// acknowledgment is the store's, not the subscriber's -- "bus publish acceptance and
+    /// delivery consumption are not durable acknowledgments" (publishing-v1 section 6).
+    pub async fn publish_checkpoint(&mut self, payload: Map<String, Value>) -> PublicationOutcome {
+        let topic = self.checkpoint_topic.topic.clone();
+        let outcome =
+            PublicationOutcome::from_bus(&topic, self.bus.publish(&topic, payload, &[]).await);
+        self.ledger.record(&outcome);
+        outcome
     }
 }
 

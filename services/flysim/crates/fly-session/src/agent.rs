@@ -7,7 +7,7 @@
 //! stimulation, then reinforces once, and executes no tick at all. Every mutating step bumps
 //! one counter, which is how a test proves a duplicate request changed nothing.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
@@ -193,6 +193,12 @@ pub struct AgentFaults {
     pub prepare_delay_ms: u64,
     /// Hold `Agent.Commit` open for this long.
     pub commit_delay_ms: u64,
+    /// Refuse `State.StageRestore`, so a group install meets one participant that will not
+    /// validate while the others already have.
+    pub fail_stage_restore: bool,
+    /// Refuse `State.ActivateRestore` after this worker has already staged, so a group meets
+    /// a failure halfway through activation.
+    pub fail_activate_restore: bool,
 }
 
 /// One fake agent worker's configuration.
@@ -238,6 +244,10 @@ pub struct FakeAgentWorker {
     context: Option<TypedValue>,
     context_digest: Option<Digest>,
     prepared: Option<(DomainRequestId, PreparedDecision)>,
+    /// A validated replacement state that the live session cannot see yet.
+    staged: Option<StagedAgent>,
+    /// Restore tokens this worker has activated. A token activates once.
+    activated: BTreeSet<Id>,
 }
 
 impl FakeAgentWorker {
@@ -252,8 +262,15 @@ impl FakeAgentWorker {
             context: None,
             context_digest: None,
             prepared: None,
+            staged: None,
+            activated: BTreeSet::new(),
             config,
         }
+    }
+
+    /// True while a validated replacement state is staged and not yet activated.
+    pub fn has_staged_restore(&self) -> bool {
+        self.staged.is_some()
     }
 
     pub fn status(&self) -> StatusCell {
@@ -666,7 +683,11 @@ impl WorkerEndpoint for FakeAgentWorker {
     }
 
     fn capabilities(&self) -> Vec<Id> {
-        vec![id("agent-step-v1"), id("pixel-observation-v1")]
+        vec![
+            id("agent-step-v1"),
+            id("pixel-observation-v1"),
+            id(crate::state::CHECKPOINT_CAPABILITY),
+        ]
     }
 
     fn status_cell(&self) -> StatusCell {
@@ -678,7 +699,14 @@ impl WorkerEndpoint for FakeAgentWorker {
     }
 
     fn methods(&self) -> Vec<&'static str> {
-        vec!["Agent.Initialize", "Agent.Prepare", "Agent.Commit"]
+        vec![
+            "Agent.Initialize",
+            "Agent.Prepare",
+            "Agent.Commit",
+            "State.Capture",
+            "State.StageRestore",
+            "State.ActivateRestore",
+        ]
     }
 
     fn handle<'a>(&'a mut self, ctx: HandlerCtx<'a>) -> BoxFuture<'a, DomainResult<HandlerReply>> {
@@ -687,6 +715,9 @@ impl WorkerEndpoint for FakeAgentWorker {
                 "Agent.Initialize" => self.initialize(&ctx).await,
                 "Agent.Prepare" => self.prepare(&ctx).await,
                 "Agent.Commit" => self.commit(&ctx).await,
+                "State.Capture" => self.state_capture(&ctx).await,
+                "State.StageRestore" => self.state_stage_restore(&ctx).await,
+                "State.ActivateRestore" => self.state_activate_restore(&ctx).await,
                 other => Err(DomainError::before(
                     ErrorCode::Unsupported,
                     format!("{other} is not an agent method"),
@@ -699,7 +730,12 @@ impl WorkerEndpoint for FakeAgentWorker {
 /// The retention class table an agent endpoint follows, for a caller that wants it.
 pub fn agent_op_class(method: &str) -> Option<OpClass> {
     match method {
-        "Agent.Initialize" => Some(OpClass::Lifecycle),
+        // `ipc-v1` section 5: lifecycle *and capture* replies are retained until
+        // `Worker.Acknowledge`, which is also what lets a duplicate restore request replay
+        // its cached reply rather than staging or activating twice.
+        "Agent.Initialize" | "State.Capture" | "State.StageRestore" | "State.ActivateRestore" => {
+            Some(OpClass::Lifecycle)
+        }
         "Agent.Prepare" | "Agent.Commit" => Some(OpClass::StepMutation),
         _ => None,
     }
@@ -769,3 +805,532 @@ pub fn synthetic_profile(agent_id: &Id, tick_duration: &RationalNs, warmup_ticks
 
 /// The per-agent contexts a bootstrap produced, keyed by agent id.
 pub type Contexts = BTreeMap<Id, TypedValue>;
+
+// -------------------------------------------------------------------------------------------
+// STATE-01: capture and restore
+
+/// The numerical model version this worker implements. It is part of a capture's
+/// compatibility identity: the same profile and seed under another model is not the same
+/// state (`workers-v1` section 2).
+pub const MODEL_VERSION: &str = "fake-lcg-v1";
+
+/// The plasticity rule version, for the same reason.
+pub const PLASTICITY_VERSION: &str = "fake-reinforce-v1";
+
+/// The version this payload layout is written and read under.
+pub const AGENT_PAYLOAD_VERSION: u64 = 1;
+
+/// The dataset identity a synthetic agent resolves.
+///
+/// There is no connectome dataset behind this worker, and a checkpoint says so with a stable
+/// identity rather than omitting the field: "no dataset" has to be distinguishable from "the
+/// dataset was not recorded".
+pub fn dataset_digest() -> Digest {
+    digest_of_bytes(b"fly-session/no-dataset-v1")
+}
+
+/// The capture compatibility digest of one agent (`workers-v1` section 2).
+///
+/// The profile digest identifies the profile definition; this additionally covers the
+/// resolved seed, the numerical model version and the plasticity rule, because two agents
+/// with the same profile digest and different seeds hold state that is not interchangeable.
+/// Every field it covers is one the checkpoint manifest already records in that agent's row,
+/// so a restore derives the expected digest from the manifest rather than from the payload it
+/// is about to validate.
+pub fn agent_compatibility_digest(
+    agent_id: &Id,
+    profile_digest: &Digest,
+    dataset_digest: &Digest,
+    model_version: &str,
+    plasticity_version: &str,
+    seed: i32,
+) -> Digest {
+    let value = serde_json::json!({
+        "agentId": agent_id.as_str(),
+        "profileDigest": profile_digest.as_str(),
+        "datasetDigest": dataset_digest.as_str(),
+        "modelVersion": model_version,
+        "plasticityVersion": plasticity_version,
+        "seed": seed,
+    });
+    digest_of(&value).expect("an agent compatibility block canonicalizes")
+}
+
+impl FakeModel {
+    /// Every field of the model, so a resumed agent is this agent and not a fresh one.
+    fn capture(&self) -> Value {
+        serde_json::json!({
+            "seed": self.seed,
+            "state": self.state.to_string(),
+            "mutations": self.mutations.to_string(),
+            "ticks": self.ticks.to_string(),
+            "stimulations": self.stimulations.to_string(),
+            "reinforcements": self.reinforcements.to_string(),
+            "learningEnabled": self.learning_enabled,
+            "learningUpdates": self.learning_updates.to_string(),
+            "learningChanged": self.learning_changed.to_string(),
+            "lastSignal": self.last_signal,
+            "inputValue": self.input_value.to_string(),
+            "inputInstalls": self.input_installs.to_string(),
+        })
+    }
+
+    fn restored(value: &Value) -> DomainResult<FakeModel> {
+        let number = |key: &str| -> DomainResult<u64> {
+            value
+                .get(key)
+                .and_then(Value::as_str)
+                .ok_or_else(|| incompatible(format!("the agent payload has no {key}")))?
+                .parse::<u64>()
+                .map_err(|_| incompatible(format!("the agent payload's {key} is not a U64")))
+        };
+        let seed = value
+            .get("seed")
+            .and_then(Value::as_i64)
+            .and_then(|v| i32::try_from(v).ok())
+            .ok_or_else(|| incompatible("the agent payload has no seed"))?;
+        let input_value = value
+            .get("inputValue")
+            .and_then(Value::as_str)
+            .ok_or_else(|| incompatible("the agent payload has no inputValue"))?
+            .parse::<i64>()
+            .map_err(|_| incompatible("the agent payload's inputValue is not an integer"))?;
+        let last_signal = value
+            .get("lastSignal")
+            .and_then(Value::as_f64)
+            .filter(|v| v.is_finite())
+            .ok_or_else(|| incompatible("the agent payload's lastSignal is not finite"))?;
+        let learning_enabled = value
+            .get("learningEnabled")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| incompatible("the agent payload has no learningEnabled"))?;
+        Ok(FakeModel {
+            seed,
+            state: number("state")?,
+            mutations: number("mutations")?,
+            ticks: number("ticks")?,
+            stimulations: number("stimulations")?,
+            reinforcements: number("reinforcements")?,
+            learning_enabled,
+            learning_updates: number("learningUpdates")?,
+            learning_changed: number("learningChanged")?,
+            last_signal,
+            input_value,
+            input_installs: number("inputInstalls")?,
+        })
+    }
+}
+
+fn incompatible(message: impl std::fmt::Display) -> DomainError {
+    DomainError::before(ErrorCode::IncompatibleState, message)
+}
+
+/// One staged restore, held outside the live agent until it is activated.
+struct StagedAgent {
+    token: Id,
+    checkpoint_id: Id,
+    scope: Scope,
+    model: FakeModel,
+    accumulator: TickAccumulator,
+    context: TypedValue,
+    profile: AssetRef,
+    committed_step: u64,
+}
+
+impl FakeAgentWorker {
+    /// This worker's own compatibility identity, from its configuration and a resolved seed.
+    fn compatibility_digest(&self, profile: &AssetRef, seed: i32) -> Digest {
+        agent_compatibility_digest(
+            &self.config.agent_id,
+            &profile.digest,
+            &dataset_digest(),
+            MODEL_VERSION,
+            PLASTICITY_VERSION,
+            seed,
+        )
+    }
+
+    /// `State.Capture`: an immutable snapshot of this agent at its committed boundary.
+    ///
+    /// It is allowed at `Ready(k)` only. A Prepared agent holds half a transition, and there
+    /// is no coherent boundary to file that under.
+    async fn state_capture(&mut self, ctx: &HandlerCtx<'_>) -> DomainResult<HandlerReply> {
+        let scope = ctx.scope()?.clone();
+        self.check_epoch(&scope)?;
+        let AgentPhase::Ready(k) = self.phase.clone() else {
+            return Err(DomainError::before(
+                ErrorCode::InvalidPhase,
+                format!(
+                    "State.Capture needs a quiescent Ready(k); this worker is {:?}",
+                    self.phase
+                ),
+            ));
+        };
+        if scope.step != k {
+            return Err(DomainError::before(
+                if scope.step < k { ErrorCode::StaleStep } else { ErrorCode::FutureStep },
+                "State.Capture names a boundary this worker is not at",
+            ));
+        }
+        let params: CaptureParams = ctx.params()?;
+        let profile = self.profile.clone().expect("initialized");
+        let context = self.context.clone().expect("initialized");
+        let accumulator = self.accumulator.as_ref().expect("initialized");
+        let previous = self.status.state();
+        self.status.set_state(WorkerState::Capturing);
+        let payload = serde_json::json!({
+            "payloadVersion": AGENT_PAYLOAD_VERSION,
+            "kind": "agent",
+            "agentId": self.config.agent_id.as_str(),
+            "checkpointId": params.checkpoint_id.as_str(),
+            "sourceScope": scope.to_json(),
+            "committedStep": k.to_string(),
+            "profile": profile.to_json(),
+            "modelVersion": MODEL_VERSION,
+            "plasticityVersion": PLASTICITY_VERSION,
+            "datasetDigest": dataset_digest().as_str(),
+            "model": self.model.capture(),
+            "accumulator": {
+                "tickDuration": accumulator.tick_duration().to_json(),
+                "remainder": accumulator.remainder().to_json(),
+                "executedTicks": accumulator.executed_ticks().to_string(),
+                "warmupOffset": accumulator.warmup_offset().to_string(),
+            },
+            "context": context.to_json(),
+        });
+        let bytes = canonicalize(&payload)
+            .map_err(|e| DomainError::invalid(format!("State.Capture: {}", e.0)))?
+            .into_bytes();
+        let digest = digest_of_bytes(&bytes);
+        let artifact = crate::state::seal_payload(ctx.client, &bytes, &digest).await?;
+        // Capture is a read of the model, not a mutation of it: nothing above changed a
+        // counter, and the worker goes back to the boundary it was already at.
+        self.status.set_state(previous);
+        let result = CaptureResult {
+            checkpoint_id: params.checkpoint_id,
+            boundary: k,
+            compatibility_digest: self.compatibility_digest(&profile, self.model.seed()),
+            payload: artifact.reference().clone(),
+        };
+        Ok(HandlerReply::with_artifacts(
+            object(result.to_json()),
+            vec![(crate::state::PAYLOAD_ATTACHMENT.to_owned(), artifact)],
+        ))
+    }
+
+    /// `State.StageRestore`: validate a replacement state into a staging slot.
+    ///
+    /// Nothing the live session can see changes here, and the worker keeps whatever state it
+    /// had. It is allowed on an uninitialized replacement or a quiescent worker only; a
+    /// failed one is neither, which is why a group that failed is replaced rather than
+    /// reused.
+    async fn state_stage_restore(&mut self, ctx: &HandlerCtx<'_>) -> DomainResult<HandlerReply> {
+        let scope = ctx.scope()?.clone();
+        if scope.session_id != self.config.session_id {
+            return Err(DomainError::before(
+                ErrorCode::IdentityMismatch,
+                "this worker belongs to another session",
+            ));
+        }
+        match &self.phase {
+            AgentPhase::Uninitialized | AgentPhase::Ready(_) => {}
+            other => {
+                return Err(DomainError::before(
+                    ErrorCode::InvalidPhase,
+                    format!(
+                        "State.StageRestore needs an uninitialized replacement or a quiescent \
+worker; this worker is {other:?}"
+                    ),
+                ));
+            }
+        }
+        if let Some(epoch) = &self.epoch
+            && *epoch == scope.epoch
+        {
+            return Err(DomainError::before(
+                ErrorCode::StaleEpoch,
+                "State.StageRestore proposes the epoch this worker is already running",
+            ));
+        }
+        let params: StageRestoreParams = ctx.params()?;
+        if params.source_scope.step != scope.step {
+            return Err(DomainError::invalid(
+                "State.StageRestore's scope step must be the source boundary",
+            ));
+        }
+        let artifact = ctx.artifact(crate::state::PAYLOAD_ATTACHMENT)?;
+        if artifact.reference() != &params.payload {
+            return Err(DomainError::before(
+                ErrorCode::BufferInvalid,
+                "the staged payload attachment is not the artifact the request names",
+            ));
+        }
+        let bytes = artifact.read_all().await.map_err(|e| {
+            DomainError::before(
+                ErrorCode::BufferInvalid,
+                format!("the staged payload could not be read: {}", e.message),
+            )
+        })?;
+        let declared = params
+            .payload
+            .digest
+            .clone()
+            .ok_or_else(|| incompatible("a checkpoint payload must carry a content digest"))?;
+        let actual = digest_of_bytes(&bytes);
+        if actual != declared || bytes.len() as u64 != params.payload.byte_length {
+            return Err(incompatible(
+                "the staged payload is not the content the request declares",
+            ));
+        }
+        let value: Value = serde_json::from_slice(&bytes)
+            .map_err(|e| DomainError::invalid(format!("the staged payload is not JSON: {e}")))?;
+        let text = |key: &str| -> DomainResult<String> {
+            value
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| incompatible(format!("the agent payload has no {key}")))
+        };
+        if value.get("payloadVersion").and_then(Value::as_u64) != Some(AGENT_PAYLOAD_VERSION) {
+            return Err(incompatible("the agent payload is another payload version"));
+        }
+        if text("kind")? != "agent" {
+            return Err(incompatible("this payload is not an agent's state"));
+        }
+        if text("agentId")? != self.config.agent_id {
+            return Err(DomainError::before(
+                ErrorCode::IdentityMismatch,
+                "the staged payload belongs to another agent",
+            ));
+        }
+        if text("checkpointId")? != params.checkpoint_id {
+            return Err(incompatible("the staged payload belongs to another checkpoint"));
+        }
+        if text("modelVersion")? != MODEL_VERSION || text("plasticityVersion")? != PLASTICITY_VERSION
+        {
+            return Err(incompatible(
+                "the staged payload was captured under another numerical model",
+            ));
+        }
+        let source_scope = Scope::from_json(
+            value
+                .get("sourceScope")
+                .ok_or_else(|| incompatible("the agent payload has no sourceScope"))?,
+        )
+        .map_err(|e| incompatible(format!("the agent payload's sourceScope: {}", e.0)))?;
+        if source_scope != params.source_scope {
+            return Err(incompatible(
+                "the staged payload was captured at another source scope",
+            ));
+        }
+        let committed_step: u64 = text("committedStep")?
+            .parse()
+            .map_err(|_| incompatible("the agent payload's committedStep is not a U64"))?;
+        if committed_step != params.source_scope.step {
+            return Err(incompatible(
+                "the staged payload's committed step is not the source boundary",
+            ));
+        }
+        let profile = AssetRef::from_json(
+            value
+                .get("profile")
+                .ok_or_else(|| incompatible("the agent payload has no profile"))?,
+        )
+        .map_err(|e| incompatible(format!("the agent payload's profile: {}", e.0)))?;
+        let model = FakeModel::restored(
+            value
+                .get("model")
+                .ok_or_else(|| incompatible("the agent payload has no model"))?,
+        )?;
+        // The compatibility digest is recomputed from this worker's own configuration and the
+        // identity the payload declares. A capture of the same profile under another seed, or
+        // of another agent's brain, fails here and never reaches activation.
+        let computed = self.compatibility_digest(&profile, model.seed());
+        if computed != params.compatibility_digest {
+            return Err(incompatible(format!(
+                "the staged state's compatibility {computed} is not the {} the restore \
+requires",
+                params.compatibility_digest
+            )));
+        }
+        let accumulator_value = value
+            .get("accumulator")
+            .ok_or_else(|| incompatible("the agent payload has no accumulator"))?;
+        let rational = |key: &str| -> DomainResult<RationalNs> {
+            RationalNs::from_json(
+                accumulator_value
+                    .get(key)
+                    .ok_or_else(|| incompatible(format!("the accumulator has no {key}")))?,
+            )
+            .map_err(|e| incompatible(format!("the accumulator's {key}: {}", e.0)))
+        };
+        let counter = |key: &str| -> DomainResult<u64> {
+            accumulator_value
+                .get(key)
+                .and_then(Value::as_str)
+                .ok_or_else(|| incompatible(format!("the accumulator has no {key}")))?
+                .parse::<u64>()
+                .map_err(|_| incompatible(format!("the accumulator's {key} is not a U64")))
+        };
+        let tick_duration = rational("tickDuration")?;
+        if tick_duration != self.config.tick_duration {
+            return Err(incompatible(
+                "the staged state was captured at another model tick duration",
+            ));
+        }
+        let accumulator = TickAccumulator::restored(
+            tick_duration,
+            rational("remainder")?,
+            counter("executedTicks")?,
+            counter("warmupOffset")?,
+        )
+        .map_err(incompatible)?;
+        let context = TypedValue::from_json(
+            value
+                .get("context")
+                .ok_or_else(|| incompatible("the agent payload has no context"))?,
+        )
+        .map_err(|e| incompatible(format!("the agent payload's context: {}", e.0)))?;
+        FakeAgentWorker::available_actions(&context)?;
+
+        if self.config.faults.fail_stage_restore {
+            // The row where a group validates three participants and the fourth does not.
+            // Nothing is staged here and nothing is staged anywhere else either: the
+            // coordinator abandons the whole install.
+            return Err(incompatible(
+                "injected staging refusal: this participant's replacement state does not \
+validate",
+            ));
+        }
+        // One staged restore at a time. A second proposal replaces nothing silently.
+        if let Some(staged) = &self.staged {
+            return Err(DomainError::before(
+                ErrorCode::Conflict,
+                format!(
+                    "this worker already holds the staged restore {} for checkpoint {}",
+                    staged.token, staged.checkpoint_id
+                ),
+            ));
+        }
+        let token = restore_token(&params.checkpoint_id, &scope, &actual, &self.config.incarnation_id);
+        if self.activated.contains(&token) {
+            return Err(DomainError::before(
+                ErrorCode::Conflict,
+                "this exact restore was already activated on this worker",
+            ));
+        }
+        self.staged = Some(StagedAgent {
+            token: token.clone(),
+            checkpoint_id: params.checkpoint_id.clone(),
+            scope: scope.clone(),
+            model,
+            accumulator,
+            context,
+            profile,
+            committed_step,
+        });
+        self.status.set_state(WorkerState::StagedRestore);
+        let result = StageRestoreResult {
+            checkpoint_id: params.checkpoint_id,
+            restore_token: token,
+        };
+        Ok(HandlerReply::from(&result))
+    }
+
+    /// `State.ActivateRestore`: install the staged state under its new scope, without a tick.
+    ///
+    /// The token activates once. A duplicate domain request replays the cached reply through
+    /// the shell's result cache; a fresh request naming an already activated token is a
+    /// conflict, which is what stops a second group from being resumed from the same bytes.
+    async fn state_activate_restore(
+        &mut self,
+        ctx: &HandlerCtx<'_>,
+    ) -> DomainResult<HandlerReply> {
+        let params: ActivateRestoreParams = ctx.params()?;
+        if self.activated.contains(&params.restore_token) {
+            return Err(DomainError::before(
+                ErrorCode::Conflict,
+                "this restore token has already been activated",
+            ));
+        }
+        let Some(staged) = self.staged.take() else {
+            return Err(DomainError::before(
+                ErrorCode::InvalidPhase,
+                "this worker holds no staged restore",
+            ));
+        };
+        if staged.token != params.restore_token {
+            // Put it back: naming another token is not a reason to discard this one.
+            let token = staged.token.clone();
+            self.staged = Some(staged);
+            return Err(DomainError::before(
+                ErrorCode::IdentityMismatch,
+                format!("this worker's staged restore is {token}, not {}", params.restore_token),
+            ));
+        }
+        if self.config.faults.fail_activate_restore {
+            let token = staged.token.clone();
+            self.staged = Some(staged);
+            self.status.set_state(WorkerState::Failed);
+            return Err(DomainError::new(
+                ErrorCode::BackendFailure,
+                format!("injected activation failure; {token} stays staged and unresumed"),
+                MutationCertainty::None,
+            ));
+        }
+        self.status.set_state(WorkerState::Restoring);
+        let StagedAgent {
+            token,
+            checkpoint_id,
+            scope,
+            model,
+            accumulator,
+            context,
+            profile,
+            committed_step,
+        } = staged;
+        self.model = model;
+        self.accumulator = Some(accumulator);
+        self.context_digest = Some(context.digest());
+        self.context = Some(context);
+        self.profile = Some(profile);
+        self.epoch = Some(scope.epoch.clone());
+        self.prepared = None;
+        self.phase = AgentPhase::Ready(committed_step);
+        self.activated.insert(token);
+        self.status.set_state(WorkerState::Ready);
+        self.status.set_scope(Some(scope_at(
+            &scope.session_id,
+            &scope.epoch,
+            committed_step,
+        )));
+        self.status.advance_to(self.model.mutations());
+        let result = ActivateRestoreResult {
+            committed_step,
+            checkpoint_id,
+            // An agent returns a null observation; the environment returns the world's.
+            observation: None,
+        };
+        result
+            .validate_for_role(Role::Agent)
+            .map_err(|e| DomainError::invalid(e.0))?;
+        Ok(HandlerReply::from(&result))
+    }
+}
+
+/// A restore token bound to the checkpoint, the proposed scope, the payload bytes and the
+/// worker incarnation staging them.
+///
+/// `state-media-v1` section 5 binds a token to scope, payload and checkpoint. Binding it to
+/// the incarnation as well is what keeps a token minted by a worker that has since been
+/// replaced from activating anything on its replacement.
+pub fn restore_token(checkpoint_id: &Id, scope: &Scope, payload_digest: &Digest, incarnation: &Id) -> Id {
+    let digest = digest_of_bytes(
+        format!(
+            "fly-session/restore-token-v1\n{checkpoint_id}\n{}\n{}\n{}\n{payload_digest}\n{incarnation}\n",
+            scope.session_id, scope.epoch, scope.step
+        )
+        .as_bytes(),
+    );
+    parse_id(&format!("rt-{}", &digest[..32])).expect("a hex suffix is an Id")
+}
