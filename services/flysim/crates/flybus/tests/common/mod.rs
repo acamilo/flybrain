@@ -5,8 +5,8 @@
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use flybus::wire::{Envelope, Kind, Location, read_frame};
@@ -175,6 +175,37 @@ impl Env {
             );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+    }
+}
+
+/// A behaviour trace: what a scenario did, in order. Methods, payload fields, counts,
+/// sequences, credits, states and error codes are behaviour; router-issued ids, paths and
+/// times are not, and [`Trace::record`] refuses them. Two transports running the same
+/// scenario must record the same events (implementation guide, BUS-01).
+#[derive(Clone, Default)]
+pub struct Trace(Arc<Mutex<Vec<String>>>);
+
+impl Trace {
+    pub fn new() -> Trace {
+        Trace::default()
+    }
+
+    pub fn record(&self, event: impl Into<String>) {
+        let event = event.into();
+        for id in [
+            "msg-", "bus-", "conn-", "svc-", "top-", "sub-", "dlv-", "own-", "call-", "inc-",
+            "router-", "store-", "/tmp", "a-1",
+        ] {
+            assert!(
+                !event.contains(id),
+                "a trace records behaviour, not the operational id in {event:?}"
+            );
+        }
+        self.0.lock().unwrap().push(event);
+    }
+
+    pub fn events(&self) -> Vec<String> {
+        self.0.lock().unwrap().clone()
     }
 }
 
