@@ -20,11 +20,36 @@ use crate::ratchet::RecoveryPolicy;
 /// equivalent of the prototype's `MemoryReader` interface.
 pub trait MemoryReader {
     fn read8(&mut self, address: u16) -> u8;
+
+    /// One byte of a ROM bank, by bank number rather than off the CPU bus.
+    ///
+    /// [`MemoryReader::read8`] reads the bus, where banks 1 and up are whichever
+    /// bank the cartridge's last switch left mapped -- so a table in bank 3 is
+    /// unreadable through it, and the only way to make it readable would be to
+    /// *write* the mapper's bank register. The joypad is the only write this
+    /// workspace makes into a running game (`docs/design/macros.md` section 12),
+    /// so this reads the cartridge image the process already holds instead: the
+    /// same bytes, addressed the way the disassembly addresses them.
+    ///
+    /// `address` is a CPU address: below `$4000` it is bank 0 whatever `bank`
+    /// says, and `$4000..$8000` is the banked window. Anything else, and any
+    /// offset past the end of the image, is `None`.
+    ///
+    /// The default is `None`: a reader with no cartridge behind it cannot answer,
+    /// and every caller of this is written to narrow rather than guess when it
+    /// does not (`docs/design/macros-wram.md`, the whole-map grid).
+    fn read_rom(&mut self, _bank: u8, _address: u16) -> Option<u8> {
+        None
+    }
 }
 
 impl MemoryReader for &mut dyn MemoryReader {
     fn read8(&mut self, address: u16) -> u8 {
         (**self).read8(address)
+    }
+
+    fn read_rom(&mut self, bank: u8, address: u16) -> Option<u8> {
+        (**self).read_rom(bank, address)
     }
 }
 

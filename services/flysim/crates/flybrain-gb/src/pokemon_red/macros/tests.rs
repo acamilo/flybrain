@@ -4110,4 +4110,5 @@ fn a_scripted_push_back_records_the_tile_it_happened_on() {
     );
 }
 
+mod map_aware;
 mod shop_purchase;

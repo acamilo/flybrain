@@ -392,6 +392,179 @@ impl Walkable {
     }
 }
 
+/// Every tile of one map, answered: `docs/design/macros.md` section 15.
+///
+/// [`GameState::walkable`] answers about the ten-by-nine window of the screen buffer and
+/// [`Walkable::Unknown`] elsewhere. This is the same predicate over the whole loaded map, decoded
+/// from the block and collision tables the cartridge has loaded
+/// ([`crate::pokemon_red::mapgrid`]), so a walk can be planned once instead of guessed at and
+/// re-planned at every window edge.
+///
+/// It carries three things and no policy at all:
+///
+/// - the walkability of every tile, in map-tile coordinates -- the same unit the player's
+///   coordinates, the warp table and the sign table are in;
+/// - the tile id each answer came from, which is what the cross-check against the window
+///   predicate compares and what the tile-pair rules are keyed on;
+/// - **directed walls**: one step out of one tile in one direction that the cartridge refuses
+///   although both tiles are passable. Pokered has two such rules and the tile-pair lists are the
+///   one that can be read ahead of time; a ledge is already [`Walkable::No`] in the collision
+///   list, and a person in the way is the sprite list's answer, not the ground's.
+///
+/// Nothing here is a fact about the run: no ledger, no visit, no target. Those stay where they
+/// are, session state in the executor layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MapGrid {
+    map: u8,
+    width: u8,
+    height: u8,
+    /// Row-major, `width * height`, [`Walkable::Unknown`] until [`MapGrid::set`] says otherwise.
+    tiles: Vec<Walkable>,
+    /// Row-major screen tile id per map tile, `None` where the tile was never decoded.
+    ids: Vec<Option<u8>>,
+    /// Row-major bitmask of the directions a step out of this tile is refused in
+    /// ([`MapGrid::wall`]).
+    walls: Vec<u8>,
+}
+
+impl MapGrid {
+    /// An all-[`Walkable::Unknown`] grid of this size, for a decoder to fill in.
+    pub fn new(map: u8, width: u8, height: u8) -> Self {
+        let cells = usize::from(width) * usize::from(height);
+        Self {
+            map,
+            width,
+            height,
+            tiles: vec![Walkable::Unknown; cells],
+            ids: vec![None; cells],
+            walls: vec![0; cells],
+        }
+    }
+
+    /// Which map this grid is of. A grid is only ever valid for the loaded map.
+    pub fn map(&self) -> u8 {
+        self.map
+    }
+
+    pub fn width(&self) -> u8 {
+        self.width
+    }
+
+    pub fn height(&self) -> u8 {
+        self.height
+    }
+
+    fn index(&self, x: u8, y: u8) -> Option<usize> {
+        (x < self.width && y < self.height)
+            .then(|| usize::from(y) * usize::from(self.width) + usize::from(x))
+    }
+
+    /// Record a decoded tile: its screen tile id and what the collision list makes of it.
+    pub fn set(&mut self, x: u8, y: u8, tile: u8, walkable: Walkable) {
+        if let Some(index) = self.index(x, y) {
+            self.tiles[index] = walkable;
+            self.ids[index] = Some(tile);
+        }
+    }
+
+    /// Record that the cartridge refuses the step out of `(x, y)` in `facing`.
+    pub fn wall(&mut self, x: u8, y: u8, facing: Facing) {
+        if let Some(index) = self.index(x, y) {
+            self.walls[index] |= wall_bit(facing);
+        }
+    }
+
+    /// Whether the player could stand on this tile. Off the map is [`Walkable::No`], which is the
+    /// window predicate's own answer for it.
+    pub fn walkable(&self, x: u8, y: u8) -> Walkable {
+        match self.index(x, y) {
+            None => Walkable::No,
+            Some(index) => self.tiles[index],
+        }
+    }
+
+    /// The screen tile id this tile's answer came from, or `None` for a tile never decoded.
+    pub fn tile_id(&self, x: u8, y: u8) -> Option<u8> {
+        self.index(x, y).and_then(|index| self.ids[index])
+    }
+
+    /// Whether the step out of `(x, y)` in `facing` is one the cartridge refuses.
+    pub fn walled(&self, x: u8, y: u8, facing: Facing) -> bool {
+        self.index(x, y).is_some_and(|index| self.walls[index] & wall_bit(facing) != 0)
+    }
+
+    /// How many tiles of the map the player could stand on.
+    pub fn walkable_count(&self) -> usize {
+        self.tiles.iter().filter(|tile| tile.is_walkable()).count()
+    }
+
+    /// How many tiles the map has that were never decoded, i.e. [`Walkable::Unknown`].
+    pub fn unknown_count(&self) -> usize {
+        self.tiles.iter().filter(|tile| matches!(tile, Walkable::Unknown)).count()
+    }
+
+    /// Every walkable tile, in row-major order, as `(x, y)`.
+    pub fn walkable_tiles(&self) -> Vec<(u8, u8)> {
+        let mut out = Vec::with_capacity(self.walkable_count());
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if self.walkable(x, y).is_walkable() {
+                    out.push((x, y));
+                }
+            }
+        }
+        out
+    }
+
+    /// How many walkable tiles a walk from `(x, y)` could reach, the directed walls respected.
+    ///
+    /// The starting tile counts whether or not it is walkable, for the same reason the route
+    /// search treats it as passable: the fly is standing on it. What this number is *for* is
+    /// reading a stalled walk at a glance -- a fly on a route with 600 walkable tiles and 4
+    /// reachable ones is fenced in, and no amount of re-planning is going to help it
+    /// (`docs/design/macros.md` section 15, `examples/scene_probe.rs`).
+    pub fn reachable_from(&self, x: u8, y: u8) -> usize {
+        if self.index(x, y).is_none() {
+            return 0;
+        }
+        let mut seen = vec![false; self.tiles.len()];
+        let mut queue = std::collections::VecDeque::new();
+        if let Some(index) = self.index(x, y) {
+            seen[index] = true;
+        }
+        queue.push_back((x, y));
+        let mut count = 0;
+        while let Some((tx, ty)) = queue.pop_front() {
+            count += 1;
+            for facing in [Facing::Up, Facing::Down, Facing::Left, Facing::Right] {
+                if self.walled(tx, ty, facing) {
+                    continue;
+                }
+                let (dx, dy) = facing.delta();
+                let Ok(nx) = u8::try_from(i16::from(tx) + dx) else { continue };
+                let Ok(ny) = u8::try_from(i16::from(ty) + dy) else { continue };
+                let Some(index) = self.index(nx, ny) else { continue };
+                if seen[index] || !self.tiles[index].is_walkable() {
+                    continue;
+                }
+                seen[index] = true;
+                queue.push_back((nx, ny));
+            }
+        }
+        count
+    }
+}
+
+/// Which bit of a [`MapGrid`] wall mask a direction is.
+fn wall_bit(facing: Facing) -> u8 {
+    match facing {
+        Facing::Up => 1,
+        Facing::Down => 2,
+        Facing::Left => 4,
+        Facing::Right => 8,
+    }
+}
+
 /// One entry of the current map's warp table: a door, a staircase, a cave mouth.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Warp {

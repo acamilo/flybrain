@@ -205,6 +205,9 @@ current tileset's list of passable tiles, walking it until it matches or hits `$
   is not followed and the answer is `Unknown`, because banks 1 and up are whatever the last bank
   switch left mapped. This is the only ROM read in the module and the reason it is allowed.
 
+**Section 9 is the same predicate over the whole map** (2026-09-22): the window below is what the
+walks fall back to on a frame the map cannot be decoded, and no longer what they plan over.
+
 Three things bound it, all reported as `Unknown` rather than guessed:
 
 1. **The window is ten tiles by nine and it follows the player**: `x - 4 ..= x + 5` and
@@ -573,3 +576,92 @@ PP, type effectiveness applied from the ROM's type chart", and section 14 replac
 one button per move slot: which move is used is the fly's choice and the mushroom body's to learn.
 Knowledge that nothing reads is not narrowed, it is deleted — `MacroState` is four methods
 shorter and `pokemon_red/state.rs` never needed them.
+
+## 9. The whole map, not the window (2026-09-22, `docs/design/macros.md` section 15)
+
+The walkable predicate of section 2 answers about ten tiles by nine because that is how much map
+the screen buffer holds. Every tile of the loaded map follows the same rule, decoded from the
+tables the cartridge has loaded.
+
+**Four more names through the same door.** `services/flysim/tools/gen_symbols.py`'s `EXTRA_RAM`
+takes the table from 63 addresses to **67**, and nothing else in it moves — no event flag, no
+milestone, no existing address. `flysim --print-compatibility` is byte-identical across the change:
+648 bytes, `0d9bfde7…707fa`.
+
+The prototype checkout `gen_symbols.py` reads is not on this box, so the four addresses were
+resolved the way it would have resolved them, by a second tool that reads the disassembly directly:
+`services/flysim/tools/resolve_wram.py` walks `ram/wram.asm` at the pinned commit with a byte
+cursor that is **only ever live while it is anchored on an address `symbols.rs` already pins**, and
+emits an address only when a pinned address *after* it agrees as well. It re-derives 40 of the 63
+addresses the table already carries with no disagreement, and each of the four new ones is
+bracketed by two of them. A declaration form it cannot size exactly kills the cursor rather than
+being guessed at, so an unanchored region cannot produce a number at all.
+
+| state | symbol | address | encoding | verified |
+| --- | --- | ---: | --- | --- |
+| the loaded map's blocks | `wOverworldMap` | `$c6e8` | one byte per 4x4-tile block. `LoadTileBlockMap` (`home/overworld.asm`) fills it from the map's own ROM bank as rows of `wCurMapWidth + MAP_BORDER * 2` bytes with the map itself `MAP_BORDER` = 3 rows and columns in, so the border can hold strips of the connected maps. The map's own blocks are therefore a WRAM read. | survey + ROM (Pallet Town and Viridian Forest, below), trace |
+| which tileset | `wCurMapTileset` | `$d367` | tileset id (`constants/tileset_constants.asm`, `OVERWORLD` 0 … `FOREST` 3 … `CAVERN` 17). Keys the tile-pair lists, which is the only thing this work reads it for. | ROM, trace |
+| the blockset's bank | `wTilesetBank` | `$d52b` | the tileset header's `db BANK(\1)` (`data/tilesets/tileset_headers.asm`). Not bank 0, which is the whole reason the seam grew a bank-aware read. | ROM (the overworld tileset's blockset reads from bank `$19`), trace |
+| blocks to tiles | `wTilesetBlocksPtr` | `$d52c` | little-endian pointer, 16 bytes per block id, four rows of four screen tile ids. `DrawTileBlock` (`home/overworld.asm`) indexes it as `block * $10` and walks four rows of four, which pins the layout exactly. | ROM, trace |
+
+### The one ROM read that needed a bank
+
+`MemoryReader` gains `read_rom(bank, address) -> Option<u8>`, defaulted to `None`. The bus read
+cannot reach the blockset — banks 1 and up are whatever the cartridge's last switch left mapped, and
+the only way to change that would be to *write* the mapper's bank register, which the doctrine
+forbids (`docs/design/macros.md` section 12: the joypad register is the only write). So the
+emulator implements it over **the cartridge image the process already holds**: below `$4000` it is
+bank 0 whatever the bank says, `$4000..$8000` is the banked window, and an offset past the end of
+the image is `None`. Nothing is written, no bank is switched, and the emulator's state does not
+move. Every other reader — the synthetic WRAM of the tests, the sim loop's stubs — keeps the
+default, and `None` there means the grid narrows to the window predicate rather than decoding a map
+out of whatever bytes were to hand.
+
+### The corner, which was measured
+
+A map tile is 2x2 screen tiles and `CheckTilePassable` matches **one** id, so a decode has to pick
+the same one the cartridge picks. It is the **lower left** of the four. The upper left is the
+plausible guess: the view is centred so that the player's own 2x2 begins at screen row 8 and
+`_GetTileAndCoordsInFrontOfPlayer` reads `(8, 9)`, which is its lower half. Measured on the
+cartridge rather than argued: Viridian Forest's (4, 32) reads `$23` on the screen, which is the
+second row of its block, where the first row holds `$04`. On a town most quadrants hold one tile id
+four times over, so an upper-left decode reads correctly there and falls apart in a forest — which
+is exactly the shape of mistake the cross-check below exists for.
+
+### Two gates, because a wrong decode answers plausibly
+
+- **Against the screen, before the grid is trusted.** The decoded ids are compared with
+  `map_tile_id` over the fly's own tile and its four neighbours; a frame where the window can answer
+  for none of them is refused. `wOverworldMap` shares its bytes with the picture buffer
+  (`ram/wram.asm`'s own `UNION`), so a battle is precisely when the blocks under it are somebody
+  else's.
+- **Against the screen again, whenever a cached grid is served.** A warp writes `wCurMap` before the
+  header and the blocks: measured on Oak's lab's doormat, where `wCurMap` reads `PALLET_TOWN` while
+  the header still reads the lab's ten-by-twelve. The decode and the screen agree on such a frame —
+  both are the old map — so only the *id* is wrong, and the check that catches it is one byte: does
+  the cached grid still agree with the screen about the tile the fly is standing on.
+
+### The survey, on two maps
+
+`services/flysim/crates/flysim/tests/rom_map_grid.rs`, the method of
+`docs/design/room-escape.md` section 3: walk the map with real button presses on throwaway
+emulators, 120 frames of held direction per step and twenty released frames before each state is
+kept, and compare the grid against what the cartridge did.
+
+| map | size | walkable | reachable | unknown | window tiles compared | tiles surveyed | refused presses | a sprite was in the way | a battle or a script answered |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Pallet Town `$00` | 20x18 | 221 | 207 | 0 | 90, no disagreement | 120 | 58, all explained | 4 | 0 |
+| Viridian Forest `$33` | 34x48 | 719 | 719 | 0 | 90, no disagreement | 120 | 74, all explained | 2 | 10 |
+
+"All explained" is the assertion that matters: every press the cartridge refused is a tile the grid
+calls a wall, a directed wall out of that tile, or a tile a sprite was standing on **in the frame
+the press was made in** — Pallet Town's two villagers walk, so reading the sprite list from the
+state the survey started in would not do. And every step the cartridge made is one the grid would
+have planned. Both halves are needed: the first catches a decode that is too permissive, the second
+one that is too strict.
+
+Three things are still not modelled, and none of them is new: a sprite in the way (the sprite list
+answers that, and the executor's per-step moved check covers the rest), a warp that fires on the
+step onto it, and a script that pushes the fly off a tile (a session ledger answers that). The
+water half of the tile-pair lists is deliberately absent: it is the list
+`CheckForJumpingAndTilePairCollisions` uses while surfing, and the palette cannot surf.

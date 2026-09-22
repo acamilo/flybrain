@@ -157,6 +157,10 @@ fn pad(gb: &mut Emulator, adapter: &PokemonRedReward, label: &str) {
     use flybrain_gb::pokemon_red::macros::{geography, palette, path, plan};
     use flybrain_gb::pokemon_red::macros::state::Walkable;
 
+    // Why the grid could not be decoded, read before the state borrows the emulator: it is the
+    // same call `MacroState::map_grid` makes, and the only reading that can say *which* of section
+    // 15's refusals a frame is.
+    let refusal = flybrain_gb::pokemon_red::state::map_grid(gb).err();
     let ledger = AdapterLedger(adapter);
     let mut poke = flybrain_gb::pokemon_red::state::PokeState::with_ledger(gb, &ledger);
     let state: &mut dyn MacroState = &mut poke;
@@ -182,16 +186,52 @@ fn pad(gb: &mut Emulator, adapter: &PokemonRedReward, label: &str) {
     let names: Vec<&str> =
         plan.slots.iter().flatten().map(|spec| spec.name).collect();
     println!("- the pad: {names:?}");
+    // The whole-map grid (`docs/design/macros.md` section 15), which is what the walks plan over
+    // now. Three numbers read a stalled walk: how much of the map is ground, how much of that the
+    // fly can actually get to from where it stands, and how much of *that* it has never stood on.
+    // A fly with 600 walkable tiles and 4 reachable ones is fenced in and no re-plan will help.
+    match state.map_grid() {
+        None => println!(
+            "- the map grid: none ({})",
+            refusal.map_or("unknown", |refusal| refusal.label())
+        ),
+        Some(grid) => {
+            let unstood = grid
+                .walkable_tiles()
+                .into_iter()
+                .filter(|(x, y)| !state.tile_visited(*x, *y))
+                .count();
+            println!(
+                "- the map grid: {}x{} walkable {} reachable {} unstood {} unknown {}",
+                grid.width(),
+                grid.height(),
+                grid.walkable_count(),
+                grid.reachable_from(player.x, player.y),
+                unstood,
+                grid.unknown_count()
+            );
+        }
+    }
     // The `v` column is the *adapter's* lifetime exploration ledger and nothing else. The
     // session's own stood ledger (`docs/design/macros.md` section 12.7) is owned by the driver's
     // palette, which this probe does not reach into, so a doormat the running fly has already
     // marked still prints as unrecorded here. That is the point of the column: it shows what the
     // reward ledger can and cannot answer.
-    println!("\n### The ground (`v` = the adapter's lifetime ledger only)\n\n```");
+    // The grid's reading of the ground where there is one, the window's otherwise, said out loud
+    // so the map below cannot be mistaken for the other reading.
+    let grid = state.map_grid();
+    println!(
+        "\n### The ground, as the {} reads it (`v` = the adapter's lifetime ledger only)\n\n```",
+        if grid.is_some() { "map grid" } else { "ten-by-nine window" }
+    );
     for y in 0..size.height {
         let row: Vec<String> = (0..size.width)
             .map(|x| {
-                let walk = match state.walkable(x, y) {
+                let answer = match grid.as_deref() {
+                    Some(grid) => grid.walkable(x, y),
+                    None => state.walkable(x, y),
+                };
+                let walk = match answer {
                     Walkable::Yes => '.',
                     Walkable::No => '#',
                     Walkable::Unknown => '?',
@@ -208,7 +248,11 @@ fn pad(gb: &mut Emulator, adapter: &PokemonRedReward, label: &str) {
         let mut n = 0;
         for y in 0..size.height {
             for x in 0..size.width {
-                if state.walkable(x, y) == Walkable::Yes && !state.tile_visited(x, y) {
+                let answer = match grid.as_deref() {
+                    Some(grid) => grid.walkable(x, y),
+                    None => state.walkable(x, y),
+                };
+                if answer == Walkable::Yes && !state.tile_visited(x, y) {
                     n += 1;
                 }
             }

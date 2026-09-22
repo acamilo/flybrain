@@ -16,6 +16,7 @@ pub mod ram {
     pub const wSpriteStateData1: u16 = 0xc100;            // 49408
     pub const wSpriteStateData2: u16 = 0xc200;            // 49664
     pub const wTileMap: u16 = 0xc3a0;                     // 50080
+    pub const wOverworldMap: u16 = 0xc6e8;                // 50920
     pub const wTopMenuItemY: u16 = 0xcc24;                // 52260
     pub const wTopMenuItemX: u16 = 0xcc25;                // 52261
     pub const wCurrentMenuItem: u16 = 0xcc26;             // 52262
@@ -59,6 +60,7 @@ pub mod ram {
     pub const wCurMap: u16 = 0xd35e;                      // 54110
     pub const wYCoord: u16 = 0xd361;                      // 54113
     pub const wXCoord: u16 = 0xd362;                      // 54114
+    pub const wCurMapTileset: u16 = 0xd367;               // 54119
     pub const wCurMapHeight: u16 = 0xd368;                // 54120
     pub const wCurMapWidth: u16 = 0xd369;                 // 54121
     pub const wCurMapConnections: u16 = 0xd370;           // 54128
@@ -68,6 +70,8 @@ pub mod ram {
     pub const wSignCoords: u16 = 0xd4b1;                  // 54449
     pub const wSignTextIDs: u16 = 0xd4d1;                 // 54481
     pub const wNumSprites: u16 = 0xd4e1;                  // 54497
+    pub const wTilesetBank: u16 = 0xd52b;                 // 54571
+    pub const wTilesetBlocksPtr: u16 = 0xd52c;            // 54572
     pub const wTilesetCollisionPtr: u16 = 0xd530;         // 54576
     pub const wTilesetTalkingOverTiles: u16 = 0xd532;     // 54578
     pub const wNumHoFTeams: u16 = 0xd5a2;                 // 54690

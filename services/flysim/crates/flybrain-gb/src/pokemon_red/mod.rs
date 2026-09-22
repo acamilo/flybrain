@@ -11,6 +11,7 @@ pub mod catalog;
 #[cfg(test)]
 pub(crate) mod fake_wram;
 pub mod macros;
+pub mod mapgrid;
 pub mod maps;
 pub mod scene;
 pub mod state;
@@ -342,6 +343,13 @@ impl MemoryReader for SampleCache<'_> {
         let value = self.source.read8(address);
         self.bytes.insert(address, value);
         value
+    }
+
+    /// Straight through, uncached: a ROM byte cannot change, so there is nothing
+    /// for a per-sample cache to save, and the caller that reads a blockset
+    /// (`docs/design/macros.md` section 15) caches the decoded map instead.
+    fn read_rom(&mut self, bank: u8, address: u16) -> Option<u8> {
+        self.source.read_rom(bank, address)
     }
 }
 
