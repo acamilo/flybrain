@@ -937,6 +937,33 @@ impl GridRefusal {
 /// ([`GridRefusal::NoScreen`]) rather than trusted, because `wOverworldMap` shares its bytes with
 /// the picture buffer and a battle is exactly when the blocks under it are somebody else's.
 pub fn map_grid(memory: &mut dyn MemoryReader) -> Result<MapGrid, GridRefusal> {
+    // The decode first, so a frame with no header answers `NoHeader` rather than whatever the
+    // player's coordinates happen to read as: the refusals are in the order they are checked.
+    let grid = map_grid_decode(memory)?;
+    let player = player(memory).ok_or(GridRefusal::NoPlayer)?;
+    // The cross-check. `map_tile_id` reads the screen buffer at the offset
+    // `_GetTileAndCoordsInFrontOfPlayer` uses, so agreeing with it on the tiles it can answer for
+    // is agreeing with the cartridge's own reading of the same ground.
+    let mut checked = 0;
+    for (x, y) in neighbourhood(player.x, player.y) {
+        let Some(screen) = map_tile_id(memory, x, y) else { continue };
+        if grid.tile_id(x, y) != Some(screen) {
+            return Err(GridRefusal::ScreenDisagrees);
+        }
+        checked += 1;
+    }
+    if checked == 0 {
+        return Err(GridRefusal::NoScreen);
+    }
+    Ok(grid)
+}
+
+/// [`map_grid`] without the cross-check: the blocks, the blockset and the collision list, decoded.
+///
+/// Split out so [`grid_disagreement`] can say what the decode answered on a frame the check
+/// refused. Nothing outside this module and the probes may use it: a grid that has not been
+/// checked against the screen is exactly the reading section 15 refuses to trust.
+fn map_grid_decode(memory: &mut dyn MemoryReader) -> Result<MapGrid, GridRefusal> {
     let size = map_size(memory).ok_or(GridRefusal::NoHeader)?;
     let player = player(memory).ok_or(GridRefusal::NoPlayer)?;
     let passable = collision_list(memory).ok_or(GridRefusal::NoCollisionList)?;
@@ -979,21 +1006,26 @@ pub fn map_grid(memory: &mut dyn MemoryReader) -> Result<MapGrid, GridRefusal> {
     if grid.width() != size.width || grid.height() != size.height {
         return Err(GridRefusal::NoHeader);
     }
-    // The cross-check. `map_tile_id` reads the screen buffer at the offset
-    // `_GetTileAndCoordsInFrontOfPlayer` uses, so agreeing with it on the tiles it can answer for
-    // is agreeing with the cartridge's own reading of the same ground.
-    let mut checked = 0;
-    for (x, y) in neighbourhood(player.x, player.y) {
-        let Some(screen) = map_tile_id(memory, x, y) else { continue };
-        if grid.tile_id(x, y) != Some(screen) {
-            return Err(GridRefusal::ScreenDisagrees);
-        }
-        checked += 1;
-    }
-    if checked == 0 {
-        return Err(GridRefusal::NoScreen);
-    }
     Ok(grid)
+}
+
+/// The decode and the screen, tile by tile, for the five tiles [`map_grid`] cross-checks.
+///
+/// The diagnostic half of [`GridRefusal::ScreenDisagrees`]: the refusal says the two readings
+/// disagree and this says *where* and *by how much*, which is the difference between "the grid is
+/// off on this map" and "this frame was mid-warp". `(x, y, decoded, screen)`, with `None` for a
+/// tile either reading cannot answer for. It decodes the map a second time rather than being
+/// folded into [`map_grid`], because the check's job on the hot path is to refuse and this is only
+/// ever asked by a probe.
+pub fn grid_disagreement(memory: &mut dyn MemoryReader) -> Vec<(u8, u8, Option<u8>, Option<u8>)> {
+    let Some(player) = player(memory) else { return Vec::new() };
+    let grid = map_grid_decode(memory).ok();
+    neighbourhood(player.x, player.y)
+        .into_iter()
+        .map(|(x, y)| {
+            (x, y, grid.as_ref().and_then(|grid| grid.tile_id(x, y)), map_tile_id(memory, x, y))
+        })
+        .collect()
 }
 
 /// Whether a cached grid is still the map that is loaded, checked from the tile the fly is on.
