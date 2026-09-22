@@ -1388,6 +1388,16 @@ pub fn frontier_aims(state: &mut dyn MacroState) -> Vec<(Tile, Facing)> {
     if counter_pending(state) {
         return Vec::new();
     }
+    // **A map whose frontier this run has already proved it cannot reach** (section 12.14, the
+    // rung-10 museum). The unstood tiles are still there and still unstood -- the exhibit hall
+    // behind the admission desk, the far side of a fence -- and a walk that could not reach any
+    // of them refuses `no route`, writes them all to the blocked ledger and comes back ten brain
+    // minutes later when the window lapses, for ever. The mark has no window; it is cleared by
+    // the fly standing somewhere on this map it had not stood before, which is the only thing
+    // that can have changed the answer.
+    if state.frontier_exhausted() {
+        return Vec::new();
+    }
     let mut local: Vec<(Tile, Facing)> = Vec::new();
     for (tile, facing) in path::frontier(state) {
         // A tile the blocked ledger is resting, or one a script pushes the fly off (row 37).

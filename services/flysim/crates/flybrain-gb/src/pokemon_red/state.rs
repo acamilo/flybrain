@@ -25,8 +25,9 @@ use crate::adapter::{MapEdge, MapExit, MapTile, MemoryReader};
 use crate::macros::{RunLedger, NoLedger};
 
 use super::macros::cartridge::{
-    AreaLedger, Edge, ExitId, MacroState, NoAreas, NoPushed, NoStood, NoTalk, NoTargets,
-    Objective, PushedLedger, StoodLedger, TalkLedger, TalkTarget, TargetKey, TargetLedger, Tile,
+    AreaLedger, Edge, ExitId, FrontierLedger, MacroState, NoAreas, NoFrontiers, NoPushed, NoStood,
+    NoTalk, NoTargets, Objective, PushedLedger, StoodLedger, TalkLedger, TalkTarget, TargetKey,
+    TargetLedger, Tile,
 };
 use super::macros::geography::Amenity;
 use super::mapgrid::{self, MapGrids};
@@ -1196,6 +1197,10 @@ pub struct PokeState<'a> {
     /// ([`PokeState::caching_grid`]) so that a precondition asking for the frontier costs a
     /// refcount instead of a map.
     grids: Option<&'a mut MapGrids>,
+    /// Which maps have proved their frontier unreachable (`docs/design/macros.md` section
+    /// 12.14). A builder rather than a constructor parameter, exactly as the grid cache is: the
+    /// sim loop passes one and everything else narrows to "nothing proved".
+    frontiers: &'a dyn FrontierLedger,
 }
 
 impl<'a> PokeState<'a> {
@@ -1214,6 +1219,7 @@ impl<'a> PokeState<'a> {
             areas: &NoAreas,
             pushed: &NoPushed,
             grids: None,
+            frontiers: &NoFrontiers,
         }
     }
 
@@ -1228,6 +1234,7 @@ impl<'a> PokeState<'a> {
             areas: &NoAreas,
             pushed: &NoPushed,
             grids: None,
+            frontiers: &NoFrontiers,
         }
     }
 
@@ -1245,7 +1252,7 @@ impl<'a> PokeState<'a> {
         areas: &'a dyn AreaLedger,
         pushed: &'a dyn PushedLedger,
     ) -> Self {
-        Self { memory, ledger, talk, targets, stood, areas, pushed, grids: None }
+        Self { memory, ledger, talk, targets, stood, areas, pushed, grids: None, frontiers: &NoFrontiers }
     }
 
     /// Keep the decoded map grid in `grids` instead of decoding it per question.
@@ -1256,6 +1263,16 @@ impl<'a> PokeState<'a> {
     /// cartridge on the first overworld frame after a restore.
     pub fn caching_grid(mut self, grids: &'a mut MapGrids) -> Self {
         self.grids = Some(grids);
+        self
+    }
+
+    /// Answer [`MacroState::frontier_exhausted`] from `frontiers` instead of "nothing proved".
+    ///
+    /// A builder for the same reason the grid cache is one: it is the sim loop's own session
+    /// state ([`super::macros::driver::PokemonPalette`]) and every other caller -- the tests, the
+    /// probes, the ROM harnesses -- wants the narrowing.
+    pub fn with_frontiers(mut self, frontiers: &'a dyn FrontierLedger) -> Self {
+        self.frontiers = frontiers;
         self
     }
 }
@@ -1344,6 +1361,10 @@ impl MacroState for PokeState<'_> {
 
     fn text_open(&mut self) -> bool {
         text_box(self.memory).open
+    }
+
+    fn frontier_exhausted(&mut self) -> bool {
+        player(self.memory).is_some_and(|player| self.frontiers.frontier_exhausted(player.map))
     }
 
     fn yes_no_prompt(&mut self) -> bool {

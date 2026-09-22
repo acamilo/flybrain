@@ -115,6 +115,11 @@ struct World {
     areas: BTreeSet<(Amenity, u8)>,
     /// Tiles the cartridge pushes the fly off (`infra/docs/macros-traps.md` row 37).
     pushes: BTreeSet<Tile>,
+    /// Maps a `GO FRONTIER` has proved it cannot reach the frontier of (section 12.14).
+    ///
+    /// Written by [`drive`] from the machine, exactly as `PokemonPalette` writes it in the sim
+    /// loop, so a test sees the ledger the next decision would see.
+    exhausted: BTreeSet<u8>,
     visited: BTreeSet<ExitId>,
     /// Tiles of this map the run has stood on, for `GO FRONTIER` and the plan's "untalked" test.
     stood: BTreeSet<Tile>,
@@ -232,6 +237,7 @@ impl World {
             counters: BTreeSet::new(),
             areas: BTreeSet::new(),
             pushes: BTreeSet::new(),
+            exhausted: BTreeSet::new(),
             stock: Vec::new(),
             visited: BTreeSet::new(),
             stood: BTreeSet::new(),
@@ -673,6 +679,10 @@ impl MacroState for World {
         self.scene == Scene::Dialog || self.box_open
     }
 
+    fn frontier_exhausted(&mut self) -> bool {
+        self.exhausted.contains(&self.map)
+    }
+
     /// A drawn box is what the reading rests on, so a prompt cannot be open with no box open:
     /// `pokemon_red::state::yes_no_prompt` gates on `wFontLoaded` before it looks at the tiles.
     fn yes_no_prompt(&mut self) -> bool {
@@ -773,6 +783,9 @@ fn drive(
         while let Some((map, target)) = machine.take_blocked() {
             world.targets.record_blocked(map, target);
         }
+        if let Some(map) = machine.take_exhausted() {
+            world.exhausted.insert(map);
+        }
         return Err(refused);
     }
     // A walk's cap is its plan's, so the bound here is the ceiling on any macro plus slack.
@@ -793,6 +806,9 @@ fn drive(
     // in the sim loop and this line's here.
     while let Some((map, target)) = machine.take_blocked() {
         world.targets.record_blocked(map, target);
+    }
+    if let Some(map) = machine.take_exhausted() {
+        world.exhausted.insert(map);
     }
     if let Some((map, target, closer)) = machine.take_timeout() {
         world.targets.record_timeout(map, target, closer);
@@ -3191,6 +3207,69 @@ fn no_playable_scene_deals_an_empty_pad() {
     let mut title = World::room();
     title.scene = Scene::Title;
     assert_eq!(plan::plan_for(Scene::Title, &mut title).bound(), 0);
+}
+
+#[test]
+fn a_frontier_no_walk_can_reach_takes_go_frontier_off_the_pad_and_keeps_it_off() {
+    // Section 12.14, the rung-10 museum. The sealed pocket below is map `0x34` in miniature: the
+    // unstood ground is real and it is fenced off, so `GO FRONTIER` refuses `no route` and writes
+    // every tile it could not reach to the blocked ledger -- which is a *window*. Before this the
+    // window lapsed after ten brain minutes and all of it was a candidate again: 1,235 starts in
+    // 47 minutes over two museum floors and a town. The mark has no window.
+    let mut world = World::room();
+    for y in 0..8 {
+        for x in 0..8 {
+            world.stood.insert(Tile::new(x, y));
+        }
+    }
+    world.stood.remove(&Tile::new(7, 7));
+    world.walls.insert(Tile::new(6, 7));
+    world.walls.insert(Tile::new(6, 6));
+    world.walls.insert(Tile::new(7, 5));
+    world.player = Tile::new(0, 0);
+    assert!(!super::palette::frontier_aims(&mut world).is_empty(), "the pocket is a frontier");
+    assert!(precondition(MacroKind::GoFrontier, &mut world), "so the button is on the pad");
+
+    let refused = run(&mut world, MacroKind::GoFrontier).expect_err("the pocket is sealed");
+    assert_eq!(refused.reason, Refusal::NoRoute);
+    assert!(world.exhausted.contains(&world.map), "the map is marked: {:?}", world.exhausted);
+    assert!(super::palette::frontier_aims(&mut world).is_empty(), "nothing left to aim at");
+    assert!(!precondition(MacroKind::GoFrontier, &mut world), "and the button is off the pad");
+
+    // Ten brain minutes later the blocked window has lapsed and every tile of the pocket is a
+    // candidate again -- and the button is still off the pad, because the ground has not moved.
+    world.targets.clock(11.0 * 60_000.0);
+    assert!(!world.targets.blocked(world.map, TargetKey::Tile(Tile::new(7, 6))));
+    assert!(
+        super::palette::frontier_aims(&mut world).is_empty(),
+        "the mark is not a window"
+    );
+    // A map the fly walks to instead is untouched: the mark is one map's.
+    world.map = 0x35;
+    assert!(!super::palette::frontier_aims(&mut world).is_empty(), "another map is its own");
+}
+
+#[test]
+fn a_frontier_mark_is_the_stood_ledgers_to_clear() {
+    // The two halves of the rule as the types have them: the stood ledger answers "this is
+    // ground the run had not stood on", which is the only event that can change which tiles the
+    // fly can reach, and that answer is what clears the map's mark.
+    let mut stood = super::cartridge::Stood::default();
+    assert!(stood.record(2, Tile::new(4, 4)), "the first time is new ground");
+    assert!(!stood.record(2, Tile::new(4, 4)), "the second time is not");
+    assert!(stood.record(0x34, Tile::new(4, 4)), "and a tile is a tile of one map");
+
+    use super::cartridge::FrontierLedger;
+    let mut frontiers = super::cartridge::Frontiers::default();
+    assert!(!frontiers.frontier_exhausted(0x34));
+    frontiers.record(0x34);
+    frontiers.record(0x34);
+    assert!(frontiers.frontier_exhausted(0x34), "idempotent");
+    assert!(!frontiers.frontier_exhausted(0x35), "and one map's");
+    assert_eq!(frontiers.len(), 1);
+    frontiers.clear(0x34);
+    assert!(!frontiers.frontier_exhausted(0x34));
+    assert!(frontiers.is_empty());
 }
 
 #[test]
