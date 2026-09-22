@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 
 use crate::coordinator::DispatchOrder;
 use crate::harness::{AgentSpec, HarnessConfig, SessionHarness, Via};
-use crate::launcher::ExecutionMode;
+use crate::launcher::{ExecutionMode, flags};
 use crate::metrics::{Percentiles, physical_cores};
 
 /// What to compare.
@@ -241,15 +241,15 @@ fn row_in_a_child(
 ) -> Result<Row, String> {
     let output = std::process::Command::new(program)
         .arg("measure-row")
-        .arg("--mode")
+        .arg(format!("--{}", flags::MODE))
         .arg(mode.label())
-        .arg("--agents")
+        .arg(format!("--{}", flags::AGENTS))
         .arg(agents.to_string())
-        .arg("--steps")
+        .arg(format!("--{}", flags::STEPS))
         .arg(config.steps.to_string())
-        .arg("--warmup-steps")
+        .arg(format!("--{}", flags::WARMUP_STEPS))
         .arg(config.warmup_steps.to_string())
-        .arg("--worker-threads")
+        .arg(format!("--{}", flags::WORKER_THREADS))
         .arg(config.worker_threads.to_string())
         .stdin(std::process::Stdio::null())
         .output()

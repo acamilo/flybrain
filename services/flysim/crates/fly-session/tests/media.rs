@@ -45,7 +45,10 @@ both_transports!(
     a_cadence_that_does_not_divide_the_sample_rate_still_lands_on_whole_samples,
 );
 
-all_modes!(the_media_path_works_in_every_execution_mode);
+all_modes!(
+    the_media_path_works_in_every_execution_mode,
+    every_media_fault_fires_in_every_execution_mode,
+);
 
 const STEPS: u64 = 3;
 
@@ -604,6 +607,77 @@ async fn the_media_path_works_in_every_execution_mode(mode: ExecutionMode) {
         (mode, _, _) => panic!("{mode:?} keeps its participants in this process"),
     }
     f.shutdown().await;
+}
+
+/// Every media fault fires wherever the world runs, which is what proves the wiring rather
+/// than assuming it.
+///
+/// A fault reaches a world in another process only as a `--flag` on its command line, so a
+/// renamed or dropped flag would make these faults silently stop firing. Here each one has to
+/// fail its transition in every execution mode; the parser refuses an unknown flag, so a
+/// mismatch fails the launch instead of turning into a no-op.
+async fn every_media_fault_fires_in_every_execution_mode(mode: ExecutionMode) {
+    let cases: [(&str, EnvironmentFaults, u64); 4] = [
+        (
+            "an extra-delayed view",
+            EnvironmentFaults {
+                stale_view_at_boundary: Some(2),
+                ..EnvironmentFaults::default()
+            },
+            2,
+        ),
+        (
+            "a frame of the wrong length",
+            EnvironmentFaults {
+                truncated_view_at_boundary: Some(1),
+                ..EnvironmentFaults::default()
+            },
+            1,
+        ),
+        (
+            "a missing audio chunk",
+            EnvironmentFaults {
+                omit_audio_at_boundary: Some(2),
+                ..EnvironmentFaults::default()
+            },
+            2,
+        ),
+        (
+            "an overlapping audio chunk",
+            EnvironmentFaults {
+                overlapping_audio_at_boundary: Some(2),
+                ..EnvironmentFaults::default()
+            },
+            2,
+        ),
+    ];
+    for (what, faults, steps) in cases {
+        let config = HarnessConfig {
+            environment_faults: faults,
+            ..HarnessConfig::default()
+        };
+        let mut f = mode_fixture(mode, config).await;
+        within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
+        let outcome = within("run", f.harness.coordinator.run(steps)).await;
+        let failure = match outcome {
+            Err(failure) => failure,
+            Ok(reports) => {
+                panic!("{what} did not fail the transition in {mode:?} mode: {reports:?}")
+            }
+        };
+        assert_eq!(
+            failure.error.code,
+            ErrorCode::BufferInvalid,
+            "{what} in {mode:?} mode: {failure}"
+        );
+        assert_eq!(f.harness.coordinator.phase(), Phase::Failed);
+        assert_eq!(
+            f.harness.coordinator.stats().advances,
+            steps - 1,
+            "{what} in {mode:?} mode committed the boundaries before it and no more"
+        );
+        f.shutdown().await;
+    }
 }
 
 /// The retention table: a required agent input is retained through encoding and Commit with no

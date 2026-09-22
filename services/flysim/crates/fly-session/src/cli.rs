@@ -21,7 +21,9 @@ use std::process::ExitCode;
 
 use crate::agent::AgentFaults;
 use crate::environment::EnvironmentFaults;
-use crate::launcher::{AgentLaunch, EnvironmentLaunch, ExecutionMode, Started, serve_one};
+use crate::launcher::{
+    AgentLaunch, EnvironmentLaunch, ExecutionMode, Started, flags, serve_one,
+};
 use crate::types::*;
 
 const USAGE: &str = "\
@@ -69,9 +71,12 @@ pub fn main() -> ExitCode {
     let command = command.to_string_lossy().into_owned();
     let rest: Vec<String> = args.map(|a| a.to_string_lossy().into_owned()).collect();
     let result = match command.as_str() {
-        "agent" | "environment" => Options::parse(&rest).and_then(|o| serve(&command, &o)),
-        "measure" => Options::parse(&rest).and_then(|o| measure(&o)),
-        "measure-row" => Options::parse(&rest).and_then(|o| measure_row(&o)),
+        "agent" => Options::parse(&rest, &[flags::COMMON, flags::AGENT_ONLY])
+            .and_then(|o| serve(&command, &o)),
+        "environment" => Options::parse(&rest, &[flags::COMMON, flags::ENVIRONMENT_ONLY])
+            .and_then(|o| serve(&command, &o)),
+        "measure" => Options::parse(&rest, &[flags::MEASURE]).and_then(|o| measure(&o)),
+        "measure-row" => Options::parse(&rest, &[flags::MEASURE]).and_then(|o| measure_row(&o)),
         "--help" | "-h" | "help" => {
             print!("{USAGE}");
             return ExitCode::SUCCESS;
@@ -92,13 +97,22 @@ pub fn main() -> ExitCode {
 struct Options(BTreeMap<String, String>);
 
 impl Options {
-    fn parse(args: &[String]) -> Result<Options, String> {
+    /// Reads the options of one command, refusing any flag that command does not have.
+    ///
+    /// `allowed` comes from [`crate::launcher::flags`], the same constants the launcher
+    /// writes the argv from. An unknown flag is an error naming it rather than a value that
+    /// is quietly ignored: a renamed option must fail the launch, not turn into a no-op that
+    /// no test notices.
+    fn parse(args: &[String], allowed: &[&[&str]]) -> Result<Options, String> {
         let mut out = BTreeMap::new();
         let mut iter = args.iter();
         while let Some(flag) = iter.next() {
             let Some(name) = flag.strip_prefix("--") else {
                 return Err(format!("expected an option, found {flag:?}"));
             };
+            if !allowed.iter().any(|set| set.contains(&name)) {
+                return Err(format!("unknown option --{name} for this command"));
+            }
             let value = iter
                 .next()
                 .ok_or_else(|| format!("option --{name} needs a value"))?;
@@ -158,51 +172,53 @@ impl Options {
 
 /// Serves one worker until `Worker.Shutdown`, then exits.
 fn serve(role: &str, options: &Options) -> Result<(), String> {
-    let socket = options.path("socket")?;
-    let store_root = options.path("store-root")?;
-    let client_id = options.required("client-id")?.to_owned();
-    let service = options.required("service")?.to_owned();
-    let threads = options.usize("threads", 1)?;
+    let socket = options.path(flags::SOCKET)?;
+    let store_root = options.path(flags::STORE_ROOT)?;
+    let client_id = options.required(flags::CLIENT_ID)?.to_owned();
+    let service = options.required(flags::SERVICE)?.to_owned();
+    let threads = options.usize(flags::THREADS, 1)?;
     if threads == 0 {
         return Err("--threads must be at least 1".to_owned());
     }
-    let session_id = options.id("session")?;
-    let incarnation_id = options.id("incarnation")?;
+    let session_id = options.id(flags::SESSION)?;
+    let incarnation_id = options.id(flags::INCARNATION)?;
     let what = match role {
         "agent" => Started::Agent(AgentLaunch {
             session_id,
-            agent_id: options.id("agent")?,
-            port_id: options.id("port")?,
+            agent_id: options.id(flags::AGENT)?,
+            port_id: options.id(flags::PORT)?,
             incarnation_id,
-            tick_duration: options.rational("tick-numerator", "tick-denominator")?,
-            warmup_ticks: options.u64("warmup-ticks", 0)?,
+            tick_duration: options.rational(flags::TICK_NUMERATOR, flags::TICK_DENOMINATOR)?,
+            warmup_ticks: options.u64(flags::WARMUP_TICKS, 0)?,
             worker_threads: threads,
             // This process's own log. The supervisor reads what crosses the bus, not this.
             sensors: crate::media::SensorLog::new(),
             faults: AgentFaults {
-                fail_commit_at_step: options.opt_u64("fail-commit-at-step")?,
-                prepare_delay_ms: options.u64("prepare-delay-ms", 0)?,
-                commit_delay_ms: options.u64("commit-delay-ms", 0)?,
+                fail_commit_at_step: options.opt_u64(flags::FAIL_COMMIT_AT_STEP)?,
+                prepare_delay_ms: options.u64(flags::PREPARE_DELAY_MS, 0)?,
+                commit_delay_ms: options.u64(flags::COMMIT_DELAY_MS, 0)?,
             },
             client_id: client_id.clone(),
             service: service.clone(),
         }),
         _ => Started::Environment(EnvironmentLaunch {
             session_id,
-            worker_id: options.id("worker")?,
+            worker_id: options.id(flags::WORKER)?,
             incarnation_id,
-            step_duration: options.rational("step-numerator", "step-denominator")?,
-            ports: parse_ports(options.required("ports")?)?,
+            step_duration: options.rational(flags::STEP_NUMERATOR, flags::STEP_DENOMINATOR)?,
+            ports: parse_ports(options.required(flags::PORTS)?)?,
             worker_threads: threads,
-            observation_delay_steps: options.u64("observation-delay-steps", 0)?,
+            observation_delay_steps: options.u64(flags::OBSERVATION_DELAY_STEPS, 0)?,
             renders: crate::media::RenderCounter::new(),
             faults: EnvironmentFaults {
-                advance_delay_ms: options.u64("advance-delay-ms", 0)?,
-                omit_view_at_boundary: options.opt_u64("omit-view-at-boundary")?,
-                stale_view_at_boundary: options.opt_u64("stale-view-at-boundary")?,
-                truncated_view_at_boundary: options.opt_u64("truncated-view-at-boundary")?,
-                omit_audio_at_boundary: options.opt_u64("omit-audio-at-boundary")?,
-                overlapping_audio_at_boundary: options.opt_u64("overlapping-audio-at-boundary")?,
+                advance_delay_ms: options.u64(flags::ADVANCE_DELAY_MS, 0)?,
+                omit_view_at_boundary: options.opt_u64(flags::OMIT_VIEW_AT_BOUNDARY)?,
+                stale_view_at_boundary: options.opt_u64(flags::STALE_VIEW_AT_BOUNDARY)?,
+                truncated_view_at_boundary: options
+                    .opt_u64(flags::TRUNCATED_VIEW_AT_BOUNDARY)?,
+                omit_audio_at_boundary: options.opt_u64(flags::OMIT_AUDIO_AT_BOUNDARY)?,
+                overlapping_audio_at_boundary: options
+                    .opt_u64(flags::OVERLAPPING_AUDIO_AT_BOUNDARY)?,
             },
             client_id: client_id.clone(),
             service: service.clone(),
@@ -287,4 +303,35 @@ fn measure_row(options: &Options) -> Result<(), String> {
     let row = runtime.block_on(crate::measure::one(&config, mode, agents))?;
     println!("{}", row.to_json());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An unknown flag is refused by name. A renamed option must fail the launch rather than
+    /// be accepted and ignored, which would turn a fault or a delay into a no-op.
+    #[test]
+    fn an_unknown_option_is_refused_by_name() {
+        let args: Vec<String> = ["--session", "demo", "--stale-view-at-boundry", "2"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        let error = Options::parse(&args, &[flags::COMMON, flags::ENVIRONMENT_ONLY])
+            .expect_err("an unknown option is refused");
+        assert!(error.contains("--stale-view-at-boundry"), "{error}");
+    }
+
+    /// A flag that belongs to another command is refused too: an agent has no render delay.
+    #[test]
+    fn an_option_of_another_command_is_refused() {
+        let args: Vec<String> = ["--observation-delay-steps", "2"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        Options::parse(&args, &[flags::COMMON, flags::AGENT_ONLY])
+            .expect_err("the agent command has no render delay");
+        Options::parse(&args, &[flags::COMMON, flags::ENVIRONMENT_ONLY])
+            .expect("the environment command does");
+    }
 }
