@@ -145,6 +145,12 @@ pub struct Deadlines {
     /// a capture serializes a participant and a restore validates and installs one, and
     /// neither is a step whose latency the probe was chosen for.
     pub capture: Duration,
+    /// How long a caller waits for a *durable* acknowledgment.
+    ///
+    /// It is not [`Deadlines::capture`]: that one bounds a call to a participant, and this
+    /// one bounds two `fsync`s, a queue the caller shares with other captures and a disk.
+    /// Reusing the call budget here would make a slow disk look like an unresponsive worker.
+    pub durable: Duration,
 }
 
 /// How long the resolution waits between attempts.
@@ -172,6 +178,7 @@ impl Default for Deadlines {
             resolve_attempts: 8192,
             boot: Duration::from_secs(30),
             capture: Duration::from_secs(30),
+            durable: Duration::from_secs(60),
         }
     }
 }
@@ -3186,14 +3193,17 @@ impl Coordinator {
     /// operation.
     pub async fn await_durable(&mut self, ticket: CaptureTicket) -> Outcome<crate::state::SaveOutcome> {
         let CaptureTicket { checkpoint_id, boundary, receiver } = ticket;
-        let budget = self.deadlines.capture;
+        let budget = self.deadlines.durable;
         let outcome =
             crate::state::CheckpointWriter::wait(receiver, &checkpoint_id, budget).await;
-        if let crate::state::SaveOutcome::Committed { .. } = &outcome {
+        if outcome.is_durable() {
             self.durable = Some((checkpoint_id.clone(), boundary));
             self.audit.push(format!("durable:{checkpoint_id}@{boundary}"));
         } else {
-            self.audit.push(format!("not-durable:{checkpoint_id}@{boundary}"));
+            // Named rather than lumped together: a failed write, a superseded capture, a lost
+            // reply and an expired caller budget are four different things to have to explain.
+            self.audit
+                .push(format!("not-durable:{}:{checkpoint_id}@{boundary}", outcome.event()));
         }
         Ok(outcome)
     }

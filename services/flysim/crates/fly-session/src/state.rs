@@ -999,10 +999,18 @@ pub enum SaveOutcome {
     Failed { checkpoint_id: Id, reason: String },
     /// A later replaceable capture took this one's place in the queue before it was written.
     Superseded { checkpoint_id: Id, by: Id },
-    /// The writer's reply never arrived. The operation's outcome is unknown from here, so
-    /// durable metadata does not move; the caller resolves the *same* operation against the
-    /// store manifest instead of saving again.
+    /// The writer finished this job and its reply channel was gone before the outcome could
+    /// be delivered. The write is over and its result is unknown from here.
     ReplyLost { checkpoint_id: Id },
+    /// The caller's own budget ran out while the job was still queued or being written. The
+    /// save is not over: it may commit after this is reported.
+    ///
+    /// It is a different fact from [`SaveOutcome::ReplyLost`] and is named separately because
+    /// diagnosing one as the other is exactly the implicit best-effort reading these
+    /// contracts refuse. Both leave durable metadata where it was, and for both the caller
+    /// resolves the *same* operation against the store manifest instead of saving again --
+    /// but only one of them is a save that has already stopped.
+    DeadlineExpired { checkpoint_id: Id },
 }
 
 impl SaveOutcome {
@@ -1011,17 +1019,54 @@ impl SaveOutcome {
             SaveOutcome::Committed { checkpoint_id, .. }
             | SaveOutcome::Failed { checkpoint_id, .. }
             | SaveOutcome::Superseded { checkpoint_id, .. }
-            | SaveOutcome::ReplyLost { checkpoint_id } => checkpoint_id,
+            | SaveOutcome::ReplyLost { checkpoint_id }
+            | SaveOutcome::DeadlineExpired { checkpoint_id } => checkpoint_id,
         }
     }
 
     /// The event name this outcome publishes under.
+    ///
+    /// Only the three the writer itself produces are ever published; the two caller-side
+    /// outcomes are what a caller saw, not what the store did, and the store does not announce
+    /// them on its own topic.
     pub fn event(&self) -> &'static str {
         match self {
             SaveOutcome::Committed { .. } => "committed",
             SaveOutcome::Failed { .. } => "failed",
             SaveOutcome::Superseded { .. } => "superseded",
-            SaveOutcome::ReplyLost { .. } => "failed",
+            SaveOutcome::ReplyLost { .. } | SaveOutcome::DeadlineExpired { .. } => "failed",
+        }
+    }
+
+    /// True only past the durable commit point.
+    pub fn is_durable(&self) -> bool {
+        matches!(self, SaveOutcome::Committed { .. })
+    }
+}
+
+/// What the writer itself can produce for one job.
+///
+/// The two caller-side outcomes -- a lost reply and an expired caller deadline -- are not in
+/// here, because the writer cannot observe either. Keeping them out is what stops the writer's
+/// own bookkeeping from carrying arms that can never run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum WriteOutcome {
+    Committed { boundary: u64, file: String },
+    Failed { reason: String },
+}
+
+impl WriteOutcome {
+    fn into_save(self, checkpoint_id: &Id) -> SaveOutcome {
+        match self {
+            WriteOutcome::Committed { boundary, file } => SaveOutcome::Committed {
+                checkpoint_id: checkpoint_id.clone(),
+                boundary,
+                file,
+            },
+            WriteOutcome::Failed { reason } => SaveOutcome::Failed {
+                checkpoint_id: checkpoint_id.clone(),
+                reason,
+            },
         }
     }
 }
@@ -1037,13 +1082,21 @@ pub enum RetryPolicy {
     RetryThenRelease { attempts: u32 },
 }
 
-/// The writer's bounds. Both are finite and both refuse before a capture is requested.
+/// The writer's bounds. Both are finite, and they refuse at different moments.
+///
+/// [`WriterConfig::queue_capacity`] is the one a capture is refused *before* it is requested:
+/// [`CheckpointWriter::reserve`] takes its slot first, which is what the durable row of
+/// `state-media-v1` section 3 means by rejecting before capture. The byte budget cannot work
+/// that way, because how many bytes a capture is worth is not known until the participants
+/// have produced it; it is checked at [`CheckpointWriter::submit`], so an oversized capture is
+/// refused after it exists and before it is queued, and its payloads are released with the
+/// refusal. Both are named `BUSY` refusals and neither fails the epoch.
 #[derive(Clone, Copy, Debug)]
 pub struct WriterConfig {
     /// Outstanding coherent captures. `state-media-v1` section 3's initial session default
-    /// is two.
+    /// is two. Refused before a capture is requested.
     pub queue_capacity: usize,
-    /// The total payload bytes the queue may hold.
+    /// The total payload bytes the queue may hold. Refused at submit, once the size is known.
     pub max_queued_bytes: u64,
     pub retry: RetryPolicy,
 }
@@ -1198,48 +1251,57 @@ capture is refused before it is requested rather than queued without bound",
     ) -> DomainResult<tokio::sync::oneshot::Receiver<SaveOutcome>> {
         let bytes = submission.byte_length();
         let budget = self.shared.config.max_queued_bytes;
-        let held = self.shared.queued_bytes.load(Ordering::SeqCst);
-        if held + bytes > budget {
-            self.shared
-                .stats
-                .lock()
-                .expect("the writer stats are never poisoned")
-                .rejected += 1;
-            return Err(DomainError::before(
-                ErrorCode::Busy,
-                format!(
-                    "the checkpoint queue holds {held} of {budget} bytes and this capture adds \
-{bytes}; the byte budget is finite and refuses before it is exceeded"
-                ),
-            ));
-        }
         let (reply, receiver) = tokio::sync::oneshot::channel();
         let checkpoint_id = submission.checkpoint_id.clone();
         let queued_event = submission.as_event("queued");
+        // Reading the byte total, deciding on it and changing it are one critical section.
+        // Only one caller submits today, so a split could not be observed -- but a bound that
+        // is only correct while nobody else is submitting is not a bound.
         let superseded = {
             let mut queue = self.shared.queue.lock().expect("the writer queue is never poisoned");
-            let replaced = if submission.replaceable {
-                queue
-                    .iter()
-                    .position(|job| job.submission.replaceable)
-                    .map(|index| queue.remove(index).expect("just found"))
+            let replaced_index = if submission.replaceable {
+                queue.iter().position(|job| job.submission.replaceable)
             } else {
                 None
             };
+            // A capture that will take a queued replaceable one's place frees its bytes, so
+            // the budget is decided against what the queue will hold and not what it holds.
+            let freed = replaced_index.map_or(0, |index| queue[index].submission.byte_length());
+            let held = self.shared.queued_bytes.load(Ordering::SeqCst);
+            let after = held.saturating_sub(freed) + bytes;
+            if after > budget {
+                self.shared
+                    .stats
+                    .lock()
+                    .expect("the writer stats are never poisoned")
+                    .rejected += 1;
+                return Err(DomainError::before(
+                    ErrorCode::Busy,
+                    format!(
+                        "the checkpoint queue would hold {after} of {budget} bytes; the byte \
+budget is finite and refuses before it is exceeded"
+                    ),
+                ));
+            }
+            let replaced = replaced_index.map(|index| queue.remove(index).expect("just found"));
+            if let Some(old) = &replaced {
+                self.shared
+                    .queued_bytes
+                    .fetch_sub(old.submission.byte_length(), Ordering::SeqCst);
+            }
             queue.push_back(Job { submission, reply, permit: reservation.permit });
             self.shared.queued_bytes.fetch_add(bytes, Ordering::SeqCst);
             let mut stats = self.shared.stats.lock().expect("the writer stats are never poisoned");
             stats.queued += 1;
             stats.peak_queue = stats.peak_queue.max(queue.len());
+            // Sampled after the superseded job's bytes are gone, so the peak is a total the
+            // queue really held.
             stats.peak_bytes = stats
                 .peak_bytes
                 .max(self.shared.queued_bytes.load(Ordering::SeqCst));
             replaced
         };
         if let Some(old) = superseded {
-            self.shared
-                .queued_bytes
-                .fetch_sub(old.submission.byte_length(), Ordering::SeqCst);
             self.shared
                 .stats
                 .lock()
@@ -1267,8 +1329,12 @@ capture is refused before it is requested rather than queued without bound",
         Ok(receiver)
     }
 
-    /// Waits for one save's outcome. A dropped reply channel is a lost save reply, which is
-    /// an outcome and not a hang.
+    /// Waits for one save's outcome, within the caller's own budget.
+    ///
+    /// The two ways this ends without an outcome are different facts and are reported as
+    /// themselves: the channel closing means the writer finished and the reply did not reach
+    /// here, and the budget running out means the save is still going. Neither is a hang and
+    /// neither is a save.
     pub async fn wait(
         receiver: tokio::sync::oneshot::Receiver<SaveOutcome>,
         checkpoint_id: &Id,
@@ -1276,7 +1342,8 @@ capture is refused before it is requested rather than queued without bound",
     ) -> SaveOutcome {
         match tokio::time::timeout(budget, receiver).await {
             Ok(Ok(outcome)) => outcome,
-            Ok(Err(_)) | Err(_) => SaveOutcome::ReplyLost { checkpoint_id: checkpoint_id.clone() },
+            Ok(Err(_)) => SaveOutcome::ReplyLost { checkpoint_id: checkpoint_id.clone() },
+            Err(_) => SaveOutcome::DeadlineExpired { checkpoint_id: checkpoint_id.clone() },
         }
     }
 
@@ -1342,6 +1409,10 @@ fn outcome_event(submission: &CaptureSubmission, outcome: &SaveOutcome) -> Map<S
             payload.insert("reason".into(), "the save reply was lost".into());
             payload.insert("durable".into(), false.into());
         }
+        SaveOutcome::DeadlineExpired { .. } => {
+            payload.insert("reason".into(), "the caller's durable budget expired".into());
+            payload.insert("durable".into(), false.into());
+        }
     }
     payload
 }
@@ -1388,15 +1459,15 @@ async fn run_writer(shared: Arc<WriterShared>) {
         shared
             .queued_bytes
             .fetch_sub(submission.byte_length(), Ordering::SeqCst);
-        let outcome = write_one(&shared, &submission).await;
+        let written = write_one(&shared, &submission).await;
         {
             let mut stats = shared.stats.lock().expect("the writer stats are never poisoned");
-            match &outcome {
-                SaveOutcome::Committed { .. } => stats.committed += 1,
-                SaveOutcome::Failed { .. } | SaveOutcome::ReplyLost { .. } => stats.failed += 1,
-                SaveOutcome::Superseded { .. } => stats.superseded += 1,
+            match &written {
+                WriteOutcome::Committed { .. } => stats.committed += 1,
+                WriteOutcome::Failed { .. } => stats.failed += 1,
             }
         }
+        let outcome = written.into_save(&submission.checkpoint_id);
         publish_event(&shared.events, &shared.stats, &outcome_event(&submission, &outcome)).await;
         let lost = shared.faults.drop_reply_for.as_ref() == Some(&submission.checkpoint_id);
         // The writer owned these handles until the bytes were committed or the job failed.
@@ -1416,21 +1487,19 @@ async fn run_writer(shared: Arc<WriterShared>) {
     }
 }
 
-async fn write_one(shared: &Arc<WriterShared>, submission: &CaptureSubmission) -> SaveOutcome {
+async fn write_one(shared: &Arc<WriterShared>, submission: &CaptureSubmission) -> WriteOutcome {
     let mut payloads = Vec::with_capacity(submission.payloads.len());
     for payload in &submission.payloads {
         let bytes = match payload.artifact.read_all().await {
             Ok(bytes) => bytes,
             Err(e) => {
-                return SaveOutcome::Failed {
-                    checkpoint_id: submission.checkpoint_id.clone(),
+                return WriteOutcome::Failed {
                     reason: format!("payload {}: {}", payload.name, e.message),
                 };
             }
         };
         if bytes.len() as u64 != payload.byte_length || digest_of_bytes(&bytes) != payload.digest {
-            return SaveOutcome::Failed {
-                checkpoint_id: submission.checkpoint_id.clone(),
+            return WriteOutcome::Failed {
                 reason: format!(
                     "payload {} is not the content its capture declared",
                     payload.name
@@ -1442,8 +1511,7 @@ async fn write_one(shared: &Arc<WriterShared>, submission: &CaptureSubmission) -
     let bytes = match checkpoint::encode(&submission.manifest, &payloads) {
         Ok(bytes) => bytes,
         Err(e) => {
-            return SaveOutcome::Failed {
-                checkpoint_id: submission.checkpoint_id.clone(),
+            return WriteOutcome::Failed {
                 reason: format!("envelope: {}", e.0),
             };
         }
@@ -1477,8 +1545,7 @@ async fn write_one(shared: &Arc<WriterShared>, submission: &CaptureSubmission) -
         .await;
         match result {
             Ok(Ok(())) => {
-                return SaveOutcome::Committed {
-                    checkpoint_id: submission.checkpoint_id.clone(),
+                return WriteOutcome::Committed {
                     boundary: submission.boundary,
                     file: format!("{}.flysess", submission.checkpoint_id),
                 };
@@ -1487,8 +1554,5 @@ async fn write_one(shared: &Arc<WriterShared>, submission: &CaptureSubmission) -
             Err(e) => last = format!("the checkpoint writer stopped: {e}"),
         }
     }
-    SaveOutcome::Failed {
-        checkpoint_id: submission.checkpoint_id.clone(),
-        reason: last,
-    }
+    WriteOutcome::Failed { reason: last }
 }

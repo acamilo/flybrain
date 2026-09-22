@@ -122,6 +122,7 @@ async fn a_slow_participant_is_resolved_rather_than_failed(mode: ExecutionMode) 
         resolve_attempts: 4096,
         boot: Duration::from_secs(30),
         capture: Duration::from_secs(30),
+        durable: Duration::from_secs(60),
     };
     within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     let reports = within("run", f.harness.coordinator.run(2))
@@ -193,6 +194,7 @@ async fn a_resolution_says_which_of_its_two_bounds_ended_it(mode: ExecutionMode)
         resolve_attempts: 8192,
         boot: Duration::from_secs(30),
         capture: Duration::from_secs(30),
+        durable: Duration::from_secs(60),
     };
     within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     let started = Instant::now();
@@ -224,6 +226,7 @@ async fn a_resolution_says_which_of_its_two_bounds_ended_it(mode: ExecutionMode)
         resolve_attempts: 3,
         boot: Duration::from_secs(30),
         capture: Duration::from_secs(30),
+        durable: Duration::from_secs(60),
     };
     within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     let failure = within("step", f.harness.coordinator.step())

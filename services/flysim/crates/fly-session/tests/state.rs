@@ -15,6 +15,7 @@ mod common;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -391,7 +392,8 @@ async fn a_lost_save_reply_holds_durable_metadata_in_every_mode(mode: ExecutionM
     a_lost_save_reply(Via::Unix, mode).await;
 }
 
-/// Two ways a save can end without a saved acknowledgment, and neither moves the mark.
+/// Three ways a save can end without a saved acknowledgment. None moves the mark, and each
+/// is reported as itself rather than as the others.
 async fn a_lost_save_reply(via: Via, mode: ExecutionMode) {
     let lost = ckpt(1);
     let config = HarnessConfig {
@@ -464,6 +466,59 @@ async fn a_lost_save_reply(via: Via, mode: ExecutionMode) {
     assert_eq!(resolved, None, "an unreferenced generation is never a restore candidate");
     assert_eq!(g.harness.coordinator.durable(), None);
     g.shutdown().await;
+
+    // The third: the caller's own budget runs out while the save is still going. That is a
+    // different fact from a lost reply -- this save has not stopped -- and it is reported as
+    // itself, because diagnosing one as the other is the implicit reading these rules refuse.
+    let slow = ckpt(3);
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let mut config = HarnessConfig::default();
+    config.writer_faults.gate = Some(gate.clone());
+    let mut h = fx(via, mode, config).await;
+    within("bootstrap", h.harness.coordinator.bootstrap()).await.unwrap();
+    within("run", h.harness.coordinator.run(1)).await.unwrap();
+    // The durable budget is the caller's own and is not the call budget: this shortens the
+    // wait for an acknowledgment without shortening a single call to a participant.
+    h.harness.coordinator.deadlines.durable = Duration::from_millis(100);
+    let ticket = within("capture", h.harness.coordinator.capture(&slow, false))
+        .await
+        .unwrap();
+    let outcome = within("durable", h.harness.coordinator.await_durable(ticket))
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome,
+        SaveOutcome::DeadlineExpired { checkpoint_id: slow.clone() },
+        "an expired caller budget is not a lost reply"
+    );
+    assert_ne!(outcome, SaveOutcome::ReplyLost { checkpoint_id: slow.clone() });
+    assert_eq!(h.harness.coordinator.durable(), None);
+    assert_eq!(
+        count(
+            &h.harness.coordinator.audit,
+            &format!("not-durable:failed:{slow}@1")
+        ),
+        1,
+        "the session records that this capture is not durable: {:?}",
+        h.harness.coordinator.audit
+    );
+
+    // It really was still going: once the writer is let past its gate the same operation
+    // commits, and resolving it is what moves the mark.
+    gate.add_permits(16);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let resolved = loop {
+        let found = within("resolve", h.harness.coordinator.resolve_durable(&slow))
+            .await
+            .unwrap();
+        if found.is_some() || std::time::Instant::now() >= deadline {
+            break found;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert_eq!(resolved, Some(1), "the save the caller stopped waiting for still committed");
+    assert_eq!(h.harness.coordinator.durable(), Some((slow, 1)));
+    h.shutdown().await;
 }
 
 // ===============================================================================================

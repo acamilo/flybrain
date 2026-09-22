@@ -189,12 +189,18 @@ The durable store is `state`, over the `FLYSESS1` layout the contract crate owns
   `BUSY` a stepping session survives rather than an epoch failure.
 - **Capture and durability are two events.** `State.Capture` completes when an immutable
   capture exists; `Coordinator::await_durable` completes when the store manifest rename has
-  happened, which is the durable commit point. Only the second moves the durable mark. A lost
-  save reply is `SaveOutcome::ReplyLost`, and `Coordinator::resolve_durable` then asks the
-  store about the *same* checkpoint instead of saving again.
-- **The writer is bounded twice**, by outstanding captures and by queued bytes, and it owns
-  its payload handles until the bytes are committed or the job fails. A queued *replaceable*
-  capture is superseded by a later one, releasing its holds; a durable one never is.
+  happened, which is the durable commit point. Only the second moves the durable mark, and the
+  three ways it can end without one are told apart: `Failed` (the write stopped),
+  `ReplyLost` (the write finished and the acknowledgment did not arrive) and
+  `DeadlineExpired` (the caller's own budget ran out while the save was still going).
+  `Coordinator::resolve_durable` then asks the store about the *same* checkpoint instead of
+  saving again.
+- **The writer is bounded twice**, and the two bounds refuse at different moments. The
+  outstanding-capture bound is taken before a capture is requested; the byte budget cannot be,
+  because a capture's size is not known until it exists, so it refuses at submit and releases
+  the payloads with the refusal. The writer owns its payload handles until the bytes are
+  committed or the job fails. A queued *replaceable* capture is superseded by a later one,
+  releasing its holds; a durable one never is.
 - **The install is a group.** A restore selects a complete compatible generation, imports its
   payloads as fresh artifacts, stages every participant, validates the coordinator's own
   ledgers, and only then activates. A failure anywhere leaves the fence closed, and every
