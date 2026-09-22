@@ -774,3 +774,13 @@ decisions for the operator, so the swarm stopped here. DOLPHIN-01 was never in s
 Measured on the development box, not capacity claims: bus RPC near one millisecond at the
 median; a two-fly transition near 10 to 12 ms at the median in every execution mode; about
 5.7 MiB per participant process when split.
+- 2026-09-22 (v0.5.1, loop review, auto): row 50. The cartridge never clears the move-list cursor
+  bytes after a turn, so every frame of a turn's text, animation and reply read as the fly's own
+  turn on an open list; the pad dealt MOVE 1-4 and BACK on all of them and the cursor step pressed
+  at a list nobody was reading. Surveyed by pressing: a press was honoured on 231 of 231 frames
+  where the menu box is drawn and on none where it is not. Fix: one gate on the drawn box in the
+  battle seam; a frame with no box is between turns, NEXT only. From the forest checkpoint MOVE n
+  blocked starts 838 -> 0, every battle entered is ended, worst battle 503 -> 283 macros; hunt
+  tiles up on both arms (296 -> 430 forest, 163 -> 184 Route 3), flagged windows again rise
+  because the fly is inside battles it is fighting (same judgement as v0.4.6). Next row: the
+  battle bag's list id outlives the bag the same way.
