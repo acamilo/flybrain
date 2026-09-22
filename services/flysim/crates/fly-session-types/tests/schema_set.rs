@@ -3,6 +3,9 @@
 use fly_session_types::{canonical, fixtures, schema};
 use serde_json::Value;
 
+#[allow(dead_code, reason = "this file uses the readers' type list, not the readers")]
+mod common;
+
 #[path = "../examples/update_fixtures.rs"]
 #[allow(dead_code, reason = "the example's main is not used by the test that reuses its writers")]
 mod updater;
@@ -104,6 +107,8 @@ fn the_contract_digest_changes_when_a_schema_changes() {
     }
 }
 
+/// Every type the crate can read is declared in the schema set, so a new payload type cannot
+/// ship outside `contractDigest`. The list is the readers' own, not a copy of it.
 #[test]
 fn the_schema_set_names_every_type_the_crate_reads() {
     let set = schema::schema_set();
@@ -113,24 +118,14 @@ fn the_schema_set_names_every_type_the_crate_reads() {
         .iter()
         .map(|t| t["name"].as_str().expect("name"))
         .collect();
-    for expected in [
-        "Scope",
-        "RationalNs",
-        "TypedValue",
-        "SessionRpcRequest",
-        "SessionRpcFailure",
-        "PrepareParams",
-        "StepResult",
-        "ViewRef",
-        "AudioRef",
-        "CaptureResult",
-        "SessionDescriptor",
-        "CommittedSnapshot",
-        "TraceBehaviour",
-        "TraceOperational",
-    ] {
-        assert!(names.contains(&expected), "the schema set must name {expected}");
-    }
+    let missing: Vec<&&str> = common::READABLE_TYPES
+        .iter()
+        .filter(|expected| !names.contains(*expected))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "every readable type must be in the schema set; missing {missing:?}"
+    );
     let mut sorted = names.clone();
     sorted.sort_unstable();
     assert_eq!(names, sorted, "the rendered set is sorted by type name");

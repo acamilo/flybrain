@@ -302,6 +302,14 @@ fn gcd(a: u64, b: u64) -> u64 {
     a
 }
 
+/// One checked `u64` x `u64` product. The product itself always fits `u128`; the function
+/// exists so every multiplication in the arithmetic below goes through one checked path.
+fn mul(a: u64, b: u64) -> Result<u128> {
+    u128::from(a)
+        .checked_mul(u128::from(b))
+        .ok_or_else(|| wire_err("RationalNs: multiplication overflowed"))
+}
+
 fn gcd128(a: u128, b: u128) -> u128 {
     let (mut a, mut b) = (a, b);
     while b != 0 {
@@ -357,20 +365,26 @@ impl RationalNs {
         Ok(())
     }
 
+    /// Cross-multiplication of two `U64` pairs fits `u128`, but their *sum* does not: two
+    /// reduced fractions near the `U64` maximum add to about 2^129. Every step is checked, as
+    /// ipc-v1 section 2 requires; nothing here may wrap in release and panic in debug.
     pub fn checked_add(&self, other: &RationalNs) -> Result<RationalNs> {
-        let n = u128::from(self.numerator) * u128::from(other.denominator)
-            + u128::from(other.numerator) * u128::from(self.denominator);
-        let d = u128::from(self.denominator) * u128::from(other.denominator);
+        let left = mul(self.numerator, other.denominator)?;
+        let right = mul(other.numerator, self.denominator)?;
+        let n = left
+            .checked_add(right)
+            .ok_or_else(|| wire_err("RationalNs: addition overflowed"))?;
+        let d = mul(self.denominator, other.denominator)?;
         RationalNs::reduced(n, d)
     }
 
     pub fn checked_sub(&self, other: &RationalNs) -> Result<RationalNs> {
-        let left = u128::from(self.numerator) * u128::from(other.denominator);
-        let right = u128::from(other.numerator) * u128::from(self.denominator);
+        let left = mul(self.numerator, other.denominator)?;
+        let right = mul(other.numerator, self.denominator)?;
         if right > left {
             return err("RationalNs: subtraction would be negative");
         }
-        let d = u128::from(self.denominator) * u128::from(other.denominator);
+        let d = mul(self.denominator, other.denominator)?;
         RationalNs::reduced(left - right, d)
     }
 
@@ -385,8 +399,8 @@ impl RationalNs {
     /// `self - ticks * tick`, which is always `>= 0` and `< tick`.
     pub fn divide_floor(&self, tick: &RationalNs) -> Result<(u64, RationalNs)> {
         tick.require_positive("RationalNs::divide_floor tick")?;
-        let n = u128::from(self.numerator) * u128::from(tick.denominator);
-        let d = u128::from(self.denominator) * u128::from(tick.numerator);
+        let n = mul(self.numerator, tick.denominator)?;
+        let d = mul(self.denominator, tick.numerator)?;
         let ticks = n / d;
         if ticks > u128::from(u64::MAX) {
             return err("RationalNs: tick count does not fit U64");

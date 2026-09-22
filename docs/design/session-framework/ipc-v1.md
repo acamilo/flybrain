@@ -154,6 +154,11 @@ Lifecycle/capture replies are retained until Worker.Acknowledge:
 not another consumer's bus delivery. Already released/unknown IDs are ignored. Serial
 watermarks reject reuse after acknowledgment without an unbounded tombstone list.
 
+**Amendment, 2026-09-22 (CONTRACT-01):** those ids are domain request ids in the `req-<U64>`
+serial form, not arbitrary `Id`s. The serial watermark rule in the sentence above cannot reject
+reuse after acknowledgment unless the acknowledged id carries its serial, so a bus callId or a
+bare `Id` is refused there.
+
 Bound unacknowledged lifecycle replies at 16, then BUSY before application. Status and
 Acknowledge use a cache of their last 16 replies; current/previous step records have their
 separate finite retention. Caches containing big artifacts consume bus owner/byte budgets;

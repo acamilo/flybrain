@@ -138,3 +138,22 @@ fn reduction_refuses_a_result_that_does_not_fit_u64() {
         big
     );
 }
+
+/// The review case: cross-multiplying two reduced fractions near the `U64` maximum fits
+/// `u128`, but adding the two products does not. Unchecked, that panics in debug and wraps in
+/// release, after which the reduction returns a confidently wrong rational.
+#[test]
+fn adding_two_fractions_near_the_u64_maximum_is_refused_not_wrapped() {
+    let left = RationalNs::new(u64::MAX, u64::MAX - 1).expect("consecutive integers are coprime");
+    let right = RationalNs::new(u64::MAX - 2, u64::MAX - 4).expect("two odd numbers differing by 2");
+    let outcome = left.checked_add(&right);
+    let message = outcome.expect_err("the sum reaches about 2^129").0;
+    assert!(
+        message.contains("overflow"),
+        "the failure names the overflow rather than the reduction: {message}"
+    );
+    assert!(
+        left.checked_add(&RationalNs::ZERO).is_ok(),
+        "the checked path still adds ordinary operands"
+    );
+}
