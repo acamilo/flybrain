@@ -1,0 +1,77 @@
+{
+  "description": "Byte sequences every implementation must refuse before validation.",
+  "cases": [
+    {
+      "name": "duplicate key at the top level",
+      "type": "Scope",
+      "base64": "eyJzZXNzaW9uSWQiOiJkZW1vIiwiZXBvY2giOiJlcG9jaC0xIiwic3RlcCI6IjEiLCJzdGVwIjoiMiJ9",
+      "reason": "duplicate JSON keys are refused at any depth"
+    },
+    {
+      "name": "duplicate key inside a nested object",
+      "type": "TypedValue",
+      "base64": "eyJzY2hlbWEiOnsiaWQiOiJhLnYxIiwidmVyc2lvbiI6MSwiZGlnZXN0IjoiYmJhNzk1MWMwNDY2NGNkNDliYjZlZWQxZGE2ZGMxYTRlMTdlOTg5ZTc4N2JmMmU3MmY1OTMzYTVjNjE3MTM3MiJ9LCJ2YWx1ZSI6eyJ4IjoxLCJ4IjoyfX0=",
+      "reason": "duplicate JSON keys are refused at any depth"
+    },
+    {
+      "name": "invalid UTF-8 in a string",
+      "type": "Scope",
+      "base64": "eyJzZXNzaW9uSWQiOiJkZf9tbyIsImVwb2NoIjoiZXBvY2gtMSIsInN0ZXAiOiIxIn0=",
+      "reason": "the envelope is UTF-8"
+    },
+    {
+      "name": "invalid UTF-8 in a key",
+      "type": "Scope",
+      "base64": "eyJzZXNzaW9u/0lkIjoiZGVtbyIsImVwb2NoIjoiZXBvY2gtMSIsInN0ZXAiOiIxIn0=",
+      "reason": "the envelope is UTF-8"
+    },
+    {
+      "name": "NaN literal",
+      "type": "Stimulus",
+      "base64": "eyJpZCI6InN0aW0tMSIsImtpbmRJZCI6InN1Z2FyIiwiZHVyYXRpb25NcyI6TmFOfQ==",
+      "reason": "NaN and Infinity are not JSON"
+    },
+    {
+      "name": "Infinity literal",
+      "type": "Stimulus",
+      "base64": "eyJpZCI6InN0aW0tMSIsImtpbmRJZCI6InN1Z2FyIiwiZHVyYXRpb25NcyI6SW5maW5pdHl9",
+      "reason": "NaN and Infinity are not JSON"
+    },
+    {
+      "name": "number that overflows a double",
+      "type": "Stimulus",
+      "base64": "eyJpZCI6InN0aW0tMSIsImtpbmRJZCI6InN1Z2FyIiwiZHVyYXRpb25NcyI6MWU5OTl9",
+      "reason": "a non-finite number never survives parsing"
+    },
+    {
+      "name": "integer past the exact double range",
+      "type": "Stimulus",
+      "base64": "eyJpZCI6InN0aW0tMSIsImtpbmRJZCI6InN1Z2FyIiwiZHVyYXRpb25NcyI6OTAwNzE5OTI1NDc0MDk5M30=",
+      "reason": "canonical JSON cannot encode it exactly; counters are U64 strings"
+    },
+    {
+      "name": "trailing data after the object",
+      "type": "Scope",
+      "base64": "eyJzZXNzaW9uSWQiOiJkZW1vIiwiZXBvY2giOiJlcG9jaC0xIiwic3RlcCI6IjEifSB7fQ==",
+      "reason": "one value per payload"
+    },
+    {
+      "name": "truncated object",
+      "type": "Scope",
+      "base64": "eyJzZXNzaW9uSWQiOiJkZW1vIiwiZXBvY2giOiJlcG9jaC0xIg==",
+      "reason": "partial JSON is refused"
+    },
+    {
+      "name": "empty payload",
+      "type": "Scope",
+      "base64": "",
+      "reason": "an empty payload is not a JSON object"
+    },
+    {
+      "name": "a bare array",
+      "type": "Scope",
+      "base64": "W10=",
+      "reason": "a payload is an object"
+    }
+  ]
+}

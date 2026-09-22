@@ -1,0 +1,249 @@
+{
+  "description": "Checked rational arithmetic and the step-v1 section 5 tick accumulator.",
+  "accumulator": [
+    {
+      "name": "a synthetic 60 Hz environment on a 1 ms model tick",
+      "stepDuration": {
+        "numerator": "50000000",
+        "denominator": "3"
+      },
+      "tickDuration": {
+        "numerator": "1000000",
+        "denominator": "1"
+      },
+      "steps": [
+        {
+          "ticks": "16",
+          "remainder": {
+            "numerator": "2000000",
+            "denominator": "3"
+          }
+        },
+        {
+          "ticks": "17",
+          "remainder": {
+            "numerator": "1000000",
+            "denominator": "3"
+          }
+        },
+        {
+          "ticks": "17",
+          "remainder": {
+            "numerator": "0",
+            "denominator": "1"
+          }
+        }
+      ],
+      "totalTicks": "50",
+      "reason": "16, 17, 17 and a remainder of zero after three steps"
+    },
+    {
+      "name": "a whole millisecond cadence never accumulates a remainder",
+      "stepDuration": {
+        "numerator": "16000000",
+        "denominator": "1"
+      },
+      "tickDuration": {
+        "numerator": "1000000",
+        "denominator": "1"
+      },
+      "steps": [
+        {
+          "ticks": "16",
+          "remainder": {
+            "numerator": "0",
+            "denominator": "1"
+          }
+        },
+        {
+          "ticks": "16",
+          "remainder": {
+            "numerator": "0",
+            "denominator": "1"
+          }
+        }
+      ],
+      "totalTicks": "32",
+      "reason": ""
+    },
+    {
+      "name": "a step shorter than one tick advances nothing and keeps the remainder",
+      "stepDuration": {
+        "numerator": "500000",
+        "denominator": "1"
+      },
+      "tickDuration": {
+        "numerator": "1000000",
+        "denominator": "1"
+      },
+      "steps": [
+        {
+          "ticks": "0",
+          "remainder": {
+            "numerator": "500000",
+            "denominator": "1"
+          }
+        },
+        {
+          "ticks": "1",
+          "remainder": {
+            "numerator": "0",
+            "denominator": "1"
+          }
+        }
+      ],
+      "totalTicks": "1",
+      "reason": "the fractional period is carried, not rounded"
+    }
+  ],
+  "add": [
+    {
+      "a": {
+        "numerator": "0",
+        "denominator": "1"
+      },
+      "b": {
+        "numerator": "50000000",
+        "denominator": "3"
+      },
+      "sum": {
+        "numerator": "50000000",
+        "denominator": "3"
+      }
+    },
+    {
+      "a": {
+        "numerator": "1",
+        "denominator": "3"
+      },
+      "b": {
+        "numerator": "1",
+        "denominator": "6"
+      },
+      "sum": {
+        "numerator": "1",
+        "denominator": "2"
+      }
+    },
+    {
+      "a": {
+        "numerator": "18446744073709551615",
+        "denominator": "1"
+      },
+      "b": {
+        "numerator": "1",
+        "denominator": "2"
+      },
+      "error": "reduced value does not fit U64"
+    }
+  ],
+  "subtract": [
+    {
+      "a": {
+        "numerator": "50000000",
+        "denominator": "3"
+      },
+      "b": {
+        "numerator": "50000000",
+        "denominator": "3"
+      },
+      "difference": {
+        "numerator": "0",
+        "denominator": "1"
+      }
+    },
+    {
+      "a": {
+        "numerator": "1",
+        "denominator": "2"
+      },
+      "b": {
+        "numerator": "1",
+        "denominator": "3"
+      },
+      "difference": {
+        "numerator": "1",
+        "denominator": "6"
+      }
+    },
+    {
+      "a": {
+        "numerator": "0",
+        "denominator": "1"
+      },
+      "b": {
+        "numerator": "1",
+        "denominator": "2"
+      },
+      "error": "subtraction would be negative"
+    }
+  ],
+  "multiply": [
+    {
+      "a": {
+        "numerator": "1000000",
+        "denominator": "1"
+      },
+      "k": "17",
+      "product": {
+        "numerator": "17000000",
+        "denominator": "1"
+      }
+    },
+    {
+      "a": {
+        "numerator": "0",
+        "denominator": "1"
+      },
+      "k": "1000",
+      "product": {
+        "numerator": "0",
+        "denominator": "1"
+      }
+    },
+    {
+      "a": {
+        "numerator": "18446744073709551615",
+        "denominator": "1"
+      },
+      "k": "2",
+      "error": "reduced value does not fit U64"
+    }
+  ],
+  "compare": [
+    {
+      "a": {
+        "numerator": "0",
+        "denominator": "1"
+      },
+      "b": {
+        "numerator": "1000000",
+        "denominator": "1"
+      },
+      "ordering": "less"
+    },
+    {
+      "a": {
+        "numerator": "1",
+        "denominator": "3"
+      },
+      "b": {
+        "numerator": "1",
+        "denominator": "3"
+      },
+      "ordering": "equal",
+      "reason": "equal values compare equal; an unreduced 2/6 never reaches a comparison, because it never parses"
+    },
+    {
+      "a": {
+        "numerator": "50000000",
+        "denominator": "3"
+      },
+      "b": {
+        "numerator": "1000000",
+        "denominator": "1"
+      },
+      "ordering": "greater"
+    }
+  ]
+}
