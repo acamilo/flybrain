@@ -18,6 +18,13 @@
 //! `PEWTER_MART` `$38` and `PEWTER_POKECENTER` `$3a` sit in the five ids between `PEWTER_GYM`
 //! `$36` and `MT_MOON_1F` `$3b`; `CERULEAN_POKECENTER` `$40` and `CERULEAN_MART` `$43` sit around
 //! `CERULEAN_GYM` `$41`. [`super::tests`] pins each against its neighbour rather than on its own.
+//!
+//! **2026-09-22, the rung-10 museum.** `PEWTER_MUSEUM_1F` `$34` and `PEWTER_MUSEUM_2F` `$35` are
+//! the two ids between `VIRIDIAN_FOREST` `$33` and `PEWTER_GYM` `$36`, and both are confirmed by
+//! the cartridge rather than by counting: Pewter City's warp table names `$34` at (14, 7) and at
+//! (19, 5) -- the museum's two doors -- and `$34`'s own warp at (7, 7) names `$35`, which is the
+//! staircase. Surveyed from the release container's rung-10 checkpoint
+//! (`infra/docs/macros-traps.md`, 2026-09-22).
 
 // Outdoors: `$00`..`$24`.
 pub const PALLET_TOWN: u8 = 0x00;
@@ -68,6 +75,8 @@ pub const VIRIDIAN_GYM: u8 = 0x2d;
 pub const VIRIDIAN_FOREST_NORTH_GATE: u8 = 0x2f;
 pub const VIRIDIAN_FOREST_SOUTH_GATE: u8 = 0x32;
 pub const VIRIDIAN_FOREST: u8 = 0x33;
+pub const PEWTER_MUSEUM_1F: u8 = 0x34;
+pub const PEWTER_MUSEUM_2F: u8 = 0x35;
 pub const PEWTER_GYM: u8 = 0x36;
 pub const PEWTER_MART: u8 = 0x38;
 pub const PEWTER_POKECENTER: u8 = 0x3a;

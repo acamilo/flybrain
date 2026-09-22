@@ -264,6 +264,27 @@ pub trait MacroPalette: Send {
     /// Give up on whatever is running, because the sim loop is rolling the game back. The
     /// abandoned macro is reported by the next [`MacroPalette::take_finished`].
     fn cancel(&mut self);
+
+    /// Whether the last [`MacroPalette::observe`] saw the fly **nearer its objective than it has
+    /// been** since that objective was set, measured in map hops.
+    ///
+    /// The ratchet's stall window is reset by exploration -- one new tile
+    /// (`docs/design/ladder.md`, the 2026-09-17 progress rule) -- and a fly crossing a town it
+    /// has already covered to reach the rung's own door earns no new ground while it does it.
+    /// That is the rung-10 stall of 2026-09-22 in one line: two "Stuck" rollbacks inside half an
+    /// hour, both of them on a fly that was walking, both of them landing it back where it had
+    /// started. Getting nearer the objective than this run has ever been is the other thing that
+    /// is plainly progress, and it is a *level* rather than a counter so nothing is checkpointed
+    /// and nothing can drift: it is true on the frame the distance falls and false after.
+    ///
+    /// Read by the sim loop and by nothing else. No macro is ranked by it, no button is bound on
+    /// it and it presses nothing (`docs/design/macros.md` section 12): it is the loop's own
+    /// answer to "is this run getting somewhere".
+    ///
+    /// The default is `false`, which is a palette with no objective to be nearer to.
+    fn nearer_the_objective(&self) -> bool {
+        false
+    }
 }
 
 /// Every macro channel a game's palette can ever bind, in the contract's own order, or empty for

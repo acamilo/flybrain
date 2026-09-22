@@ -189,6 +189,44 @@ impl Ratchet {
     where
         F: FnOnce() -> Snapshot,
     {
+        self.observe_with_progress(safe, rank, coverage, now, game_over, false, capture)
+    }
+
+    /// [`Ratchet::observe_with_game_over`] plus a progress signal the coverage figure cannot
+    /// carry.
+    ///
+    /// `progressed` is the caller saying "something happened on this sample that is plainly
+    /// progress, and it is not a number that only grows". The stall window is restarted by it
+    /// exactly as a rise in `coverage` restarts it, and nothing else changes: no budget is
+    /// spent, no snapshot is taken and no trigger is skipped.
+    ///
+    /// It exists because coverage is the *only* progress the window could see, and coverage is
+    /// ground never stood on. A fly crossing a town it has already covered to reach the rung's
+    /// own door is getting somewhere and earns none. Measured on rung 10, 2026-09-22: two
+    /// "Stuck" rollbacks inside half an hour, both on a fly that was walking, each one landing
+    /// it back where it had started. What the Pokemon loop passes here is "nearer the objective,
+    /// in map hops, than this run has ever been" (`docs/design/macros.md` section 12.15), which
+    /// can only fire as many times as the road is long.
+    ///
+    /// Nothing in this module knows what the signal means, which is the same bargain `coverage`
+    /// is: the ladder, the map graph and the objective all belong to the adapter.
+    // One argument past clippy's seven, and the argument is the point: this is the whole of one
+    // sample. A struct for it would be a type that exists only to be destructured at the one
+    // call site the sim loop has, which is the same idiom `decoder.rs` and `lif.rs` take here.
+    #[allow(clippy::too_many_arguments)]
+    pub fn observe_with_progress<F>(
+        &mut self,
+        safe: bool,
+        rank: u64,
+        coverage: u64,
+        now: u64,
+        game_over: bool,
+        progressed: bool,
+        capture: F,
+    ) -> bool
+    where
+        F: FnOnce() -> Snapshot,
+    {
         if !safe {
             let since = *self.unsafe_since.get_or_insert(now);
             // Allow brief walking/warp instability; sustained menus, scripts
@@ -200,7 +238,7 @@ impl Ratchet {
         } else {
             self.unsafe_since = None;
         }
-        if coverage > self.state.coverage {
+        if coverage > self.state.coverage || progressed {
             self.state.last_progress = now;
         }
         self.state.coverage = self.state.coverage.max(coverage);
@@ -457,5 +495,52 @@ mod tests {
         // The new coverage moved lastProgress to 119_000, so this is 111 s.
         assert!(!ratchet.observe(true, 1, 2, 230_000, || snapshot(1)));
         assert!(ratchet.observe(true, 1, 2, 239_001, || snapshot(1)));
+    }
+
+    #[test]
+    fn a_map_the_run_has_never_stood_on_is_coverage_and_resets_the_window() {
+        // The half of the 2026-09-17 rule that already held, pinned because the other half is
+        // new: entering a map for the first time is ground never stood on, so it arrives here as
+        // a rise in `coverage` and needs nothing of its own. Re-entering a map the run has
+        // covered is not, which is exactly the rung-10 museum and why the signal below exists.
+        let mut ratchet = Ratchet::new();
+        ratchet.observe(true, 1, 100, 0, || snapshot(1));
+        // A new map: eighty tiles nobody had stood on.
+        assert!(!ratchet.observe(true, 1, 180, 100_000, || snapshot(1)));
+        // Walking it again for two minutes adds none, and the window ages from the arrival.
+        assert!(!ratchet.observe(true, 1, 180, 219_000, || snapshot(1)));
+        assert!(ratchet.observe(true, 1, 180, 220_001, || snapshot(1)));
+    }
+
+    #[test]
+    fn getting_nearer_the_objective_resets_the_stall_window_without_spending_anything() {
+        // The rung-10 rollbacks of 2026-09-22: a fly walking a town it has already covered
+        // toward the rung's own door earns no coverage while it does it, and the window aged out
+        // twice in half an hour. A caller's progress signal restarts the window exactly as
+        // coverage does -- and does nothing else.
+        let mut ratchet = Ratchet::new();
+        ratchet.observe(true, 1, 100, 0, || snapshot(1));
+        // 119 s of walking ground the run has covered, and then one step nearer the gym.
+        assert!(!ratchet.observe_with_progress(true, 1, 100, 119_000, false, true, || snapshot(1)));
+        let state = ratchet.state;
+        assert_eq!(state.last_progress, 119_000);
+        assert_eq!((state.recoveries, state.attempts), (0, 0), "progress spends no budget");
+        // The window now runs from there rather than from the start.
+        assert!(!ratchet.observe(true, 1, 100, 238_000, || snapshot(1)));
+        assert!(ratchet.observe(true, 1, 100, 239_001, || snapshot(1)));
+    }
+
+    #[test]
+    fn a_progress_signal_cannot_conjure_a_recovery_or_skip_a_trigger() {
+        // It restarts the window; it is not a trigger and it is not a snapshot. With nothing
+        // archived there is nothing to recover to, and an unsafe sample still never recovers.
+        let mut ratchet = Ratchet::new();
+        assert!(!ratchet.observe_with_progress(true, 0, 0, 0, false, true, || snapshot(1)));
+        assert!(ratchet.snapshot.is_none(), "progress captures nothing");
+        let mut armed = Ratchet::new();
+        armed.observe(true, 1, 1, 0, || snapshot(1));
+        // Unsafe, stalled, and told that something progressed: still no recovery, because an
+        // unsafe sample would restore on top of whatever made it unsafe.
+        assert!(!armed.observe_with_progress(false, 1, 1, 400_000, false, true, || snapshot(1)));
     }
 }

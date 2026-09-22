@@ -31,6 +31,8 @@
 //! | `FLY_PROBE_FRAMES` | 200000 | frames to drive before giving up |
 //! | `FLY_PROBE_STUCK` | 600 | consecutive frames in one non-overworld scene that count as stuck |
 
+use std::collections::BTreeMap;
+
 use flybrain_core::decoder::PopulationDecoder;
 use flybrain_core::decoder::gameboy::gameboy_decoder_config_with_macros;
 use flybrain_core::ordered::NumberMap;
@@ -161,6 +163,16 @@ fn pad(gb: &mut Emulator, adapter: &PokemonRedReward, label: &str) {
     // same call `MacroState::map_grid` makes, and the only reading that can say *which* of section
     // 15's refusals a frame is.
     let refusal = flybrain_gb::pokemon_red::state::map_grid(gb).err();
+    // Which tile the decode and the screen disagree about, when that is the refusal. The label
+    // alone cannot tell "the grid is wrong on this map" from "this frame was mid-warp", and the
+    // two want opposite fixes (`docs/design/macros.md` section 15). Read here, beside the refusal
+    // itself, because everything below holds a borrow of the emulator.
+    let disagreement = match refusal {
+        Some(flybrain_gb::pokemon_red::state::GridRefusal::ScreenDisagrees) => {
+            flybrain_gb::pokemon_red::state::grid_disagreement(gb)
+        }
+        _ => Vec::new(),
+    };
     let ledger = AdapterLedger(adapter);
     let mut poke = flybrain_gb::pokemon_red::state::PokeState::with_ledger(gb, &ledger);
     let state: &mut dyn MacroState = &mut poke;
@@ -209,6 +221,22 @@ fn pad(gb: &mut Emulator, adapter: &PokemonRedReward, label: &str) {
                 grid.reachable_from(player.x, player.y),
                 unstood,
                 grid.unknown_count()
+            );
+        }
+    }
+    // Which tile the decode and the screen disagree about, when that is the refusal. The label
+    // alone cannot tell "the grid is wrong on this map" from "this frame was mid-warp", and the
+    // two want opposite fixes (`docs/design/macros.md` section 15).
+    if !disagreement.is_empty() {
+        println!("- the decode against the screen, tile by tile:");
+        for (x, y, decoded, screen) in disagreement {
+            println!(
+                "  - ({x:2}, {y:2}) decoded {decoded:?} screen {screen:?}{}",
+                if decoded.is_some() && screen.is_some() && decoded != screen {
+                    "   <- the disagreement"
+                } else {
+                    ""
+                }
             );
         }
     }
@@ -710,6 +738,25 @@ fn main() {
             && surveyed >= 60
         {
             println!("\nThe fly reached map {map:#04x} at frame {frame}.");
+            // Stand still for a while and count how many of those frames the whole-map grid can be
+            // decoded on. A walking fly is mid-step on most frames -- `wYCoord` is the tile it is
+            // walking *to* while the background is still scrolling -- and the screen buffer the
+            // cross-check reads is the one that is a tile behind, so "is the grid refused on this
+            // map" and "is the grid refused while the fly is moving" are different questions with
+            // different fixes (`docs/design/macros.md` section 15).
+            let mut refusals: BTreeMap<&'static str, usize> = BTreeMap::new();
+            for _ in 0..env_usize("FLY_PROBE_SETTLE", 120) {
+                gb.set_buttons(flybrain_gb::buttons::NONE);
+                gb.run_frame().expect("a frame should complete");
+                ms += MS_PER_FRAME;
+                adapter.sample(&mut gb, ms);
+                let label = match flybrain_gb::pokemon_red::state::map_grid(&mut gb) {
+                    Ok(_) => "decoded",
+                    Err(refusal) => refusal.label(),
+                };
+                *refusals.entry(label).or_insert(0) += 1;
+            }
+            println!("\nStanding still on it, frame by frame: {refusals:?}");
             cartridge(&mut gb, &adapter, "The save on the surveyed map");
             pad(&mut gb, &adapter, "The pad on the surveyed map");
             return;

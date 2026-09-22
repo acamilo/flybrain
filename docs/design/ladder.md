@@ -125,7 +125,18 @@ condition the plan wanted, at the cost of no new state.
 ## Recovery budgets
 
 Attempts per rung stay 3; lifetime budget scales with the ladder (36 instead of 12). Stall window
-unchanged (120 s without new exploration, 180 s since last recovery). The ratchet's rank bound is
+unchanged (120 s without new exploration, 180 s since last recovery).
+
+**Amended 2026-09-22 (rung 10).** "New exploration" is the adapter's lifetime tile ledger, so a map
+entered for the first time resets the window -- a new map is a map's worth of tiles nobody has stood
+on -- and a map *re-entered* does not. Two "Stuck" rollbacks fired inside half an hour on a fly that
+was walking a town it had already covered toward the rung's own door, and both were this rule
+working. The window now takes a second signal beside the tile count: **the fly being nearer its
+objective, in map hops, than this run has ever been** (`docs/design/macros.md` section 12.15). The
+ratchet treats it exactly as it treats new exploration -- it restarts the window and does nothing
+else -- it can fire at most once per step of the road, and the ratchet itself knows no more about
+what it means than it knows what a tile is. Nothing else about the budgets, the triggers or the
+checkpointed state changes. The ratchet's rank bound is
 now the running adapter's ladder length, passed in rather than a constant, because the bound belongs
 to the adapter: Pokémon's ladder is 38 rungs and the platformer's is 16
 (`docs/design/platformer.md` §3). Only the *budgets* are per-game, from the adapter's

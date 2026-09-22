@@ -364,6 +364,14 @@ pub trait MacroState: GameState {
         false
     }
 
+    /// Whether a `GO FRONTIER` on this map has already proved its frontier unreachable.
+    ///
+    /// [`FrontierLedger`] is the evidence and the measurement. The default is `false`: a state
+    /// that cannot answer has proved nothing, which is a fresh session.
+    fn frontier_exhausted(&mut self) -> bool {
+        false
+    }
+
     /// Whether the cartridge has pushed the fly off this tile of the loaded map.
     ///
     /// [`PushedLedger`] is the evidence and the measurement. The default is `false`: a state that
@@ -462,6 +470,22 @@ pub trait MacroState: GameState {
     }
 
     fn talked(&mut self, _target: TalkTarget) -> bool {
+        false
+    }
+
+    /// Whether a text box is open at all: `wFontLoaded`'s bit, and nothing drawn.
+    ///
+    /// The one thing that tells a screen with words on it from a frame of the overworld the
+    /// cartridge happens to be driving, and [`super::palette::scene_set`] deals
+    /// [`Scene::Unknown`]'s pad on it (**section 12.13**). `Unknown` is two different states
+    /// wearing one name: a screen this crate cannot name -- the Pokedex, the trainer card,
+    /// OPTION -- where `NEXT` and `BACK` are the A and B that leave it; and a *scripted* overworld
+    /// frame, where `scene::detect` falls through to `Unknown` because the buttons are not
+    /// reaching the player, and where an A or a B press is a press into somebody else's script.
+    ///
+    /// The default is `false`, which narrows: with no reading, `Unknown` deals nothing and the
+    /// fly waits, which is what the doctrine says a scene with nothing to press does.
+    fn text_open(&mut self) -> bool {
         false
     }
 
@@ -612,9 +636,13 @@ impl StoodLedger for NoStood {
 pub struct Stood(std::collections::BTreeSet<(u8, Tile)>);
 
 impl Stood {
-    /// Record the tile the fly is standing on. Idempotent.
-    pub fn record(&mut self, map: u8, tile: Tile) {
-        self.0.insert((map, tile));
+    /// Record the tile the fly is standing on, and say whether it is ground this run had not
+    /// stood on before. Idempotent.
+    ///
+    /// The answer is what clears a map's frontier mark ([`Frontiers`], section 12.14): new
+    /// ground under the fly is the one thing that can have changed which tiles it can reach.
+    pub fn record(&mut self, map: u8, tile: Tile) -> bool {
+        self.0.insert((map, tile))
     }
 
     /// How much ground this session has watched, for a log line and the tests.
@@ -630,6 +658,75 @@ impl Stood {
 impl StoodLedger for Stood {
     fn stood(&self, map: u8, tile: Tile) -> bool {
         self.0.contains(&(map, tile))
+    }
+}
+
+/// Maps whose frontier the run has proved it cannot reach any more.
+///
+/// **The rung-10 museum and Pewter City, 2026-09-22.** `GO FRONTIER` ran 1,235 times in 47
+/// minutes over two museum floors and a town whose walkable ground the fly had already covered.
+/// The ground it was aiming at was real -- the museum's exhibit hall behind the admission desk,
+/// the far side of a fence -- and unreachable: 98 walkable tiles on map `0x34`, 62 of them
+/// reachable from the door, 39 never stood on and all but a handful of those behind the desk.
+/// A walk that can reach none of its goals refuses `no route` and writes every one of them to
+/// the blocked ledger ([`Targets`]), which is a **window**: ten brain minutes later all forty
+/// tiles were candidates again, the button was back on the pad, and the refusal happened again.
+/// A window is right for a target a person is standing in front of and wrong for ground the map
+/// has fenced off.
+///
+/// So the refusal is remembered per map instead. It is written when a `GO FRONTIER` refuses for
+/// want of a route -- the measured fact "from here, no unstood tile of this map can be walked
+/// to" -- and it is cleared the moment the fly **stands somewhere on that map it has not stood
+/// before**, because that is the only thing that can have changed the answer: a door opened, a
+/// script carried the fly through, somebody moved out of a doorway. Not on re-entering the map,
+/// which is the loop the window made.
+///
+/// Session state beside [`Talked`], [`Stood`], [`Areas`] and [`Pushed`], never checkpointed: a
+/// restored run tries the frontier once more, which is the honest answer for a ledger that did
+/// not survive.
+pub trait FrontierLedger {
+    /// Whether a `GO FRONTIER` has proved this map's remaining frontier unreachable.
+    fn frontier_exhausted(&self, map: u8) -> bool;
+}
+
+/// A ledger that has proved nothing: every map's frontier is still worth a walk.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoFrontiers;
+
+impl FrontierLedger for NoFrontiers {
+    fn frontier_exhausted(&self, _map: u8) -> bool {
+        false
+    }
+}
+
+/// The session's own record of which maps have nothing left to walk to.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Frontiers(std::collections::BTreeSet<u8>);
+
+impl Frontiers {
+    /// Record that `map`'s frontier could not be reached. Idempotent.
+    pub fn record(&mut self, map: u8) {
+        self.0.insert(map);
+    }
+
+    /// Forget `map`'s mark, because the run has just stood somewhere on it that it had not.
+    pub fn clear(&mut self, map: u8) {
+        self.0.remove(&map);
+    }
+
+    /// How many maps are marked, for a log line and the tests.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl FrontierLedger for Frontiers {
+    fn frontier_exhausted(&self, map: u8) -> bool {
+        self.0.contains(&map)
     }
 }
 
