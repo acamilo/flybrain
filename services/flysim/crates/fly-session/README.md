@@ -218,6 +218,22 @@ The durable store is `state`, over the `FLYSESS1` layout the contract crate owns
   derived from the epoch, so a resumed run's behaviour is compared through
   `EpochRebase`, which rewrites exactly those and fails on anything it does not recognise.
 
+## Before you add a check to a reply
+
+Ask which kind of reply it is. Is the far side **reporting what it did**, in which case a
+subset or an empty answer is permitted and must be accepted? Or is it **being held to a
+requirement**, in which case exactness is the rule and must be enforced? `Worker.Acknowledge`
+is the only reply of the first kind in this crate, because `ipc-v1` section 5 explicitly makes
+it idempotent -- "Already released/unknown IDs are ignored" -- so a second one legitimately
+releases nothing, and the section 6 resolution turns any slow Acknowledge into exactly that
+second one. Demanding the whole list back there fenced healthy sessions until
+`an_acknowledge_that_releases_nothing_is_not_a_failure` was written.
+
+The commit and batch checks are the second kind and must stay exact: `commit_all` requires
+every agent (`step-v1` section 3 phase D, section 7) and `check_batch` requires every declared
+port (`workers-v1` section 3). Loosening those in the name of tolerance is the same mistake
+pointing the other way -- they are what make a partial commit and an incomplete batch fail.
+
 ## Where this crate narrows or adds to the contract crate
 
 - **Required views.** `WorldObservation::validate_against` checks the views a result carries

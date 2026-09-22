@@ -199,6 +199,9 @@ pub struct AgentFaults {
     /// Refuse `State.ActivateRestore` after this worker has already staged, so a group meets
     /// a failure halfway through activation.
     pub fail_activate_restore: bool,
+    /// Add this id to every `Worker.Acknowledge` reply, so the caller meets a worker
+    /// reporting about an id it was never asked about.
+    pub acknowledge_extra_id: Option<Id>,
 }
 
 /// One fake agent worker's configuration.
@@ -696,6 +699,10 @@ impl WorkerEndpoint for FakeAgentWorker {
 
     fn worker_threads(&self) -> u64 {
         self.config.worker_threads as u64
+    }
+
+    fn acknowledge_extra_id(&self) -> Option<Id> {
+        self.config.faults.acknowledge_extra_id.clone()
     }
 
     fn methods(&self) -> Vec<&'static str> {

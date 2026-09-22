@@ -63,6 +63,10 @@ pub struct Injections {
     pub substituted_published_handle: bool,
     /// Ask an agent to apply a stimulus kind its published descriptor does not declare.
     pub undeclared_stimulus: bool,
+    /// Acknowledge the lifecycle replies twice, which is what the `ipc-v1` section 6
+    /// resolution does to any Acknowledge whose first reply outran the probe. The second one
+    /// legitimately releases nothing, and bootstrap must accept it.
+    pub duplicate_lifecycle_acknowledge: bool,
 }
 
 /// What an injection produced, for a test to assert on.
@@ -346,6 +350,8 @@ pub struct Coordinator {
     pub resolutions: u64,
     /// How the last resolution ended, so a test or a supervisor can tell which bound fired.
     pub last_resolution: Option<ResolutionEnd>,
+    /// How many attempts the last resolution spent. Counted, not inferred from the clock.
+    pub last_resolution_attempts: u32,
     /// The caller-side failure-detection budgets of `ipc-v1` section 6.
     pub deadlines: Deadlines,
     /// Per-method and critical-path latency samples. Local synthetic timings, never a
@@ -435,6 +441,7 @@ impl Coordinator {
             in_progress_replies: 0,
             resolutions: 0,
             last_resolution: None,
+            last_resolution_attempts: 0,
             deadlines: Deadlines::default(),
             metrics: Metrics::default(),
             blame: None,
@@ -966,21 +973,69 @@ impl Coordinator {
                 .push(request_id);
         }
         for (worker, ids) in by_worker.into_values() {
-            let params = AcknowledgeParams { request_ids: ids.clone() };
-            let reply = self
-                .call(&worker, "Worker.Acknowledge", None, object(params.to_json()), &[], &[])
-                .await?;
-            let result: AcknowledgeResult =
-                reply.parse().map_err(|e| self.fail_now(e, "acknowledge"))?;
-            if result.acknowledged.len() != ids.len() {
-                return Err(self.fail_now(
-                    DomainError::invalid("a worker did not acknowledge every lifecycle reply"),
-                    "acknowledge",
-                ));
+            if self.injections.duplicate_lifecycle_acknowledge {
+                // Release them first, out of sight, so the call this method then makes and
+                // checks is already the *second* one -- which is the shape the section 6
+                // resolution produces when an Acknowledge's first reply outruns the probe,
+                // and the shape the original defect fenced a healthy session on. Adding a
+                // second call after the checked one would not reproduce it: the first reply
+                // is always complete, so a length check on it would pass.
+                let first = self.acknowledge_replies(&worker, &ids).await?;
+                if first.len() != ids.len() {
+                    return Err(self.fail_now(
+                        DomainError::invalid("the first Acknowledge did not release everything"),
+                        "acknowledge",
+                    ));
+                }
             }
+            self.acknowledge_replies(&worker, &ids).await?;
         }
         self.audit.push("acknowledge.lifecycle".to_owned());
         Ok(())
+    }
+
+    /// Releases a worker's retained lifecycle replies, and accepts a short answer.
+    ///
+    /// **`ipc-v1` section 5: "Already released/unknown IDs are ignored."** The reply lists what
+    /// *this* call released, which is not always everything it asked about, and the contract
+    /// type already holds that list to a subset of the request. So a second Acknowledge of the
+    /// same ids answers with an empty list by design, and an empty list is success.
+    ///
+    /// This matters beyond tidiness. The `ipc-v1` section 6 resolution turns any Acknowledge
+    /// whose reply is slower than the probe into a second Acknowledge of the same ids, so the
+    /// short answer is not an edge case -- it is what the contract produces on an ordinarily
+    /// slow worker. Requiring the whole list back made the contract's own idempotence a failed
+    /// epoch, which is what
+    /// `an_acknowledge_that_releases_nothing_is_not_a_failure` guards against.
+    ///
+    /// A short list is accepted; a list about something else is not. The worker reports what
+    /// *it* released, so fewer ids than asked for is success -- but it is still only entitled
+    /// to report about the ids it was asked about, and an id outside the request is a worker
+    /// talking about another caller's cache. That half is exact-demanded, and
+    /// `AcknowledgeResult::validate_against` is what says so.
+    ///
+    /// Returns the ids the worker actually released.
+    pub async fn acknowledge_replies(
+        &mut self,
+        worker: &WorkerRef,
+        request_ids: &[DomainRequestId],
+    ) -> Outcome<Vec<DomainRequestId>> {
+        let params = AcknowledgeParams { request_ids: request_ids.to_vec() };
+        let reply = self
+            .call(worker, "Worker.Acknowledge", None, object(params.to_json()), &[], &[])
+            .await?;
+        let result: AcknowledgeResult =
+            reply.parse().map_err(|e| self.fail_now(e, "acknowledge"))?;
+        if let Err(e) = result.validate_against(&params) {
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::IdentityMismatch,
+                    format!("a worker acknowledged an id this session never asked about: {e}"),
+                ),
+                "acknowledge",
+            ));
+        }
+        Ok(result.acknowledged)
     }
 
     /// Queries one worker's status without waiting for its current mutation.
@@ -1274,16 +1329,22 @@ impl Coordinator {
         let attempts = self.deadlines.resolve_attempts;
         let started = Instant::now();
         self.resolutions += 1;
+        // Both, together: a resolution that ends before its first attempt would otherwise
+        // report the previous one's count.
         self.last_resolution = None;
+        self.last_resolution_attempts = 0;
         self.audit.push(format!("resolve:{}:{method}", worker.worker_id));
         // The budget is the working limit and the attempt count is a guard; whichever runs
         // out is recorded, so "it gave up" is never an unexplained number.
         let mut end = ResolutionEnd::AttemptsExhausted;
+        let mut spent = 0u32;
         for _ in 0..attempts {
             if started.elapsed() >= budget {
                 end = ResolutionEnd::BudgetExpired;
                 break;
             }
+            spent += 1;
+            self.last_resolution_attempts = spent;
             let outcome = call_owned(
                 self.bus.clone(),
                 worker.clone(),
