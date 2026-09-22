@@ -438,6 +438,20 @@ pub trait MacroState: GameState {
         false
     }
 
+    /// The tile the fly is stepping onto, or `None` while it is standing still.
+    ///
+    /// **Row 54 of `infra/docs/macros-traps.md`, measured on the cartridge.** `wXCoord` and
+    /// `wYCoord` change at the *end* of a step, so for fifteen frames of every sixteen the fly's
+    /// coordinates are the tile it has already left. The ground under it is unrecorded for all of
+    /// them, `path::frontier` keeps offering it, and `GO FRONTIER` is dealt aiming one tile away
+    /// -- a walk that reports `done` the instant the step it did not make lands.
+    ///
+    /// The default is `None`, i.e. never mid-step, which is the narrowing every other default in
+    /// this trait is: the stood ledger keeps the coordinates alone, which is what it did before.
+    fn stepping_onto(&mut self) -> Option<Tile> {
+        None
+    }
+
     /// Whether this run has already talked to `target` on the map that is loaded.
     ///
     /// `docs/design/macros.md` section 12's talked ledger, and the observable that ends the
