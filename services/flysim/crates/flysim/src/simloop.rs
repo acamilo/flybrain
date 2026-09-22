@@ -619,6 +619,16 @@ impl Sim {
         sim.next_generation = sim.durable.highest_generation().max(sim.hot.highest_generation()) + 1;
         sim.start_writer();
         sim.restore_or_warm_up()?;
+        // The on-screen chat ring, from its sidecar beside the hot checkpoints, before the first
+        // publish (`docs/control-api.md`, `[chat]`). It is session state and not part of the
+        // checkpoint envelope, so it is restored whatever the checkpoints did — including on a
+        // fresh start, where the brain is new but the panel's last dozen lines are not stale.
+        if config.chat.enabled {
+            let restored = sim.chat_ring.load_sidecar(&config.paths.hot_dir, now_wall_ms());
+            if restored > 0 {
+                tracing::info!(lines = restored, "restored the on-screen chat ring");
+            }
+        }
         // A dealt mode, seeded from the network as it now stands. No macro has a random
         // component since `GO FRONTIER` replaced `WANDER` (`docs/design/macros.md` section 9), so
         // the seed changes nothing about a run today; taking it here rather than before the
@@ -1328,6 +1338,12 @@ impl Sim {
             text,
             bot: if bot { Some(true) } else { None },
         });
+        // The ring survives a restart because it is written here, not because it is in a
+        // checkpoint: one atomic rename onto tmpfs per accepted line, and a failure is a warning
+        // rather than a refusal — the line is already on screen.
+        if let Err(error) = self.chat_ring.save_sidecar(&self.shared.config.paths.hot_dir) {
+            tracing::warn!(%error, "could not persist the chat ring; it will not survive a restart");
+        }
         Metrics::incr(&self.shared.metrics.chat_accepted_total);
         Ok(event.id)
     }

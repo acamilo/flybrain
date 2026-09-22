@@ -258,9 +258,10 @@ if [ -n "$RELEASE_TARBALL" ]; then
     # BEFORE the symlink moves. Cost: one dataset load, a second or two.
     #
     # FLY_RESET_STATE=1 is the deliberate override: it archives the durable
-    # checkpoints (kept, never deleted) and clears the tmpfs hot ring, so the
-    # new build warms up fresh. Everything learned so far is thrown away, which
-    # is why it is not the default.
+    # checkpoints (kept, never deleted) and clears the tmpfs hot ring — the hot
+    # checkpoints and the on-screen chat ring's sidecar — so the new build warms
+    # up fresh. Everything learned so far is thrown away, which is why it is not
+    # the default.
     # -----------------------------------------------------------------------
     state_dir="${FLY_STATE_DIR:-/srv/fly/state}"
     hot_dir="${FLY_STATE_HOT_DIR:-/run/fly/state}"
@@ -294,7 +295,7 @@ if [ -n "$RELEASE_TARBALL" ]; then
             # state_dir is its own mountpoint, so the directory itself cannot be
             # renamed; its contents move instead.
             ct_exec "$CTID" -- sh -c "mkdir -p '$archive' && mv '${state_dir}'/*.checkpoint '${state_dir}/manifest.json' '$archive'/ 2>/dev/null; chown -R fly:fly '$archive'"
-            ct_exec "$CTID" -- sh -c "rm -f '${hot_dir}'/*.checkpoint '${hot_dir}/manifest.json' 2>/dev/null; true"
+            ct_exec "$CTID" -- sh -c "rm -f '${hot_dir}'/*.checkpoint '${hot_dir}/manifest.json' '${hot_dir}/chat-ring.json' 2>/dev/null; true"
         else
             die "05-deploy: REFUSING to deploy release ${version}: its checkpoint compatibility string does not match the live state in ${state_dir}, so flysim would refuse every checkpoint there and then refuse to start at all — a black stream.
   live state: ${live_compat}
