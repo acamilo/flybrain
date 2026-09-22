@@ -772,13 +772,13 @@ fn shop_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64) 
                 machine.step(&mut poke)
             };
             let Some(mask) = mask else { break };
-            gb.set_buttons(mask as u8);
+            gb.set_buttons(mask);
             gb.run_frame().expect("a frame should complete");
             *ms += MS_PER_FRAME;
             adapter.sample(gb, *ms);
             frame += 1;
             let line = counter_line(gb, adapter);
-            if line != last || frame % 20 == 0 {
+            if line != last || frame.is_multiple_of(20) {
                 println!("- frame {frame:3}: mask {mask:#06x}  {line}");
                 last = line;
             }
@@ -787,10 +787,7 @@ fn shop_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64) 
                 break;
             }
         }
-        println!(
-            "- outcome after {frame} frames: {:?}",
-            machine.outcome().map(|(name, abort)| (name, abort))
-        );
+        println!("- outcome after {frame} frames: {:?}", machine.outcome());
         let mut entries = Vec::new();
         while let Some(entry) = machine.take_blocked() {
             entries.push(entry);
