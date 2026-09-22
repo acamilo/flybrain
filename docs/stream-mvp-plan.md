@@ -744,3 +744,7 @@ rewritten separately.
   a v5 checkpoint instead of refusing it. `fly-reset-to-milestone <N>` restarts the run from a
   ladder rung (archives both stores first). The live run restarts from rung 7 with this release, so
   the ladder is climbed again with the catch reward and the row-54 walks in place.
+- 2026-09-22 19:59 UTC (v0.5.0 deployed): rung 7 had no milestone archive (the ratchet passed it
+  inside one commit), so the run restarted from rung 8, VIRIDIAN CITY, with
+  `fly-reset-to-milestone 8`; the v5 checkpoint migrated to v6 as designed. The previous state is
+  archived beside the store.
