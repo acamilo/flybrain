@@ -939,6 +939,34 @@ pub fn map_grid(memory: &mut dyn MemoryReader) -> Result<MapGrid, GridRefusal> {
     Ok(grid)
 }
 
+/// Whether a cached grid is still the map that is loaded, checked from the tile the fly is on.
+///
+/// The map id, the map header and the block data are written by different parts of a warp, so
+/// there is a frame or two on the way through a door where `wCurMap` is the map the fly is
+/// arriving on and the header and the blocks are still the map it is leaving: the decode agrees
+/// with the screen (both are the old map) and is filed under the new id. Measured on the
+/// cartridge — the fly on Oak's lab doormat with `wCurMap` already reading `PALLET_TOWN` and the
+/// header still the lab's ten-by-twelve (`tests/rom_map_grid.rs`).
+///
+/// Nothing in WRAM says "the map has finished loading", so the cache asks the cheapest question
+/// that can tell: does the grid still agree with the screen about the tile the fly is standing on?
+/// One byte, once per question. A grid that does not is dropped and decoded again, so a torn
+/// frame's grid lives exactly as long as the tear does — and through it the cartridge is walking
+/// the fly, which is not a frame any macro plans on.
+fn still_the_loaded_map(
+    memory: &mut dyn MemoryReader,
+    grid: &MapGrid,
+    x: u8,
+    y: u8,
+) -> bool {
+    match map_tile_id(memory, x, y) {
+        // The screen is not showing the map (a battle, a text box): nothing to check against, and
+        // the grid was checked when it was decoded.
+        None => true,
+        Some(tile) => grid.tile_id(x, y) == Some(tile),
+    }
+}
+
 /// The player's own tile and its four neighbours, which is every tile the window is certain to be
 /// able to answer for from where the fly is standing.
 fn neighbourhood(x: u8, y: u8) -> Vec<(u8, u8)> {
@@ -1233,10 +1261,11 @@ impl MacroState for PokeState<'_> {
     /// falls back to the ten-by-nine window predicate then, which is what all of them did before
     /// this existed. [`GridRefusal`] names which, for the probes.
     fn map_grid(&mut self) -> Option<std::sync::Arc<MapGrid>> {
+        let player = player(self.memory)?;
         let size = map_size(self.memory)?;
-        let map = player(self.memory)?.map;
         if let Some(grids) = self.grids.as_deref()
-            && let Some(grid) = grids.get(map, size.width, size.height)
+            && let Some(grid) = grids.get(player.map, size.width, size.height)
+            && still_the_loaded_map(self.memory, &grid, player.x, player.y)
         {
             return Some(grid);
         }
