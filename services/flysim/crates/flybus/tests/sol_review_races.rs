@@ -714,6 +714,13 @@ async fn caller_disconnect_cleanup_works_before_and_after_consumption() {
     .await;
     caller.close().await;
     drop(pending);
+    // `Client::close` waits for this client to stop; the router marks the call detached when
+    // *it* observes the disconnect, in its own connection task. Asserting the reply routing
+    // before that is a race: under load the reply reaches the router first and is routed to a
+    // connection that is already closing. Nothing escapes -- teardown releases those roots --
+    // but `routed` is then true. The contract sentence is about a reply to an already detached
+    // call, so the test waits for the teardown it is talking about.
+    e.settle("caller-a disconnected", |s| s.connections == 1).await;
     assert!(!responder.reply(obj(json!({})), &[]).await.unwrap());
     drop(responder);
     e.settle("retained responder retired", |s| {

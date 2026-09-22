@@ -119,7 +119,7 @@ and once over a Unix socket, so `tests/rpc.rs::request_reply_roundtrip` means
 | Requirement | Status | Code | Test |
 | --- | --- | --- | --- |
 | `call-<U64>` with increasing serials per connected client; reused or retired ids are rejected, never executed again | conforms: a syntactically valid id advances the watermark even when admission is refused | `router/state.rs::op_call` (`call_watermark`) | `tests/sol_review_races.rs::rejected_call_id_still_advances_monotonic_watermark`, `tests/rpc.rs::raw_call_ids_and_forged_replies` (both) |
-| Reconnecting creates a new incarnation rather than reviving old calls | conforms | `router/state.rs::{hello, disconnect}` | `tests/sol_review_races.rs::caller_disconnect_cleanup_works_before_and_after_consumption` |
+| Reconnecting creates a new incarnation rather than reviving old calls | conforms | `router/state.rs::{hello, disconnect}` | `tests/sol_review_races.rs::caller_disconnect_cleanup_works_before_and_after_consumption` (its synchronisation was fixed on 2026-09-22; see "A flaky test and what it was measuring") |
 | An RPC targets one registered service, not a broadcast subject | conforms | `router/state.rs::op_call` | `tests/rpc.rs::request_reply_roundtrip` (both) |
 | First-dispatch FIFO per caller and service; responses may complete out of order and correlate by callId | conforms | `router/state.rs::{Svc::queue, dispatch_rpc}` | `tests/rpc.rs::fifo_dispatch_and_out_of_order_completion` (both), `tests/conformance_routing.rs::out_of_order_replies_correlate_across_concurrent_callers` (both) |
 | A service dispatcher can answer status concurrently with a long mutation | conforms | `router/state.rs::dispatch_rpc` (in-flight credits, not one-at-a-time) | `tests/bus_acceptance.rs::a_status_rpc_responds_while_another_handler_is_delayed` (both) |
@@ -411,6 +411,45 @@ What the numbers do and do not say:
 - Router CPU grows with agent count much more slowly than the whole process (0.18 to 0.22
   cores against 0.33 to 0.46), because the clients own the copies. A thread that exits between
   two samples takes its CPU with it, so the router figure is a floor.
+
+## A flaky test and what it was measuring, 2026-09-22 (MEDIA-01)
+
+`tests/sol_review_races.rs::caller_disconnect_cleanup_works_before_and_after_consumption`
+failed intermittently on `main` after the bus slice merged. Reproduced here at
+**37 failures in 240 runs** (four parallel loops of 60, debug, on the loaded dev VM), always
+on the same line and always the same way: `responder.reply(...)` returned `routed:true` where
+the test asserted `false`.
+
+The mechanism is a synchronisation gap in the test, not a routing defect.
+`router/state.rs::op_reply` returns `routed:false` only when `call.detached` is set, and for a
+disconnected caller that flag is set by `router/state.rs::disconnect`, which the router runs
+when **its** connection task reads EOF. `Client::close` documents what it waits for — "flushes
+queued releases, closes the connection and waits until the reader has stopped ... the router
+releases what they owned" — which is the client side only. So after `close()` returns, the
+router may not have torn the caller's connection down yet, and a reply that reaches it first is
+routed to a connection that is already closing. Nothing escapes: `disconnect` then releases
+that connection's roots along with the queued result, which is why the test's own later
+`settle` calls always passed. Only the `routed` flag, read one step too early, was wrong.
+
+The fix is in the test: it now waits for the teardown it is talking about
+(`e.settle("caller-a disconnected", |s| s.connections == 1)`) before asserting the
+reply-to-a-detached-call sentence of section 6. That is the same bounded
+poll-until-the-router-settles the rest of the file already uses for router-side consequences;
+no sleep, no timing constant, and the assertion now has the precondition its contract sentence
+names. **360 runs after the fix, 0 failures** (240 debug, 120 release).
+
+Two other intermittent failures were seen in the same sweep and are **not** fixed here, since
+they belong to the bus slice rather than to this one:
+
+- `tests/example_demo.rs::the_example_shows_a_counter_rpc_an_observer_and_a_held_frame`,
+  2 failures in 40 standalone runs plus 1 in 12 full-suite runs. It prints
+  "while the frame is held: 1 artifact(s), 2 root(s)" instead of 1 root: the producer's hold
+  release is queued on the control lane and had not been applied when the example read the
+  counts. The same shape of gap, in the guide deliverable's printed output.
+- `tests/integration.rs::unix_socket::session_over_one_router`, 1 failure in 12 full-suite
+  runs and 0 in 40 standalone runs, at the assertion that the deliberately slow consumer
+  skipped snapshots. Under load it kept up, so the assertion is a timing claim about the
+  machine.
 
 ## Contradictions
 
