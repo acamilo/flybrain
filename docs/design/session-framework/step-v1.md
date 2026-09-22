@@ -30,6 +30,7 @@ Starting → Ready(k) → Preparing(k) → Applying(k) → Observing(k+1)
 
 Ready(k) → Paused(k) → Ready(k)
 Ready(k) / Paused(k) → Capturing(k) → same boundary
+pause requested mid-step → Committing(k) → Ready(k+1) → Paused(k+1)
 any unresolved partial failure → Failed → Restoring(new epoch) → Paused(k)
 terminal episode → Paused(k) → Resetting(new epoch) → Ready(0)
 ```
@@ -37,6 +38,12 @@ terminal episode → Paused(k) → Resetting(new epoch) → Ready(0)
 `Committing(k)` refers to completing transition `k → k+1`. Requests throughout that
 transition carry `scope.step=k`; result fields identify `nextStep=k+1` where applicable.
 Do not send Agent.Commit with step `k+1` merely because the observation is newer.
+
+**Amendment, 2026-09-22.** The mid-step pause line above adds no new edge: a pause requested
+during a transition is served by the ordinary `Committing(k) → Ready(k+1)` edge followed by
+`Ready(k+1) → Paused(k+1)`. It is written into the machine because section 6 requires the
+transition to finish first, so the only boundary such a pause can land on is the one the
+transition just committed.
 
 ## 3. Transaction sequence
 

@@ -26,6 +26,7 @@ both_transports!(
     a_terminal_episode_pauses_at_its_own_boundary,
     status_answers_with_the_committed_boundary,
     a_worker_refuses_a_second_initialize,
+    a_single_agent_composition_runs_the_same_transaction,
 );
 
 const STEPS: u64 = 3;
@@ -376,8 +377,7 @@ async fn sequential_concurrent_and_reversed_orders_agree() {
 
 /// A one-agent composition still runs the same transaction, so the barrier is not two-agent
 /// specific.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_single_agent_composition_runs_the_same_transaction() {
+async fn a_single_agent_composition_runs_the_same_transaction(via: Via) {
     let config = HarnessConfig {
         agents: vec![AgentSpec {
             agent_id: id("fly-a"),
@@ -387,7 +387,7 @@ async fn a_single_agent_composition_runs_the_same_transaction() {
         }],
         ..HarnessConfig::default()
     };
-    let mut f: Fixture = fixture(Via::Memory, config).await;
+    let mut f: Fixture = fixture(via, config).await;
     within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     within("run", f.harness.coordinator.run(3)).await.unwrap();
     assert_eq!(f.harness.coordinator.stats().advances, 3);

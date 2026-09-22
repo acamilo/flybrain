@@ -12,7 +12,7 @@ use common::{Fixture, at, fly_a, fly_b, within};
 use fly_session::agent::AgentFaults;
 use fly_session::coordinator::Injections;
 use fly_session::environment::EnvironmentFaults;
-use fly_session::harness::{HarnessConfig, SessionHarness, Via};
+use fly_session::harness::{HarnessConfig, Via};
 use fly_session::phase::Phase;
 use fly_session::types::*;
 
@@ -27,6 +27,7 @@ both_transports!(
     a_reply_from_another_incarnation_is_rejected,
     a_world_that_advanced_without_sensory_data_fails_the_transition,
     an_exact_duplicate_of_a_running_operation_is_in_progress,
+    an_old_epoch_operation_is_refused_with_stale_epoch,
 );
 
 const STEPS: u64 = 4;
@@ -338,13 +339,10 @@ async fn an_exact_duplicate_of_a_running_operation_is_in_progress(via: Via) {
     f.shutdown().await;
 }
 
-/// A restarted worker under a new epoch refuses an operation from the old one.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_old_epoch_operation_is_refused_with_stale_epoch() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut harness = SessionHarness::start(Via::Memory, dir.path(), HarnessConfig::default())
-        .await
-        .unwrap();
+/// A live worker under this epoch refuses an operation naming another one.
+async fn an_old_epoch_operation_is_refused_with_stale_epoch(via: Via) {
+    let mut f = clean_fixture(via).await;
+    let harness = &mut f.harness;
     within("bootstrap", harness.coordinator.bootstrap()).await.unwrap();
     within("step", harness.coordinator.step()).await.unwrap();
 
@@ -371,6 +369,5 @@ async fn an_old_epoch_operation_is_refused_with_stale_epoch() {
     .expect_err("an old epoch cannot mutate this worker");
     assert_eq!(err.code, ErrorCode::StaleEpoch);
     assert_eq!(harness.coordinator.stats().advances, 1);
-    harness.shutdown().await;
-    drop(dir);
+    f.shutdown().await;
 }

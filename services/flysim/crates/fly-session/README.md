@@ -114,7 +114,9 @@ harness.shutdown().await;
   libraries, so their types live here rather than in the payload contract. An intent is a
   `PortControl` without its port, and only the coordinator adds the port.
 - **The phase machine.** `step-v1` section 2 is this crate's, not the contract crate's; the
-  trace's phase path is recorded beside the contract's `TransitionTrace`.
+  trace's phase path is recorded beside the contract's `TransitionTrace`. The mid-step pause
+  it takes -- the transition finishes, then the session pauses at the boundary it just
+  committed -- is now written into the section 2 machine as a dated amendment.
 
 ## Limitations
 
@@ -136,8 +138,10 @@ cargo test -p fly-session                                    # unit + both integ
 cargo run -p fly-session --example session                   # the runnable synthetic session
 ```
 
-Every integration test runs twice, once over the in-memory transport and once over a Unix
-socket, through the same router code:
+Every integration test runs over both transports, through the same router code: all but one
+are generated twice by `both_transports!`, and
+`sequential_concurrent_and_reversed_orders_agree` walks both transports inside one test
+because it compares their behaviour traces against each other.
 
 - `tests/session.rs`: one world advance per complete batch; every agent Prepared before the
   advance; one task evaluation per transition; every agent committed before the next Prepare or
