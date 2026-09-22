@@ -168,8 +168,7 @@ async fn session_over_one_router(via: Via) {
             let bytes = frame.read_all().await.unwrap();
             let step = bytes[0] as u64;
             assert_eq!(
-                (step, sequence),
-                (step, step),
+                sequence, step,
                 "a delivery carries the frame of the snapshot it announces"
             );
             coalesced += replaced;

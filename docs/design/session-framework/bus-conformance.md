@@ -438,18 +438,30 @@ poll-until-the-router-settles the rest of the file already uses for router-side 
 no sleep, no timing constant, and the assertion now has the precondition its contract sentence
 names. **360 runs after the fix, 0 failures** (240 debug, 120 release).
 
-Two other intermittent failures were seen in the same sweep and are **not** fixed here, since
-they belong to the bus slice rather than to this one:
+Two other intermittent failures were seen in the same sweep. They belonged to the bus slice
+rather than to this one and were fixed there, in the same way and for the same reason:
 
 - `tests/example_demo.rs::the_example_shows_a_counter_rpc_an_observer_and_a_held_frame`,
-  2 failures in 40 standalone runs plus 1 in 12 full-suite runs. It prints
+  2 failures in 40 standalone runs plus 1 in 12 full-suite runs. It printed
   "while the frame is held: 1 artifact(s), 2 root(s)" instead of 1 root: the producer's hold
   release is queued on the control lane and had not been applied when the example read the
-  counts. The same shape of gap, in the guide deliverable's printed output.
-- `tests/integration.rs::unix_socket::session_over_one_router`, 1 failure in 12 full-suite
-  runs and 0 in 40 standalone runs, at the assertion that the deliberately slow consumer
-  skipped snapshots. Under load it kept up, so the assertion is a timing claim about the
-  machine.
+  counts. `examples/demo.rs` now waits for that release before reading the counts, the same
+  bounded poll it already used for collection eight lines below, so the line the guide quotes
+  is an observation rather than a race. The printed output is unchanged.
+- `tests/integration.rs::session_over_one_router`, 1 failure in 12 full-suite runs and 0 in 40
+  standalone runs, at the assertion that the deliberately slow consumer skipped snapshots.
+  Under load it kept up, so the assertion was a timing claim about the machine: section 7
+  permits a latest subscriber to miss values, it does not oblige it to. The renderer is now
+  held until the publisher's twentieth receipt has returned -- the publisher's completion
+  observed, not timed -- so the coalescing is forced by construction, and the test asserts the
+  guarantees that do hold: each delivery carries the frame of the snapshot it announces,
+  deliveries arrive in publication order, the last value received is the latest published, the
+  renderer receives snapshots 1 and 20 of 20, both subscriptions accept all twenty publications
+  while the spectator reads nothing, and the eighteen replacements reported to the publisher at
+  admission are the same eighteen reported to the renderer on delivery and are exactly the
+  snapshots it did not receive. 16 failures in 40 runs beside four busy loops before, 0 in 40
+  after; the whole crate went from 10 failed runs in 20 to 0, and the workspace suite from 2
+  in 5 to 0.
 
 ## Contradictions
 
