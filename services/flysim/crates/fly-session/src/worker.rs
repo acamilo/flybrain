@@ -584,13 +584,6 @@ fn classify_default(method: &str) -> Option<OpClass> {
     }
 }
 
-fn object(value: Value) -> Map<String, Value> {
-    match value {
-        Value::Object(m) => m,
-        _ => unreachable!("a struct serializes to an object"),
-    }
-}
-
 fn success(
     request: &SessionRpcRequest,
     worker_id: &Id,
