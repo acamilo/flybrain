@@ -2156,3 +2156,126 @@ skipped cleanly without `FLY_ROM` and the checkpoint):
 - `infra/tests/lint.sh`: all checks passed, de-PII guard included.
 - `--print-compatibility`: **648 bytes, sha256 `0d9bfde7...707fa`** -- byte-identical to v0.4.1
   through v0.4.5. Decoder, reward catalog, adapter version and roles untouched.
+
+## Row 50: the move list was never drawn (2026-09-22, v0.4.7)
+
+`MOVE n` has reported `blocked` on most of its starts since v0.4.3 and every review since has named
+it and left it: "the move list drawn and its cursor placeable but not accepting input". Half of
+that is wrong, and finding out which half is the fix.
+
+### The survey
+
+`examples/scene_probe.rs`, `FLY_PROBE_CATCH=accept`, from the rung-9 forest checkpoint. The
+question "is this menu accepting input" is answered by **pressing at it**: every battle frame
+exports the emulator state, takes one directional pulse, reads `wCurrentMenuItem` and puts the
+state straight back, so every frame has a ground truth and the run is not perturbed by the
+measurement. `HandleMenuInput` moves the cursor on UP and DOWN before it looks at
+`wMenuWatchedKeys`, so a cursor that moves is a menu running its input loop. The pulse releases the
+buttons first: `JoypadLowSensitivity` acts on a key's edge, and the first pass of this survey
+counted 187 refusals that were its own held button.
+
+3,102 battle frames whose cursor bytes say "the move list":
+
+| the reading | press refused | press honoured |
+| --- | ---: | ---: |
+| the cursor bytes alone (the seam before this row) | 2,838 | 264 |
+| the cursor bytes **and** the box on screen | **0** | **231** |
+| the cursor bytes with no box drawn | 2,838 | 33 |
+
+So 91.5% of the frames the old reading called an open move list were frames no press reached. The
+33 are frames where the pulse's own thirty were long enough for the cartridge to open something by
+itself; the pulse is a measurement and not a claim about one frame.
+
+Beside the press, the probe asks **every byte of WRAM and HRAM** whether its values on accepting
+frames are disjoint from its values on refusing ones, so the reading is found rather than
+nominated. Once the box is in the reading nothing separates the two classes, because there is
+nothing left to separate. The top-level battle menu was already exact: 413 frames, 0 refused, and
+`wTextBoxID` is why.
+
+### The mechanism
+
+`MoveSelectionMenu` writes `wTopMenuItemY` 12 and `wTopMenuItemX` 5 and nothing in the game clears
+them -- row 41's fact about the YES/NO box, one menu over. `SelectMenuItem` then decrements
+`wCurrentMenuItem` back into a 0-based move slot on its way out, which lands inside the one-based
+range the accessor reads as valid, so a turn spent on move 2, 3 or 4 leaves a *placeable* cursor
+behind it. That is why `MOVE 4` was 222 of 224.
+
+### The trap hunt, twenty brain minutes on each checkpoint
+
+`main` at `e76b3d1` against this branch, same seed, same ground.
+
+**The rung-9 forest checkpoint.**
+
+| measure | before | after |
+| --- | ---: | ---: |
+| `MOVE n` starts / `blocked` | 109 / **29** (26.6%) | 83 / **0** |
+| macro starts that were `BACK` on the move list | **233** | 17 |
+| frames the seam called an open move list | **20,318** | 3,742 |
+| frames it called a move list with no cursor | 6,751 | 10 |
+| frames it called between-turns | 1,670 | **44,270** |
+| distinct (map, tile) | 296 | **430** |
+| windows flagged | **33 / 73** | 70 / 73 |
+| macros started / blocked | 620 / 31 | 1,160 / **1** |
+| frames in `battle` | 31,751 | 52,311 |
+| wall clock | 3,350 s | 3,038 s |
+
+**The rung-11 Route 3 checkpoint.**
+
+| measure | before | after |
+| --- | ---: | ---: |
+| `MOVE n` starts / `blocked` | 198 / **72** (36.4%) | 97 / **2** (2.1%) |
+| macro starts that were `BACK` on the move list | **361** | 22 |
+| frames the seam called an open move list | **34,637** | 4,141 |
+| frames it called a move list with no cursor | 16,162 | 5 |
+| frames it called between-turns | 5,372 | **47,660** |
+| distinct (map, tile) | 163 | **184** |
+| windows flagged | **68 / 73** | 73 / 73 |
+| macros started / blocked | 1,097 / 87 | 1,300 / **19** |
+| `GO ROUTE` completed | 5 | 21 |
+| wall clock | 2,392 s | 2,127 s |
+
+**More ground on both arms, and more flagged windows on both.** That is row 54's arm again and it
+is reported rather than smoothed: after the fix the fly spends 73% and 78% of the two runs inside
+battles it is actually fighting, and the hunt's rule -- fewer than four distinct tiles in two brain
+minutes -- flags a fly that is fighting exactly as hard as a fly that is stuck. The ethos check's
+"fewer flagged windows, more distinct tiles" holds on the tiles and **not** on the windows, on both
+arms. The merge is Fable's call.
+
+### ROM-gated, from the forest checkpoint
+
+`the_battles_turns_advance_from_the_rung_nine_forest_checkpoint`, with the two claims row 50 turns
+on added to it:
+
+| measure | before (`main` at `e76b3d1`) | after |
+| --- | ---: | ---: |
+| `MOVE n` starts / `blocked` | 940 / **838** | 51 / **0** |
+| battles entered / ended | 11 / **10** | 13 / **13** |
+| worst battle, in macros | 503 | 283 |
+| median battle, in macros | 48 | 43 |
+| where `blocked` was earned | seven of ten were `MOVE n` in a battle | no `MOVE n` at all |
+
+The blocked share is the assertion; the median is what it buys and the worst battle is a tail.
+
+### Residuals, named rather than worked around
+
+- **The battle bag is the same trap on `wListMenuID`.** `ITEMLISTMENU` outlives the bag exactly as
+  the cursor bytes outlive the move list: over the frames the seam calls an open battle bag the
+  same survey refused **449** presses against 36 honoured. Its list is drawn in the top half of the
+  screen and the survey has not found the figure that tells it from the frame after it closes, so
+  `ITEM` and `THROW BALL` still pay for it. It is the next trap.
+- **The party list, likewise**: `PartyMenuInit`'s geometry outlives its list.
+- **The hunt's tile rule still cannot tell a long battle from a stall**, which is section 15's own
+  measurement in `docs/design/macros.md` and now the third branch to run into it.
+
+### Gates
+
+- `cargo test --workspace` with `FLY_ROM` set: green except
+  `flysim::integration::the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_killed`,
+  the known debug-build boot failure on this box. On the first pass
+  `flybus::integration::unix_socket::session_over_one_router` also failed -- the slow-consumer
+  coalescing flake that `fix/flybus-coalescing-flake` is open on -- and passed on a re-run; three
+  other agents were building on the box at the time.
+- `cargo clippy --all-targets`: clean.
+- `infra/tests/lint.sh`: all checks passed, de-PII guard included.
+- `--print-compatibility`: **648 bytes, sha256 `0d9bfde7...707fa`** -- byte-identical to this
+  branch's base. Decoder, reward catalog, adapter version and roles untouched.
