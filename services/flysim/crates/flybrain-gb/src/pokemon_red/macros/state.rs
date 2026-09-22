@@ -41,7 +41,8 @@ pub enum Scene {
     Dialog,
     /// Start menu or one of its submenus, outside battle.
     Menu,
-    /// In a battle. `own_turn` is the top-level FIGHT/PKMN/ITEM/RUN menu waiting for input;
+    /// In a battle. `own_turn` is any battle menu waiting for input -- the top-level
+    /// FIGHT/PKMN/ITEM/RUN one, the move list, the party list or the bag;
     /// `forced_switch` is the party list the game opens when the active Pokémon has fainted, which
     /// cannot be backed out of.
     Battle { own_turn: bool, forced_switch: bool },
@@ -234,10 +235,10 @@ pub enum BattleMenu {
     /// The bag, opened from a battle's ITEM entry: `wListMenuID` is `ITEMLISTMENU`.
     ///
     /// Not one of the three `docs/design/macros.md` section 12.6 named, and the gap was
-    /// observable: the bag list is not the top-level menu, so `own_turn` is false and the frame
-    /// reads as a battle between turns, whose pad is `NEXT` and `BACK` -- and `NEXT` was an A
-    /// press on whatever the cursor held. What the list needed is a *cursor* the scripts can read,
-    /// which is what `ITEM` and section 14's `THROW BALL` navigate by (2026-09-17).
+    /// observable twice over. First the list needed a *cursor* the scripts can read, which is what
+    /// `ITEM` and section 14's `THROW BALL` navigate by (2026-09-17). Then it needed to be the
+    /// fly's *turn*: a bag reading as nobody's turn landed on the between-turns row, whose `NEXT`
+    /// is the A that advances text and on an open bag is the A that uses an item (12.10).
     Bag { cursor: u8, count: u8 },
 }
 
@@ -245,8 +246,9 @@ pub enum BattleMenu {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Battle {
     pub kind: BattleKind,
-    /// A battle menu is open and waiting for the fly: the top-level one, the move list, or the
-    /// party list outside a forced switch (`pokemon_red::state::battle`).
+    /// A battle menu is open and waiting for the fly: the top-level one, the move list, the bag,
+    /// or the party list outside a forced switch (`pokemon_red::state::battle`). Every frame with a
+    /// cursor accepting input is one of these, which is section 12.10's invariant.
     pub own_turn: bool,
     /// The party list is open because the active Pokémon fainted; it cannot be cancelled.
     pub forced_switch: bool,
