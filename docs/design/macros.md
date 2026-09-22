@@ -859,6 +859,61 @@ reproduction and the numbers; two macros, and section 12.2's one rule between th
 
 The decoder, the reward catalog, the adapter version and the compatibility string are untouched.
 
+### 12.10 No two buttons on a battle pad undo each other (2026-09-22, rung 9, seventy-one hours)
+
+Thirty-five minutes after v0.4.2 deployed, the watchdog flagged the same rung again. Rank 9
+(VIRIDIAN FOREST, next PEWTER CITY), seventy-one hours on it, and since the restart the macro
+starts were `NEXT` **1264**, `BACK` **1241**, `THROW BALL` 5 and `GO WARP` 3 -- the event log
+alternating `NEXT start/done, BACK start/done` every hold, on map 51.
+
+Reproduced from the live checkpoint with the real cartridge and the real brain
+(`infra/docs/macros-traps.md` has the numbers): twenty brain minutes, **71,673 frames of them all
+in one battle**, 73 of 73 windows flagged, one distinct tile, and the two counts that name the
+mechanism -- `BACK` **739 starts on the move list** and `NEXT` **739 on the top-level menu**.
+
+- **The pair was split across two sub-states of one turn, which is why 12.9 did not catch it.**
+  `NEXT`'s script is one press of A. On a frame of battle text that A advances the text, which is
+  what the button is for. On the *top-level battle menu* the same A press **confirms whatever the
+  cursor is sitting on**, and the cursor sits on FIGHT, so `NEXT` opened the move list -- whose
+  `BACK` closed it again. Each button was legitimate where it stood: 12.9's rule is about `BACK`
+  and a list, and there *was* a list to leave. What is a trap is the **pair**: two buttons that
+  undo each other with nothing else changing, so the roll lands on one of them nearly every hold
+  and the turn never resolves. Section 12.2's rule, stated at the pad instead of at one macro:
+  **no pair of buttons on any battle pad may undo each other with nothing else changing.**
+- **`NEXT` is the A that advances text, so it belongs only on a frame with no cursor accepting
+  input.** It is off every own-turn pad: the top-level menu, the move list, the party list and the
+  bag. The between-turns row keeps it alone, and the forced switch keeps it as row 8's backstop --
+  the one arm with a cursor and no `BACK` at all, because a forced switch cannot be cancelled.
+- **`MOVE 1` is the backstop the top-level menu keeps.** `NEXT` was there for the turn where every
+  other button drops (row 7), and it was the wrong button for the job twice over: it does not end
+  a turn, and what it does instead is reopen the list `BACK` had just closed. `MOVE 1`'s
+  precondition over that menu is 12.8's -- "is there a move list to open", and FIGHT always opens,
+  because `CheckPlayerHasUsableMoves` sets Struggle without opening it -- so it is bound there
+  whatever the seam makes of `wBattleMon*`, and its script over that menu is "confirm FIGHT and
+  stop", which reads no move at all. A battler the seam cannot read is not a reason to take the
+  turn's one ending button away.
+- **The bag is the fly's turn, and its pad is the bag's own answers.** `Battle::own_turn` answered
+  `false` for it, which was the last frame in the game with a cursor accepting input and no own
+  turn -- so it landed on the between-turns row, and that row's `NEXT` on an open bag is the A
+  press that *uses* whatever the cursor holds. The invariant is now whole: **a battle frame with a
+  cursor accepting input is the fly's turn**, the forced switch excepted because it has a pad of
+  its own. The bag's row is `ITEM` (use the thing) / `THROW BALL` / `BACK`; `CONFIRM` is gone from
+  it, because it was the same blind A press under another name, and both scripts already navigated
+  this list by reading its cursor (7.1 of `macros-wram.md`).
+- **`wListMenuID` is not stale, which is why the bag reading stands.** It is zeroed by
+  `DisplayTextIDInit` at the start of every text display (`macros-wram.md`), so a battle's text
+  frames cannot inherit an `ITEMLISTMENU` from a bag the fly closed. Checked because a stale byte
+  there would have put the bag's pad on every frame of battle text.
+- **What the harness now holds, rather than the pads alone.** The ROM-gated run from this
+  checkpoint asserts that no battle pad deals both buttons, that `NEXT` is on no frame with a
+  cursor accepting input, that the longest `NEXT`/`BACK` alternation is under four, and that every
+  battle it enters *ends* -- 25 of 25, worst 275 macros -- where v0.4.2 spent a whole hunt inside
+  one that never did. The battle rules are asked of the **scene the pad was dealt for** and not of
+  `wIsInBattle`: the `$ff` frame a lost battle passes through reads `Unknown`, whose pad is
+  `NEXT, BACK` by contract (row 9), and it is not under a battle's rules.
+
+The decoder, the reward catalog, the adapter version and the compatibility string are untouched.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")
@@ -936,12 +991,12 @@ observe is not a precondition, it is a guess.
 | Menu (the start menu) | CLOSE, CONFIRM, BACK | unchanged. The cursor is the fly's to move with the **raw** D-pad, which still reaches the cartridge in macros mode; a SAVE or a POKéDEX button would be a macro per start-menu entry and is not asked for |
 | Menu (the bag, an elevator, the party list outside a battle) | CLOSE, CONFIRM, BACK | unchanged |
 | Unknown (the Pokédex, the trainer card, OPTION, a naming screen, a mid-warp frame) | NEXT, **BACK** | **BACK added** (row 9): B is what leaves the first three, and A leaves none of them |
-| Battle, own turn, main menu | MOVE 1..4, SWITCH, ITEM, THROW BALL, RUN, NEXT | four move buttons for `ATTACK` (section 14); THROW BALL added, and gated on the species since 12.9; **RUN gated**, below. No `BACK`: the four entries are the answers to this menu |
+| Battle, own turn, main menu | MOVE 1..4, SWITCH, ITEM, THROW BALL, RUN | four move buttons for `ATTACK` (section 14); THROW BALL added, and gated on the species since 12.9; **RUN gated**, below. No `BACK`: the four entries are the answers to this menu. **`NEXT` removed by 12.10** — an A press here confirms FIGHT and reopens the list the move list's `BACK` just closed, and `MOVE 1` is the backstop instead, bound here whatever the battler reads as |
 | Battle, own turn, move list | MOVE 1..4, BACK | as above |
 | Battle, own turn, party list | SWITCH, BACK | unchanged |
-| Battle, the bag | NEXT, **BACK** | **BACK added**, and the list now reports a *cursor* (`macros-wram.md` 7.1) — before this `ITEM` could open the bag and had nothing to read |
-| Battle, forced switch | SWITCH, NEXT | unchanged (row 8) |
-| Battle, between turns | NEXT | `BACK` was added here for the bag (the row above reads as nobody’s turn) and **taken back out by section 12.9**: on a frame of battle text there is no list to leave, and a `BACK` that changes nothing is the trap of section 12.2 |
+| Battle, own turn, the bag | ITEM, THROW BALL, **BACK** | the bag reports a *cursor* (`macros-wram.md` 7.1), and since **12.10** it is the own turn, because a cursor accepting input is one. Its pad is the list's own answers; `NEXT` and `CONFIRM` are both off it, being the same blind A press that *uses* whatever the cursor holds |
+| Battle, forced switch | SWITCH, NEXT | unchanged (row 8). The one arm that keeps `NEXT` with a cursor up, because it cannot be cancelled and has no `BACK` to undo it |
+| Battle, between turns | NEXT | `BACK` was added here for the bag and **taken back out by 12.9**: on a frame of battle text there is no list to leave, and a `BACK` that changes nothing is the trap of section 12.2. Since **12.10** the bag is not on this row at all, so `NEXT` here is only ever the A that advances text |
 | Shop | BUY POTION, BUY BALL, BUY ANTIDOTE, BUY REPEL, CONFIRM, LEAVE | two purchases to four; CONFIRM added |
 | PC | **CONFIRM**, LEAVE | **CONFIRM added**: a list the fly opened is one it can answer rather than only close. Depositing and withdrawing are still not in the vocabulary (row 17) |
 | Title | nothing | unchanged, by contract: the readout's boot variant applies |
@@ -983,6 +1038,7 @@ measured where it cannot.
 | a restore, before the first `observe` | not a cause: the loop calls `observe` once at the end of boot and once after a ratchet recovery, so the first frame is decided on a real palette |
 | the title screen, and raw mode | not an empty pad by contract: the readout's boot variant applies and no palette is dealt |
 | a scene the detector cannot name | `Unknown` deals `NEXT` and `BACK`; a screen neither press leaves (the naming screen, row 14) is a genuine stall and still needs START, which is a contract change |
+| the fly's own turn where the seam cannot read the battler, now that `NEXT` is off that row (12.10) | **fixed**: `MOVE 1` is bound over the top-level menu whatever `wBattleMon*` reads as, because FIGHT is one of that menu's four entries and always opens |
 
 And because "closed where a macro can close it" is not "closed":
 `game.padEmptyMs` publishes how long a **playable** scene has had nothing on the pad, in brain

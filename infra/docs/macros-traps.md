@@ -1359,3 +1359,166 @@ Four things about it that are not improvements, recorded rather than buried.
 - `infra/tests/lint.sh`: all checks passed, de-PII guard included.
 - `--print-compatibility`: byte-identical to v0.4.1, 648 bytes, decoder / reward catalog / adapter
   version / roles untouched.
+
+## 2026-09-22, rows 42 and 43: the pair that undid itself
+
+Thirty-five minutes after v0.4.2 deployed, the release watchdog flagged the same rung. Rank 9
+(VIRIDIAN FOREST, next PEWTER CITY), seventy-one hours on it, and since the restart the macro
+starts were `NEXT` **1264**, `BACK` **1241**, `THROW BALL` 5 and `GO WARP` 3, with the event log
+alternating
+
+```
+NEXT start, NEXT done, BACK start, BACK done
+```
+
+every hold on map 51. It is the residual the previous review named and left -- "a `NEXT, BACK`
+2-cycle x75 closes the run inside one battle... worth watching" -- at full scale, and the reason
+that review's rule did not catch it is that **each of the two buttons was legitimate where it
+stood**. `docs/design/macros.md` section 12.10 is the contract this closed against.
+
+### The mechanism, measured
+
+Twenty brain minutes from the release container's own rung-9 checkpoint, real cartridge, real
+brain as the readout. The whole run -- **71,673 frames, all of them `battle`** -- was one battle,
+on one tile, with 73 of 73 windows flagged and every window reading `NEXT, BACK` x74 or x75. The
+two rows of the hunt's own sub-state table are the mechanism:
+
+| macro start | battle sub-state | n |
+| --- | --- | ---: |
+| `BACK` | move list | **739** |
+| `NEXT` | **main menu** | **739** |
+| `NEXT` | move list, no cursor | 8 |
+| `BACK` | party list | 1 |
+| `MOVE 1` | main menu | 1 |
+| `THROW BALL` | main menu | 1 |
+
+1. **`NEXT` on the top-level battle menu is not the press that advances text.** `NEXT`'s script is
+   one press of A. Between turns that A advances the text box, which is the button's whole
+   purpose. On the top-level menu the same A press **confirms whatever the cursor sits on**, and
+   the cursor sits on FIGHT -- so `NEXT` *opened the move list*. It was put there as row 7's
+   backstop for a turn where every other button drops out, and it is the wrong button for that
+   job twice over: it does not end a turn, and what it does instead is reopen a list.
+2. **`BACK` on the move list closed it again**, which is 12.9's contract and correct: backing out
+   of a list is one of exactly two answers to one. So neither rule was broken and the loop was a
+   *pair*: main menu -> `NEXT` -> move list -> `BACK` -> main menu, 739 times each, at 2.4 macros
+   per brain second, with the turn never resolving and the battle never ending. Section 12.2's
+   rule restated at the pad: **no pair of buttons on any battle pad may undo each other with
+   nothing else changing.**
+3. **The bag was the last frame in the game with a cursor accepting input and no own turn.**
+   `Battle::own_turn` answered `false` for it (12.6 had no observable for the bag at all; 13.1 gave
+   it a cursor), so it landed on the between-turns row -- whose `NEXT` on an open bag is the A
+   press that *uses* whatever the cursor holds. Not what the live loop was made of, and the same
+   defect: an A press dealt where A does not advance text.
+
+### What changed, all of it inside the macros
+
+- **`NEXT` is off every own-turn pad**: the top-level menu, the move list, the party list and the
+  bag. It stays alone on the between-turns row and stays as row 8's backstop on the forced switch,
+  which is the one arm with a cursor up and no `BACK` at all, because it cannot be cancelled.
+- **`MOVE 1` is the top-level menu's backstop instead**, and it is bound there whatever the seam
+  makes of `wBattleMon*`: the question over that menu is 12.8's "is there a move list to open",
+  FIGHT always opens, and `MOVE 1`'s script over that menu is "confirm FIGHT and stop", which reads
+  no move at all. A battler the seam cannot read is not a reason to take the turn's one ending
+  button away. Over an **open list** the per-slot PP rule is unchanged (row 30a, row 34).
+- **The bag is the fly's turn** (`state::battle`), and its pad is the bag's own three answers:
+  `ITEM` (use what the cursor is on), `THROW BALL`, `BACK`. `CONFIRM` is gone from it -- the same
+  blind A press under another name -- and both scripts already navigated this list by reading its
+  cursor (`macros-wram.md` 7.1). The invariant is now whole: **a battle frame with a cursor
+  accepting input is the fly's turn**, the forced switch excepted because it has a pad of its own.
+- **`wListMenuID` was checked for staleness rather than assumed sound**: it is zeroed by
+  `DisplayTextIDInit` at the start of every text display (`macros-wram.md`), so a battle's text
+  frames cannot inherit an `ITEMLISTMENU` from a bag the fly closed, and the bag reading stands.
+- **The harness asks the scene the pad was dealt for, not `wIsInBattle`.** The `$ff` frame a lost
+  battle passes through reads `Unknown`, whose pad is `NEXT, BACK` by contract (row 9); the first
+  version of the new assertion accused that row of a battle rule it is not under.
+
+| # | trap | trigger | test | fix, or why it is left |
+| ---: | --- | --- | --- | --- |
+| 42 | two buttons on a battle pad undo each other with nothing else changing: `NEXT` on the top-level menu opens the move list, `BACK` on the move list closes it | every wild battle, every turn -- 739 starts each in twenty brain minutes, one battle, 73 of 73 windows flagged | `no_battle_pad_holds_both_next_and_back`, `the_battle_row_is_the_move_buttons_switch_item_and_never_next`, `each_battle_menu_deals_its_own_pad`, `the_battles_turns_advance_from_the_rung_nine_forest_checkpoint` (ROM-gated: it **fails on v0.4.2** with `NEXT` dealt on `battle/main`) | **fixed**: `NEXT` is off every pad with a cursor accepting input, and `MOVE 1` is the top-level menu's backstop, bound there whatever the battler reads as. `NEXT` keeps the between-turns row and the forced switch |
+| 43 | the battle bag reads as nobody's turn, so its pad is the between-turns `NEXT` -- an A press that *uses* what the cursor holds | choosing ITEM in a battle; rare, because `ITEM` needs a potion and a hurt Pokemon | `a_battle_frame_with_a_cursor_accepting_input_is_the_flys_turn`, `the_battle_bag_is_the_flys_turn_and_deals_its_own_two_uses`, `back_is_on_a_battle_pad_only_where_a_list_is_open` | **fixed**: `own_turn` is true for the bag, and its pad is `ITEM` / `THROW BALL` / `BACK`. This is row 30c closed -- it was left in 12.6 for want of an observable, given a cursor in 13.1, and given the right *turn* here |
+
+### The ROM-gated run, before and after
+
+Same test, same checkpoint, sixty-seven brain minutes of the game-blind rotation, `v0.4.2`
+(`592c264`) against this branch.
+
+| measure | before (v0.4.2) | after |
+| --- | --- | --- |
+| verdict | **FAILED**: "`NEXT` was on the pad while a battle menu was accepting input" | **passed** |
+| `NEXT` dealt on | `battle/between-turns`, **`battle/main`**, `battle/moves-unplaceable` | `battle/between-turns`, `battle/moves-unplaceable` |
+| `BACK` dealt on | `battle/moves`, `battle/party` | `battle/bag`, `battle/moves`, `battle/party` |
+| maps visited | **[51]** -- never left the forest | 51, 0, 12, 1, 41, 44, 42, 13, 50 (nine) |
+| battles entered / ended | 14 / 15 | 26 / 25 |
+| worst battle, in macros | not measurable: the run never left the fly's own turn | **275** |
+| longest `NEXT`/`BACK` alternation | (the assertion fires first) | **1** |
+| `MOVE 1..4` starts | 96 | **718** |
+| `NEXT` / `BACK` starts | 1235 / 1315 of 3944 | 526 / 313 of 2090 |
+| own-turn frames | 20,914 | 143,180 |
+| `GO OBJECTIVE` on an overworld pad | map 51 only | nine maps |
+
+### The trap hunt, before and after
+
+Twenty brain minutes, seed 20260917, 4 sweep threads, the same connectome and the same cartridge,
+from the release container's rung-9 checkpoint, **driven by the brain** rather than by
+`FLY_TRAP_STUB`: this branch adds no macro type, so the thirty-one `macro_<type>` populations are
+the same function in both arms and `--print-compatibility` is byte-identical at 648 bytes. The two
+arms differ in the macro code and in nothing else.
+
+| measure | before (v0.4.2) | after |
+| --- | ---: | ---: |
+| distinct (map, tile) | **1** | **260** |
+| windows flagged | 73/73 | **68/73** |
+| windows under 4 tiles | **73** | **2** |
+| longest repeated sequence in a window | **`NEXT, BACK` x75** | `NEXT` x20 |
+| macros started | 1489 | 797 |
+| frames in `battle` | **71,673** (one battle, the whole run) | 50,600 |
+| frames in `overworld` | **0** | **20,394** |
+| `NEXT` starts on the main menu | **739** | **0** |
+| `BACK` starts on the move list | 739 | 263 |
+| `MOVE n` starts | **1** | **113** |
+| `THROW BALL` starts | 1 | 63 |
+| `RUN` starts | 0 | 7 |
+
+The before arm never left the battle it resumed in and never left the tile it stood on. The after
+arm fought fifty thousand frames of battle *and* walked twenty thousand frames of overworld across
+260 tiles.
+
+Raw reports: `hunt-before-20260922T0459.md` and `hunt-after-20260922T0459.md` in the coordination
+state's `runs/` directory.
+
+### Residuals, named rather than worked around
+
+- **`NEXT` on a move list whose cursor the seam cannot place is now the largest source of it** --
+  142 of the after arm's 248 `NEXT` starts, over 8,687 frames. That frame is *correctly* not the
+  fly's turn (row 30b: `MoveSelectionMenu`'s coordinates appear before the engine has copied the
+  active Pokemon into `wBattleMon*`), so `NEXT` there is the between-turns press and it advances.
+  It is not a 2-cycle -- the ROM-gated run measures the longest `NEXT`/`BACK` alternation at
+  **1** -- but it is the same unplaceable cursor 12.6 named, and the honest fix is still a WRAM
+  reading rather than a pad change.
+- **`BACK` is 326 of 797 starts**, all of them over an open list: 263 on the move list and 63 on a
+  party list. Row 34's contract, and where it leads is a menu with `MOVE 1` on it.
+- **The 68 windows still flagged are the sequence rule's dominance arm, not a cycle.** They read
+  `NEXT` x11 to x20 or `BACK` x11 to x14 over windows holding **5 to 86** distinct tiles, where
+  every window of the before arm read `NEXT, BACK` x74 on **one** tile. Only two windows of the
+  after arm are under four tiles, against seventy-three before. A window spent in a long battle is
+  one tile by construction, which is the known false-positive shape of the tile rule and why this
+  row is proved on the pad and sub-state tables as well.
+- **Row 41 is not reproduced here and is not closed.** The after arm's text boxes are 140 frames
+  at (6, 30) of map 0x33 and smaller counts on seven other tiles, with no Pokemon Center in the
+  run at all; the nurse's `YES` loop needs its own checkpoint to measure.
+- **The road north is still reported rather than asserted.** The ROM-gated run leaves the forest
+  and reaches maps 50, 13, 12, 1, 41, 44, 42 and 0 with `GO OBJECTIVE` on the overworld pad of all
+  nine, but it does not reach map 47 -- the forest's north gate -- in sixty-seven brain minutes of
+  the game-blind rotation. Row 40's note stands.
+
+### Gates
+
+- `cargo test --workspace` with `FLY_ROM` set: green except
+  `flysim::integration::the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_killed`,
+  which fails identically on v0.4.2 on this box with the same assertion (a debug build of the
+  service does not finish booting inside the test's window here). Pre-existing and unrelated to
+  the macro layer.
+- `cargo clippy --all-targets`: clean.
+- `infra/tests/lint.sh`: all checks passed, de-PII guard included.
+- `--print-compatibility`: **648 bytes, sha256 `0d9bfde7...707fa`** -- byte-identical to v0.4.1 and
+  v0.4.2. Decoder, reward catalog, adapter version and roles untouched.
