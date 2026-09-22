@@ -1,11 +1,12 @@
-//! The Pokémon Red reward adapter, `pokered-unique8-v5`.
+//! The Pokémon Red reward adapter, `pokered-unique8-v6`.
 //!
 //! A port of the prototype's `src/reward/pokemon-red.ts`. The gates and budgets
 //! are unchanged; `docs/rewards-learning.md` holds the live rule table and the
 //! source evidence behind each gate. v4 replaced the 16-rung boot-to-badges
 //! ladder with the 38 rungs of `docs/design/ladder.md`; v5 adds one reward rule,
 //! `boundary` (`docs/design/room-escape.md` section 2), which pays the first step
-//! next to and the first step onto each of a map's exits.
+//! next to and the first step onto each of a map's exits; v6 adds `catch`, the
+//! operator's decision of 2026-09-22, which pays for keeping a wild Pokémon.
 
 pub mod catalog;
 #[cfg(test)]
@@ -32,13 +33,33 @@ use symbols::ram;
 
 /// Adapter version, pinned into the checkpoint compatibility string.
 ///
-/// `v5` is the `boundary` rule. Bumping it is what rejects every checkpoint written
-/// by `v4`: the string is compared whole before a restore is attempted, so a ledger
-/// that has never recorded a single `boundary:` key can never be resumed as though
-/// its exits were already collected. (`v4` was the 38-rung ladder, and rejected
-/// `v3` for the same reason: a stored rank that meant "4 badges" on the old ladder
-/// could not be read as a rung on the new one.) Pre-launch, so no run is lost.
-pub const REWARD_ADAPTER: &str = "pokered-unique8-v5";
+/// `v6` is the `catch` rule. Bumping it is what makes a `v5` checkpoint a decision
+/// rather than an accident: the compatibility string is compared whole before a
+/// restore is attempted, so a `v5` run is refused by default and resumed only when
+/// the operator names it in `FLY_ACCEPT_ADAPTERS`
+/// ([`crate::compatibility::RestoreDecision`], `docs/design/flysim.md`). That
+/// migration is safe in one direction only, and only for this pair: `v5`'s ledger is
+/// a `v6` ledger with the catch counter absent, and an absent counter reads as zero.
+///
+/// (`v5` was the `boundary` rule, and rejected `v4` because a ledger that had never
+/// recorded a `boundary:` key could not be resumed as though its exits were already
+/// collected. `v4` was the 38-rung ladder, and rejected `v3` because a stored rank
+/// that meant "4 badges" on the old ladder is not a rung on the new one. Neither of
+/// those is a migration: this one is, because nothing a `v5` ledger holds means
+/// something different under `v6`.)
+pub const REWARD_ADAPTER: &str = "pokered-unique8-v6";
+
+/// Adapter ids whose checkpoints `v6` can read.
+///
+/// Exactly one, and it is one because the `catch` rule adds a counter and changes nothing else:
+/// a `v5` ledger restores as a `v6` ledger with `catchCounts` empty, and every other byte of the
+/// state means what it meant. `v4` is not here -- its `seen` ledger holds no `boundary:` keys, so
+/// resuming it would pay a second time for every exit the run had already found -- and neither is
+/// `v3`, whose stored rank is a rung on a different ladder.
+///
+/// Listing an id here is necessary but not sufficient: `FLY_ACCEPT_ADAPTERS` must name it too
+/// (`crate::compatibility::decide`, `docs/design/flysim.md`).
+pub const MIGRATES_FROM: &[&str] = &["pokered-unique8-v5"];
 
 /// The only cartridge semantic rewards are enabled for. Even the canonical
 /// pret build stays disabled until reviewed; see `docs/rewards-learning.md`.
@@ -60,7 +81,21 @@ pub const SUPPORTED_ROM: &str =
 /// [`REWARD_ADAPTER`] is the gate that refuses such a checkpoint anyway, and it is
 /// the right gate, because the objection to loading one is about semantics rather
 /// than shape.
+///
+/// *Not* bumped for the `catch` rule either, and this time the answer matters,
+/// because `v5` checkpoints are meant to be restorable under `v6`. The rule adds one
+/// counter, `catchCounts`, and nothing else: every other field keeps its name, its
+/// shape and its meaning, and a state written without the counter restores with it
+/// empty, which is the truth about a run that was never paid for a catch. That is the
+/// whole of the documented `v5` -> `v6` migration; see
+/// [`crate::compatibility::RestoreDecision`].
 pub const STATE_VERSION: u64 = 4;
+
+/// Catch payouts one species may earn in the lifetime of a run's ledger.
+///
+/// The same cap and the same reason as the wild-KO rule's three: a species the fly can
+/// find over and over is a farm, and three is enough for the behaviour to be learned.
+const MAX_CATCH_PAYOUTS: u64 = 3;
 
 const BADGE_NAMES: [&str; 8] = [
     "BOULDER", "CASCADE", "THUNDER", "RAINBOW", "SOUL", "MARSH", "VOLCANO", "EARTH",
@@ -325,6 +360,26 @@ struct Battle {
     wild: bool,
     saw_living: bool,
     ko: bool,
+    /// Lifetime `species` payouts when this battle started.
+    ///
+    /// The "never owned this run" test for the catch rule, and an exact one: the only
+    /// thing that can set a `wPokedexOwned` bit during a wild battle is the catch
+    /// itself, so a `species` payout between the battle starting and the ball keeping
+    /// the Pokémon *is* that Pokémon being new. It is read this way rather than from
+    /// `wCapturedMonSpecies` directly because that byte is the cartridge's **internal**
+    /// species index and the owned bitset is by **Pokédex number**; the two numberings
+    /// differ and nothing in WRAM converts between them
+    /// (`docs/design/macros-wram.md` section 2, "species numbering").
+    ///
+    /// `None` for a battle restored from a checkpoint written before this existed,
+    /// which reads as "cannot tell" and pays the repeat amount rather than guessing
+    /// generously.
+    species_at_start: Option<u64>,
+    /// The internal species index `wCapturedMonSpecies` named, once a ball has kept one.
+    captured: Option<u8>,
+    /// Whether that catch was a species this run had never owned, decided on the frame
+    /// the capture was observed.
+    captured_new: bool,
 }
 
 /// Immutable per-sample byte cache. Each address requested during one sample
@@ -370,6 +425,10 @@ pub struct PokemonRedReward {
     tiles: OrderedSet,
     tile_counts: BTreeMap<u8, u64>,
     wild_wins: BTreeMap<String, u64>,
+    /// Catch payouts per species, by the cartridge's internal species index as a decimal
+    /// string. The one field `v6` adds to the checkpoint; absent in a `v5` state, which
+    /// reads as every species at zero.
+    catch_counts: BTreeMap<String, u64>,
     replay_blocked: OrderedSet,
     counts: Counts,
     total: f64,
@@ -420,6 +479,7 @@ impl PokemonRedReward {
             tiles: OrderedSet::new(),
             tile_counts: BTreeMap::new(),
             wild_wins: BTreeMap::new(),
+            catch_counts: BTreeMap::new(),
             replay_blocked: OrderedSet::new(),
             counts: Counts::default(),
             total: 0.0,
@@ -567,8 +627,9 @@ impl PokemonRedReward {
     }
 
     /// Forget observations a rollback invalidates. Lifetime novelty survives,
-    /// and every wild-KO key paid so far is blocked from paying again, because
-    /// after a rollback the same battle could otherwise be replayed for reward.
+    /// and every wild-KO key and every caught species paid so far is blocked from
+    /// paying again, because after a rollback the same battle -- or the same catch --
+    /// could otherwise be replayed for reward.
     pub fn clear_transient(&mut self) {
         self.location.clear();
         self.stable = 0;
@@ -577,6 +638,10 @@ impl PokemonRedReward {
         let keys: Vec<String> = self.wild_wins.keys().cloned().collect();
         for key in keys {
             self.replay_blocked.insert(&key);
+        }
+        let caught: Vec<String> = self.catch_counts.keys().cloned().collect();
+        for species in caught {
+            self.replay_blocked.insert(&format!("catch:{species}"));
         }
     }
 
@@ -690,14 +755,29 @@ impl PokemonRedReward {
         if in_battle == 1 || in_battle == 2 || in_battle == 255 {
             self.mode = "BATTLE".to_string();
             self.stable = 0;
+            let species_paid = self.counts.get(kind::SPECIES);
             if self.battle.is_none() && in_battle != 255 {
                 self.battle = Some(Battle {
                     key: battle_key(memory, map),
                     wild: in_battle == 1,
                     saw_living: false,
                     ko: false,
+                    species_at_start: Some(species_paid),
+                    captured: None,
+                    captured_new: false,
                 });
             }
+            // The cartridge's own answer to "was one caught": `ram/wram.asm`'s comment on
+            // this byte is "0 if no mon was captured". `ItemUseBall` zeroes it before every
+            // throw and writes `wEnemyMonSpecies` into it only on the branch that keeps the
+            // Pokémon, and `UseBagItem`'s `.returnAfterCapturingMon` zeroes it again on the
+            // way out of the battle -- so it is non-zero for the hundreds of frames the
+            // catch's own text and Pokédex screen take, and zero everywhere else.
+            //
+            // Read rather than derived from `wPartyCount`, because a catch with a full party
+            // raises `wBoxCount` instead, and because `wPartyCount` also rises for a gift, a
+            // trade and a revive out of the PC.
+            let captured = memory.read8(ram::wCapturedMonSpecies);
             if let Some(battle) = &mut self.battle {
                 let hp = word(memory, ram::wEnemyMonHP);
                 let max = word(memory, ram::wEnemyMonMaxHP);
@@ -709,6 +789,11 @@ impl PokemonRedReward {
                 }
                 if battle.saw_living && hp == 0 {
                     battle.ko = true;
+                }
+                if battle.wild && captured != 0 && battle.captured.is_none() {
+                    battle.captured = Some(captured);
+                    battle.captured_new =
+                        battle.species_at_start.is_some_and(|before| species_paid > before);
                 }
             }
         } else if in_battle == 0 {
@@ -727,6 +812,41 @@ impl PokemonRedReward {
                         );
                     }
                     self.wild_wins.insert(battle.key.clone(), (count + 1).min(3));
+                }
+                // The catch rule (`docs/rewards-learning.md`, the operator 2026-09-22).
+                //
+                // Paid on the way out of the battle rather than on the capture frame, so that
+                // it lands in the same place the wild-KO payout does and cannot fire twice for
+                // one battle. `wBattleResult` is 2 on exactly two paths in the game:
+                // `UseBagItem`'s `.returnAfterCapturingMon`, which is this one, and a link
+                // battle whose opponent ran (`engine/battle/core.asm`), which this cartridge
+                // never has. Requiring it as well as the captured species means a byte read
+                // out of a half-initialised battle cannot pay.
+                if let Some(species) = battle.captured
+                    && battle.wild
+                    && result == 2
+                {
+                    let key = species.to_string();
+                    let paid = self.catch_counts.get(&key).copied().unwrap_or(0);
+                    if paid < MAX_CATCH_PAYOUTS
+                        && !self.replay_blocked.contains(&format!("catch:{key}"))
+                    {
+                        let value = if battle.captured_new {
+                            catalog::rule(kind::CATCH)
+                                .expect("the catch rule is in the catalog")
+                                .value
+                        } else {
+                            catalog::CATCH_REPEAT_VALUE
+                        };
+                        self.emit_amount(
+                            &mut emitted,
+                            kind::CATCH,
+                            format!("CAUGHT #{species}"),
+                            value,
+                            brain_ms,
+                        );
+                    }
+                    self.catch_counts.insert(key, (paid + 1).min(MAX_CATCH_PAYOUTS));
                 }
             }
             let location = format!("{map}:{x}:{y}");
@@ -827,11 +947,31 @@ impl PokemonRedReward {
         brain_ms: f64,
     ) {
         let rule = catalog::rule(kind).expect("emit is only called with catalog kinds");
+        self.emit_amount(emitted, kind, label, rule.value * scale, brain_ms);
+    }
+
+    /// [`PokemonRedReward::emit`] with the payout stated outright instead of as a multiple
+    /// of the catalog value.
+    ///
+    /// One rule needs it. `catch` pays 0.30 for a species this run has not caught and 0.10
+    /// for one it has, and no binary float scales the first into exactly the second:
+    /// `0.3 * (1.0 / 3.0)` is `0.09999999999999999`, and that is the number that would reach
+    /// the ticker and the checkpoint. `boundary`'s pair, 0.05 and 0.10, *is* an exact scale
+    /// of two, so that rule still goes through [`PokemonRedReward::emit`].
+    fn emit_amount(
+        &mut self,
+        emitted: &mut Vec<RewardEvent>,
+        kind: &'static str,
+        label: String,
+        value: f64,
+        brain_ms: f64,
+    ) {
+        let rule = catalog::rule(kind).expect("emit is only called with catalog kinds");
         let event = RewardEvent {
             kind,
             label,
             brain_ms,
-            value: rule.value * scale,
+            value,
             stimulation_ms: rule.stimulation_ms,
         };
         emitted.push(event.clone());
@@ -991,6 +1131,10 @@ impl PokemonRedReward {
             "tiles": self.tiles.as_slice(),
             "tileCounts": self.tile_counts,
             "wildWins": self.wild_wins,
+            // The one field v6 adds. A v5 state does not carry it and restores with it
+            // empty, which is the documented v5 -> v6 migration and the truth about a run
+            // that was never paid for a catch.
+            "catchCounts": self.catch_counts,
             "replayBlocked": self.replay_blocked.as_slice(),
             "counts": self.counts,
             "total": self.total,
@@ -1011,6 +1155,9 @@ impl PokemonRedReward {
                 "wild": battle.wild,
                 "sawLiving": battle.saw_living,
                 "ko": battle.ko,
+                "speciesAtStart": battle.species_at_start,
+                "captured": battle.captured,
+                "capturedNew": battle.captured_new,
             })),
             "mode": self.mode,
         })
@@ -1056,6 +1203,13 @@ impl PokemonRedReward {
         let counts_raw = counted_record(input.get("counts")).ok_or(BAD_CHECKPOINT)?;
         let tile_counts_raw = counted_record(input.get("tileCounts")).ok_or(BAD_CHECKPOINT)?;
         let wild_wins_raw = counted_record(input.get("wildWins")).ok_or(BAD_CHECKPOINT)?;
+        // Absent in every v5 state, and that absence is the migration: no species has been
+        // paid for a catch, because the rule did not exist. Present but malformed is still
+        // an error, the same as every other counter here.
+        let catch_counts = match input.get("catchCounts") {
+            None | Some(Value::Null) => BTreeMap::new(),
+            Some(value) => counted_record(Some(value)).ok_or(BAD_CHECKPOINT)?,
+        };
 
         let recent = recent_raw
             .iter()
@@ -1078,6 +1232,19 @@ impl PokemonRedReward {
                 wild: value.get("wild").and_then(Value::as_bool).ok_or(BAD_HISTORY)?,
                 saw_living: value.get("sawLiving").and_then(Value::as_bool).ok_or(BAD_HISTORY)?,
                 ko: value.get("ko").and_then(Value::as_bool).ok_or(BAD_HISTORY)?,
+                // All three are v6's, and all three are optional for the same reason
+                // `catchCounts` is. A v5 battle carries no `speciesAtStart`, which reads as
+                // "cannot tell whether the caught species was new" and pays the repeat
+                // amount: the conservative half of the rule, and at most 0.20 once.
+                species_at_start: value.get("speciesAtStart").and_then(Value::as_u64),
+                captured: value
+                    .get("captured")
+                    .and_then(Value::as_u64)
+                    .and_then(|species| u8::try_from(species).ok()),
+                captured_new: value
+                    .get("capturedNew")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             }),
         };
         let replay_blocked = match input.get("replayBlocked") {
@@ -1103,6 +1270,7 @@ impl PokemonRedReward {
         }
         self.tile_counts = tile_counts;
         self.wild_wins = wild_wins_raw;
+        self.catch_counts = catch_counts;
         self.replay_blocked = replay_blocked.iter().map(String::as_str).collect();
         self.counts = Counts::default();
         for (key, count) in &counts_raw {
@@ -1172,6 +1340,10 @@ fn parse_event(value: &Value) -> Option<RewardEvent> {
 impl GameAdapter for PokemonRedReward {
     fn id(&self) -> &'static str {
         REWARD_ADAPTER
+    }
+
+    fn migrates_from(&self) -> &'static [&'static str] {
+        MIGRATES_FROM
     }
 
     fn rom_allowed(&self, sha256: &str) -> bool {

@@ -118,6 +118,20 @@ Addresses are at the pinned commit. "Verified" is one of:
 | which slot is out | `wPlayerMonNumber` | `$cc2f` | 0-based party slot | ROM, trace |
 | the enemy | `wEnemyMonSpecies`, `wEnemyMonHP`, `wEnemyMonLevel`, `wEnemyMonMaxHP` | `$cfe5`, `$cfe6`, `$cff3`, `$cff4` | HP big-endian. Not written on the frame a battle starts — the reward adapter's own comment says the same — so the enemy is `None` for the first few hundred frames of a battle. | ROM (the rival's Squirtle, level 5, 20/20, and `None` on the first frame), trace |
 | how many moves | `wNumMovesMinusOne` | `$cd6c` | the move count minus one, valid in a battle | trace |
+| **a ball kept this one** | `wCapturedMonSpecies` | `$d11c` | **new 2026-09-22** (the catch reward, `docs/rewards-learning.md`). `ram/wram.asm`'s own comment is "0 if no mon was captured". `ItemUseBall` zeroes it before every throw (`.canUseBall`) and writes `wEnemyMonSpecies` into it only on the branch that keeps the Pokémon; `UseBagItem`'s `.returnAfterCapturingMon` zeroes it again and sets `wBattleResult` to 2 on the way out of the battle. It is therefore non-zero for the hundreds of frames the catch's text and Pokédex screen take, and zero everywhere else. The value is the **internal** species index, like `wEnemyMonSpecies` and unlike `wPokedexOwned`'s bit index. Address resolved by `services/flysim/tools/resolve_wram.py`, bracketed by `wFontLoaded` and `wForcePlayerToChooseMon`. | survey (`tests/rom_catch.rs`: a real wild battle from a rung-9 checkpoint, balls thrown by the `THROW BALL` macro, the byte read out of the running game), trace (`pokemon_red/tests.rs`) |
+
+`wBattleResult` (`$cf0b`) is the second half of that row and is worth its own sentence: it is 0
+for a win, 1 for a loss, and 2 on exactly two paths in the whole game -- `.returnAfterCapturingMon`
+and a *link* battle whose opponent ran (`engine/battle/core.asm`), which this cartridge never has.
+So "the captured-species byte was non-zero during the battle **and** the result is 2" is a catch
+and nothing else. `InitBattleVariables`, `ResetStatusAndHalveMoneyOnBlackout` and
+`HandleFlyWarpOrDungeonWarp` all clear it, so a stale 2 cannot survive into the next battle.
+
+Not used for the catch, and why: `wPartyCount` (`$d163`) rises on a catch **only** when the party
+has room -- a full party sends the Pokémon to `wBoxCount` instead -- and it also rises for a gift,
+a trade and a Pokémon withdrawn from the PC. Reading a catch off it would need a second rule to
+tell those apart. The cartridge's own flag needs none, which is why the row above is the one the
+adapter reads.
 
 ### Battle menu and cursor, own turn against forced switch
 

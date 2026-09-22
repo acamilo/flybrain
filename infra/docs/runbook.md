@@ -231,6 +231,59 @@ auto-reset (`docs/design/flysim.md` section 8: "no automatic fresh start, ever")
 is deliberate — a silent reset would be indistinguishable from real progress on stream.
 A deliberate reset means moving `/srv/fly/state` aside by hand.
 
+## Restart the run from a rung
+
+When the run has to go back to an earlier milestone rather than start over — the operator's
+decision of 2026-09-22 was "restart the live run from an early checkpoint instead of from
+scratch". `FLY_RESET_STATE=1` is the wrong tool: it archives the durable state and the next start
+warms up a fresh fly, losing everything the brain has learned.
+
+`infra/bin/fly-reset-to-milestone <N>` promotes `milestone-<N>.checkpoint` to being what both
+stores restore, with the ratchet's attempts and recoveries back at zero. It copies every file in
+both stores to `/srv/fly/state.reset-<UTC>` first, so it is reversible by hand. It refuses while
+flysim is running, and refuses a rung this run never reached.
+
+The whole sequence, in order. Claim the container in the host's agent claim log first, like any
+other work on it.
+
+```
+CTID=<release-ctid>
+N=9                       # the rung to restart from
+
+# 1. what rungs exist at all
+pct exec $CTID -- ls -1 /srv/fly/state/milestone-*.checkpoint
+
+# 2. stop flysim (it owns both stores; a reset underneath it is overwritten within the minute)
+pct exec $CTID -- systemctl stop flysim.service
+
+# 3. the reset. Prints what it did, one line per step.
+pct exec $CTID -- /opt/fly/bin/fly-reset-to-milestone $N
+
+# 4. deploy. Two cases:
+#    (a) the running release already wrote that checkpoint -> nothing to deploy, skip to 5.
+#    (b) the new build bumps the ADAPTER VERSION and nothing else -> name the checkpoint's
+#        adapter so the gate and flysim both migrate instead of refusing:
+FLY_ACCEPT_ADAPTERS=pokered-unique8-v5 infra/05-deploy.sh <release-env> <release-tarball>
+#    The gate logs "the adapter version is the only difference, and it is named; the run is KEPT
+#    and migrated", and writes FLY_ACCEPT_ADAPTERS into /etc/fly/fly.env so flysim applies the
+#    same rule at restore. Anything else about the string differing is still a refusal.
+
+# 5. start
+pct exec $CTID -- systemctl start flysim.service
+
+# 6. verify: the rank is the rung, and the restore came from the generation the tool wrote
+pct exec $CTID -- curl -s http://127.0.0.1:7401/status | jq '.milestone.rank, .game.badges, .checkpoint'
+pct exec $CTID -- journalctl -u flysim -n 40 --no-pager | grep -E 'restored|migration|compatibility'
+```
+
+Step 6 is the one that must be read rather than assumed. The rank is recomputed by the adapter
+from the restored game state, not taken from the ratchet, so a rank that is *not* N means the
+milestone archive was taken somewhere other than where its name says — stop and look before
+starting a stream on it.
+
+To undo: stop flysim, move the contents of `/srv/fly/state.reset-<UTC>/durable` back into
+`/srv/fly/state`, delete the generation the tool wrote, and start again.
+
 ## Restore from the backup host
 
 ```

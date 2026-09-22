@@ -708,12 +708,36 @@ impl Sim {
         if runtime.rom_sha256 != self.rom_sha256 {
             bail!("checkpoint is for another cartridge ({})", runtime.rom_sha256);
         }
-        if runtime.compatibility != self.compatibility {
-            bail!(
-                "compatibility mismatch\n  checkpoint: {}\n  this build: {}",
+        // Byte-identical, or the one documented migration the operator asked for.
+        //
+        // `FLY_ACCEPT_ADAPTERS` is read here rather than carried in `Config` because it is a
+        // property of a *deploy*, not of a run: `infra/05-deploy.sh` writes it into
+        // `/etc/fly/fly.env` only for the deploy that needs it, and an operator who wants the
+        // migration off again deletes one line. An empty or unset variable is no migration at
+        // all, which is what every deploy before this one did.
+        let accepted = flybrain_gb::compatibility::accepted_adapters(
+            std::env::var(flybrain_gb::compatibility::ACCEPT_ADAPTERS_ENV).ok().as_deref(),
+        );
+        match flybrain_gb::compatibility::decide(
+            &runtime.compatibility,
+            &self.compatibility,
+            self.adapter.migrates_from(),
+            &accepted,
+        ) {
+            flybrain_gb::compatibility::RestoreDecision::Exact => {}
+            flybrain_gb::compatibility::RestoreDecision::MigrateAdapter { from } => {
+                tracing::warn!(
+                    from = %from,
+                    to = %self.adapter.id(),
+                    "restoring a checkpoint from an earlier adapter, by the migration \
+                     FLY_ACCEPT_ADAPTERS opted this deploy into"
+                );
+            }
+            flybrain_gb::compatibility::RestoreDecision::Refuse(reason) => bail!(
+                "compatibility mismatch: {reason}\n  checkpoint: {}\n  this build: {}",
                 runtime.compatibility,
                 self.compatibility
-            );
+            ),
         }
         if runtime.framebuffer.len() != FRAMEBUFFER_LEN {
             bail!("checkpoint framebuffer is {} bytes", runtime.framebuffer.len());

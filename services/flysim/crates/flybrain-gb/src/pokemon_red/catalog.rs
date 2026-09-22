@@ -1,4 +1,4 @@
-//! The `pokered-unique8-v5` reward catalog.
+//! The `pokered-unique8-v6` reward catalog.
 //!
 //! A direct port of the prototype's `src/reward/catalog.ts`, including the
 //! declaration order, which is the order `counts` and `last` serialize in.
@@ -20,7 +20,17 @@ pub mod kind {
     pub const BATTLE: &str = "battle";
     pub const BADGE: &str = "badge";
     pub const BOUNDARY: &str = "boundary";
+    pub const CATCH: &str = "catch";
 }
+
+/// What a `catch` of a species this run has already caught pays.
+///
+/// Not a multiple of the rule's catalog value, because no binary float scales 0.30 into
+/// exactly 0.10: `0.3 * (1.0 / 3.0)` is `0.09999999999999999`, and that number would reach
+/// the ticker, the checkpoint and `docs/rewards-learning.md`'s table as itself. `boundary`'s
+/// two payouts are 0.05 and 0.10, which a scale of two does express exactly, so that rule
+/// still goes through the scaling path.
+pub const CATCH_REPEAT_VALUE: f64 = 0.10;
 
 #[derive(Debug, Clone, Copy)]
 pub struct RewardRule {
@@ -34,7 +44,7 @@ pub struct RewardRule {
     pub stimulation_ms: u32,
 }
 
-pub const REWARDS: [RewardRule; 8] = [
+pub const REWARDS: [RewardRule; 9] = [
     RewardRule {
         kind: kind::MILESTONE,
         label: "Story",
@@ -98,6 +108,22 @@ pub const REWARDS: [RewardRule; 8] = [
         trigger: "First tile adjacent to a map exit (x2 on the exit); once per map and exit",
         value: 0.05,
         stimulation_ms: 100,
+    },
+    // The operator's decision of 2026-09-22: the fly is paid for *keeping* a wild Pokémon, not
+    // only for knocking one out. Appended rather than slotted next to `species` for the same
+    // reason `boundary` was appended -- the declaration order is the key order `counts`
+    // serializes in, and every checkpoint already written carries the first eight in this order.
+    //
+    // One rule, two payouts, like `boundary`: this value is what a species this run has never
+    // caught pays, and [`CATCH_REPEAT_VALUE`] is what a repeat pays. The existing `species`
+    // rule is untouched and still pays 0.50 the first time a species is owned by any means, so
+    // a first catch of a new species pays 0.50 + 0.30 across two kinds.
+    RewardRule {
+        kind: kind::CATCH,
+        label: "Catch",
+        trigger: "Wild Pokémon caught; 0.10 for a species already caught; max 3 per species",
+        value: 0.30,
+        stimulation_ms: 150,
     },
 ];
 
@@ -199,8 +225,32 @@ mod tests {
         // separate kinds.
         assert_eq!(rule(kind::BOUNDARY).unwrap().value, 0.05);
         assert_eq!(rule(kind::BOUNDARY).unwrap().stimulation_ms, 100);
+        // Nor the prototype's: the operator's catch rule, `pokered-unique8-v6`.
+        assert_eq!(rule(kind::CATCH).unwrap().value, 0.30);
+        assert_eq!(CATCH_REPEAT_VALUE, 0.10);
+        assert_eq!(rule(kind::CATCH).unwrap().stimulation_ms, 150);
         assert!(rule("blackout").is_none(), "the catalog has no penalties");
         assert!(REWARDS.iter().all(|rule| rule.value > 0.0));
+    }
+
+    #[test]
+    fn the_catch_rule_is_last_so_the_older_key_order_does_not_move() {
+        let order: Vec<&str> = REWARDS.iter().map(|rule| rule.kind).collect();
+        assert_eq!(
+            order,
+            vec![
+                kind::MILESTONE,
+                kind::EXPLORATION,
+                kind::MAP,
+                kind::SPECIES,
+                kind::TRAINER,
+                kind::BATTLE,
+                kind::BADGE,
+                kind::BOUNDARY,
+                kind::CATCH,
+            ]
+        );
+        assert_eq!(index(kind::CATCH), Some(REWARDS.len() - 1));
     }
 
     #[test]
