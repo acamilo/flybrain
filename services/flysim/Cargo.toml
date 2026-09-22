@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/flybrain-core", "crates/flybrain-gb", "crates/flysim"]
+members = ["crates/flybrain-core", "crates/flybrain-gb", "crates/flybus", "crates/flysim"]
 
 [workspace.package]
 version = "0.1.1"

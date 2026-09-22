@@ -1,0 +1,21 @@
+[package]
+name = "flybus"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "A small local RPC and pub/sub bus with immutable file-backed artifacts."
+
+[dependencies]
+# `flock`, `posix_fallocate` and `O_NOFOLLOW`; everything else is std or Tokio.
+libc = "0.2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { version = "1", features = ["rt", "net", "io-util", "sync", "time", "macros"] }
+
+[dev-dependencies]
+sha2 = { workspace = true }
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
