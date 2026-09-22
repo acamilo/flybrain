@@ -448,12 +448,16 @@ impl World {
         }
         let here = i16::from(self.cursor);
         let target = if self.grid {
-            // Two rows of two: up and down change row, left and right change column.
+            // Red's battle menu: two **columns** of two, indexed by column. `wCurrentMenuItem` is
+            // the row inside the column the cursor is in and selection adds two for the right
+            // column, so the order is FIGHT, ITEM, PKMN, RUN -- up and down move one inside a
+            // column, left and right move two across (surveyed 2026-09-22; the fake had it
+            // row-major, which is the same mistake `battle_entry` had).
             match facing {
-                Facing::Down => here + 2,
-                Facing::Up => here - 2,
-                Facing::Right if here % 2 == 0 => here + 1,
-                Facing::Left if here % 2 == 1 => here - 1,
+                Facing::Down if here % 2 == 0 => here + 1,
+                Facing::Up if here % 2 == 1 => here - 1,
+                Facing::Right => here + 2,
+                Facing::Left => here - 2,
                 _ => here,
             }
         } else {
@@ -4376,6 +4380,40 @@ fn the_move_list_deals_back_only_where_the_moves_can_be_read() {
     // path (row 30a) and the only reading available here.
     assert_eq!(run(&mut world, MacroKind::Move1).unwrap(), MacroAbort::Done);
     assert_eq!(world.pulses.last(), Some(&buttons::A));
+}
+
+/// Section 12.11: Red's battle menu is two columns, so its order is FIGHT, ITEM, PKMN, RUN.
+///
+/// The screen reads `FIGHT PKMN` over `ITEM RUN` and the game's own index does not: it is the row
+/// inside the column the cursor is in, plus two for the right column. `battle_entry` had `PKMN` 1
+/// and `ITEM` 2, which is the row-major reading of the picture, so **every macro that opened the
+/// bag opened the party list and every macro that opened the party list opened the bag**.
+///
+/// **Surveyed on the cartridge** (`infra/docs/macros-traps.md`): a `THROW BALL` aiming at 2 walked
+/// the cursor to `wTopMenuItemX` 15 / `wCurrentMenuItem` 0, pressed A, and the party list opened --
+/// `wTopMenuItemY` 1, `wTopMenuItemX` 0, `wListMenuID` `$02` -- with the game writing
+/// `wCurrentMenuItem` 2 on the frame after the press. On v0.4.3 `THROW BALL` was 63 starts and 63
+/// `blocked`, and `SWITCH` 15 of them: never the macro's own list, always the other one.
+#[test]
+fn the_battle_menus_two_columns_put_item_under_fight_and_pkmn_beside_it() {
+    use super::cartridge::battle_entry;
+    assert_eq!(
+        [battle_entry::FIGHT, battle_entry::ITEM, battle_entry::PKMN, battle_entry::RUN],
+        [0, 1, 2, 3],
+        "the left column is FIGHT then ITEM, the right is PKMN then RUN"
+    );
+    // And the seam reads the same order back off the fake's own geometry: DOWN moves one inside a
+    // column, RIGHT moves two across.
+    let mut world = World::battle();
+    let menu = |world: &mut World| super::palette::battle_menu(world);
+    assert_eq!(menu(&mut world), BattleMenu::Main { cursor: battle_entry::FIGHT });
+    world.on_pulse(buttons::DOWN);
+    assert_eq!(menu(&mut world), BattleMenu::Main { cursor: battle_entry::ITEM });
+    world.on_pulse(buttons::UP);
+    world.on_pulse(buttons::RIGHT);
+    assert_eq!(menu(&mut world), BattleMenu::Main { cursor: battle_entry::PKMN });
+    world.on_pulse(buttons::DOWN);
+    assert_eq!(menu(&mut world), BattleMenu::Main { cursor: battle_entry::RUN });
 }
 
 /// Section 12.11: a cursor step waits for the list it was built for.

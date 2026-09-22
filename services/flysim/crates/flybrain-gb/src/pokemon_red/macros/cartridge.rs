@@ -107,8 +107,24 @@ pub const CHEAPEST_PURCHASE: u32 = {
 /// 1 PKMN, 2 ITEM, 3 RUN".
 pub mod battle_entry {
     pub const FIGHT: u8 = 0;
-    pub const PKMN: u8 = 1;
-    pub const ITEM: u8 = 2;
+    /// `$01`. **The left column's second row, not the right column's first.**
+    ///
+    /// Red draws the battle menu as `FIGHT PKMN` over `ITEM RUN`, which reads as two rows -- and
+    /// the game's own index is two *columns*: `wCurrentMenuItem` is the row inside the column the
+    /// cursor is in and selection adds two for the right one. So the order is FIGHT, `ITEM`,
+    /// `PKMN`, RUN, and this pair was the other way round for as long as the four constants have
+    /// existed.
+    ///
+    /// **Measured on the cartridge** (2026-09-22, `infra/docs/macros-traps.md`): a `THROW BALL`
+    /// aiming at 2 walked the cursor to `wTopMenuItemX` 15, `wCurrentMenuItem` 0, pressed A, and
+    /// the **party list** opened -- `wTopMenuItemY` 1, `wTopMenuItemX` 0, `wListMenuID` `$02`.
+    /// The frame after the press the game wrote `wCurrentMenuItem` 2, which is the right column's
+    /// first row plus two, and the right column's first row is PKMN. So `THROW BALL` and `ITEM`
+    /// opened the party list and `SWITCH` opened the bag, every single time: `THROW BALL` was 63
+    /// starts and 63 `blocked` on v0.4.3, and `SWITCH` 15 of them.
+    pub const ITEM: u8 = 1;
+    /// `$02`. The right column's first row: see [`ITEM`].
+    pub const PKMN: u8 = 2;
     pub const RUN: u8 = 3;
 }
 
