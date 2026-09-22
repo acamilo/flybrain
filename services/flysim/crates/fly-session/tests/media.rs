@@ -24,7 +24,7 @@ use fly_session::media::{
 };
 use fly_session::phase::Phase;
 use fly_session::types::*;
-use fly_session_types::media::{check_imported_asset, require_finite_samples};
+use fly_session_types::media::{AudioTimeline, check_imported_asset, require_finite_samples};
 
 both_transports!(
     one_shared_image_reaches_both_agents_through_owned_attachments,
@@ -38,6 +38,7 @@ both_transports!(
     one_audio_chunk_per_boundary_with_an_exact_sample_budget,
     required_agent_input_is_never_coalesced_while_spectator_snapshots_are,
     a_persistent_asset_and_a_transient_artifact_are_different_identities,
+    a_restored_audio_source_resumes_and_marks_the_discontinuity,
 );
 
 const STEPS: u64 = 3;
@@ -466,11 +467,47 @@ async fn a_persistent_asset_and_a_transient_artifact_are_different_identities(vi
         router.stats().sealed_artifacts == before
     })
     .await;
+    assert!(registry.contains(&asset));
     assert_eq!(
         registry.resolve(&asset).expect("still installed"),
         body.as_bytes(),
         "a persistent asset outlives the bus objects imported from it"
     );
+    f.shutdown().await;
+}
+
+/// A restored epoch resumes the preserved sample position, and its first chunk marks the
+/// discontinuity that says so. The producer and the validator agree about which epoch it is.
+async fn a_restored_audio_source_resumes_and_marks_the_discontinuity(via: Via) {
+    let f = default_fixture(via).await;
+    let client = f.harness.observer().await.unwrap();
+    let descriptor = fly_session::environment::CounterEnvironment::audio_descriptor();
+    let step = hz(f.harness.config.step_hz).expect("a positive cadence");
+    let resumed_at = 2_400;
+
+    let mut source = AudioSource::restored_at(descriptor.clone(), resumed_at);
+    let (first, _first_handle) = source
+        .produce(&client, &step, 3)
+        .await
+        .expect("the restored source produces");
+    assert_eq!(first.first_sample, resumed_at, "the sample position is preserved");
+    assert!(first.discontinuity, "the first chunk after a restore marks it");
+    let (second, _second_handle) = source
+        .produce(&client, &step, 3)
+        .await
+        .expect("the next chunk");
+    assert!(!second.discontinuity, "only the first chunk of the epoch marks it");
+    assert_eq!(second.first_sample, resumed_at + first.sample_frames);
+
+    // The validator accepts exactly this sequence under a restored timeline, and refuses it
+    // under a fresh one: the flag is what distinguishes the two epochs.
+    let mut restored = AudioTimeline::restored_at(&descriptor, resumed_at);
+    restored.accept(&first, &descriptor).expect("the restored epoch");
+    restored.accept(&second, &descriptor).expect("and its next chunk");
+    let mut fresh = AudioTimeline::fresh(&descriptor, resumed_at);
+    fresh
+        .accept(&first, &descriptor)
+        .expect_err("a fresh episode's first chunk is not a discontinuity");
     f.shutdown().await;
 }
 
