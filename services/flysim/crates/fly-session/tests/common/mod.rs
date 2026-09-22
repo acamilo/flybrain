@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use fly_session::harness::{HarnessConfig, SessionHarness, Via};
+use fly_session::harness::{ExecutionMode, HarnessConfig, SessionHarness, Via};
 use fly_session::types::*;
 
 pub const WAIT: Duration = Duration::from_secs(20);
@@ -93,4 +93,56 @@ pub async fn within<T>(what: &str, f: impl std::future::Future<Output = T>) -> T
         Ok(v) => v,
         Err(_) => panic!("{what}: timed out"),
     }
+}
+
+/// Generates one test per execution mode from an `async fn name(mode: ExecutionMode)`.
+///
+/// The separate-process mode is the SESSION-02 subject; the other two are the variants it is
+/// compared against, and a row that holds in one must hold in all three.
+#[macro_export]
+macro_rules! all_modes {
+    ($($name:ident),* $(,)?) => {
+        mod in_process {
+            $(
+                #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+                async fn $name() {
+                    super::$name($crate::common::mode_in_process()).await
+                }
+            )*
+        }
+        mod dedicated_thread {
+            $(
+                #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+                async fn $name() {
+                    super::$name($crate::common::mode_thread()).await
+                }
+            )*
+        }
+        mod separate_process {
+            $(
+                #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+                async fn $name() {
+                    super::$name($crate::common::mode_process()).await
+                }
+            )*
+        }
+    };
+}
+
+pub fn mode_in_process() -> ExecutionMode {
+    ExecutionMode::InProcess
+}
+
+pub fn mode_thread() -> ExecutionMode {
+    ExecutionMode::Thread
+}
+
+pub fn mode_process() -> ExecutionMode {
+    ExecutionMode::Process
+}
+
+/// A fixture in one execution mode. The transport is the mode's own: a separate process
+/// reaches the router only over a socket.
+pub async fn mode_fixture(mode: ExecutionMode, config: HarnessConfig) -> Fixture {
+    fixture(Via::Unix, HarnessConfig { mode, ..config }).await
 }

@@ -379,12 +379,7 @@ async fn sequential_concurrent_and_reversed_orders_agree() {
 /// specific.
 async fn a_single_agent_composition_runs_the_same_transaction(via: Via) {
     let config = HarnessConfig {
-        agents: vec![AgentSpec {
-            agent_id: id("fly-a"),
-            port_id: id("p1"),
-            seed: 7,
-            faults: AgentFaults::default(),
-        }],
+        agents: vec![AgentSpec::new("fly-a", "p1", 7)],
         ..HarnessConfig::default()
     };
     let mut f: Fixture = fixture(via, config).await;

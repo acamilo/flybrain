@@ -224,6 +224,22 @@ impl WorkerHandle {
         let _ = self.task.await;
         self.client.close().await;
     }
+
+    /// Stops serving without waiting. The connection closes when the last handle to it is
+    /// dropped, which this does. For a supervisor's `Drop`, where there is no runtime to wait
+    /// on.
+    pub fn abort(self) {
+        self.task.abort();
+    }
+
+    /// Waits until the worker stops serving, which `Worker.Shutdown` makes it do.
+    ///
+    /// A worker process awaits this and then exits, so the supervisor's `Worker.Shutdown` and
+    /// the process's exit are the same event rather than two racing ones.
+    pub async fn join(self) {
+        let _ = self.task.await;
+        self.client.close().await;
+    }
 }
 
 /// Registers `service_name` and serves `endpoint` on it until the service ends or Shutdown.
