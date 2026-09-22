@@ -528,8 +528,45 @@ change, 648 bytes, checked on the WSL box.
 
 | state | symbol | address | encoding | verified |
 | --- | --- | ---: | --- | --- |
-| the open mart's stock | `wItemList` | `$cf7b` | `ds 16`. `LoadItemList` (`home/text_script.asm:156`) copies the clerk's `script_mart` list out of its text script the moment the counter opens: **a count byte** (the macro's `_NARG`), then the item ids, then `$ff`. `DisplayPokemartDialogue_` points the buy list's `wListPointer` at the same buffer for `PRICEDITEMLISTMENU`, so **an item's position in this list is its cursor index** in the buy menu — which is what lets a purchase be navigated by reading the cursor rather than by counting presses. The terminator wins over the count, as it does for the bag, and the sixteen-byte buffer bounds both. | ROM (Viridian's counter reads POKE BALL, ANTIDOTE, PARLYZ HEAL, BURN HEAL, in that order, and no Potion), trace |
+| the open mart's stock | `wItemList` | `$cf7b` | `ds 16`. `LoadItemList` (`home/text_script.asm:156`) copies the clerk's `script_mart` list out of its text script the moment the counter opens: **a count byte** (the macro's `_NARG`), then the item ids, then `$ff`. `DisplayPokemartDialogue_` points the buy list's `wListPointer` at the same buffer for `PRICEDITEMLISTMENU`, so an item's position in this list is its cursor index in the buy menu **for the first three entries only** — see the correction below. | ROM (Viridian's counter reads POKE BALL, ANTIDOTE, PARLYZ HEAL, BURN HEAL, in that order, and no Potion), trace |
 | the tileset's counter tiles | `wTilesetTalkingOverTiles` | `$d532` | three tile ids from the tileset header (`data/tilesets/tileset_headers.asm`), `$ff` for a tileset with fewer. Mart and Pokecenter are both `$18 $19 $1e`; the overworld and an ordinary house have none. `IsSpriteOrSignInFrontOfPlayer`'s `.extendRangeOverCounter` branch (`home/overworld.asm:1115`) walks exactly this list and doubles the talking range from `$10` to `$20` pixels — one tile to two — when the tile in front of the player is one of them. | ROM (the Viridian mart's column 1 and the centre's (3, 2) read as counters and the floor either side does not), trace |
+
+### 7.1 Correction, 2026-09-22 (row 55): the list byte and the cursor index both say less than this
+
+Two claims in the table above were surveyed again from the live checkpoint the stream looped in
+(`examples/scene_probe.rs`, `FLY_PROBE_CATCH=shop`, in the Pewter mart), and both are narrower
+than they were written.
+
+**`wListMenuID` says the counter is open, not which of its screens is up.** Section 2's row for it
+says it is "zeroed by `DisplayTextIDInit` at the start of every text display, so a stale value
+cannot outlive one". That holds for text the overworld displays and not for the mart's own: the
+clerk's "Here you are! Thank you!" is printed from inside `DisplayPokemartDialogue_`, which never
+calls the routine that clears it. Measured: **every frame of a mart visit read `PRICEDITEMLISTMENU`
+`$02`** — the counter menu and each of the clerk's text boxes included — and on the counter menu
+`wTextBoxID` reads `MONEY_BOX` `$0d` rather than `BUY_SELL_QUIT_MENU` `$15`, because the money box
+is the last template drawn. So `ShopScreen::BuySellQuit` and `Selling` were unreachable in a mart
+that had ever drawn a buy list, and the frame the stream sat on — a dialogue box waiting for a
+press, with a two-option box's leftover cursor bytes (`wTopMenuItemY` 8, `wTopMenuItemX` 15,
+`wMaxMenuItem` 1, `wMenuWatchedKeys` `$03`) — read as "the priced buy list is open".
+
+The screen is now read from the figure the game draws, the construction [`text_box`]'s `waiting`
+test and [`yes_no_prompt`] already use: the full-width box drawn and waiting is the clerk
+(`ShopScreen::Talking`, new), the item window drawn is the buy list, and the item window blank is
+the counter menu. The item window's own figure is its first name cell, screen (6, 4), which held
+`$7f` on the counter menu and `P` of `POKE BALL` on every frame the list was drawn.
+
+**The buy list scrolls, so a position in `wItemList` is a cursor index only for the first three
+entries.** Walked one DOWN pulse at a time on the live list: the cursor went `0, 1, 2` and then
+**stopped moving while the window scrolled under it** — the fourth drawn row is a look-ahead the
+cursor never occupies. The absolute position of the item under the cursor is that index plus
+`wListScrollOffset`, which is **not** in the reviewed address list and cannot be pinned without the
+disassembly `gen_symbols.py` reads (the same refusal `$cfc5` met in section 9). Viridian's
+four-item counter hid it: POKE BALL is 0 and ANTIDOTE is 1, both in reach. Pewter's seven-item
+counter did not: its ANTIDOTE is **3**.
+
+So the macros carry `MART_CURSOR_ROWS = 3` and a purchase past it is not on the pad
+(`infra/docs/macros-traps.md` row 55). Pinning `wListScrollOffset` would widen that, and it is a
+residual rather than a guess.
 
 **Why the second one is load-bearing.** A mart clerk is `object_event 0, 5, SPRITE_CLERK` behind a
 counter running down column 1; a Pokémon Center nurse is `object_event 3, 1, SPRITE_NURSE` behind

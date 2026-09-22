@@ -1552,8 +1552,21 @@ arm fought fifty thousand frames of battle *and* walked twenty thousand frames o
 
 Raw reports: `hunt-before-20260922T0459.md` and `hunt-after-20260922T0459.md` in the coordination
 state's `runs/` directory.
+| 55 | `BUY <item>` is dealt on a frame where no list is accepting input, and aimed at a stock index the counter's cursor cannot reach: it gives up on its own first frame, presses nothing, records nothing, and is dealt again next hold | the Pewter mart, ten brain minutes after v0.4.7: map `0x38`, scene `shop`, `loop.json` `sequence: [BUY ANTIDOTE], period 1, repeats 747, distinctMacros 1`, `BUY ANTIDOTE start` / `BUY ANTIDOTE blocked` every 0.8 s with **nothing else starting**; money 104, so the Antidote was the only purchase money allowed | `the_clerks_text_box_is_not_the_marts_buy_list`, `the_clerks_own_text_box_deals_no_purchase_and_reports_no_list`, `a_purchase_past_the_cursors_reach_is_not_on_the_pad`, `a_purchase_out_of_reach_by_the_time_it_starts_is_refused_without_a_press`, and the ROM run below | **fixed**, two facts, both surveyed with `FLY_PROBE_CATCH=shop`. `wListMenuID` says the **counter is open**, not which screen is up -- the mart prints its own text without clearing it, so every frame of a visit read "the priced buy list", including the clerk's "Here you are! Thank you!" box whose leftover cursor bytes are a two-option box's (`max` 1); the screen is now read from the figure the game draws and the clerk is `ShopScreen::Talking`, which reports no listing and deals no purchase. And the buy list **scrolls**: the cursor walks rows 0, 1, 2 and then the window moves under it, so only the first three of a counter's stock have an index this seam can aim at, and Pewter's ANTIDOTE is its fourth. `docs/design/macros.md` section 12.18, `docs/design/macros-wram.md` section 7.1 |
 
 ### Residuals, named rather than worked around
+
+- **`wListScrollOffset` is not a pinned address** (row 55), so a mart's fourth item and after have
+  no cursor index this seam can name and their `BUY` buttons are off the pad -- Pewter's ANTIDOTE,
+  BURN HEAL, AWAKENING and PARLYZ HEAL among them. Pinning it is the same survey `$cfc5` is waiting
+  on in `docs/design/macros-wram.md` section 9: `gen_symbols.py` refuses a hand-written address and
+  the checkout it reads is not on this box.
+- **A mart that has never drawn a buy list reads `Unknown`, not `Shop`** (measured beside row 55).
+  On a first visit `wListMenuID` is 0 and `wTextBoxID` on the counter menu is `MONEY_BOX` `$0d`
+  rather than `BUY_SELL_QUIT_MENU` `$15` -- the money box is the last template drawn -- so
+  `state::shop` answers `None` until the fly has opened the list once. Named rather than worked:
+  widening the test to `MONEY_BOX` would let the Game Corner's prize counter read as a mart, and
+  what that costs has not been surveyed.
 
 - **`NEXT` on a move list whose cursor the seam cannot place is now the largest source of it** --
   142 of the after arm's 248 `NEXT` starts, over 8,687 frames. That frame is *correctly* not the
@@ -2156,3 +2169,58 @@ skipped cleanly without `FLY_ROM` and the checkpoint):
 - `infra/tests/lint.sh`: all checks passed, de-PII guard included.
 - `--print-compatibility`: **648 bytes, sha256 `0d9bfde7...707fa`** -- byte-identical to v0.4.1
   through v0.4.5. Decoder, reward catalog, adapter version and roles untouched.
+
+## Row 55: the two arms, and the ROM run (2026-09-22, v0.4.7)
+
+One checkpoint, the mart the stream was standing in. Same seed, same ground, `main` at `5512900`
+against this branch, twenty brain minutes each.
+
+| measure | before (`main`) | after |
+| --- | ---: | ---: |
+| distinct (map, tile) | **1** | **62** |
+| windows flagged | 73 / 73 | 72 / 73 |
+| macros started | 1,494 | 1,136 |
+| macros **blocked** | **1,494 — every one of them** | 82 |
+| `BUY ANTIDOTE` starts | **1,494, mean 0 frames, mean net 0.0 tiles** | **0** |
+| frames in scene `shop` | **71,673 of 71,673** | **225** (longest run 171) |
+| the repeated sequence | `BUY ANTIDOTE` x149 to x150, every window | `NEXT` x14 to x19 |
+| the fly leaves the mart | **never** | **at 0.19 brain minutes** |
+| frames in `battle` | 0 | 66,727 (longest run 17,722, from minute 0.58) |
+| wall clock | 4,210 s | 2,384 s |
+
+**The before arm is the live loop whole, with the real brain in it**: the fly started 1,494 macros
+in twenty brain minutes, **every single one of them `BUY ANTIDOTE`, every single one `blocked`,
+every one at a mean of nought frames** — so it pressed no button at all for the whole run and stood
+on one tile. That is the sharpest reproduction any row here has had, and it is what a macro that
+gives up before its first press looks like from outside.
+
+**The after arm walks out and then fights.** The shop scene is 225 frames of 71,673 instead of all
+of them, `CONFIRM` and `LEAVE` are the two macros that end it, and the fly is on the overworld at
+0.19 brain minutes, takes an item six tiles away, walks three routes at a mean net of 9.0 tiles
+(max 19) and is in a battle from 0.58. Sixty-two times the ground.
+
+**The flagged-window count barely moves (73 → 72), and this says so rather than smoothing it.**
+What the windows are flagging after the fix is **row 50**: 66,727 of the 71,673 frames are one long
+battle, `MOVE 1`–`MOVE 4` are 74 of the 82 remaining `blocked` finishes at a mean of ~230 frames
+each, and the repeated sequence is `NEXT`/`BACK` in a battle. The hunt's tile rule cannot tell a
+long fight from a stall — `docs/design/macros.md` section 15's own measurement, and the third branch
+in a row to run into it. The loop this row is about is gone; the one underneath it is somebody
+else's brief.
+
+**ROM-gated, from the same checkpoint**
+(`services/flysim/crates/flysim/tests/rom_macros_mode.rs`, skipped cleanly without `FLY_ROM` and
+the checkpoint):
+
+- `the_fly_leaves_the_pewter_mart_counter_from_the_rung_eleven_checkpoint` — route `[56, 2, 14]`
+  over 20.1 brain minutes: out of the mart, across Pewter City and on to Route 3. `BUY ANTIDOTE`
+  **0** starts, `LEAVE` 1, `CONFIRM` 1, empty shop pads **0**, and the longest chain of one macro
+  reporting `blocked` in the shop with the map, the tile, the wallet and the scene unchanged is
+  **0**, against a bound of three. The same chain in the *battle* scene is **47** (`MOVE 2`),
+  printed beside it and asserted on by nobody here: it is row 50's.
+
+### Gates
+
+- `cargo test --workspace` with `FLY_ROM` and `FLY_DATASET` set.
+- `cargo clippy --all-targets`.
+- `infra/tests/lint.sh`, de-PII guard included.
+- `flysim --print-compatibility`, byte-identical to this branch's base.
