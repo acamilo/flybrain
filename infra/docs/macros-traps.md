@@ -1359,3 +1359,71 @@ Four things about it that are not improvements, recorded rather than buried.
 - `infra/tests/lint.sh`: all checks passed, de-PII guard included.
 - `--print-compatibility`: byte-identical to v0.4.1, 648 bytes, decoder / reward catalog / adapter
   version / roles untouched.
+
+## 2026-09-22, section 15: the walkable window becomes the whole map
+
+The operator: "the frontier and warp macros need to be map aware: A* over walkable tiles."
+`docs/design/macros.md` section 15 is the contract, `docs/design/macros-wram.md` section 9 the
+bytes, and this is the measurement. Nothing about the *choice* moves: the scene deals the same
+buttons and what changed is what a chosen walk knows about the ground.
+
+**Row 35 has no source any more.** That row — "the screen-buffer tile read disagrees with itself on
+a map smaller than the screen", worked around by taking a counter's reach from the map id — was a
+fact about reading tiles out of a view that cannot centre on an 8x8 map. The grid reads the map's
+own block data, so it answers the same way from every tile of every map. The counter rule is left
+exactly as it is: this branch changes the ground, not the amenity, and a workaround that is no
+longer needed is not the same thing as one that was wrong.
+
+### The trap hunt, before and after
+
+20 brain minutes, the hunt's own seed, 4 sweep threads, the same connectome, the same cartridge and
+the same rung-9 checkpoint in both runs. "Before" is `main` at v0.4.2, which is the branch's own
+merge base, so the two rows differ by this work and nothing else:
+
+```sh
+FLY_ROM=".../Pokemon Red (U) [S][BF].gb" FLY_MACRO_BRAIN=data/fafb-v783 \
+  FLY_TRAP_CHECKPOINT=.local/checkpoints/release-rank9-20260922T0254.checkpoint \
+  FLY_TRAP_MINUTES=20 FLY_TRAP_MODE=macros cargo run --release -p flysim --example trap_hunt
+```
+
+| measure | before (`main`, v0.4.2) | after (this branch) |
+| --- | ---: | ---: |
+| distinct (map, tile) over 20 brain minutes | 286 | **489** |
+| median distinct tiles in a flagged window | 16 | **55** |
+| most tiles in any one window | 94 | **180** |
+| macros started | 830 | 912 |
+| done / blocked / timeout / refused | 726 / 97 / 6 / 0 | 820 / 90 / **1** / 8 |
+| windows flagged | 61 of 73 | 70 of 73 |
+| windows under 4 distinct tiles | 5 | 14 |
+| frames in a battle (longest run) | 48,756 (9,549) | 50,413 (13,411) |
+| frames in the overworld | 22,149 | 18,972 |
+| `GO FRONTIER` done / timeout / mean net / max net tiles | 4 / 1 / 0.5 / 1 | **64** / 0 / 1.6 / **12** |
+| `GO WARP` done / timeout / mean frames / max net | 14 / 2 / 403 / 30 | 4 / **0** / 751 / 26 |
+| `GO ROUTE` done / timeout / mean frames / max net | 9 / 2 / 483 / 22 | 11 / 1 / 410 / 8 |
+| `GO OBJECTIVE` done / timeout / max net | 3 / 1 / 8 | 5 / **0** / **42** |
+| wall seconds on the development box | 1,390 | 932 |
+
+**The ground is the measure and the ground moved.** 286 distinct tiles became 489; the median
+flagged window holds 55 of them instead of 16 and the widest holds 180 instead of 94. `GO FRONTIER`
+went from four walks worth a net tile each to sixty-four worth up to twelve, `GO OBJECTIVE`'s best
+walk from eight net tiles to forty-two, and the only walk that spent its cap is one `GO ROUTE` that
+gained forty-two tiles while doing it. Nothing timed out that used to arrive.
+
+**The cost, named rather than buried: the flag count went the wrong way**, 61 windows to 70, and
+the windows holding fewer than four tiles went 5 to 14. Every one of those is a battle. The fly
+covers more ground, so it walks into more grass and more trainers: battle frames 48,756 to 50,413,
+the longest single battle 9,549 frames to 13,411, overworld frames 22,149 down to 18,972. A
+two-minute window spent inside one battle is a window with one tile in it, and the worst window of
+the after-run is 83 macros on one tile with **no repeated sequence at all** — which is a battle,
+not a loop. This file has recorded battle text as check 10's known false-positive shape since its
+first section, and the `NEXT` x12 to x14 runs that flag 43 of the 70 windows are exactly it.
+
+So the two halves of the usual reading disagree here for the first time, and this is the honest
+statement of it: **more ground, more battle, more flags.** What the flag counts cannot show and the
+tile counts can is that the fly is walking across maps instead of round the tile it is standing on.
+
+### Gates
+
+`cargo test --workspace`, `cargo clippy --all-targets` and `infra/tests/lint.sh` on the development
+box. `flysim --print-compatibility` is byte-identical across the change: 648 bytes,
+`0d9bfde7…707fa`, so the live checkpoint carries over.

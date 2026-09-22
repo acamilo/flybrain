@@ -1168,5 +1168,11 @@ before the map**, which is what the per-serve check above is for.
   `GO FRONTIER` in the forest planned to ground outside the window and walked there in 215 frames
   (615 of its frontier tiles are outside the window); every way out of the forest is one plan away,
   27 to 149 steps, with no guessed tile in any of them.
-- **The trap hunt**, twenty brain minutes from the rung-9 checkpoint, before and after, is in
-  `infra/docs/macros-traps.md`.
+- **The trap hunt**, twenty brain minutes from the rung-9 checkpoint, against `main` at v0.4.2:
+  **286 distinct (map, tile) become 489**, the median flagged window holds 55 tiles instead of 16,
+  `GO FRONTIER` runs 64 walks worth up to twelve net tiles instead of four worth one, and one walk
+  spends its cap where six did. It costs battle: flagged windows go 61 to 70 and windows under four
+  tiles 5 to 14, every one of them a window spent inside a battle, because a fly that covers more
+  ground walks into more grass. `infra/docs/macros-traps.md` has both runs whole and says so at
+  length; this is the one measurement in this file where more ground and fewer flags do not both
+  hold.
