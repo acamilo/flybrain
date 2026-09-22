@@ -59,6 +59,8 @@ const VIRIDIAN_MART: u32 = 0x2a;
 /// Route 2's southern forest gate and the forest north of it, which is rung 9's own road.
 const VIRIDIAN_FOREST_SOUTH_GATE: u32 = 0x32;
 const VIRIDIAN_FOREST: u32 = 0x33;
+/// Pewter City's Pokemon Center, which is the room the rung-10 nurse loop was inside.
+const PEWTER_POKECENTER: u32 = 0x3a;
 /// The upper floor of the Pewter museum, which is the building the rung-10 stall was inside.
 const MUSEUM_2F: u32 = 0x35;
 /// The forest's *northern* gate, which is the first hop from the forest toward Pewter
@@ -237,10 +239,33 @@ struct Run {
     blocked_where: std::collections::BTreeSet<String>,
     /// Macros started while the fly was still on the map it resumed on.
     macros_on_the_first_map: u32,
+    /// How many times each macro started while the fly was still on that map, by name.
+    ///
+    /// The total is the wrong measure for a room the fly is meant to *leave*: a run that leaves it
+    /// and then fights a gym answers `YES` in the gym's own boxes, which is the fly playing the
+    /// game. What row 41 is about is the presses spent in the room.
+    started_on_the_first_map: std::collections::BTreeMap<&'static str, u32>,
     /// The longest chain of macro starts that alternated `MENU`, `BACK`, `MENU`, `BACK`.
     longest_menu_back_alternation: u32,
     menu_alternation: u32,
     last_start: Option<&'static str>,
+    /// Frames the run spent in a `Scene::Dialog`, and of those, frames a readable YES/NO prompt
+    /// was open (section 12.12).
+    ///
+    /// The two numbers that name row 41: 62,804 of the hunt's 71,673 frames were one text box, and
+    /// the survey found the **prompt** on one frame of every forty-six. A `NEXT` and a `YES` that
+    /// are the same press live in the difference.
+    dialog_frames: u32,
+    prompt_frames: u32,
+    /// Whether `NEXT` was ever on the pad while a readable YES/NO prompt was open.
+    ///
+    /// 12.10's rule in a dialog: an A press at a two-option box confirms the option the cursor is
+    /// on, which is what `YES` is, so the two are one press under two names. `false` is the claim.
+    next_on_a_prompt: bool,
+    /// Whether `TALK` was ever on the pad while the fly faced a nurse the party had no use for.
+    ///
+    /// The door into the ring (section 12.12). `false` is the claim.
+    talk_at_a_rested_nurse: bool,
 }
 
 impl Run {
@@ -331,7 +356,12 @@ impl Run {
             blocked: std::collections::BTreeMap::new(),
             blocked_where: std::collections::BTreeSet::new(),
             macros_on_the_first_map: 0,
+            started_on_the_first_map: std::collections::BTreeMap::new(),
             longest_menu_back_alternation: 0,
+            dialog_frames: 0,
+            prompt_frames: 0,
+            next_on_a_prompt: false,
+            talk_at_a_rested_nurse: false,
             menu_alternation: 0,
             last_start: None,
         }
@@ -427,7 +457,12 @@ impl Run {
             blocked: std::collections::BTreeMap::new(),
             blocked_where: std::collections::BTreeSet::new(),
             macros_on_the_first_map: 0,
+            started_on_the_first_map: std::collections::BTreeMap::new(),
             longest_menu_back_alternation: 0,
+            dialog_frames: 0,
+            prompt_frames: 0,
+            next_on_a_prompt: false,
+            talk_at_a_rested_nurse: false,
             menu_alternation: 0,
             last_start: None,
         }
@@ -574,6 +609,20 @@ impl Run {
         flybrain_gb::pokemon_red::macros::MacroState::shop_stock(&mut state)
     }
 
+    /// Whether the two-option YES/NO box is drawn, through the accessor the palette reads
+    /// (section 12.12).
+    fn yes_no_prompt(&mut self) -> bool {
+        flybrain_gb::pokemon_red::state::yes_no_prompt(&mut self.gb)
+    }
+
+    /// Whether the fly faces a Pokemon Center nurse with a party that does not need her.
+    fn rested_nurse(&mut self) -> bool {
+        let ledger = AdapterLedger(&self.adapter);
+        let mut state =
+            flybrain_gb::pokemon_red::state::PokeState::with_ledger(&mut self.gb, &ledger);
+        flybrain_gb::pokemon_red::macros::palette::rested_nurse(&mut state)
+    }
+
     /// Whether every party member reads full HP with no status: the end of a `HEAL`.
     fn party_rested(&mut self) -> bool {
         let party = flybrain_gb::pokemon_red::state::party(&mut self.gb);
@@ -714,6 +763,7 @@ impl Run {
             self.last_start = Some(name);
             if self.route.len() == 1 {
                 self.macros_on_the_first_map += 1;
+                *self.started_on_the_first_map.entry(name).or_insert(0) += 1;
             }
             *self.started.entry(name).or_insert(0) += 1;
         }
@@ -747,6 +797,24 @@ impl Run {
         let map = self.map();
         if self.route.last() != Some(&map) && map != u32::MAX {
             self.route.push(map);
+        }
+        // Section 12.12's two frame counters and its two pad rules, asked of the frame the pad
+        // was dealt for -- the dialog's, exactly as 12.10 asks the battle rules of the battle's.
+        if self.layer.scene_name() == "dialog" {
+            self.dialog_frames += 1;
+            let dealt = self.layer.bound_channels();
+            if self.yes_no_prompt() {
+                self.prompt_frames += 1;
+                if dealt.iter().any(|channel| channel.as_str() == "macro_next") {
+                    self.next_on_a_prompt = true;
+                }
+            }
+        }
+        if self.layer.scene_name() == "overworld"
+            && self.rested_nurse()
+            && self.layer.bound_channels().iter().any(|channel| channel.as_str() == "macro_talk")
+        {
+            self.talk_at_a_rested_nurse = true;
         }
         // The pad the *next* frame will choose from, for the maps that have been accused of
         // dealing one button. Only the overworld: a warp in flight reads `unknown` and a text box
@@ -2015,5 +2083,101 @@ fn the_fly_leaves_the_pewter_building_from_the_rung_ten_checkpoint() {
         None,
         "`THROW BALL` reported blocked: {:?}",
         run.blocked
+    );
+}
+
+/// The rung-10 Pokemon Center checkpoint, or `None` to skip.
+fn center_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_CENTER_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// From the rung-10 Pokemon Center checkpoint: the fly leaves the centre and stops answering YES.
+///
+/// **What was live** (2026-09-22, v0.4.4, rank 10 PEWTER CITY): the fly on **map 0x3a at (3, 3)**,
+/// facing the nurse over her counter, and since the 09:39 restart the macro starts were `YES`
+/// **2,142**, `TALK` 107, `GO FRONTIER` 26, `BACK` 24, the event log ending `YES start/done` for
+/// ever. This is row 41, first measured in the rung-9 trap hunt and named as the next trap by
+/// 12.11.
+///
+/// **What the survey found** (`infra/docs/macros-traps.md` row 41, and
+/// `examples/scene_probe.rs`'s `FLY_PROBE_CATCH=nurse`): the nurse's conversation is a ring of
+/// **forty-six A presses** -- welcome, the offer, the YES/NO box on **one** frame of the
+/// forty-six, "OK. We'll need your POKeMON.", the machine, "fighting fit!", "We hope to see you
+/// again!", the box closes for a single frame, and the next A press opens the whole thing again.
+/// The party read **70/70 and healthy** throughout, so every press of it changed nothing, and
+/// `HEAL` was never in it: its precondition reads the live party and answers no. What was on the
+/// pad was the dialog's `NEXT`, `YES`, `NO` -- two names for one A press -- and `TALK` to get back
+/// in, whose ledger entry was read one tile shorter than its own precondition and so was never
+/// written.
+///
+/// The claims, none of them about where the fly goes next:
+///
+/// - `YES` starts **under five** in the whole run, against 1,278 in the rung-9 hunt from the same
+///   room. Not zero: the fly may legitimately answer a hurt party's prompt.
+/// - `NEXT` is on **no** pad while a readable YES/NO prompt is open (12.10 in a dialog).
+/// - `TALK` is on **no** pad while the fly faces a nurse the party has no use for.
+/// - the fly **leaves map 0x3a** on a bounded number of macros.
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_CENTER_CHECKPOINT=.local/checkpoints/release-rank10-pokecenter.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture
+/// ```
+#[test]
+fn the_fly_leaves_the_pokemon_center_from_the_rung_ten_checkpoint() {
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = center_checkpoint() else {
+        eprintln!("skipped: no FLY_CENTER_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    let from = run.map();
+    assert_eq!(from, PEWTER_POKECENTER, "the checkpoint is the room the stream stalled in");
+    // The premise of the whole trap: there was nothing to heal.
+    assert!(run.party_rested(), "the checkpoint's party is already full and healthy");
+
+    let mut left = None;
+    for frame in 0..120_000u32 {
+        run.frame();
+        if left.is_none() && run.map() != from {
+            left = Some(frame);
+        }
+    }
+    eprintln!(
+        "from map {from:#04x} in {:.1} brain minutes: route {:?}, macros {:?}, dialog frames {} \
+         (prompt on {}), blocked {:?}",
+        run.ms / 60_000.0,
+        run.route,
+        run.started,
+        run.dialog_frames,
+        run.prompt_frames,
+        run.blocked
+    );
+    eprintln!("macros spent in the centre: {:?}", run.started_on_the_first_map);
+
+    assert!(
+        !run.next_on_a_prompt,
+        "`NEXT` was on the pad at a YES/NO box, where an A press is `YES`"
+    );
+    assert!(
+        !run.talk_at_a_rested_nurse,
+        "`TALK` was on the pad at a nurse the party had no use for"
+    );
+    // In the **centre**, which is what row 41 is about: the run goes on to leave Pewter's gym
+    // door and fight there, and the gym's own boxes are the fly playing the game rather than the
+    // ring. 1,278 of 1,295 in the rung-9 hunt from this room; 2,142 live.
+    let yes = run.started_on_the_first_map.get("YES").copied().unwrap_or(0);
+    assert!(yes < 5, "`YES` started {yes} times in the centre: {:?}", run.started_on_the_first_map);
+    let Some(left) = left else {
+        panic!("the fly never left map {from:#04x}: {:?}", run.started)
+    };
+    eprintln!("it left map {from:#04x} on frame {left}");
+    assert!(
+        run.macros_on_the_first_map < 400,
+        "leaving the centre cost {} macros",
+        run.macros_on_the_first_map
     );
 }

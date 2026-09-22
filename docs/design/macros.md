@@ -1003,6 +1003,83 @@ cursor inverted and it needs a WRAM reading rather than a pad change.
 The decoder, the reward catalog, the adapter version, the roles and the compatibility string are
 untouched.
 
+### 12.12 The nurse's box is a ring, and `YES` and `NEXT` are one press (2026-09-22, rung 10, row 41)
+
+Rank 10 (PEWTER CITY), the fly in the Pewter Pokémon Center, and since the v0.4.4 restart the
+macro starts were `YES` **2,142**, `TALK` 107, `GO FRONTIER` 26, `BACK` 24, with the event log's
+tail `YES start/done` for ever. This is **row 41**, first measured in the rung-9 trap hunt (`YES`
+1,278 of 1,295 starts on one tile of map `0x3a`) and named by 12.11 as the next trap. Reproduced
+from the live checkpoint with the real cartridge and surveyed press by press
+(`examples/scene_probe.rs`, `FLY_PROBE_CATCH=nurse`); `infra/docs/macros-traps.md` has the survey
+whole.
+
+- **The conversation is a ring of forty-six A presses, and the box is a *choice* on one of them.**
+  Welcome, "We heal your POKéMON back to perfect health!", the **YES/NO box**, "OK. We'll need your
+  POKéMON.", the machine, "Your POKéMON are fighting fit!", "We hope to see you again!", the box
+  closes for a single frame, and the next A press at a nurse two tiles away over her counter opens
+  the whole thing again. The party read **70/70 and healthy** on every frame of it, so not one of
+  those presses changed anything. That is section 12.2's rule at conversation scale: a macro whose
+  precondition is already satisfied where the fly stands is a trap.
+- **The brief allowed three readings and the survey settles it as none of them.** The box open at
+  the checkpoint is not the prompt, it is the closing line, and `YES` there is an A press on plain
+  text -- forty-five of the forty-six frames are like that. `HEAL` is not in the loop at all: its
+  precondition already reads the live party, `party_needs_rest` answers `false`, and the button was
+  off the pad the whole time. And `HEAL`'s own wait is a *read* of the party, not a loop waiting
+  for a timer, so it cannot spin on a party that is already full. What was in the loop was the
+  **dialog pad**, dealt unconditionally, and `TALK` to get back into it.
+- **On a box that is a choice, `NEXT` is `YES` under another name.** An A press at a two-option menu
+  confirms the option the cursor is on, and the cursor opens on YES, so `NEXT` and `YES` are one
+  press with two channels -- 12.10's rule about a pair of buttons, in a dialog rather than a
+  battle. `NEXT` is off any pad dealt for a readable YES/NO prompt; the pad is the box's own two
+  answers.
+- **At the nurse's prompt the answer that changes something is the only one bound.** Hurt or
+  statused, `YES`; full and healthy, `NO`. Section 13 has read that byte for `HEAL` since the
+  errands existed; this is the same byte read for the box `HEAL` opens. Knowledge inside the macro
+  as a precondition, and nothing ranks the two: one of them simply is not there.
+- **`TALK` is not offered at a nurse the party has no use for.** The nurse is an object with a
+  purpose rather than a person to chat with, and she is the one person in Red whose conversation
+  has a precondition the cartridge publishes. This is the door into the ring, and closing it is
+  what makes the rest of the section a backstop rather than the fix. Nobody else is narrowed: an
+  ordinary villager is `TALK`'s whatever the party reads.
+- **The nurse enters the *talked* ledger on a completed heal or a declined prompt.** A completed
+  `HEAL` has had the conversation with its own presses, so `TALK` has nothing left to open, and the
+  reached window would otherwise expire in ten brain minutes and offer the ring again. A declined
+  prompt is 12.4's rule deliberately inverted, for one person: "the thing it said no to is still on
+  offer" is true of a villager with something to say and false of a service the party does not
+  need -- and the pad only ever offers `NO` at her prompt when the party is already full.
+- **`TALK`'s precondition and `TALK`'s ledger entry were two different questions, which is why she
+  was never retired.** The precondition reaches over a counter, because
+  `IsSpriteOrSignInFrontOfPlayer` does; the entry was read one tile ahead. So `TALK` was *bound* at
+  the counter and *recorded* nothing at all, 107 times. A precondition and the ledger that answers
+  it have to be the same reading, and they are now.
+- **The general rule: an answer that brings the same prompt straight back is excluded for the
+  blocked window.** Same map, same tile, same readable prompt, within one hold of the answer
+  finishing -- nothing moved and nothing was settled, so the press did nothing the next press will
+  not undo. It is 12.1's ledger doing for an answer what it does for a walk, with the same ten
+  brain minutes, keyed `TargetKey::Answer { at, yes }`. The exclusion *narrows* a pad and never
+  empties one: with both answers excluded both come back, because a box nothing can answer is a
+  screen nothing can leave.
+- **What the reading rests on, and what it does not claim.** `docs/design/macros-wram.md` said
+  outright that there is no "a choice is open" flag, and there is not -- so `yes_no_prompt` is the
+  construction `text_box`'s `waiting` already makes: `wFontLoaded` plus the figure the game draws,
+  a border at (11, 6)-(19, 11) with the shared cursor parked at row 8, column 12, one item below
+  the first, watching A and B. **Both halves are needed**: the cursor bytes are not cleared when
+  the box closes, so all forty-six of the nurse's frames carry that geometry while the box itself
+  is drawn on exactly one. Red places a two-option menu where the script asking for it says, so a
+  prompt drawn somewhere else reads `false` and its dialog keeps the pad it has always had. That is
+  a named limit, not a gap being papered over.
+
+**What the harness holds.** Unit: `HEAL` is off a full party's pad, including the rung-10 party's
+own numbers; `TALK` is off a rested nurse's pad and on a hurt one's; the nurse's prompt deals one
+answer and a plain box still deals three; a readable prompt that is not hers deals both answers and
+no `NEXT`; an answer whose prompt reopens is excluded and an answer that settled the box is not; a
+completed heal and a declined prompt both write the nurse into the talked ledger. ROM-gated from
+the live checkpoint: the fly leaves map `0x3a`, `YES` starts stay under five, `NEXT` is on no pad
+while a prompt is readable, and `TALK` is on no pad at a rested nurse.
+
+The decoder, the reward catalog, the adapter version, the roles and the compatibility string are
+untouched.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")
@@ -1025,7 +1102,9 @@ Knowledge inside macros, never in the choice; the pad still lists buttons and th
   marks nothing visited; the errand was paid on entering.
 - **Center scene.** `HEAL` is a macro: walk to the counter, face the nurse, talk, answer YES,
   wait for the heal animation to end (read the party HP back to full), close the box. On the
-  pad only when at least one party member is not at full HP or has a status. `LEAVE` walks out.
+  pad only when at least one party member is not at full HP or has a status — verified against the
+  live party on the cartridge (**12.12**), which is also what takes `TALK` at the nurse off the pad
+  and what picks the one answer her YES/NO box is dealt. `LEAVE` walks out.
 - **Ladder.** Unchanged; no reward for shopping or healing (rewards are the adapter's,
   untouched).
 - **Screen.** Two new channel tags; the cells and the MACROS rate row take them as they come.
@@ -1075,8 +1154,9 @@ observe is not a precondition, it is a guess.
 | Overworld, inside a Pokémon Center | the indoor pad plus HEAL | new. A centre is a sub-state of the overworld, not a `Scene`: pokered has no "a Pokémon Center is open" byte, so the only honest observable is the map id, and a new `Scene` would be a new `game.scene` on the wire |
 | Overworld, inside a mart | the indoor pad | the counter is a `Shop`; the mart's *floor* is an ordinary interior, with the one exception below |
 | Overworld, inside a mart or a centre, counter unfaced | GO SHOP or GO HEAL, TALK when facing the counter | new, and it is the one place a pad is deliberately *narrow*. The errand is paid on entering and never offered again, so a walk that leaves the building spends the one visit the area gets — measured: the fly reached the mart in 1.7 brain minutes and `GO OBJECTIVE` walked it straight back out over the doormat. While the counter is unfaced nothing on the pad leaves (row 34b) |
-| Overworld, inside a mart or a centre, counter faced | the indoor pad, plus HEAL in a centre | the suppression is released by facing the counter, by talking to it, or by a walk to it failing |
-| Dialog | NEXT, YES, NO | unchanged. There is no "a choice is open" flag (`macros-wram.md`), and A and B both advance a plain box, so all three are dealt for every box — what it buys is the fly being able to answer *no* |
+| Overworld, inside a mart or a centre, counter faced | the indoor pad, plus HEAL in a centre | the suppression is released by facing the counter, by talking to it, or by a walk to it failing. Since **12.12** `TALK` is not on it at a *nurse* the party has no use for: her conversation is a service whose need the cartridge publishes, and a ring of text that ends where it began is section 12.2's trap |
+| Dialog, a plain text box | NEXT, YES, NO | A and B both advance a plain box, so all three are dealt for one — what it buys is the fly being able to answer *no*. Forty-five of the nurse's forty-six frames are this row (**12.12**) |
+| Dialog, a readable YES/NO box | YES, NO — or **one of them** at a Pokémon Center's nurse | **new, 12.12.** `NEXT` is off it: an A press at a two-option menu confirms the option the cursor is on, which is what `YES` is, so the two are one press under two names (12.10). At the nurse's own prompt the bound answer is the one that changes something — `YES` with a hurt or statused party, `NO` with a full one. An answer whose prompt comes straight back is excluded for the blocked window, and the exclusion never empties the pad |
 | Menu (the start menu) | CLOSE, CONFIRM, BACK | unchanged as a *scene*, and since **12.11** nothing on any other pad opens it: the fly reaches it with the **raw** START button, which still reaches the cartridge in macros mode, and moves its cursor with the raw D-pad. A SAVE or a POKéDEX button would be a macro per start-menu entry and is not asked for -- which is precisely why `MENU` had nothing behind it |
 | Menu (the bag, an elevator, the party list outside a battle) | CLOSE, CONFIRM, BACK | unchanged |
 | Unknown (the Pokédex, the trainer card, OPTION, a naming screen, a mid-warp frame) | NEXT, **BACK** | **BACK added** (row 9): B is what leaves the first three, and A leaves none of them |
@@ -1120,6 +1200,7 @@ measured where it cannot.
 
 | cause | closed by |
 | --- | --- |
+| a dialog whose one answer the reopen ledger excludes | **not a cause** (12.12): the exclusion narrows a pad and never empties one, so a box with both answers excluded is dealt both again. A box nothing can answer is a screen nothing can leave |
 | a scene that binds nothing at all | the table above: every playable scene but the overworld has at least one unconditional button (`NEXT` in a dialog and in a battle, `CLOSE` in a menu, `LEAVE` in a shop and a PC). The overworld's was `MENU`, and **12.11** took it off rather than keep a button whose only effect is a screen its own scene closes again; what stands in its place is the row below |
 | an overworld map with no way out at all | **not closed, and named**: with `MENU` gone this is a genuinely empty pad. No map in Red is that -- an interior has its front door or its staircase, an outdoor map has its connections -- so it is asserted as a residual in the pad-empty sweep rather than covered, and `game.padEmptyMs` reports it |
 | an *indoors* overworld where every ledger excludes everything and the blocked window is resting the one door | **fixed** (12.11): `ways`' last resort is a room's too, not only `GO ROUTE`'s. With nothing else on this map worth walking to, the exits of that kind come back ignoring the blocked window, the one toward the objective preferred. This is the rung-10 museum: its only way out is a *passage*, so tier 3 was built out of the excluded list and emptied with it |

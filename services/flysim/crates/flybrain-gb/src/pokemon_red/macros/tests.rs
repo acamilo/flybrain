@@ -27,7 +27,8 @@ use super::executor::{
     WALK_FRAME_CEILING, walk_budget,
 };
 use super::palette::{
-    MacroId, MacroKind, Palette, SLOTS, amenity_goals, errand, healthiest_other, heal_goals,
+    MacroId, MacroKind, Palette, SLOTS, amenity_goals, answer_key, errand, facing_nurse,
+    healthiest_other, heal_goals, nurse_prompt, rested_nurse,
     listing, losing, move_slot_bound, objective_goals, party_needs_rest, party_rested,
     poke_sprite, precondition, throw_slot, untalked_objects, untalked_people, ways,
 };
@@ -163,6 +164,12 @@ struct World {
     /// A frame at which the cartridge heals the party, which is what a Pokémon Center does while
     /// its text box is open (`docs/design/macros.md` section 13).
     heal_at: Option<u32>,
+    /// Whether the two-option YES/NO box is the thing on screen ([`MacroState::yes_no_prompt`]).
+    ///
+    /// A field rather than a shape of the `list`, because on the cartridge it is a *drawn box*
+    /// beside a cursor the game never clears, and what the palette asks is only "is a choice
+    /// open" (section 12.12).
+    prompt: bool,
     /// Whether the cartridge is driving the player right now ([`MacroState::scripted`]).
     scripted: bool,
     /// A frame at which the cartridge takes the joypad, which is what the Viridian gate does.
@@ -236,6 +243,7 @@ impl World {
             pending: None,
             switch: None,
             heal_at: None,
+            prompt: false,
             scripted: false,
             scripted_at: None,
             pulses: Vec::new(),
@@ -336,6 +344,18 @@ impl World {
             Tile::new(4, 1),
             Tile::new(3, 2),
         ]);
+        world
+    }
+
+    /// [`World::center`] with the fly at the counter facing the nurse, mid-conversation.
+    ///
+    /// The rung-10 state (`infra/docs/macros-traps.md` row 41): map `0x3a` at (3, 3) facing up,
+    /// a text box open, the nurse two tiles away over the counter at (3, 1).
+    fn at_the_nurse() -> Self {
+        let mut world = Self::center();
+        world.player = Tile::new(3, 3);
+        world.facing = Facing::Up;
+        world.scene = Scene::Dialog;
         world
     }
 
@@ -636,6 +656,12 @@ impl GameState for World {
 impl MacroState for World {
     fn scripted(&mut self) -> bool {
         self.scripted
+    }
+
+    /// A drawn box is what the reading rests on, so a prompt cannot be open with no box open:
+    /// `pokemon_red::state::yes_no_prompt` gates on `wFontLoaded` before it looks at the tiles.
+    fn yes_no_prompt(&mut self) -> bool {
+        self.prompt && self.scene == Scene::Dialog
     }
 
     fn shop_stock(&mut self) -> Vec<u8> {
@@ -3892,6 +3918,16 @@ fn heal_is_on_the_centres_pad_only_while_the_party_needs_it() {
     assert!(!precondition(MacroKind::Heal, &mut center));
     assert!(!on_the_pad(&mut center, MacroKind::Heal));
 
+    // The rung-10 party, as the live checkpoint of 2026-09-22 reads it: one Pokemon, 70 of 70,
+    // healthy (`infra/docs/macros-traps.md` row 41). `HEAL` was **not** what looped there -- its
+    // precondition reads the live party and answers no, and the survey confirmed it on the
+    // cartridge. So this is the assertion that the loop was never the heal's.
+    let mut rung10 = World::center();
+    rung10.mons = vec![Mon { hp: 70, max_hp: 70, ..mon(0, 70, 70, &[(33, 30)]) }];
+    assert!(!party_needs_rest(&mut rung10));
+    assert!(!precondition(MacroKind::Heal, &mut rung10));
+    assert!(!on_the_pad(&mut rung10, MacroKind::Heal));
+
     // Hurt.
     center.mons[0].hp = 9;
     assert!(precondition(MacroKind::Heal, &mut center));
@@ -4565,3 +4601,149 @@ fn a_scripted_push_back_records_the_tile_it_happened_on() {
 
 mod map_aware;
 mod shop_purchase;
+
+// ---------------------------------------------------------------------------------------------
+// Section 12.12: the nurse's box (row 41)
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn talk_is_off_the_pad_at_a_nurse_the_party_has_no_use_for() {
+    // The overworld frame the ring starts from: at the counter, facing the nurse, party full.
+    let mut center = World::center().at(3, 3);
+    center.facing = Facing::Up;
+    assert!(facing_nurse(&mut center), "the nurse is the thing ahead, over the counter");
+    assert!(rested_nurse(&mut center));
+    assert!(!precondition(MacroKind::Talk, &mut center));
+    assert!(!on_the_pad(&mut center, MacroKind::Talk));
+
+    // Hurt, and she is worth talking to again -- the conversation now does something.
+    center.mons[0].hp = 4;
+    assert!(!rested_nurse(&mut center));
+    assert!(precondition(MacroKind::Talk, &mut center));
+    assert!(on_the_pad(&mut center, MacroKind::Talk));
+
+    // Statused at full HP counts as needing her, exactly as `HEAL`'s own precondition does.
+    center.mons[0].hp = center.mons[0].max_hp;
+    center.mons[0].status = Status::Poison;
+    assert!(precondition(MacroKind::Talk, &mut center));
+
+    // And nobody else in the game is narrowed by this: an ordinary person on the same map is
+    // still `TALK`'s whatever the party reads.
+    let mut villager = World::center().at(3, 3);
+    villager.facing = Facing::Up;
+    villager.npcs = vec![Npc { slot: 1, picture: 1, x: 3, y: 2, facing: Facing::Down }];
+    villager.counters.clear();
+    villager.walls.clear();
+    assert!(!facing_nurse(&mut villager));
+    assert!(precondition(MacroKind::Talk, &mut villager), "a full party is not a reason to ignore a person");
+}
+
+#[test]
+fn the_nurses_prompt_offers_only_the_answer_that_changes_something() {
+    let mut center = World::at_the_nurse();
+    center.prompt = true;
+    assert!(nurse_prompt(&mut center));
+
+    // Full and healthy: the offer is for nothing, so `NO` is the answer and `YES` is not on the
+    // pad. `NEXT` is off it too -- an A press at a two-option box *is* `YES` (12.10).
+    assert_eq!(names(&plan::plan_for(Scene::Dialog, &mut center)), ["NO"]);
+
+    // Hurt: `YES` is the answer, and `NO` is the one that changes nothing.
+    center.mons[0].hp = 4;
+    assert_eq!(names(&plan::plan_for(Scene::Dialog, &mut center)), ["YES"]);
+
+    // A plain text box, which is forty-five of the nurse's forty-six frames, keeps all three: A
+    // and B both advance one and there is no choice for `NEXT` to be the wrong name for.
+    center.prompt = false;
+    assert_eq!(names(&plan::plan_for(Scene::Dialog, &mut center)), ["NEXT", "YES", "NO"]);
+}
+
+#[test]
+fn a_readable_prompt_that_is_not_the_nurses_keeps_both_answers_and_loses_next() {
+    // Red draws a two-option box for a dozen scripts and only the nurse's is an offer about the
+    // party, so nothing else is narrowed by the party: both answers, and no `NEXT`.
+    let mut world = World::room();
+    world.scene = Scene::Dialog;
+    world.prompt = true;
+    assert!(!nurse_prompt(&mut world));
+    assert_eq!(names(&plan::plan_for(Scene::Dialog, &mut world)), ["YES", "NO"]);
+}
+
+#[test]
+fn a_yes_no_box_that_reopens_unchanged_takes_that_answer_off_the_pad() {
+    // Section 12.12's general rule, away from the nurse: the answer completed, the fly is on the
+    // tile it answered from, and the same prompt is up again -- so the press did nothing, which
+    // is section 12.2's trap, and the answer joins the blocked ledger for its window.
+    let mut world = World::room();
+    world.scene = Scene::Dialog;
+    world.prompt = true;
+    assert_eq!(names(&plan::plan_for(Scene::Dialog, &mut world)), ["YES", "NO"]);
+
+    assert_eq!(run(&mut world, MacroKind::Yes).unwrap(), MacroAbort::Done);
+    let key = answer_key(&mut world, true).expect("a loaded map has a tile");
+    assert!(world.targets.blocked(world.map, key), "the answer that changed nothing");
+    assert_eq!(
+        names(&plan::plan_for(Scene::Dialog, &mut world)),
+        ["NO"],
+        "the other answer is still there, which is what ends the ring"
+    );
+
+    // And `NO` is not excluded by `YES`'s entry: one answer, one key.
+    let no = answer_key(&mut world, false).expect("a loaded map has a tile");
+    assert!(!world.targets.blocked(world.map, no));
+}
+
+#[test]
+fn a_prompt_that_does_not_come_back_excludes_nothing() {
+    // The other half of the same rule: an answer that settled the box is an answer worth making
+    // again. Nothing is excluded, because nothing looped.
+    let mut world = World::room();
+    world.scene = Scene::Dialog;
+    world.prompt = true;
+    // The box closes on the frame after the press, which is what answering it does.
+    world.switch = Some((2, Scene::Overworld));
+    assert_eq!(run(&mut world, MacroKind::Yes).unwrap(), MacroAbort::Done);
+    let key = answer_key(&mut world, true).expect("a loaded map has a tile");
+    assert!(!world.targets.blocked(world.map, key));
+}
+
+#[test]
+fn a_declined_heal_writes_the_nurse_into_the_talked_ledger() {
+    // 12.4's rule is "the fly said no, so the thing is still on offer", and for one person in Red
+    // that is wrong: the pad only ever offers `NO` at her prompt when the party is already full,
+    // so declining is the errand's end rather than a conversation postponed.
+    let mut center = World::at_the_nurse();
+    center.prompt = true;
+    assert!(party_rested(&mut center));
+
+    assert_eq!(run(&mut center, MacroKind::No).unwrap(), MacroAbort::Done);
+    assert!(center.talked.contains(&TalkTarget::Sprite(1)), "the nurse: {:?}", center.talked);
+
+    // So `TALK` is off the pad there even if the party is hurt later: the ledger is the record
+    // that this run has had her conversation.
+    center.scene = Scene::Overworld;
+    center.mons[0].hp = 4;
+    assert!(!precondition(MacroKind::Talk, &mut center));
+}
+
+#[test]
+fn a_completed_heal_writes_the_nurse_into_the_talked_ledger() {
+    let mut center = World::center();
+    center.mons[0].hp = 3;
+    center.switch = Some((200, Scene::Dialog));
+    center.heal_at = Some(240);
+
+    assert_eq!(run(&mut center, MacroKind::Heal).unwrap(), MacroAbort::Done);
+    assert!(party_rested(&mut center));
+    assert!(
+        center.talked.contains(&TalkTarget::Sprite(1)),
+        "a completed heal has had the conversation: {:?}",
+        center.talked
+    );
+
+    // And `TALK` cannot reopen it. The reached window would expire in ten brain minutes and offer
+    // the fly the same forty-six text frames again; the talked entry is for the session.
+    center.scene = Scene::Overworld;
+    assert_eq!(center.player, Tile::new(3, 3));
+    assert!(!precondition(MacroKind::Talk, &mut center));
+}

@@ -31,7 +31,9 @@ use super::cartridge::{
 use super::geography::Amenity;
 use super::palette::{
     MacroId, MacroKind, Palette, amenity_goals, frontier_aims, heal_goals, healthiest_other,
-    listing, move_index, move_list, objective_goals, party_rested, potion_slot, precondition,
+    facing_target, listing, move_index, move_list, nurse_prompt, objective_goals, party_rested,
+    potion_slot,
+    precondition,
     shop_screen, throw_slot, untalked_objects, untalked_people, ways,
 };
 use super::path::{self, Route, Way};
@@ -127,6 +129,15 @@ const BACKOUT_PRESSES: u8 = 8;
 
 /// Presses a `MENU` may spend opening the start menu before it reports `Blocked`.
 const OPEN_PRESSES: u8 = 3;
+
+/// Frames after an answer inside which the same YES/NO prompt coming back is that answer's doing.
+///
+/// One hold of the Game Boy preset's macro group (268 brain milliseconds, sixteen frames at
+/// 59.7275 fps) and half of one again, which is the fly's own next decision plus the frames the
+/// cartridge spends redrawing: the nurse's prompt is back **two frames** after a `YES` at the
+/// rung-10 checkpoint (`infra/docs/macros-traps.md`, row 41). Later than this and the prompt came
+/// back because something else happened, which is not the answer's fault.
+const ANSWER_REOPEN_FRAMES: u32 = 24;
 
 /// Frames a `HEAL` waits, pressing nothing, for the healing machine to finish.
 ///
@@ -481,12 +492,44 @@ struct Active {
     /// whether a conversation ended with the game walking it away, and whether a push-back
     /// happened under a macro that was not walking.
     from: Option<Tile>,
+    /// The box a `YES` or `NO` is answering, read at `start` because by the time the press has
+    /// landed the box has moved on (section 12.12). `None` for every other macro.
+    answered: Option<Answered>,
     /// What this macro is walking to, and the map it was chosen on: the target ledgers' entry.
     ///
     /// Chosen at `start`, from the state the fly chose in, for the same reason `facing` is: by the
     /// time the macro aborts the candidate list has moved on, and "which target did this fail at"
     /// has to be the one it set out for. `None` for every macro that does not walk.
     target: Option<(u8, TargetKey)>,
+}
+
+/// The box a `YES` or `NO` was answering, as it read when the answer was chosen.
+///
+/// `docs/design/macros.md` section 12.12. Read at `start`: the whole point of the reading is that
+/// the *same* prompt comes back, and by the time the press has landed the box on screen is
+/// whatever the answer led to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Answered {
+    map: u8,
+    /// The tile the fly answered from, which is what the box belongs to.
+    at: Tile,
+    yes: bool,
+    /// Whether the box was a prompt this crate can read at all. An answer to a plain text box
+    /// cannot be judged by "the same prompt came back", because no prompt was there to come back.
+    prompt: bool,
+    /// The nurse this prompt belongs to, when it is hers: the talked-ledger entry a *declined*
+    /// heal earns (section 12.12).
+    nurse: Option<TalkTarget>,
+}
+
+/// An answer that has been made and whose box may yet come straight back
+/// ([`MacroMachine::pending_answer`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingAnswer {
+    answered: Answered,
+    /// Frames since the answer finished. The window is one hold: a prompt that comes back later
+    /// than that came back because something else happened.
+    frames: u32,
 }
 
 /// A conversation that has been started and has not ended yet ([`MacroMachine::pending_talk`]).
@@ -574,6 +617,14 @@ pub struct MacroMachine {
     /// `GO ITEM`'s list, so the one conversation that might change something could not be had
     /// again.
     pending_talk: Option<PendingTalk>,
+    /// A finished `YES` or `NO` whose prompt may yet come straight back.
+    ///
+    /// `docs/design/macros.md` section 12.12: **a YES/NO box that reopens after an answer with
+    /// nothing changed is section 12.2's trap** -- the answer completed, the fly is on the tile it
+    /// answered from, and the same question is being asked again, so the press did nothing that
+    /// the next press will not undo. One hold of frames is the window, because that is how long
+    /// the fly has to choose again; anything later and something else happened in between.
+    pending_answer: Option<PendingAnswer>,
     /// A finished `TALK`'s target, waiting to be taken into the session's talked ledger.
     ///
     /// The machine records rather than keeps: the ledger is the driver's
@@ -604,6 +655,7 @@ impl MacroMachine {
             timed_out: None,
             resume: VecDeque::new(),
             pending_talk: None,
+            pending_answer: None,
             talked: None,
             rng: if seed == 0 { 1 } else { seed },
         }
@@ -666,6 +718,21 @@ impl MacroMachine {
         let facing = (spec.kind == MacroKind::Talk)
             .then(|| talk_target(state))
             .flatten();
+        // And which box a `YES` or `NO` is answering, read here for the same reason: the answer
+        // is about the box that was on screen when the fly chose it (section 12.12).
+        let answered = matches!(spec.kind, MacroKind::Yes | MacroKind::No)
+            .then(|| {
+                let prompt = state.yes_no_prompt();
+                let nurse = nurse_prompt(state).then(|| talk_target(state)).flatten();
+                state.player().map(|player| Answered {
+                    map: player.map,
+                    at: Tile::new(player.x, player.y),
+                    yes: spec.kind == MacroKind::Yes,
+                    prompt,
+                    nurse: nurse.map(|(_, target)| target),
+                })
+            })
+            .flatten();
         self.outcome = None;
         let from = state.player().map(|player| Tile::new(player.x, player.y));
         self.active = Some(Active {
@@ -677,6 +744,7 @@ impl MacroMachine {
             cap,
             plan,
             facing,
+            answered,
             from,
             target,
         });
@@ -824,6 +892,8 @@ impl MacroMachine {
         self.resume.clear();
         // A rollback is not the end of a conversation; it is the end of the frames it happened in.
         self.pending_talk = None;
+        // Nor is it a prompt reopening: the frames the answer was made in are being thrown away.
+        self.pending_answer = None;
     }
 
     /// Whether the fly is standing somewhere other than where the running macro began.
@@ -851,6 +921,7 @@ impl MacroMachine {
     /// - the cartridge took the joypad, or the fly is somewhere else — not talked;
     /// - the fly answered `NO` — not talked, and that one is decided in [`MacroMachine::finish`].
     pub fn observe_frame(&mut self, state: &mut dyn MacroState) {
+        self.observe_answer(state);
         let Some(pending) = self.pending_talk else { return };
         if state.scripted() {
             self.pending_talk = None;
@@ -866,6 +937,38 @@ impl MacroMachine {
         if class(state.scene()) != Class::Talking {
             self.pending_talk = None;
             self.talked = Some((pending.map, pending.target));
+        }
+    }
+
+    /// One frame after a `YES` or `NO`: decide whether the box it answered has come straight back.
+    ///
+    /// `docs/design/macros.md` section 12.12. The evidence is all in one frame: the fly is on the
+    /// tile it answered from, and the prompt it answered is up again. Nothing moved and nothing
+    /// was settled, so the answer goes into the blocked ledger for its window and the dialog pad
+    /// offers the *other* one -- which at the nurse's counter is the `NO` that ends the ring.
+    ///
+    /// Only for an answer to a prompt this crate can **read**. An answer to a plain text box is
+    /// not judged here, because "the same prompt came back" is not a question that has a meaning
+    /// there: a conversation is many boxes and advancing one is exactly what `YES` should do.
+    fn observe_answer(&mut self, state: &mut dyn MacroState) {
+        let Some(pending) = self.pending_answer.as_mut() else { return };
+        pending.frames += 1;
+        let answered = pending.answered;
+        if pending.frames > ANSWER_REOPEN_FRAMES || !answered.prompt {
+            self.pending_answer = None;
+            return;
+        }
+        let Some(player) = state.player() else { return };
+        if player.map != answered.map || Tile::new(player.x, player.y) != answered.at {
+            self.pending_answer = None;
+            return;
+        }
+        if state.yes_no_prompt() {
+            self.blocked.push((
+                answered.map,
+                TargetKey::Answer { at: answered.at, yes: answered.yes },
+            ));
+            self.pending_answer = None;
         }
     }
 
@@ -978,6 +1081,19 @@ impl MacroMachine {
                     if active.kind == MacroKind::No {
                         self.pending_talk = None;
                     }
+                    // An answer, and the box it answered: armed so that the same prompt coming
+                    // straight back is recorded (section 12.12), and the nurse written into the
+                    // talked ledger when what was declined was *her* offer. That is 12.4's rule
+                    // inverted, deliberately and for one person: "the thing it said no to is
+                    // still on offer" is true of a villager with something to say and false of a
+                    // service the party does not need -- the pad only ever offers `NO` at her
+                    // prompt when the party is already full, and declining is the errand's end.
+                    if let Some(answered) = active.answered {
+                        if let Some(nurse) = answered.nurse.filter(|_| !answered.yes) {
+                            self.talked = Some((answered.map, nurse));
+                        }
+                        self.pending_answer = Some(PendingAnswer { answered, frames: 0 });
+                    }
                     // The cartridge answered the macro by walking the fly away: that is the
                     // target's own fact, not the world's, so it is excluded for the window like
                     // any other refusal. Without it the gate was walked into once per hold for
@@ -1010,6 +1126,16 @@ impl MacroMachine {
                         && let Some(entry) = active.target
                     {
                         self.reached = Some(entry);
+                        // And a completed `HEAL` has *had* the conversation: the box was opened,
+                        // answered and closed by this macro's own presses, so the nurse is talked
+                        // to and `TALK` has nothing left to open (section 12.12). Without it the
+                        // reached window expires after ten brain minutes and the fly is offered
+                        // the same forty-six text frames again with a party that is already full.
+                        if active.kind == MacroKind::Heal
+                            && let (map, TargetKey::Thing(target)) = entry
+                        {
+                            self.talked = Some((map, target));
+                        }
                     }
                 }
                 // Section 12's blocked-target ledger: three failed steps, or the frame cap on a
@@ -1981,9 +2107,17 @@ fn shop_plan(state: &mut dyn MacroState, want: u8) -> Option<Vec<Step>> {
 ///
 /// `None` when the tile ahead is off the map or has nothing on it, which is also when `TALK`'s
 /// precondition refuses, so a started `TALK` normally has one.
+///
+/// **`palette::facing_target`, which is `TALK`'s own precondition, and not a second reading of
+/// it.** This looked one tile ahead, and a mart clerk and a Pokemon Center nurse stand two tiles
+/// away behind a counter -- so `TALK` was *bound* at a counter by the reach
+/// `IsSpriteOrSignInFrontOfPlayer` really has and *recorded* by a reach one tile shorter, which is
+/// no entry at all: the ledger never learned that the counter had been talked to, and the pad
+/// offered the same conversation once per hold for ever. Measured at the rung-10 Pokemon Center
+/// (`infra/docs/macros-traps.md` row 41): `TALK` 107 starts on one tile, none of them retiring the
+/// nurse. A precondition and the ledger that answers it have to be the same question.
 fn talk_target(state: &mut dyn MacroState) -> Option<(u8, TalkTarget)> {
+    let target = facing_target(state)?;
     let player = state.player()?;
-    let ahead = Tile::new(player.x, player.y).step(player.facing)?;
-    let target = path::target_at(state, ahead)?;
     Some((player.map, target))
 }

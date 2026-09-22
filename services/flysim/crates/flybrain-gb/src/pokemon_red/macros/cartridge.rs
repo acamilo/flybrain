@@ -286,6 +286,15 @@ pub enum TargetKey {
     Thing(TalkTarget),
     /// A tile of the map to stand on.
     Tile(Tile),
+    /// One answer to the YES/NO box at a tile: the key of the reopened-prompt exclusion
+    /// (`docs/design/macros.md` section 12.12).
+    ///
+    /// Not a walk's target -- nothing is aimed at it -- but the same ledger and the same window,
+    /// because it is the same fact: an answer that changed nothing is an answer not worth making
+    /// again from this tile for a while. Keyed by the tile rather than by the person, because what
+    /// the box belongs to is whatever the fly is standing in front of, and the box is the only
+    /// thing on screen while it is open.
+    Answer { at: Tile, yes: bool },
 }
 
 /// Which list the shared cursor belongs to right now.
@@ -453,6 +462,20 @@ pub trait MacroState: GameState {
     }
 
     fn talked(&mut self, _target: TalkTarget) -> bool {
+        false
+    }
+
+    /// Whether the box on screen is the two-option YES/NO prompt rather than a plain text box.
+    ///
+    /// `pokemon_red::state::yes_no_prompt`: the border `DisplayTwoOptionMenu` draws plus the
+    /// cursor it parks inside it, surveyed on the cartridge (`docs/design/macros.md` section
+    /// 12.12). It is what tells the *one* frame of the nurse's conversation that is a choice from
+    /// the forty-five that are text, and the pad is dealt differently for it -- on a choice, an A
+    /// press *is* `YES`, so `NEXT` is the same press under another name (12.10).
+    ///
+    /// The default is `false`: a state that cannot answer has no choice open, which leaves the
+    /// dialog pad exactly what it has always been.
+    fn yes_no_prompt(&mut self) -> bool {
         false
     }
 

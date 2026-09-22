@@ -477,10 +477,10 @@ pub fn scene_set(scene: Scene, state: &mut dyn MacroState) -> Vec<MacroKind> {
         // of advancing, because `Unknown` is also where the Pokédex, the trainer card and OPTION
         // land (`docs/design/macros-wram.md`) and B is what leaves all three.
         Scene::Unknown => vec![Next, Back],
-        // There is no WRAM observable for "a choice is open" (`macros-wram.md` says so outright),
-        // and A and B both advance a plain box, so the three are dealt for every text box. What it
-        // buys is the fly being *able* to answer no, which a pad of one A press never could.
-        Scene::Dialog => vec![Next, Yes, No],
+        // `NEXT`, `YES`, `NO` for a plain box -- A and B both advance one, and what the three
+        // buy is the fly being *able* to answer no. On the one box that **is** a choice, the pad
+        // is the choice's own answers: section 12.12.
+        Scene::Dialog => dialog_set(state),
         Scene::Menu => vec![Close, Confirm, Back],
         // Section 9.1's split, plus section 13's errands and centre. Indoors the ways out of a
         // room are the building's door and its passages; outdoors there is no building to leave.
@@ -601,7 +601,11 @@ pub fn precondition(kind: MacroKind, state: &mut dyn MacroState) -> bool {
         // that this run has not already talked to (`docs/design/macros.md` section 12: "TALK
         // (only when facing something untalked)"). A tile ahead with nothing on it is not a
         // reason to press A, and a shelf that has been read is not a reason to read it again.
-        MacroKind::Talk => facing_untalked(state),
+        // ...and only where there is something to say. The nurse of a Pokemon Center is an
+        // object with a purpose, not a person to chat with: with the party already full her whole
+        // conversation is forty-six text frames that end where they began, which is section
+        // 12.2's trap at conversation scale (section 12.12).
+        MacroKind::Talk => facing_untalked(state) && !rested_nurse(state),
         // The start menu opens from anywhere, and that is exactly why `MENU` is on no pad:
         // "the precondition is satisfied wherever the fly stands" is section 12.2's trap, and a
         // macro whose whole effect is a screen its own scene's `BACK` closes again is 12.10's
@@ -658,6 +662,104 @@ pub fn precondition(kind: MacroKind, state: &mut dyn MacroState) -> bool {
         // (section 13: "at least one party member is not at full HP or has a status").
         MacroKind::Heal => party_needs_rest(state) && !heal_goals(state).is_empty(),
     }
+}
+
+/// The dialog pad: the answers to a box that is a choice, the three presses for one that is not.
+///
+/// **Section 12.12, rung 10, the Pewter Pokemon Center.** Since the 09:39 restart the macro starts
+/// were `YES` **2,142**, `TALK` 107, `GO FRONTIER` 26, `BACK` 24, the log ending `YES start/done`
+/// for ever, on one tile of map `0x3a`. Surveyed on the cartridge from the live checkpoint: the
+/// nurse's conversation is a **ring of forty-six A presses** -- welcome, "We heal your POKeMON
+/// back to perfect health!", the YES/NO box on **one** frame of the forty-six, "OK. We'll need
+/// your POKeMON.", the machine, "Your POKeMON are fighting fit!", "We hope to see you again!",
+/// the box closes for a single frame, and the next A press at a nurse two tiles away over the
+/// counter opens the whole thing again. The party was **70/70 and healthy** throughout, so every
+/// press of it changed nothing.
+///
+/// Two readings the survey settles, because the brief allowed three:
+///
+/// - the box open at the checkpoint is **not** the prompt, it is the closing line, and `YES` there
+///   is an A press on plain text. Forty-five of the forty-six frames are like that, and on every
+///   one of them `NEXT` and `YES` are the identical press with two names;
+/// - `HEAL` is **not** in the loop at all: its precondition already reads the live party and
+///   `party_needs_rest` answers `false`, so the button was off the pad the whole time. What was on
+///   the pad was the *dialog*, unconditionally, and `TALK` to get back into it.
+///
+/// So: on a box that is a readable choice the pad is that choice's answers and `NEXT` is off it,
+/// which is 12.10's rule about two buttons that are one press; at the nurse's own prompt the
+/// answer that changes something is the only one bound, which is 12.2's rule about a macro whose
+/// precondition is already satisfied; and an answer that brings the same prompt straight back is
+/// excluded for the blocked window, which is 12.1's ledger doing what it does for a walk.
+fn dialog_set(state: &mut dyn MacroState) -> Vec<MacroKind> {
+    use MacroKind::*;
+    if !state.yes_no_prompt() {
+        return vec![Next, Yes, No];
+    }
+    // A choice is open. An A press here confirms whichever option the cursor is on, which is what
+    // `YES` is, so `NEXT` is off this pad for exactly 12.10's reason: two buttons that are one
+    // press cannot both be answers to the box.
+    let answers = if nurse_prompt(state) {
+        // The nurse's box is an offer about the party, and the party is a byte. Hurt or statused,
+        // the answer worth making is `YES`; full and healthy, the offer is for nothing and the
+        // only answer that changes anything is `NO`. Knowledge inside the macro as a
+        // precondition, section 13's rule for `HEAL` applied to the box `HEAL` opens.
+        if party_needs_rest(state) { vec![Yes] } else { vec![No] }
+    } else {
+        vec![Yes, No]
+    };
+    let kept: Vec<MacroKind> =
+        answers.iter().copied().filter(|kind| !answer_excluded(state, *kind)).collect();
+    // A box must stay answerable: the exclusion narrows a pad, it never empties one. With both
+    // answers excluded the fly is offered both again, because a dialog with nothing on its pad is
+    // a screen nothing can leave.
+    if kept.is_empty() { answers } else { kept }
+}
+
+/// Whether this answer to the box at this tile is inside its reopened-prompt exclusion window.
+fn answer_excluded(state: &mut dyn MacroState, kind: MacroKind) -> bool {
+    let yes = match kind {
+        MacroKind::Yes => true,
+        MacroKind::No => false,
+        _ => return false,
+    };
+    match answer_key(state, yes) {
+        Some(key) => state.blocked(key),
+        None => false,
+    }
+}
+
+/// The blocked-ledger key for answering the box at the tile the fly is standing on.
+pub fn answer_key(state: &mut dyn MacroState, yes: bool) -> Option<TargetKey> {
+    let player = state.player()?;
+    Some(TargetKey::Answer { at: Tile::new(player.x, player.y), yes })
+}
+
+/// Whether the box on screen is the Pokemon Center nurse's own YES/NO prompt.
+///
+/// Three readings, each a byte: the two-option box is drawn ([`MacroState::yes_no_prompt`]), the
+/// map is a centre ([`inside_center`]), and the thing the fly is facing is the nurse. The map id
+/// is in there because Red draws a two-option box for a dozen scripts and only this one is an
+/// offer about the party.
+pub fn nurse_prompt(state: &mut dyn MacroState) -> bool {
+    state.yes_no_prompt() && inside_center(state) && facing_nurse(state)
+}
+
+/// Whether the thing the fly is facing -- over a counter, which is how a nurse is ever faced -- is
+/// a Pokemon Center's nurse.
+pub fn facing_nurse(state: &mut dyn MacroState) -> bool {
+    let Some(TalkTarget::Sprite(slot)) = facing_target(state) else { return false };
+    state.npcs().iter().any(|npc| npc.slot == slot && npc.picture == poke_sprite::NURSE)
+}
+
+/// Whether the fly is facing a nurse with nothing to ask her for: what takes `TALK` off the pad.
+///
+/// The nurse is the one person in Red whose conversation has a *precondition*, because her
+/// conversation is a service and the cartridge publishes whether the service is needed. `HEAL` has
+/// read that byte since section 13; this is the same byte read for the press that opens the same
+/// box. Section 12.2's rule, at conversation scale: a `TALK` whose whole effect is a ring of text
+/// that ends where it began is a trap, so it is not on the pad.
+pub fn rested_nurse(state: &mut dyn MacroState) -> bool {
+    inside_center(state) && !party_needs_rest(state) && facing_nurse(state)
 }
 
 /// Whether at least one party member is below full HP or carries a status: `HEAL`'s precondition.
