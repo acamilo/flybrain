@@ -13,12 +13,12 @@ use std::time::Duration;
 
 use serde_json::Map;
 
-use common::{default_fixture, fixture, fly_a, fly_b, within};
+use common::{Fixture, default_fixture, fixture, fly_a, fly_b, mode_fixture, within};
 use fly_session::environment::{
     AUDIO_STREAM_ID, CHANNELS, EnvironmentFaults, SAMPLE_RATE, VIEW_HEIGHT, VIEW_WIDTH,
     synthetic_asset,
 };
-use fly_session::harness::{HarnessConfig, Via};
+use fly_session::harness::{ExecutionMode, HarnessConfig, Via};
 use fly_session::media::{
     AssetRegistry, AudioSource, AudioTimelines, SensedView, Spectator, SpectatorFrame,
     arena_frame, audio_attachment, detach_frame, view_attachment,
@@ -44,6 +44,8 @@ both_transports!(
     restored_timelines_need_every_declared_streams_position,
     a_cadence_that_does_not_divide_the_sample_rate_still_lands_on_whole_samples,
 );
+
+all_modes!(the_media_path_works_in_every_execution_mode);
 
 const STEPS: u64 = 3;
 
@@ -72,6 +74,25 @@ async fn frame_at(spectator: &mut Spectator, boundary: u64) -> SpectatorFrame {
     panic!("the spectator never reached boundary {boundary}");
 }
 
+/// The views one agent read.
+///
+/// The sensor log is shared memory, so it is readable only where that agent lives. These tests
+/// run in the default in-process composition; the process-mode test below asserts the media
+/// path over the bus instead, which is what crosses a process boundary.
+fn sensed(f: &Fixture, agent_id: &Id) -> Vec<SensedView> {
+    f.harness
+        .sensor_log(agent_id)
+        .expect("this composition keeps its agents in this process")
+        .entries()
+}
+
+/// How many native frames the world rendered, for a world in this process.
+fn renders(f: &Fixture) -> u64 {
+    f.harness
+        .renders()
+        .expect("this composition keeps its world in this process")
+}
+
 fn boundaries(entries: &[SensedView]) -> Vec<u64> {
     entries.iter().map(|e| e.boundary).collect()
 }
@@ -93,13 +114,13 @@ async fn one_shared_image_reaches_both_agents_through_owned_attachments(via: Via
     // One render per boundary: forwarding the handle to two agents and to publication does not
     // render or copy it again.
     assert_eq!(
-        f.harness.renders(),
+        renders(&f),
         STEPS + 1,
         "one native frame per boundary, whatever the number of recipients"
     );
 
-    let a = f.harness.sensor_log(&fly_a()).entries();
-    let b = f.harness.sensor_log(&fly_b()).entries();
+    let a = sensed(&f, &fly_a());
+    let b = sensed(&f, &fly_b());
     assert_eq!(boundaries(&a), (0..=STEPS).collect::<Vec<_>>());
     assert_eq!(a, b, "both agents read the same artifact and the same bytes");
     assert_eq!(produced(&a), (0..=STEPS).collect::<Vec<_>>(), "no declared delay");
@@ -151,8 +172,8 @@ async fn a_spectator_cannot_corrupt_sensory_state(via: Via) {
     drop(frame);
     within("run more", f.harness.coordinator.run(STEPS)).await.unwrap();
 
-    let a = f.harness.sensor_log(&fly_a()).entries();
-    let b = f.harness.sensor_log(&fly_b()).entries();
+    let a = sensed(&f, &fly_a());
+    let b = sensed(&f, &fly_b());
     assert_eq!(boundaries(&a), (0..=2 * STEPS).collect::<Vec<_>>());
     assert_eq!(a, b);
     assert_eq!(
@@ -205,7 +226,7 @@ async fn a_slow_spectator_exhausts_only_its_own_credits(via: Via) {
         latest.boundary, steps,
         "the reading spectator reaches the latest boundary"
     );
-    let a = f.harness.sensor_log(&fly_a()).entries();
+    let a = sensed(&f, &fly_a());
     assert_eq!(boundaries(&a), (0..=steps).collect::<Vec<_>>());
     f.shutdown().await;
 }
@@ -236,7 +257,7 @@ async fn delayed_rendering_retains_its_handle_after_the_message_drops(via: Via) 
     // The rendering finishes now, long after its message is gone.
     let bytes = artifact.read_all().await.expect("the guard kept the bytes alive");
     assert_eq!(bytes.len() as u64, VIEW_WIDTH * VIEW_HEIGHT * 4);
-    let entries = f.harness.sensor_log(&fly_a()).entries();
+    let entries = sensed(&f, &fly_a());
     let at_boundary = entries
         .iter()
         .find(|e| e.produced_step == view.produced_step)
@@ -260,7 +281,7 @@ async fn a_declared_render_delay_repeats_o0_until_the_pipeline_fills(via: Via) {
     within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     within("run", f.harness.coordinator.run(4)).await.unwrap();
 
-    let a = f.harness.sensor_log(&fly_a()).entries();
+    let a = sensed(&f, &fly_a());
     assert_eq!(boundaries(&a), vec![0, 1, 2, 3, 4]);
     assert_eq!(
         produced(&a),
@@ -272,7 +293,7 @@ async fn a_declared_render_delay_repeats_o0_until_the_pipeline_fills(via: Via) {
     assert_ne!(a[2].artifact_id, a[3].artifact_id, "then the pipeline advances");
     assert_ne!(a[3].artifact_id, a[4].artifact_id);
     // The world still renders once per boundary; the delay is a queue, not a missing frame.
-    assert_eq!(f.harness.renders(), 5);
+    assert_eq!(renders(&f), 5);
     f.shutdown().await;
 }
 
@@ -300,7 +321,7 @@ async fn an_extra_delayed_sensory_view_fails_the_step(via: Via) {
         "the transition that met the stale frame committed nothing"
     );
     // The agents did not encode the stale frame.
-    let a = f.harness.sensor_log(&fly_a()).entries();
+    let a = sensed(&f, &fly_a());
     assert_eq!(boundaries(&a), vec![0, 1]);
     f.shutdown().await;
 }
@@ -511,6 +532,80 @@ async fn a_cadence_that_does_not_divide_the_sample_rate_still_lands_on_whole_sam
     f.shutdown().await;
 }
 
+/// The media path itself is mode-agnostic: one native image per boundary, forwarded to every
+/// agent as an owned attachment and published once for presentation, whether the participants
+/// are tasks on one runtime, threads with their own runtimes, or separate processes.
+///
+/// What a *test* can see differs by mode, and this test only asserts what crosses a process
+/// boundary. An agent validates that each attachment is the artifact its payload names and
+/// reads the pixels before it commits, so a session that commits every boundary in process
+/// mode has carried one shared image across that boundary through the store, not through
+/// shared memory. The sensor log and the render counter are shared memory, so they are
+/// asserted where they exist and their absence is asserted where they do not.
+async fn the_media_path_works_in_every_execution_mode(mode: ExecutionMode) {
+    // A declared render delay as well, so the option reaches a world in another process.
+    let config = HarnessConfig {
+        observation_delay_steps: 1,
+        ..HarnessConfig::default()
+    };
+    let mut f = mode_fixture(mode, config).await;
+    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
+    let observer = f.harness.observer().await.unwrap();
+    let topic = f.harness.coordinator.topics().snapshots.clone();
+    let mut spectator = Spectator::attach(&observer, &topic, 2).await.unwrap();
+    within("run", f.harness.coordinator.run(STEPS)).await.unwrap();
+
+    // Every agent read its attachment and committed, in every mode.
+    assert_eq!(f.harness.coordinator.committed_boundary(), Some(STEPS));
+
+    // The coordinator holds one view handle and one audio handle for this boundary, and the
+    // observation names exactly those artifacts.
+    let observation = f.harness.coordinator.observation().expect("an observation").clone();
+    let handles = f.harness.coordinator.media_handles();
+    assert_eq!(handles.len(), 2, "one view and one chunk: {handles:?}");
+    let view = observation.sensory_views.first().expect("a required view");
+    assert_eq!(
+        view.produced_step,
+        STEPS - 1,
+        "the declared one-step delay reached the world in {mode:?} mode"
+    );
+    assert!(handles.iter().any(|(name, r)| *name == view_attachment(&view.view_id)
+        && r.artifact_id == view.pixels.artifact_id));
+
+    // The same object is what presentation was published, and its bytes read back at the
+    // declared shape through an ordinary subscription.
+    let published = frame_at(&mut spectator, STEPS).await;
+    assert_eq!(published.view.pixels.artifact_id, view.pixels.artifact_id);
+    assert_eq!(published.view.produced_step, view.produced_step);
+    let pixels = published.artifact.read_all().await.expect("the published frame");
+    assert_eq!(pixels.len() as u64, VIEW_WIDTH * VIEW_HEIGHT * 4);
+    let (chunk, audio) = published.audio.first().expect("the published chunk");
+    let samples = audio.read_all().await.expect("the published chunk");
+    assert_eq!(samples.len() as u64, chunk.sample_frames * CHANNELS * 4);
+    require_finite_samples(&samples).expect("native samples are finite f32");
+
+    // The shared-memory instrumentation exists exactly where the participants do.
+    match (mode, f.harness.sensor_log(&fly_a()), f.harness.renders()) {
+        (ExecutionMode::Process, sensors, renders) => {
+            assert!(sensors.is_none() && renders.is_none(), "not observable from here");
+        }
+        (_, Some(sensors), Some(renders)) => {
+            let a = sensors.entries();
+            let b = f.harness.sensor_log(&fly_b()).expect("in this process").entries();
+            assert_eq!(a, b, "both agents read the same artifact and the same bytes");
+            assert_eq!(boundaries(&a), (0..=STEPS).collect::<Vec<_>>());
+            assert_eq!(
+                digest_of_bytes(&pixels),
+                a.last().expect("an entry per boundary").digest,
+                "the published bytes are the bytes the agents encoded"
+            );
+            assert_eq!(renders, STEPS + 1, "one render per boundary");
+        }
+        (mode, _, _) => panic!("{mode:?} keeps its participants in this process"),
+    }
+    f.shutdown().await;
+}
+
 /// The retention table: a required agent input is retained through encoding and Commit with no
 /// coalescing, while a spectator's snapshots are a latest subscription with finite credits.
 async fn required_agent_input_is_never_coalesced_while_spectator_snapshots_are(via: Via) {
@@ -536,7 +631,7 @@ async fn required_agent_input_is_never_coalesced_while_spectator_snapshots_are(v
     // Every agent's required input arrived once per boundary, in order, with nothing dropped
     // or replaced.
     for agent in [fly_a(), fly_b()] {
-        let entries = f.harness.sensor_log(&agent).entries();
+        let entries = sensed(&f, &agent);
         assert_eq!(
             boundaries(&entries),
             (0..=steps).collect::<Vec<_>>(),

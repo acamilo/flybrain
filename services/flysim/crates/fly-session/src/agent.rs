@@ -203,7 +203,13 @@ pub struct AgentConfig {
     pub incarnation_id: Id,
     pub tick_duration: RationalNs,
     pub warmup_ticks: u64,
+    /// The thread allocation the launcher started this worker within. `workers-v1` requires
+    /// `Agent.Initialize`'s `workerThreads` to lie inside it.
+    pub worker_threads: usize,
     /// Records every view this agent read, so a test can see which artifact reached it.
+    ///
+    /// It is this process's log: an agent with a process of its own writes to its own copy,
+    /// which the supervisor cannot read. `SessionHarness::sensor_log` says so with `None`.
     pub sensors: crate::media::SensorLog,
     pub faults: AgentFaults,
 }
@@ -379,6 +385,18 @@ impl FakeAgentWorker {
         }
         if params.worker_threads == 0 {
             return Err(DomainError::invalid("workerThreads must be >= 1"));
+        }
+        // `workers-v1`: workerThreads is "within launcher allocation". This worker was started
+        // with that allocation, so a request for more than it is a capacity refusal made
+        // before the model is constructed, not a silent reduction to what is available.
+        if params.worker_threads > self.config.worker_threads as u64 {
+            return Err(DomainError::before(
+                ErrorCode::Busy,
+                format!(
+                    "Agent.Initialize asks for {} worker threads; the launcher allocated {}",
+                    params.worker_threads, self.config.worker_threads
+                ),
+            ));
         }
         params.initial_decision_context.validate().map_err(DomainError::invalid)?;
         let available = FakeAgentWorker::available_actions(&params.initial_decision_context)?;
@@ -644,6 +662,10 @@ impl WorkerEndpoint for FakeAgentWorker {
 
     fn status_cell(&self) -> StatusCell {
         self.status.clone()
+    }
+
+    fn worker_threads(&self) -> u64 {
+        self.config.worker_threads as u64
     }
 
     fn methods(&self) -> Vec<&'static str> {

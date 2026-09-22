@@ -22,12 +22,16 @@
 //! [`step-v1`]: https://example.invalid/step-v1
 
 pub mod agent;
+pub mod cli;
 pub mod clock;
 pub mod coordinator;
 pub mod dedup;
 pub mod environment;
 pub mod harness;
+pub mod launcher;
+pub mod measure;
 pub mod media;
+pub mod metrics;
 pub mod phase;
 pub mod rpc;
 pub mod task;
@@ -38,5 +42,8 @@ pub mod worker;
 pub mod types;
 pub use fly_session_types;
 
-pub use coordinator::{Coordinator, DispatchOrder, Injections, SessionFailure, StepReport};
+pub use coordinator::{
+    Coordinator, Deadlines, DispatchOrder, Injections, ResolutionEnd, SessionFailure, StepReport,
+};
+pub use launcher::{ExecutionMode, Launcher, ReapOutcome, ThreadBudget, Via};
 pub use phase::{Phase, PhaseMachine};
