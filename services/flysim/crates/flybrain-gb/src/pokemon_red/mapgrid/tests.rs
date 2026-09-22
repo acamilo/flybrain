@@ -12,7 +12,8 @@ use crate::pokemon_red::macros::state::{Facing, Walkable};
 /// four different tile ids.
 ///
 /// A block is four screen tiles each way and a map tile is two, so the quadrants are the four
-/// corners and the tile a map tile's walkability comes from is the top left of its own quadrant.
+/// corners and the tile a map tile's walkability comes from is the lower left of its own quadrant
+/// ([`ANCHOR_ROW`], which the cartridge settled).
 fn blockset() -> Vec<u8> {
     let floor = [FLOOR; 16];
     let wall = [WALL; 16];

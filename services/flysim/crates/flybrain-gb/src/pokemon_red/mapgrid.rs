@@ -21,9 +21,10 @@
 //! cartridge's *blocks* are 4x4 screen tiles; the player moves in *map tiles* of 2x2 screen tiles,
 //! which is the unit `wXCoord`, the warp table and everything in `macros/` is in. So one block is
 //! [`TILES_PER_BLOCK`] map tiles each way, and the screen tile a map tile's walkability is read
-//! from is the top left of its 2x2 quadrant -- the same corner `_GetTileAndCoordsInFrontOfPlayer`
-//! reads at screen `(8, 9)` for the tile the player stands on, which is what
-//! [`super::state::map_grid`]'s cross-check against the window predicate proves on a cartridge.
+//! from is the **lower** left of its 2x2 quadrant ([`ANCHOR_ROW`]) -- the corner
+//! `_GetTileAndCoordsInFrontOfPlayer` reads at screen `(8, 9)` for the tile the player stands on,
+//! measured rather than argued and pinned by [`super::state::map_grid`]'s cross-check against the
+//! window predicate on a cartridge.
 //!
 //! What it does **not** model is what it did not model before: sprites standing on ground (the
 //! sprite list answers that, and [`super::macros::path::frontier`] reads it), warps that fire on
