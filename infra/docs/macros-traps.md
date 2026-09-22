@@ -2014,6 +2014,7 @@ which is the half of the 2026-09-17 rule that already held and is now pinned by 
 | `GO FRONTIER` starts on the museum's two floors | **0** (1,235 live over those floors and the town) |
 | `GO FRONTIER` starts overall | 1,247 -- 649 of them in Pewter City itself |
 | route | `0x34` -> Pewter City -> the gym, then the town's shops and houses |
+| the rank at the end | 10 (PEWTER CITY), **0 badges**: the road is open, the badge is not won |
 
 The fly is out of the museum and into the gym in the first minute, and then spends the run in
 Pewter City's buildings: the town's errands are session state and the 11:30 restart re-armed both,
