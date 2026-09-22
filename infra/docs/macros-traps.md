@@ -2140,9 +2140,10 @@ skipped cleanly without `FLY_ROM` and the checkpoint):
   **3,163** on **25 macros**, `BACK` in a box **0**, unknown pads with no box **0**, `GO FRONTIER`
   on the museum's two floors **0**, and the new claim: **the longest chain of walks that completed
   at a net of zero tiles is 1**, against a bound of three.
-- `the_fly_leaves_pewter_from_the_rung_eleven_checkpoint` -- the fly reaches Route 3, the same
-  net-zero bound holds, and neither errand is offered in a town the run has already shopped and
-  healed in.
+- `the_fly_leaves_pewter_from_the_rung_eleven_checkpoint` -- route `[2, 56, 2, 14, 2, 14]` over
+  55.8 brain minutes: out of the town, into the mart **once**, and on to Route 3. `GO HEAL` **0**
+  starts, `GO SHOP` **1**, `GO ROUTE` **3**, and the longest chain of walks that completed at a net
+  of zero tiles is **2** (`GO FRONTIER`, `GO NPC`) against the same bound of three.
 
 ### Gates
 
