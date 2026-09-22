@@ -17,9 +17,6 @@ use crate::dedup::{Admission, CachedReply, OpClass, OperationKey, ResultCache};
 // glob keeps the contract's own names in sight instead of restating them.
 use crate::types::*;
 
-/// `Worker.Acknowledge` accepts 1..=16 request ids.
-pub const MAX_ACKNOWLEDGE_IDS: usize = 16;
-
 /// The build identity a worker reports in Hello. It is not a profile digest.
 pub fn build_digest() -> Digest {
     digest_of_bytes(b"fly-session/synthetic-workers-v1")
@@ -686,7 +683,7 @@ async fn acknowledge(
 ) -> DomainResult<Map<String, Value>> {
     let params: AcknowledgeParams = AcknowledgeParams::from_json(&request.params)
         .map_err(|e| DomainError::invalid(format!("Worker.Acknowledge: {e}")))?;
-    if params.request_ids.is_empty() || params.request_ids.len() > MAX_ACKNOWLEDGE_IDS {
+    if params.request_ids.is_empty() || params.request_ids.len() > MAX_ACKNOWLEDGE {
         return Err(DomainError::invalid("Worker.Acknowledge takes 1..=16 request ids"));
     }
     let acknowledged = {
