@@ -186,6 +186,36 @@ else
     log "05-deploy: CPUSET unset — heavy in-container steps run unpinned (no partition configured)"
 fi
 
+# Whether the only difference between two compatibility strings is the adapter
+# segment, and FLY_ACCEPT_ADAPTERS names the adapter the live checkpoints carry.
+#
+# The bash half of flybrain_gb::compatibility::decide, which is what flysim
+# itself applies at restore. Both have to agree: a gate that let a deploy
+# through and a flysim that then refused every checkpoint would be the black
+# stream this whole section exists to prevent. The string is
+# {kernel}/{adapter}/{fingerprint}/{plasticity}/binjgb:{rev}/pokered:{commit}/statefmt:{id},
+# so the adapter is segment 1 and nothing else may move.
+adapter_migration_accepted() {
+    local live="$1" new="$2" accepted="$3"
+    local -a live_parts new_parts
+    IFS='/' read -r -a live_parts <<< "$live"
+    IFS='/' read -r -a new_parts <<< "$new"
+    [ "${#live_parts[@]}" -eq "${#new_parts[@]}" ] || return 1
+    local i differing=0 index=-1
+    for ((i = 0; i < ${#live_parts[@]}; i++)); do
+        if [ "${live_parts[$i]}" != "${new_parts[$i]}" ]; then
+            differing=$((differing + 1))
+            index=$i
+        fi
+    done
+    [ "$differing" -eq 1 ] && [ "$index" -eq 1 ] || return 1
+    local entry
+    for entry in ${accepted//,/ }; do
+        [ "$entry" = "${live_parts[1]}" ] && return 0
+    done
+    return 1
+}
+
 # cpu_pin CMD [ARGS...] — run CMD inside the container on the page cpus.
 # Falls through to a plain ct_exec when no partition is configured, so this is
 # a no-op on an unpartitioned container rather than a new failure mode (a
@@ -262,6 +292,16 @@ if [ -n "$RELEASE_TARBALL" ]; then
     # checkpoints and the on-screen chat ring's sidecar — so the new build warms
     # up fresh. Everything learned so far is thrown away, which is why it is not
     # the default.
+    #
+    # FLY_ACCEPT_ADAPTERS is the *other* override, and the opposite one: it keeps
+    # the run. It names adapter version strings whose checkpoints the new build
+    # may migrate — e.g. FLY_ACCEPT_ADAPTERS=pokered-unique8-v5 for the deploy
+    # that adds the catch reward. It only applies when the adapter segment is the
+    # ONLY difference between the two strings and the new build's adapter says it
+    # can read that one; a dataset, kernel, emulator or state-format change is
+    # still a refusal, because none of those has a migration. The same variable is
+    # written into /etc/fly/fly.env below, so flysim applies the same rule at
+    # restore that this gate applied at deploy.
     # -----------------------------------------------------------------------
     state_dir="${FLY_STATE_DIR:-/srv/fly/state}"
     hot_dir="${FLY_STATE_HOT_DIR:-/run/fly/state}"
@@ -287,6 +327,11 @@ if [ -n "$RELEASE_TARBALL" ]; then
             log "05-deploy: no decodable checkpoint in ${state_dir} — nothing to compare, continuing"
         elif [ "$new_compat" = "$live_compat" ]; then
             log "05-deploy: checkpoint compatibility matches the live state, the new build will restore it"
+        elif [ -n "${FLY_ACCEPT_ADAPTERS:-}" ] \
+            && adapter_migration_accepted "$live_compat" "$new_compat" "$FLY_ACCEPT_ADAPTERS"; then
+            log "05-deploy: FLY_ACCEPT_ADAPTERS=${FLY_ACCEPT_ADAPTERS} — the adapter version is the only difference, and it is named; the run is KEPT and migrated"
+            log "05-deploy:   live: $live_compat"
+            log "05-deploy:   new:  $new_compat"
         elif [ "${FLY_RESET_STATE:-0}" = 1 ]; then
             archive="${state_dir}.$(date -u +%Y%m%d%H%M%S)"
             log "05-deploy: FLY_RESET_STATE=1 — compatibility CHANGED, archiving the durable state to ${archive} and clearing the hot ring"
@@ -300,8 +345,12 @@ if [ -n "$RELEASE_TARBALL" ]; then
             die "05-deploy: REFUSING to deploy release ${version}: its checkpoint compatibility string does not match the live state in ${state_dir}, so flysim would refuse every checkpoint there and then refuse to start at all — a black stream.
   live state: ${live_compat}
   new build:  ${new_compat}
-The difference is usually an adapter/ladder or dataset version bump. Two ways forward:
+The difference is usually an adapter/ladder or dataset version bump. Three ways forward:
   * deploy a build whose string matches (check out the commit the running release was built from), or
+  * if the ADAPTER VERSION is the only segment that differs and the new build documents a
+    migration from the old one, re-run with FLY_ACCEPT_ADAPTERS set to the adapter id in the live
+    string (e.g. FLY_ACCEPT_ADAPTERS=pokered-unique8-v5). The run is kept; flysim applies the same
+    rule at restore. See docs/design/flysim.md, \"Restoring across an adapter version\", or
   * accept losing everything the brain has learned and re-run with FLY_RESET_STATE=1, which
     archives ${state_dir}'s checkpoints to ${state_dir}.<timestamp> (kept, not deleted) and
     clears ${hot_dir} so the new build warms up fresh.
@@ -457,6 +506,16 @@ trap 'rm -f "$tmp_fly_env" "$tmp_flypush_env"' EXIT
     if [[ -n "${FLY_MACRO_BLOCKED_MINUTES:-}" ]]; then
         echo "FLY_MACRO_BLOCKED_MINUTES=${FLY_MACRO_BLOCKED_MINUTES}"
     fi
+    # Adapter versions whose checkpoints this build may migrate
+    # (flybrain_gb::compatibility, docs/design/flysim.md "Restoring across an
+    # adapter version"). Only written when it is set, because the safe state is
+    # absent: an empty or missing variable migrates nothing, which is what every
+    # deploy before 2026-09-22 did. It stays in fly.env for as long as the
+    # operator leaves it on the deploy command line, so removing the opt-in is
+    # one deploy without it.
+    if [[ -n "${FLY_ACCEPT_ADAPTERS:-}" ]]; then
+        echo "FLY_ACCEPT_ADAPTERS=${FLY_ACCEPT_ADAPTERS}"
+    fi
     # flybridge (services/bridge/src/config.ts). Nothing wrote these before, so
     # flybridge.service had no EnvironmentFile= at all and the service refused to
     # start with "CHANNEL is required / BOT_USER is required / GAME_TITLE is
@@ -607,7 +666,7 @@ fi
 # ---------------------------------------------------------------------------
 log "05-deploy: converging bin/ helpers to /opt/fly/bin"
 ct_exec "$CTID" -- mkdir -p /opt/fly/bin
-for name in fly-watchdog fly-recap fly-retention flypush flystage-launch flycast-launch wait-for-x wait-for-stage wait-for-health; do
+for name in fly-watchdog fly-recap fly-retention fly-reset-to-milestone flypush flystage-launch flycast-launch wait-for-x wait-for-stage wait-for-health; do
     converge_file "$CTID" "$INFRA_DIR/bin/$name" "/opt/fly/bin/$name" 0755 root:root >/dev/null
 done
 

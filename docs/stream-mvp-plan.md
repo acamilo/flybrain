@@ -736,3 +736,11 @@ rewritten separately.
   (73/73) because 82% of the fixed run is battle time; Fable shipped it on the same judgement as
   v0.4.6 and started row 50 (MOVE n blocked on an unresponsive move list). The on-screen chat ring
   now survives a sim restart (sidecar in the hot dir, never in the checkpoint).
+- 2026-09-22 (v0.5.0, the operator's decision): the fly is paid for keeping a wild Pokémon. New
+  catalog kind `catch` (0.30 for a species this run never caught, 0.10 for a repeat, three payouts
+  per species), read from the captured-species byte and the battle result together; the existing
+  species rule still pays on top. Adapter `pokered-unique8-v6`; the compatibility string differs
+  in the adapter segment only, and a deploy with `FLY_ACCEPT_ADAPTERS=pokered-unique8-v5` migrates
+  a v5 checkpoint instead of refusing it. `fly-reset-to-milestone <N>` restarts the run from a
+  ladder rung (archives both stores first). The live run restarts from rung 7 with this release, so
+  the ladder is climbed again with the catch reward and the row-54 walks in place.

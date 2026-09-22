@@ -200,6 +200,15 @@ EXTRA_RAM = (
     'wCurMapTileset',
     'wTilesetBank',
     'wTilesetBlocksPtr',
+    # The catch reward (`docs/rewards-learning.md`, `docs/design/macros-wram.md` section 2).
+    # ram/wram.asm's own comment is "0 if no mon was captured": ItemUseBall zeroes it before
+    # every throw and writes wEnemyMonSpecies into it only on the branch that keeps the
+    # Pokemon, and UseBagItem zeroes it again on the way out of the battle. It is the
+    # cartridge's own answer to "was this one caught", and the only signal that needs no
+    # second rule to tell a catch apart from a gift, a trade or an evolution.
+    # services/flysim/tools/resolve_wram.py is the second reading of it, from ram/wram.asm at
+    # this commit, bracketed by wFontLoaded and wForcePlayerToChooseMon.
+    'wCapturedMonSpecies',
 )
 
 

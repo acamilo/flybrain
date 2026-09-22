@@ -1,6 +1,11 @@
 //! bus-v1 section 11 item 6: two parallel fake agents, complete-batch environment RPC,
 //! committed snapshot publication and a deliberately slow presentation consumer, all over one
 //! router. Generic services only; nothing here knows what a brain or a game is.
+//!
+//! The presentation consumer is held until the publisher's own completion is observed, so the
+//! latest subscription has to coalesce instead of happening to: section 7 lets a latest
+//! subscriber miss values, it does not oblige it to, and a test that demands a miss it cannot
+//! force is asserting how fast the machine is.
 
 mod common;
 
@@ -148,20 +153,31 @@ async fn session_over_one_router(via: Via) {
         )
         .await
         .unwrap();
+    // A renderer that does not read a single snapshot until the publisher has finished every
+    // one of them. The hold ends on the publisher's observed completion, never on a timer.
+    let (release, held) = tokio::sync::oneshot::channel::<()>();
     let presenting = tokio::spawn(async move {
+        held.await.unwrap();
         let mut seen = Vec::new();
+        let mut coalesced = 0;
         while let Some(m) = slow.next().await {
+            let (sequence, replaced) = (m.topic_sequence(), m.replaced());
             let frame = m.artifact("frame").unwrap();
             drop(m);
             tokio::time::sleep(Duration::from_millis(25)).await; // a slow renderer
             let bytes = frame.read_all().await.unwrap();
             let step = bytes[0] as u64;
+            assert_eq!(
+                sequence, step,
+                "a delivery carries the frame of the snapshot it announces"
+            );
+            coalesced += replaced;
             seen.push((step, frame.reference().artifact_id.clone()));
             if step == STEPS {
                 break;
             }
         }
-        seen
+        (seen, coalesced)
     });
     let recorder = e.client("recorder").await;
     let mut all = recorder
@@ -179,6 +195,7 @@ async fn session_over_one_router(via: Via) {
         seq
     });
 
+    let mut replaced_at_admission = 0;
     for step in 1..=STEPS {
         let advanced = coordinator
             .call_and_wait(
@@ -226,8 +243,16 @@ async fn session_over_one_router(via: Via) {
             )
             .await
             .unwrap();
-        assert_eq!(receipt.topic_sequence, step);
+        assert_eq!(
+            (receipt.topic_sequence, receipt.subscribers),
+            (step, 2),
+            "both subscriptions accept every publication: the stalled latest spectator neither \
+             refuses one nor drops out of the fan-out"
+        );
+        replaced_at_admission += receipt.replaced;
     }
+    // The publisher is finished, observably, so the renderer may start.
+    release.send(()).unwrap();
 
     let recorded = within("recorder", recording).await.unwrap();
     assert_eq!(
@@ -235,17 +260,30 @@ async fn session_over_one_router(via: Via) {
         (1..=STEPS).map(|s| (s, s)).collect::<Vec<_>>(),
         "the bounded recorder misses nothing"
     );
-    let presented = within("presenter", presenting).await.unwrap();
-    assert_eq!(
-        presented.last().unwrap().0,
-        STEPS,
-        "the slow consumer ends on the latest snapshot"
-    );
+    let (presented, coalesced) = within("presenter", presenting).await.unwrap();
+    let steps: Vec<u64> = presented.iter().map(|(s, _)| *s).collect();
     assert!(
-        presented.len() < STEPS as usize,
-        "the slow consumer skipped snapshots: {presented:?}"
+        steps.windows(2).all(|w| w[0] < w[1]),
+        "what a latest subscription does deliver arrives in publication order: {presented:?}"
     );
-    assert!(presented.windows(2).all(|w| w[0].0 < w[1].0));
+    assert_eq!(
+        steps.last().copied(),
+        Some(STEPS),
+        "the slow consumer ends on the latest snapshot: {presented:?}"
+    );
+    assert_eq!(
+        steps,
+        vec![1, STEPS],
+        "held for the whole run, the subscription keeps the one delivery already in flight and \
+         one replaceable queued value, so the renderer sees the first snapshot and the last, \
+         and the eighteen between them were coalesced: {presented:?}"
+    );
+    assert_eq!(
+        (coalesced, replaced_at_admission),
+        (STEPS - 2, STEPS - 2),
+        "every snapshot the renderer missed is counted as a replacement, to the publisher at \
+         admission and to the renderer on its next delivery: none is lost silently"
+    );
 
     for t in agents {
         t.abort();

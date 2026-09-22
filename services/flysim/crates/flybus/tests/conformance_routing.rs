@@ -420,14 +420,20 @@ async fn bounded_overflow_rolls_back_all_artifact_roots(via: Via) {
 }
 
 /// bus-v1 section 7: "New subscriptions with replayLatest enqueue it before subsequent accepted
-/// publications." A fresh `latest` subscription's replay claims its first in-flight credit
-/// immediately (there is nothing else competing for it yet), so a publish accepted right after
-/// subscribing must still be observed strictly after the replay, never ahead of or merged with
-/// it: each keeps its own delivery.
+/// publications ... bounded mode preserves that order, while latest mode may coalesce it before
+/// delivery under the ordinary latest rule." The replay is enqueued under the subscribe lock, so
+/// a publication admitted after `subscribe` returned is always behind it; what the two modes do
+/// with that order is what differs, and one racing publication is put to both at once.
+///
+/// The bounded subscription must deliver both values, replay first. The latest subscription
+/// either does the same or replaces the still-queued replay, and the router says which in the
+/// racing publication's own `replaced` count rather than the test guessing from how fast the
+/// dispatcher ran: what it may never do is reorder the two or lose the newer value.
 async fn latest_replay_is_ordered_ahead_of_a_racing_publish(via: Via) {
     let e = env(via).await;
     let admin = e.client("admin").await;
     let reader = e.client("reader").await;
+    let viewer = e.client("viewer").await;
     admin
         .declare_topic("t.replay-race", Retained::Latest)
         .await
@@ -436,26 +442,66 @@ async fn latest_replay_is_ordered_ahead_of_a_racing_publish(via: Via) {
         .publish("t.replay-race", obj(json!({"v": "old"})), &[])
         .await
         .unwrap();
-    let mut sub = reader
+    let mut fifo = reader
+        .subscribe(
+            "t.replay-race",
+            SubscriptionConfig::bounded().in_flight(1).replay(true),
+        )
+        .await
+        .unwrap();
+    let mut coalescing = viewer
         .subscribe(
             "t.replay-race",
             SubscriptionConfig::latest().in_flight(1).replay(true),
         )
         .await
         .unwrap();
-    admin
+    let racing = admin
         .publish("t.replay-race", obj(json!({"v": "new"})), &[])
         .await
         .unwrap();
-    let first = within("the replay arrives first", sub.next())
+    assert_eq!(
+        racing.subscribers, 2,
+        "one publication, admitted behind both replays"
+    );
+
+    let first = within("the replay arrives first", fifo.next())
         .await
         .unwrap();
     assert_eq!(first.payload()["v"], "old");
     drop(first); // the sole in-flight credit must return before the queued second value moves
-    let second = within("the racing publish follows, not coalesced away", sub.next())
+    let second = within("the racing publish follows, not coalesced away", fifo.next())
         .await
         .unwrap();
-    assert_eq!(second.payload()["v"], "new");
+    assert_eq!(
+        (second.payload()["v"].as_str(), second.replaced()),
+        (Some("new"), 0),
+        "bounded preserves the order and coalesces nothing"
+    );
+
+    let m = within("the latest subscription's first delivery", coalescing.next())
+        .await
+        .unwrap();
+    if racing.replaced == 1 {
+        assert_eq!(
+            (m.payload()["v"].as_str(), m.replaced()),
+            (Some("new"), 1),
+            "a replay still queued is replaced by the newer value, and the delivery says so"
+        );
+        drop(m);
+        quiet("nothing behind a coalesced replay", coalescing.next()).await;
+    } else {
+        assert_eq!(
+            (racing.replaced, m.payload()["v"].as_str(), m.replaced()),
+            (0, Some("old"), 0),
+            "a replay already in flight keeps its own delivery"
+        );
+        drop(m);
+        let after = within("the racing publish follows it", coalescing.next())
+            .await
+            .unwrap();
+        assert_eq!(after.payload()["v"], "new");
+    }
 }
 
 /// bus-v1 section 7: clearing releases only the retained root; a later `replayLatest`

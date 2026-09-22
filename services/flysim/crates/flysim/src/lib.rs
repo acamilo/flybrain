@@ -30,6 +30,7 @@ pub mod metrics;
 pub mod pacing;
 pub mod profile;
 pub mod ratelimit;
+pub mod reset;
 pub mod sdnotify;
 pub mod simloop;
 pub mod snapshot;

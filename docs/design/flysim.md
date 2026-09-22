@@ -355,6 +355,50 @@ on-screen ticker cannot disagree with what the sim did.
   against the prototype's WASM size and diffs a known save. If they match, prototype checkpoints
   import and the segment records the shared tag; if not, milestone saves must be re-earned and that
   is a stated M3 finding.
+- **Restoring across an adapter version** (2026-09-22). The compatibility string is compared
+  whole, so bumping the reward adapter refuses every checkpoint the previous one wrote -- which is
+  the right default and was, until now, the only behaviour. It is the wrong default for a change
+  that only *adds* a rule: `pokered-unique8-v6` adds the catch reward and one counter,
+  `catchCounts`, and means the same thing as `v5` for every other field, so a `v5` run is
+  resumable and throwing it away would be a choice nobody made deliberately.
+
+  So there is one narrow, opt-in migration, `flybrain_gb::compatibility::decide`, and it requires
+  **all three** of:
+
+  1. the two compatibility strings differ in the adapter segment (segment 1) and **nowhere else**.
+     A dataset, kernel, plasticity, emulator-revision, symbol-provenance or state-format
+     difference is still a refusal: none of those has a migration, and a fly restored across one
+     is a different fly;
+  2. the running adapter's `migrates_from()` lists the checkpoint's adapter, so the code that will
+     read that state says out loud that it can. Pokémon Red's list is `["pokered-unique8-v5"]` and
+     nothing else -- `v4` is excluded because its ledger holds no `boundary:` keys and resuming it
+     would pay a second time for every exit already found, and `v3` because its stored rank is a
+     rung on a different ladder;
+  3. the deploy names the same adapter id in **`FLY_ACCEPT_ADAPTERS`** (comma- or
+     space-separated). Unset or empty migrates nothing, which is what every deploy before this one
+     did.
+
+  Condition 2 without 3 would make the migration silent; condition 3 without 2 would let an
+  operator wave through a pair nobody wrote a migration for. `infra/05-deploy.sh`'s compatibility
+  gate applies the same rule before it flips the `current` symlink, and writes the variable into
+  `/etc/fly/fly.env` so flysim applies it at restore -- the two must agree, or a deploy would pass
+  a gate that flysim then fails, which is the black stream the gate exists to prevent. The
+  migration itself is `PokemonRedReward::import_state` doing what it already did: `catchCounts` is
+  absent from a `v5` state and restores empty, which is the truth about a run that was never paid
+  for a catch. `STATE_VERSION` does not move, because the schema did not.
+
+- **Restarting a run from an earlier rung** (2026-09-22). `FLY_RESET_STATE=1` throws the run away;
+  `infra/bin/fly-reset-to-milestone <N>` keeps it and rewinds it. It archives both stores to a
+  dated directory, rewrites `milestone-<N>.checkpoint` with the ratchet's `attempts` and
+  `recoveries` at zero (so the restarted run does not begin with its recovery budget already
+  spent), installs it as the newest generation of the hot and durable stores, removes the
+  milestone archives above N, and clears the event log -- whose id sequence the restored
+  checkpoint's `lastEventId` rewinds. `best` is not touched: the archive's own `best` is the rung
+  it was taken at, and the rank the stream shows is recomputed by the adapter from the restored
+  game state. The implementation is `flysim::reset` (`flysim --reset-to-milestone N`) rather than
+  the shell script, because two of those steps are inside the envelope. The sequence around it is
+  in `infra/docs/runbook.md`.
+
 - **A running macro is not checkpointed** (2026-09-16, `docs/design/macros.md`). Palette mode's
   state — the scene, the palette, the running macro, its plan and its frame count — is transient,
   like the readout's blocked-direction cooldown and for the same reason: a restore that resumed a
