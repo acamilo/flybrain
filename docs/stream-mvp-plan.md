@@ -784,3 +784,11 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   tiles up on both arms (296 -> 430 forest, 163 -> 184 Route 3), flagged windows again rise
   because the fly is inside battles it is fighting (same judgement as v0.4.6). Next row: the
   battle bag's list id outlives the bag the same way.
+- 2026-09-22 (v0.5.2, loop review, auto): row 55, opened by the v0.4.7 errand change. A mart's
+  list id says the counter is open, not which screen is up, so the clerk's closing text box read
+  as an open buy list, and the buy list scrolls, so a stock position past the third row is never a
+  cursor index. BUY ANTIDOTE aimed at row 3 of a list reporting one row, blocked on frame 0 with
+  no button pressed, and was dealt again every hold. Fix: the shop screen is read from what the
+  game draws (a clerk's text box lists nothing, so a cursor step waits), and a purchase past the
+  three cursor rows is not on the pad. From the live checkpoint the fly leaves the mart in 0.19
+  brain minutes where it never left before; hunt tiles 1 -> 62, blocked starts 1,494 -> 82.
