@@ -182,6 +182,24 @@ EXTRA_RAM = (
     # standing behind a desk can be talked to at all: none of the four tiles around either of
     # them is walkable.
     'wTilesetTalkingOverTiles',
+    # The whole-map walkability grid (docs/design/macros.md section 15).
+    #
+    # LoadTileBlockMap copies the loaded map out of its ROM bank into wOverworldMap
+    # as one byte per 4x4-tile block, in rows of wCurMapWidth + MAP_BORDER * 2 with
+    # the map itself three rows and three columns in, so the blocks of the current
+    # map are a WRAM read rather than a ROM one. wCurMapTileset keys the tile-pair
+    # collision lists (CheckForTilePairCollisions). wTilesetBank and
+    # wTilesetBlocksPtr are the tileset header's blockset: 16 bytes per block id,
+    # four rows of four tile ids, which DrawTileBlock indexes exactly that way --
+    # and it is not in bank 0, which is why the memory seam grew a bank-aware ROM
+    # read for it. All four are resolved the same way every other name here is;
+    # services/flysim/tools/resolve_wram.py is the second reading of them, from
+    # ram/wram.asm at this commit, and it re-derives 40 of the addresses this table
+    # already carries before it emits one of these four.
+    'wOverworldMap',
+    'wCurMapTileset',
+    'wTilesetBank',
+    'wTilesetBlocksPtr',
 )
 
 
