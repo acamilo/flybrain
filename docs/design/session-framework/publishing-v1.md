@@ -51,6 +51,10 @@ or, with no revision, the newest; `Session.GetSnapshot` takes no parameters and 
 latest `CommittedSnapshot`. A revision the session never published is `IDENTITY_MISMATCH`, not
 an empty answer. Nothing on this service mutates, selects a participant or reaches a worker, so
 it is not the controller API section 7 rules out; adding a third method that did would be.
+These two names are **internal and provisional**: they are what the internal boundary needs in
+order to be buildable now, and the later public v2 step is free to rename them, supersede them
+or expose a different repair surface entirely. Nothing about them is browser-facing, and the
+public step does not inherit them by default merely because they landed first.
 
 Descriptor revisions and scope link observations to schemas. Cross-topic ordering is not
 guaranteed; a subscriber receiving an unknown descriptor revision must fetch it through the

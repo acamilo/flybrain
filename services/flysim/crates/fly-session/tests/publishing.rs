@@ -37,6 +37,7 @@ both_transports!(
     a_refused_event_batch_is_held_and_counted_not_lost,
     the_query_service_answers_reads_and_nothing_else,
     the_published_descriptor_is_what_the_workers_attested_to,
+    a_stimulus_kind_the_descriptor_does_not_declare_is_refused,
 );
 
 all_modes!(
@@ -604,6 +605,61 @@ async fn the_published_descriptor_is_what_the_workers_attested_to(via: Via) {
         asset_ids.len(),
         descriptor.assets.len(),
         "assets are unique by id"
+    );
+    f.shutdown().await;
+}
+
+/// `supportedStimuli` is enforced, not advertised: a kind outside the list the descriptor
+/// publishes is refused before the model is touched, so the declaration is worth reading.
+async fn a_stimulus_kind_the_descriptor_does_not_declare_is_refused(via: Via) {
+    let mut f = started(via).await;
+    let declared = f
+        .harness
+        .coordinator
+        .session_descriptor()
+        .expect("a descriptor")
+        .agents
+        .iter()
+        .find(|a| a.agent_id == fly_a())
+        .expect("fly-a")
+        .supported_stimuli
+        .clone();
+    assert!(!declared.contains(&id("arena.undeclared")), "{declared:?}");
+
+    // A clean transition first, so the refusal is the injection and not the composition.
+    f.harness.coordinator.run(1).await.expect("one clean transition");
+    let before = f.harness.coordinator.stats().advances;
+    f.harness.coordinator.injections = Injections {
+        at_step: 1,
+        undeclared_stimulus: true,
+        ..Injections::default()
+    };
+    let failure = f
+        .harness
+        .coordinator
+        .run(1)
+        .await
+        .expect_err("an undeclared stimulus kind is refused");
+    assert_eq!(failure.error.code, ErrorCode::Unsupported, "{failure:?}");
+    assert_eq!(
+        failure.error.mutation,
+        MutationCertainty::None,
+        "refused before the model is touched"
+    );
+    assert!(
+        failure.error.message.contains("arena.undeclared"),
+        "the refusal names the kind: {}",
+        failure.error.message
+    );
+    assert!(failure.participant.is_some(), "and the participant it came from");
+    assert_eq!(
+        f.harness.coordinator.stats().advances,
+        before,
+        "the refused transition never completed, so no boundary was added"
+    );
+    assert!(
+        f.harness.coordinator.is_fenced(),
+        "a commit that refused after the world moved fences the epoch"
     );
     f.shutdown().await;
 }

@@ -61,6 +61,8 @@ pub struct Injections {
     /// Publish this boundary's snapshot with a handle that is not the artifact the snapshot
     /// references: the same name, the same shape, another object.
     pub substituted_published_handle: bool,
+    /// Ask an agent to apply a stimulus kind its published descriptor does not declare.
+    pub undeclared_stimulus: bool,
 }
 
 /// What an injection produced, for a test to assert on.
@@ -2246,13 +2248,23 @@ impl Coordinator {
                 .expect("every agent prepared");
             let outcome = outcomes.get(&agent_id).cloned().unwrap_or_default();
             let next_context = next_contexts.get(&agent_id).cloned().expect("checked");
+            let mut task_stimulations = outcome.stimulations.clone();
+            if self.injections.undeclared_stimulus && self.injections.at_step == k {
+                // A kind outside the agent's published `supportedStimuli`. The declaration is
+                // only worth publishing if the worker enforces it.
+                task_stimulations.push(Stimulus {
+                    id: parse_id(&format!("stim-undeclared-{k}")).expect("a serial makes an Id"),
+                    kind_id: id("arena.undeclared"),
+                    duration_ms: 1.0,
+                });
+            }
             let params = CommitParams {
                 agent_id: agent_id.clone(),
                 prepared_request_id: prepared_request.clone(),
                 next_input: self.sensory_input(observation, k + 1),
                 next_decision_context: next_context,
                 rewards: outcome.rewards.clone(),
-                task_stimulations: outcome.stimulations.clone(),
+                task_stimulations,
             };
             let params = match params.to_json() {
                 Value::Object(m) => m,
