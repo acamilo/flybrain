@@ -26,6 +26,10 @@ pub const CPU_TICKS_PER_SECOND: u64 = 4_194_304;
 /// so there is no `NEW_FRAME` event to wait for yet.
 const MAX_FRAME_ATTEMPTS: u32 = 120;
 
+/// Bytes in one ROM bank (`$4000`), which is how [`Emulator::read_rom_bank`]
+/// turns a bank number and a CPU address into an offset in the cartridge image.
+const ROM_BANK_BYTES: usize = 0x4000;
+
 /// Audio frequency flysim runs the emulator at. binjgb resamples internally to
 /// whatever is requested, so this is only a default.
 pub const DEFAULT_AUDIO_FREQUENCY: u32 = 48_000;
@@ -135,6 +139,13 @@ impl FrameCache {
 /// thread. It is deliberately not `Sync`.
 pub struct Emulator {
     gb: *mut ffi::FlyGb,
+    /// The cartridge image, for [`MemoryReader::read_rom`].
+    ///
+    /// The shim owns its own padded copy behind the handle and does not hand it
+    /// back, so this is a second one. It is read-only from here: nothing in this
+    /// workspace writes a ROM byte, and the bank-addressed read is the only
+    /// reason it is kept.
+    rom: std::sync::Arc<[u8]>,
     rom_sha256: [u8; 32],
     audio_frequency: u32,
     /// Raw binjgb samples drained since the last [`Emulator::take_audio`].
@@ -167,6 +178,7 @@ impl Emulator {
         debug_assert_eq!(unsafe { ffi::fly_gb_frame_buffer_size() }, FRAMEBUFFER_LEN);
         Ok(Self {
             gb,
+            rom: rom.into(),
             rom_sha256: Sha256::digest(rom).into(),
             audio_frequency,
             pending_audio: Vec::new(),
@@ -240,6 +252,25 @@ impl Emulator {
     /// within a frame; the reward adapter must not use it.
     pub fn read_uncached(&self, address: u16) -> u8 {
         unsafe { ffi::fly_gb_read_mem(self.gb, address) }
+    }
+
+    /// One byte of ROM bank `bank`, from the cartridge image rather than the bus.
+    ///
+    /// `address` is a CPU address: `$0000..$4000` is bank 0 whatever `bank` says
+    /// (that is what "always mapped" means) and `$4000..$8000` is the banked
+    /// window. `None` for any other address and for an offset past the end of the
+    /// image, which is what a bank a smaller cartridge does not have reads as.
+    /// No bank register is written and the emulator's state does not move: this
+    /// is a read of bytes the process already owns.
+    pub fn read_rom_bank(&self, bank: u8, address: u16) -> Option<u8> {
+        let offset = match address {
+            0x0000..=0x3fff => usize::from(address),
+            0x4000..=0x7fff => {
+                usize::from(bank) * ROM_BANK_BYTES + usize::from(address) - ROM_BANK_BYTES
+            }
+            _ => return None,
+        };
+        self.rom.get(offset).copied()
     }
 
     /// Sample rate of the raw buffer, as binjgb configured it.
@@ -363,6 +394,10 @@ impl Drop for Emulator {
 impl MemoryReader for Emulator {
     fn read8(&mut self, address: u16) -> u8 {
         self.read_wram(address)
+    }
+
+    fn read_rom(&mut self, bank: u8, address: u16) -> Option<u8> {
+        self.read_rom_bank(bank, address)
     }
 }
 
