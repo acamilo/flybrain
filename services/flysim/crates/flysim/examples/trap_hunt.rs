@@ -205,6 +205,12 @@ struct Trace {
     /// Every input of the detector's disputed branch on the last frame
     /// (`pokemon_red::scene::why_unknown`).
     ended_why: String,
+    /// The whole-map grid on the last frame, as [`grid_line`] reads it
+    /// (`docs/design/macros.md` section 15): how much of the map is ground, how much of it the fly
+    /// could reach from where it stopped, and how much of that it had never stood on. A hunt that
+    /// ends with reachable far below walkable ended fenced in, which no amount of re-planning was
+    /// ever going to fix.
+    ended_grid: String,
     /// How the dialog branch's two halves agreed, per frame: `wFontLoaded`'s bit against the four
     /// corners and against the whole `TextBoxBorder` (`pokemon_red::state::dialog_border`).
     ///
@@ -346,6 +352,7 @@ fn run(
         ended_in: ("", String::new()),
         longest_scene: BTreeMap::new(),
         ended_why: String::new(),
+        ended_grid: String::new(),
         font_corners_border: 0,
         font_corners_no_border: 0,
         font_no_corners: 0,
@@ -504,9 +511,10 @@ fn run(
                 let ahead = Tile::new(player.x, player.y).step(player.facing)?;
                 flybrain_gb::pokemon_red::macros::path::target_at(state, ahead)
             });
+            let ground = grid_line(state, player);
             let why = flybrain_gb::pokemon_red::scene::why_unknown(&mut emulator);
             println!(
-                "trace {:7.2} min  scene={scene:<9} player={player:?} ahead={ahead:?}\n    {why}",
+                "trace {:7.2} min  scene={scene:<9} player={player:?} ahead={ahead:?}\n    {why}\n    {ground}",
                 (ms - began_ms) / MINUTE_MS
             );
         }
@@ -577,6 +585,13 @@ fn run(
         adapter.mode().to_string(),
     );
     trace.ended_why = flybrain_gb::pokemon_red::scene::why_unknown(&mut emulator);
+    trace.ended_grid = {
+        use flybrain_gb::pokemon_red::macros::cartridge::MacroState;
+        let mut state = flybrain_gb::pokemon_red::state::PokeState::new(&mut emulator);
+        let state: &mut dyn MacroState = &mut state;
+        let player = state.player();
+        grid_line(state, player)
+    };
     trace.ended_ms = agent.network.ms;
     trace.wall_seconds = began_wall.elapsed().as_secs_f64();
     trace
@@ -675,6 +690,39 @@ fn walk_report(trace: &Trace) {
     }
 }
 
+/// The whole-map grid in one line: what a stalled walk looks like from outside.
+///
+/// `docs/design/macros.md` section 15. Walkable is how much of the map is ground, reachable is
+/// how much of that the fly can get to from where it is standing (the directed walls respected),
+/// and unstood is how much of *that* this run has never been on -- which is the frontier's own
+/// candidate pool. A walk that cannot finish is one of three shapes and these numbers tell them
+/// apart: fenced in (reachable far below walkable), nothing left to explore (unstood zero), or no
+/// grid at all, in which case the walks are back on the ten-by-nine window and the reason is
+/// named.
+fn grid_line(
+    state: &mut dyn flybrain_gb::pokemon_red::macros::cartridge::MacroState,
+    player: Option<flybrain_gb::pokemon_red::macros::state::Player>,
+) -> String {
+    let Some(player) = player else { return "grid: no player".to_string() };
+    let Some(grid) = state.map_grid() else {
+        return "grid: none".to_string();
+    };
+    let unstood = grid
+        .walkable_tiles()
+        .into_iter()
+        .filter(|(x, y)| !state.tile_visited(*x, *y))
+        .count();
+    format!(
+        "grid map={:#04x} {}x{} walkable={} reachable={} unstood={}",
+        grid.map(),
+        grid.width(),
+        grid.height(),
+        grid.walkable_count(),
+        grid.reachable_from(player.x, player.y),
+        unstood
+    )
+}
+
 fn main() {
     let Some(path) = std::env::var_os("FLY_ROM") else {
         println!(
@@ -749,6 +797,7 @@ fn main() {
     println!("| --- | ---: |");
     println!("| rung reached | {} |", trace.rungs.iter().map(|(rank, ..)| *rank).max().unwrap_or(0));
     println!("| distinct (map, tile) | {} |", ground.len());
+    println!("| the map at the end | {} |", trace.ended_grid);
     println!("| macros started | {} |", trace.starts.len());
     for (outcome, count) in &trace.outcomes {
         println!("| {outcome} | {count} |");
