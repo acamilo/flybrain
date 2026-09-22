@@ -13,7 +13,7 @@ come from the dataset at runtime; nothing else is dynamic.
 This is a real fly's brain, 139,255 mapped neurons and 2.7 million synapses, running live. The
 screen is its eye. Its motor neurons press the buttons. Each scene offers a few actions, walk to
 a door, talk, attack; the fly picks one. When the game rewards it, a few thousand synapses shift,
-and what worked gets likelier. !sugar sends it a small reward pulse, no buttons. FlyWire connectome.
+and what worked gets likelier. !sugar sends it a small reward pulse, no buttons. FlyWire connectome. github.com/acamilo/flybrain
 
 ## The new-chatter switch (the operator, 2026-09-17)
 
