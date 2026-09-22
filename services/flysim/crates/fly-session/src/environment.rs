@@ -4,19 +4,31 @@
 //! one interval, and returns boundary `k+1` with its world time advanced by `stepDuration`. It
 //! never advances while waiting for the next request, and it does not free-run during agent
 //! initialization.
+//!
+//! Its native output is real: one immutable RGBA8 frame per boundary through a
+//! [`ViewPipeline`](crate::media::ViewPipeline) that honours the declared
+//! `observationDelaySteps`, and one audio chunk per transition with an exact sample budget.
+//! Nothing here resizes, mixes, composites or encodes anything; that is the presentation
+//! layer's work.
 
 use std::collections::BTreeSet;
-use std::io::Write;
 
+use crate::media::{self, AudioSource, RenderCounter, ViewPipeline};
 use crate::task::{controller_schema_ref, inspection, inspection_schema};
 // `crate::types` is this crate's facade over the shared `fly-session-types` crate; the
 // glob keeps the contract's own names in sight instead of restating them.
 use crate::types::*;
 use crate::worker::{BoxFuture, HandlerCtx, HandlerReply, StatusCell, WorkerEndpoint};
 
-/// The arena's view: a 4x4 RGBA8 tile whose bytes carry the counter.
-pub const VIEW_WIDTH: u64 = 4;
-pub const VIEW_HEIGHT: u64 = 4;
+/// The arena's one view: a small native RGBA8 image.
+pub const VIEW_ID: &str = "arena";
+pub const VIEW_WIDTH: u64 = 32;
+pub const VIEW_HEIGHT: u64 = 24;
+
+/// The arena's one audio stream. 48 kHz stereo is a native rate, not a presentation choice.
+pub const AUDIO_STREAM_ID: &str = "arena";
+pub const SAMPLE_RATE: u64 = 48_000;
+pub const CHANNELS: u64 = 2;
 
 /// Deliberate faults a test can ask the environment for.
 #[derive(Clone, Debug, Default)]
@@ -26,6 +38,16 @@ pub struct EnvironmentFaults {
     /// Drop the required sensory view from the result at this boundary, so the coordinator
     /// meets a world that advanced with no usable sensory data.
     pub omit_view_at_boundary: Option<u64>,
+    /// Serve the previous boundary's frame at this boundary: an extra-delayed sensory input,
+    /// which is a step failure rather than an acceptable latest frame.
+    pub stale_view_at_boundary: Option<u64>,
+    /// Seal a frame one row short at this boundary, so its artifact length is not
+    /// `rowStride x height`.
+    pub truncated_view_at_boundary: Option<u64>,
+    /// Leave the audio chunk out of the result at this boundary.
+    pub omit_audio_at_boundary: Option<u64>,
+    /// Emit an audio chunk that starts before the previous chunk ended.
+    pub overlapping_audio_at_boundary: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -36,6 +58,10 @@ pub struct EnvironmentConfig {
     /// The world's fixed reduced step duration. 60 Hz is `1/60` s.
     pub step_duration: RationalNs,
     pub ports: Vec<Id>,
+    /// The view's declared render delay, in steps. Zero is same-boundary output.
+    pub observation_delay_steps: u64,
+    /// Counts frames actually rendered, so a test can prove one image was not rendered twice.
+    pub renders: RenderCounter,
     pub faults: EnvironmentFaults,
 }
 
@@ -52,6 +78,10 @@ pub struct CounterEnvironment {
     world_time: RationalNs,
     advances: u64,
     batches: BTreeSet<Id>,
+    pipeline: Option<ViewPipeline>,
+    audio: Option<AudioSource>,
+    /// The frame served at the previous boundary, kept only so a fault can serve it again.
+    previous_view: Option<(ViewRef, flybus::Artifact)>,
 }
 
 impl CounterEnvironment {
@@ -67,6 +97,9 @@ impl CounterEnvironment {
             world_time: RationalNs::ZERO,
             advances: 0,
             batches: BTreeSet::new(),
+            pipeline: None,
+            audio: None,
+            previous_view: None,
             config,
         }
     }
@@ -101,15 +134,25 @@ impl CounterEnvironment {
         }
     }
 
-    pub fn view_descriptor() -> ViewDescriptor {
+    /// The arena's native view, with the configured render delay.
+    pub fn view_descriptor(observation_delay_steps: u64) -> ViewDescriptor {
         ViewDescriptor {
-            view_id: id("arena"),
+            view_id: id(VIEW_ID),
             width: VIEW_WIDTH,
             height: VIEW_HEIGHT,
             row_stride: VIEW_WIDTH * 4,
             pixel_aspect_numerator: 1,
             pixel_aspect_denominator: 1,
-            observation_delay_steps: 0,
+            observation_delay_steps,
+        }
+    }
+
+    /// The arena's native audio stream.
+    pub fn audio_descriptor() -> AudioDescriptor {
+        AudioDescriptor {
+            stream_id: id(AUDIO_STREAM_ID),
+            sample_rate: SAMPLE_RATE,
+            channels: CHANNELS,
         }
     }
 
@@ -119,10 +162,11 @@ impl CounterEnvironment {
             content_digest: digest_of_bytes(b"counter-arena-content-v1"),
             configuration_digest: digest_of_bytes(
                 format!(
-                    "counter-arena-config-v1\nstep={}/{}\nports={}\n",
+                    "counter-arena-config-v1\nstep={}/{}\nports={}\ndelay={}\n",
                     self.config.step_duration.numerator,
                     self.config.step_duration.denominator,
-                    self.config.ports.len()
+                    self.config.ports.len(),
+                    self.config.observation_delay_steps
                 )
                 .as_bytes(),
             ),
@@ -137,8 +181,10 @@ impl CounterEnvironment {
                 })
                 .collect(),
             inspection_schema: inspection_schema(),
-            views: vec![CounterEnvironment::view_descriptor()],
-            audio: Vec::new(),
+            views: vec![CounterEnvironment::view_descriptor(
+                self.config.observation_delay_steps,
+            )],
+            audio: vec![CounterEnvironment::audio_descriptor()],
             recovery: Recovery::ExactCheckpoint,
             determinism: Determinism::FixedBuild,
         };
@@ -146,73 +192,76 @@ impl CounterEnvironment {
         Ok(descriptor)
     }
 
-    /// Seals one immutable native frame for the current counter and returns the handle.
-    async fn render(
-        &self,
-        ctx: &HandlerCtx<'_>,
-    ) -> DomainResult<(ViewRef, flybus::Artifact)> {
-        let descriptor = CounterEnvironment::view_descriptor();
-        let len = descriptor.byte_length();
-        let mut writer = ctx
-            .client
-            .artifacts()
-            .allocate(len, "image/x-rgba")
-            .await
-            .map_err(|e| {
-                DomainError::new(
-                    ErrorCode::BackendFailure,
-                    format!("frame allocation failed: {}", e.message),
-                    MutationCertainty::Applied,
-                )
-            })?;
-        // Every pixel carries the counter's low byte, so an agent reading the frame reads the
-        // world rather than a constant.
-        let byte = (self.counter & 0xff) as u8;
-        writer
-            .write_all(&vec![byte; len as usize])
-            .map_err(|e| {
-                DomainError::new(
-                    ErrorCode::BackendFailure,
-                    format!("frame write failed: {e}"),
-                    MutationCertainty::Applied,
-                )
-            })?;
-        let artifact = writer.seal().await.map_err(|e| {
-            DomainError::new(
-                ErrorCode::BackendFailure,
-                format!("frame seal failed: {}", e.message),
-                MutationCertainty::Applied,
-            )
-        })?;
-        let view = ViewRef {
-            view_id: descriptor.view_id.clone(),
-            produced_step: descriptor.required_produced_step(self.boundary),
-            pixels: artifact.reference().clone(),
-        };
-        Ok((view, artifact))
-    }
-
+    /// Renders this boundary's native media and returns the observation with its owned
+    /// handles. The same immutable object serves the sensory and the broadcast view; nothing
+    /// is rendered twice and no second copy of the pixels exists.
     async fn observation(
-        &self,
+        &mut self,
         ctx: &HandlerCtx<'_>,
     ) -> DomainResult<(WorldObservation, Vec<(String, flybus::Artifact)>)> {
-        let omit = self.config.faults.omit_view_at_boundary == Some(self.boundary);
-        let (views, attachments) = if omit {
-            (Vec::new(), Vec::new())
+        let boundary = self.boundary;
+        let counter = self.counter;
+        let pipeline = self
+            .pipeline
+            .as_mut()
+            .ok_or_else(|| DomainError::before(ErrorCode::InvalidPhase, "no view pipeline"))?;
+        if self.config.faults.truncated_view_at_boundary == Some(boundary) {
+            pipeline
+                .render_truncated(ctx.client, boundary, counter)
+                .await?;
         } else {
-            let (view, artifact) = self.render(ctx).await?;
-            let name = format!("view.{}", view.view_id);
-            (vec![view], vec![(name, artifact)])
-        };
+            pipeline.render(ctx.client, boundary, counter).await?;
+        }
+        let produced = pipeline.at(boundary);
+
+        let mut attachments = Vec::new();
+        let mut views = Vec::new();
+        if self.config.faults.omit_view_at_boundary == Some(boundary) {
+            // A world that advanced with no usable sensory data.
+        } else if self.config.faults.stale_view_at_boundary == Some(boundary) {
+            if let Some((view, artifact)) = self.previous_view.clone() {
+                attachments.push((media::view_attachment(&view.view_id), artifact));
+                views.push(view);
+            }
+        } else if let Some((view, artifact)) = produced.clone() {
+            attachments.push((media::view_attachment(&view.view_id), artifact));
+            views.push(view);
+        } else {
+            return Err(DomainError::new(
+                ErrorCode::BackendFailure,
+                "the view pipeline has no frame for this boundary",
+                MutationCertainty::Applied,
+            ));
+        }
+        self.previous_view = produced;
+
+        let mut audio = Vec::new();
+        if boundary > 0 && self.config.faults.omit_audio_at_boundary != Some(boundary) {
+            let step = self.config.step_duration;
+            let overlap = self.config.faults.overlapping_audio_at_boundary == Some(boundary);
+            let source = self
+                .audio
+                .as_mut()
+                .ok_or_else(|| DomainError::before(ErrorCode::InvalidPhase, "no audio source"))?;
+            let (mut chunk, artifact) = source.produce(ctx.client, &step, counter).await?;
+            if overlap {
+                // A chunk that starts inside the previous one: the timeline refuses it rather
+                // than playing the same samples twice.
+                chunk.first_sample = chunk.first_sample.saturating_sub(1);
+            }
+            attachments.push((media::audio_attachment(&chunk.stream_id), artifact));
+            audio.push(chunk);
+        }
+
         let observation = WorldObservation {
-            boundary: self.boundary,
+            boundary,
             world_time: self.world_time,
-            engine_frame: Some(self.boundary.to_string()),
+            engine_frame: Some(boundary.to_string()),
             sensory_views: views.clone(),
-            inspection: inspection(self.counter, self.boundary),
+            inspection: inspection(counter, boundary),
             // The same immutable object serves the broadcast view; nothing is rendered twice.
             broadcast_views: views,
-            audio: Vec::new(),
+            audio,
         };
         Ok((observation, attachments))
     }
@@ -268,6 +317,13 @@ impl CounterEnvironment {
         self.counter = 0;
         self.world_time = RationalNs::ZERO;
         self.batches.clear();
+        self.pipeline = Some(ViewPipeline::new(
+            CounterEnvironment::view_descriptor(self.config.observation_delay_steps),
+            self.config.renders.clone(),
+        ));
+        // A fresh episode starts at audio origin zero; a restore would resume the preserved
+        // sample position instead, and its first chunk would mark the discontinuity.
+        self.audio = Some(AudioSource::new(CounterEnvironment::audio_descriptor(), 0));
         self.descriptor = Some(descriptor.clone());
         // The world is stopped when O[0] goes out and cannot free-run while the brains boot.
         self.status.set_state(WorkerState::Ready);

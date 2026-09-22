@@ -203,6 +203,8 @@ pub struct AgentConfig {
     pub incarnation_id: Id,
     pub tick_duration: RationalNs,
     pub warmup_ticks: u64,
+    /// Records every view this agent read, so a test can see which artifact reached it.
+    pub sensors: crate::media::SensorLog,
     pub faults: AgentFaults,
 }
 
@@ -296,6 +298,15 @@ impl FakeAgentWorker {
                     format!("view {} is the wrong length", view.view_id),
                 ));
             }
+            // What this agent read, from the bytes it read: the artifact it was given and the
+            // digest of its content.
+            self.config.sensors.record(crate::media::SensedView {
+                boundary: input.boundary,
+                view_id: view.view_id.clone(),
+                artifact_id: artifact.reference().artifact_id.clone(),
+                produced_step: view.produced_step,
+                digest: digest_of_bytes(&bytes),
+            });
             total += i64::from(bytes.first().copied().unwrap_or_default());
         }
         if let Some(structured) = &input.structured {

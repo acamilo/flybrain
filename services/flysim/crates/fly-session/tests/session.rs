@@ -270,7 +270,11 @@ async fn the_committed_snapshot_names_the_boundary_that_just_ended(via: Via) {
         // The frame the snapshot names travels as an owned attachment.
         if step > 0 {
             let frame = message.artifact("view.arena").expect("the published frame");
-            assert_eq!(frame.reference().byte_length, 4 * 4 * 4);
+            assert_eq!(
+                frame.reference().byte_length,
+                fly_session::environment::VIEW_WIDTH * fly_session::environment::VIEW_HEIGHT * 4,
+                "the published frame is the environment native frame"
+            );
         }
     }
     assert_eq!(boundaries[0], (0, false), "boundary 0 has no decision or control");

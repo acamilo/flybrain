@@ -27,6 +27,7 @@ pub mod coordinator;
 pub mod dedup;
 pub mod environment;
 pub mod harness;
+pub mod media;
 pub mod phase;
 pub mod rpc;
 pub mod task;

@@ -18,6 +18,7 @@ use flybus::{
 use crate::agent::{AgentConfig, AgentFaults, FakeAgentWorker, synthetic_profile};
 use crate::coordinator::{AgentSlot, Coordinator};
 use crate::environment::{CounterEnvironment, EnvironmentConfig, EnvironmentFaults};
+use crate::media::{RenderCounter, SensorLog};
 use crate::rpc::WorkerRef;
 use crate::task::{ActionExecutor, CounterTask, IdentityExecutor, Terminal};
 // `crate::types` is this crate's facade over the shared `fly-session-types` crate; the
@@ -55,6 +56,8 @@ pub struct HarnessConfig {
     pub tick_ms: u64,
     pub warmup_ticks: u64,
     pub terminal: Terminal,
+    /// The view's declared render delay, in steps. Zero is same-boundary output.
+    pub observation_delay_steps: u64,
     pub environment_faults: EnvironmentFaults,
 }
 
@@ -82,6 +85,7 @@ impl Default for HarnessConfig {
             tick_ms: 1,
             warmup_ticks: 10,
             terminal: Terminal::Never,
+            observation_delay_steps: 0,
             environment_faults: EnvironmentFaults::default(),
         }
     }
@@ -152,6 +156,10 @@ pub struct SessionHarness {
     pub agents: BTreeMap<Id, WorkerHandle>,
     pub config: HarnessConfig,
     pub via: Via,
+    /// How many native frames the environment has actually rendered.
+    pub renders: RenderCounter,
+    /// What each agent read out of its sensory attachments.
+    pub sensors: BTreeMap<Id, SensorLog>,
     connector: Connector,
     observers: Mutex<Vec<Client>>,
 }
@@ -207,6 +215,12 @@ impl SessionHarness {
 
         let step_duration = hz(config.step_hz).expect("a positive cadence");
         let tick_duration = millis(config.tick_ms).expect("a positive tick");
+        let renders = RenderCounter::new();
+        let sensors: BTreeMap<Id, SensorLog> = config
+            .agents
+            .iter()
+            .map(|spec| (spec.agent_id.clone(), SensorLog::new()))
+            .collect();
 
         // The environment first: it owns the world and the descriptor.
         let env_client = connector.client(ENV_CLIENT).await?;
@@ -221,6 +235,8 @@ impl SessionHarness {
                 incarnation_id: id("arena-inc-1"),
                 step_duration,
                 ports: config.agents.iter().map(|a| a.port_id.clone()).collect(),
+                observation_delay_steps: config.observation_delay_steps,
+                renders: renders.clone(),
                 faults: config.environment_faults.clone(),
             }),
         );
@@ -242,6 +258,7 @@ impl SessionHarness {
                         .expect("an agent id plus a suffix is an Id"),
                     tick_duration,
                     warmup_ticks: config.warmup_ticks,
+                    sensors: sensors[&spec.agent_id].clone(),
                     faults: spec.faults.clone(),
                 }),
             );
@@ -280,6 +297,8 @@ impl SessionHarness {
             agents,
             config,
             via,
+            renders,
+            sensors,
             connector,
             observers: Mutex::new(Vec::new()),
         })
@@ -345,11 +364,23 @@ impl SessionHarness {
                 incarnation_id,
                 tick_duration,
                 warmup_ticks: self.config.warmup_ticks,
+                sensors: self.sensor_log(agent_id),
                 faults: spec.faults,
             }),
         );
         self.agents.insert(agent_id.clone(), handle);
         Ok(restarted)
+    }
+
+    /// What one agent read out of its sensory attachments, in order.
+    pub fn sensor_log(&self, agent_id: &Id) -> SensorLog {
+        self.sensors.get(agent_id).cloned().unwrap_or_default()
+    }
+
+    /// How many native frames the environment rendered. Forwarding one image to several
+    /// recipients does not render it again.
+    pub fn renders(&self) -> u64 {
+        self.renders.count()
     }
 
     /// The agent worker's progress counter, which is its fake model's mutation count.
@@ -367,7 +398,8 @@ impl SessionHarness {
 
     /// Stops every worker and closes the router.
     pub async fn shutdown(self) {
-        let SessionHarness { coordinator, environment, agents, connector, observers, .. } = self;
+        let SessionHarness { coordinator, environment, agents, connector, observers, .. } =
+            self;
         drop(coordinator);
         environment.stop().await;
         for (_, handle) in agents {
