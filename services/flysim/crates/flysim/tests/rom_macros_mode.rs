@@ -219,6 +219,9 @@ struct Run {
     /// number of macros rather than on however many holds the 2-cycle takes to fall out of.
     macros_this_battle: u32,
     worst_battle_macros: u32,
+    /// What every battle that *ended* cost in macros, so the run can be asked for a median rather
+    /// than only for its worst (row 50).
+    battle_costs: Vec<u32>,
     battles_entered: u32,
     battles_ended: u32,
     was_in_battle: bool,
@@ -396,6 +399,7 @@ impl Run {
             last_battle_start: None,
             macros_this_battle: 0,
             worst_battle_macros: 0,
+            battle_costs: Vec::new(),
             battles_entered: 0,
             battles_ended: 0,
             was_in_battle: false,
@@ -507,6 +511,7 @@ impl Run {
             last_battle_start: None,
             macros_this_battle: 0,
             worst_battle_macros: 0,
+            battle_costs: Vec::new(),
             battles_entered: 0,
             battles_ended: 0,
             was_in_battle: false,
@@ -904,6 +909,7 @@ impl Run {
                 self.battles_ended += 1;
                 self.worst_battle_macros =
                     self.worst_battle_macros.max(self.macros_this_battle);
+                self.battle_costs.push(self.macros_this_battle);
                 self.macros_this_battle = 0;
             }
             _ => {}
@@ -1336,6 +1342,50 @@ fn the_battles_turns_advance_from_the_rung_nine_forest_checkpoint() {
         run.battles_ended,
         run.worst_battle_macros,
         run.longest_next_back_alternation
+    );
+
+    // **Row 50**: a `MOVE n` that starts on an accepting move list finishes its cursor walk.
+    //
+    // What was measured on v0.4.6 from this checkpoint: `MOVE n` reported `blocked` **890 times in
+    // 1,431 macros**, and `MOVE 4` 222 of 224 -- every one of them on a frame whose cursor bytes
+    // said "the move list" while no list was on screen. `MoveSelectionMenu` writes
+    // `wTopMenuItemY` 12 and `wTopMenuItemX` 5 and nothing ever clears them, so the whole of a
+    // turn's text, animation and reply read back an open list with a placeable cursor; the pad
+    // dealt the four move buttons on it and the cursor step pressed at nothing until its budget
+    // ran out. Surveyed with one rollback pulse per battle frame
+    // (`examples/scene_probe.rs`, `FLY_PROBE_CATCH=accept`): by the cursor bytes alone a real
+    // directional press was honoured on 264 frames of 3,102, and by the cursor bytes *and* the box
+    // on screen on 231 of 231.
+    let move_starts: u32 = run
+        .started
+        .iter()
+        .filter(|(name, _)| name.starts_with("MOVE "))
+        .map(|(_, n)| *n)
+        .sum();
+    let move_blocked: u32 = run
+        .blocked
+        .iter()
+        .filter(|(name, _)| name.starts_with("MOVE "))
+        .map(|(_, n)| *n)
+        .sum();
+    eprintln!("`MOVE n`: {move_starts} starts, {move_blocked} blocked");
+    assert!(move_starts > 0, "no move button ever started: {:?}", run.started);
+    assert!(
+        move_blocked * 20 < move_starts,
+        "`MOVE n` reported blocked on {move_blocked} of {move_starts} starts, which is row 50"
+    );
+
+    // And what that buys, which is the thing the audience sees: a battle that is over in a
+    // sensible number of presses rather than one that spends its turns pressing at text. The
+    // worst battle is a tail; the median is the run.
+    let mut costs = run.battle_costs.clone();
+    costs.sort_unstable();
+    let median = costs.get(costs.len() / 2).copied().unwrap_or(0);
+    eprintln!("battle cost in macros: {costs:?}, median {median}");
+    assert!(
+        median > 0 && median < 300,
+        "the median battle cost {median} macros over {} that ended",
+        run.battles_ended
     );
     // `BACK` is still pressed, and that is the contract rather than a residual: over the move list
     // and over a one-Pokemon party list it is one of the two answers a list has, and where it
