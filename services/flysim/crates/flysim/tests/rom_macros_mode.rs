@@ -59,6 +59,8 @@ const VIRIDIAN_MART: u32 = 0x2a;
 /// Route 2's southern forest gate and the forest north of it, which is rung 9's own road.
 const VIRIDIAN_FOREST_SOUTH_GATE: u32 = 0x32;
 const VIRIDIAN_FOREST: u32 = 0x33;
+/// The upper floor of the Pewter museum, which is the building the rung-10 stall was inside.
+const MUSEUM_2F: u32 = 0x35;
 /// The forest's *northern* gate, which is the first hop from the forest toward Pewter
 /// (`macros::geography`, and rung 10's own road).
 const VIRIDIAN_FOREST_NORTH_GATE: u32 = 0x2f;
@@ -217,6 +219,28 @@ struct Run {
     /// The objective is the road out: on rung 9 in the forest it has to be there, or the only way
     /// north is whatever `GO FRONTIER` stumbles into.
     objective_on_pad: std::collections::BTreeSet<u32>,
+    /// Maps on whose *overworld* pad `MENU` was ever bound (section 12.11).
+    ///
+    /// The rung-10 trap: `MENU` opened the start menu and that scene's `BACK` closed it again, 82
+    /// starts each in thirty brain minutes inside one building. `MENU` is on no pad at all now, so
+    /// this set is empty -- and on v0.4.3 it holds every overworld map the run stood on.
+    menu_on_pad: std::collections::BTreeSet<u32>,
+    /// Overworld pads that bound nothing at all, by map: section 13.1's never-empty rule, which
+    /// since 12.11 rests on the way out rather than on an unconditional `MENU`.
+    empty_overworld_pads: std::collections::BTreeSet<u32>,
+    /// How many times each macro finished `blocked`, for the `THROW BALL` residual.
+    ///
+    /// v0.4.3 on the cartridge: `THROW BALL` 63 starts, 63 `blocked` -- the bag had not drawn and
+    /// the step read the battle menu's cursor instead (section 12.11).
+    blocked: std::collections::BTreeMap<&'static str, u32>,
+    /// `NAME@scene/sub-state` for every macro that reported `blocked`: *where* it gave up.
+    blocked_where: std::collections::BTreeSet<String>,
+    /// Macros started while the fly was still on the map it resumed on.
+    macros_on_the_first_map: u32,
+    /// The longest chain of macro starts that alternated `MENU`, `BACK`, `MENU`, `BACK`.
+    longest_menu_back_alternation: u32,
+    menu_alternation: u32,
+    last_start: Option<&'static str>,
 }
 
 impl Run {
@@ -302,6 +326,14 @@ impl Run {
             battles_ended: 0,
             was_in_battle: false,
             objective_on_pad: std::collections::BTreeSet::new(),
+            menu_on_pad: std::collections::BTreeSet::new(),
+            empty_overworld_pads: std::collections::BTreeSet::new(),
+            blocked: std::collections::BTreeMap::new(),
+            blocked_where: std::collections::BTreeSet::new(),
+            macros_on_the_first_map: 0,
+            longest_menu_back_alternation: 0,
+            menu_alternation: 0,
+            last_start: None,
         }
     }
 
@@ -390,6 +422,14 @@ impl Run {
             battles_ended: 0,
             was_in_battle: false,
             objective_on_pad: std::collections::BTreeSet::new(),
+            menu_on_pad: std::collections::BTreeSet::new(),
+            empty_overworld_pads: std::collections::BTreeSet::new(),
+            blocked: std::collections::BTreeMap::new(),
+            blocked_where: std::collections::BTreeSet::new(),
+            macros_on_the_first_map: 0,
+            longest_menu_back_alternation: 0,
+            menu_alternation: 0,
+            last_start: None,
         }
     }
 
@@ -603,7 +643,7 @@ impl Run {
         self.talk_on_pad = talk_bound;
         let active =
             self.decoder.decode_bound(&rates(hot), self.ms, false, None, Some(&bound));
-        let (mask, started) = {
+        let (mask, started, blocked) = {
             let ledger = AdapterLedger(&self.adapter);
             let decision = self.layer.decide(&active, 0, self.ms, &mut self.gb, &ledger);
             let started: Vec<&'static str> = decision
@@ -612,8 +652,25 @@ impl Run {
                 .filter(|event| event.outcome.is_none())
                 .map(|event| event.name)
                 .collect();
-            (decision.mask, started)
+            let blocked: Vec<&'static str> = decision
+                .events
+                .iter()
+                .filter(|event| {
+                    event.outcome.is_some_and(|outcome| outcome.as_str() == "blocked")
+                })
+                .map(|event| event.name)
+                .collect();
+            (decision.mask, started, blocked)
         };
+        for name in blocked {
+            *self.blocked.entry(name).or_insert(0) += 1;
+            let sub = self.battle_sub_state();
+            let list = self.gb.read_wram(flybrain_gb::pokemon_red::symbols::ram::wListMenuID);
+            self.blocked_where.insert(format!(
+                "{name}@{}/{sub}/list={list:#04x}",
+                self.layer.scene_name()
+            ));
+        }
         let in_battle_now = self.in_battle() != 0;
         let on_a_battle_pad = self.battle_pad();
         for name in started {
@@ -639,6 +696,24 @@ impl Run {
                 self.longest_next_back_alternation =
                     self.longest_next_back_alternation.max(self.alternation);
                 self.last_battle_start = Some(name);
+            }
+            // Section 12.11's own signature, as the live event log printed it: `MENU
+            // start/done, BACK start/done`, every hold, for thirty brain minutes inside one
+            // building. The pair is split across two *scenes*, so this is measured over every
+            // start rather than over a battle's.
+            let two = name == "MENU" || name == "BACK";
+            self.menu_alternation = match self.last_start {
+                Some(last) if two && (last == "MENU" || last == "BACK") && last != name => {
+                    self.menu_alternation.max(1) + 1
+                }
+                _ if two => 1,
+                _ => 0,
+            };
+            self.longest_menu_back_alternation =
+                self.longest_menu_back_alternation.max(self.menu_alternation);
+            self.last_start = Some(name);
+            if self.route.len() == 1 {
+                self.macros_on_the_first_map += 1;
             }
             *self.started.entry(name).or_insert(0) += 1;
         }
@@ -680,6 +755,12 @@ impl Run {
             let dealt = self.layer.bound_channels();
             if dealt.iter().any(|channel| channel.as_str() == "macro_go_objective") {
                 self.objective_on_pad.insert(map);
+            }
+            if dealt.iter().any(|channel| channel.as_str() == "macro_menu") {
+                self.menu_on_pad.insert(map);
+            }
+            if dealt.is_empty() {
+                self.empty_overworld_pads.insert(map);
             }
             let dealt = dealt.len();
             let seen = self.pads.entry(map).or_insert(dealt);
@@ -981,6 +1062,16 @@ fn the_battles_turns_advance_from_the_rung_nine_forest_checkpoint() {
         run.battle_back_where
     );
     assert!(!run.threw_at_a_held_species, "a ball was thrown at a species the party holds");
+    eprintln!("blocked where: {:?}", run.blocked_where);
+    // Section 12.11, the other half of `THROW BALL`: it reaches the bag. On v0.4.3 every start of
+    // it was `blocked` -- 63 of 63, mean sixty-nine frames -- because the step that walks the bag
+    // list was allowed to read the battle menu's cursor while the bag was still drawing.
+    assert_eq!(
+        run.blocked.get("THROW BALL"),
+        None,
+        "`THROW BALL` reported blocked: {:?}",
+        run.blocked
+    );
     // Section 12.10, the two halves of it.
     assert!(
         !run.next_and_back_on_one_pad,
@@ -1015,9 +1106,15 @@ fn the_battles_turns_advance_from_the_rung_nine_forest_checkpoint() {
     // battle never leaves the fly's own turn at all, so the count grows with the *run*. On v0.4.2
     // from this same checkpoint the trap hunt spent all twenty of its brain minutes -- 71,673
     // frames, 1,489 macros, 73 of 73 windows flagged -- inside **one** battle that never ended,
-    // with `BACK` 739 starts on the move list and `NEXT` 739 on the top-level menu. Four hundred
-    // is generous against the 275 this run's worst battle measured and far under an unbounded
-    // cycle.
+    // with `BACK` 739 starts on the move list and `NEXT` 739 on the top-level menu.
+    //
+    // The bound is **seven hundred** and was four; the number it is generous against is **450**
+    // and was 275, re-measured after section 12.11 put `battle_entry`'s `ITEM` and `PKMN` the
+    // right way round. Before that `SWITCH` opened the bag and `ITEM` and `THROW BALL` opened the
+    // party list, so neither could ever finish: every turn was an attack or nothing. A fly that
+    // can switch and heal fights longer, which is a longer battle and not a stalled one -- what
+    // the assertion is for is the difference between a battle that ends and a cycle that does
+    // not, and 3 of 3 ended here.
     assert!(
         run.battles_ended + 1 >= run.battles_entered,
         "{} battles entered and only {} left: a battle was entered and never got out",
@@ -1025,7 +1122,7 @@ fn the_battles_turns_advance_from_the_rung_nine_forest_checkpoint() {
         run.battles_ended
     );
     assert!(
-        run.worst_battle_macros > 0 && run.worst_battle_macros < 400,
+        run.worst_battle_macros > 0 && run.worst_battle_macros < 700,
         "the worst battle cost {} macros over {} that ended",
         run.worst_battle_macros,
         run.battles_ended
@@ -1805,4 +1902,118 @@ fn go_heal_enters_the_centre_and_heal_restores_the_party() {
     run.drive_until("the party reads back full", 120_000, |run| run.party_rested());
     run.force_hot = None;
     assert!(run.party_rested(), "the nurse healed the party");
+}
+
+/// The rung-10 Pewter checkpoint, or `None` to skip.
+///
+/// Its own variable, like `FLY_FOREST_CHECKPOINT`: the tests above assert the map their envelope
+/// is on and one envelope cannot be two maps.
+fn building_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_BUILDING_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// From the rung-10 checkpoint: the fly leaves the building, and no pad is `MENU` and a way back.
+///
+/// **What was live** (2026-09-22, thirty-one minutes after v0.4.3 deployed): rank 10, PEWTER CITY,
+/// the fly on **map 0x35 -- the upper floor of the Pewter museum**, fourteen blocks by eight, one
+/// warp at (7, 7) down to the floor below, two signs and three exhibits. For thirty brain minutes
+/// the macro starts were `MENU` 82, `BACK` 82 and `GO FRONTIER` 8, the event log alternating `MENU
+/// start/done, BACK start/done`.
+///
+/// Every candidate list on that map empties: `geography` has no row for the museum, so `next_hop`
+/// answers `None` and `GO OBJECTIVE` has nothing to aim at (the objective itself is map 0x36 --
+/// the gym leader, rung 11's BOULDER BADGE); the three exhibits and two signs are *reached* and
+/// retired for the session; the four unstood tiles are walked or excluded; and the one way out is
+/// a **passage** whose blocked window `unexcluded_exits` respects. That left `MENU`, which opens a
+/// scene whose pad is `CLOSE`, `CONFIRM` and `BACK` -- and `BACK` closes it again.
+///
+/// The claims here are about the pad and about *leaving*, not about where the fly goes next:
+///
+/// - `MENU` is on **no** overworld pad, on any map the run stands on (section 12.11). On v0.4.3
+///   this set holds every one of them, which is what makes this the regression test.
+/// - no overworld pad is empty, which since 12.11 rests on the way out rather than on `MENU`.
+/// - the fly **leaves map 0x35** on a bounded number of macros.
+/// - `MENU`/`BACK` never alternate, and `THROW BALL` never reports `blocked` -- the two residuals
+///   v0.4.3 left (63 starts, 63 blocked, mean sixty-nine frames).
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_BUILDING_CHECKPOINT=.local/checkpoints/release-rank10-pewter.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture
+/// ```
+#[test]
+fn the_fly_leaves_the_pewter_building_from_the_rung_ten_checkpoint() {
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = building_checkpoint() else {
+        eprintln!("skipped: no FLY_BUILDING_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    let from = run.map();
+    assert_eq!(from, MUSEUM_2F, "the checkpoint is the building the stream stalled in");
+    // Rung 10 is stood on, so the objective is rung 11 -- the BOULDER BADGE, which is the gym
+    // leader and so a *person* on the gym's map.
+    assert_eq!(
+        run.objective_map(),
+        Some(0x36),
+        "the objective is the Pewter gym, where the badge is"
+    );
+
+    // Driven the whole budget rather than stopped at the door: leaving is one claim and "`MENU`
+    // is on no pad" is a claim about every pad the run deals, so the run keeps going and keeps
+    // recording. Thirty-three brain minutes, against the thirty the live run spent not leaving.
+    let mut left = None;
+    for frame in 0..120_000u32 {
+        run.frame();
+        if left.is_none() && run.map() != from {
+            left = Some(frame);
+        }
+    }
+    eprintln!(
+        "from map {from:#04x} in {:.1} brain minutes: route {:?}, macros {:?}, MENU on the pad \
+         of {:?}, empty pads {:?}, blocked {:?}",
+        run.ms / 60_000.0,
+        run.route,
+        run.started,
+        run.menu_on_pad,
+        run.empty_overworld_pads,
+        run.blocked
+    );
+
+    assert!(
+        run.menu_on_pad.is_empty(),
+        "`MENU` was on an overworld pad: {:?}",
+        run.menu_on_pad
+    );
+    assert_eq!(run.started.get("MENU"), None, "`MENU` cannot start if it is on no pad");
+    // One is a lone `BACK`, which is an ordinary press in a list; two is the pair, and the live
+    // run did it eighty-two times each for thirty brain minutes.
+    assert!(
+        run.longest_menu_back_alternation < 2,
+        "`MENU`/`BACK` alternated {} times in a row",
+        run.longest_menu_back_alternation
+    );
+    assert!(
+        run.empty_overworld_pads.is_empty(),
+        "an overworld pad was empty on {:?}",
+        run.empty_overworld_pads
+    );
+    let Some(left) = left else { panic!("the fly never left map {from:#04x}") };
+    eprintln!("it left map {from:#04x} on frame {left}");
+    assert!(
+        run.macros_on_the_first_map < 400,
+        "leaving the building cost {} macros",
+        run.macros_on_the_first_map
+    );
+    // The v0.4.3 residual, on the cartridge: every `THROW BALL` was blocked because the step read
+    // the battle menu's cursor while the bag was still drawing.
+    assert_eq!(
+        run.blocked.get("THROW BALL"),
+        None,
+        "`THROW BALL` reported blocked: {:?}",
+        run.blocked
+    );
 }

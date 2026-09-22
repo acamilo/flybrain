@@ -406,8 +406,14 @@ pub fn battle(memory: &mut dyn MemoryReader) -> Option<Battle> {
         && (left || right);
 
     let menu = if main {
-        // FIGHT and PKMN are the left column, ITEM and RUN the right; the cursor index the game
-        // keeps is within the column, and `.rightColumn` adds two to it on selection.
+        // **FIGHT and ITEM are the left column, PKMN and RUN the right.** The screen reads
+        // `FIGHT PKMN` over `ITEM RUN` and the game's index is by column: `wCurrentMenuItem` is
+        // the row inside the column the cursor is in, and `.rightColumn` adds two to it on
+        // selection -- so the order is FIGHT, ITEM, PKMN, RUN. Surveyed on the cartridge
+        // 2026-09-22 (`infra/docs/macros-traps.md`): A at `wTopMenuItemX` 15 with
+        // `wCurrentMenuItem` 0 opens the **party** list and the game then writes
+        // `wCurrentMenuItem` 2. `macros::cartridge::battle_entry` had this pair the other way
+        // round, so `ITEM` and `THROW BALL` opened the party list and `SWITCH` opened the bag.
         let column = if right { 2 } else { 0 };
         BattleMenu::Main { cursor: column + cursor.current.min(1) }
     } else if cursor.top_y == 12 && cursor.top_x == 5 {

@@ -25,7 +25,8 @@ use crate::adapter::MemoryReader;
 use crate::emulator::buttons;
 
 use super::cartridge::{
-    FACINGS, MacroState, TalkTarget, TargetKey, Tile, battle_entry, button, item, opposite,
+    FACINGS, ListKind, MacroState, TalkTarget, TargetKey, Tile, battle_entry, button, item,
+    opposite,
 };
 use super::geography::Amenity;
 use super::palette::{
@@ -411,14 +412,37 @@ struct Walk {
 struct Cursor {
     target: u8,
     confirm: bool,
-    /// The directions to try, in order, aimed at the target by the first comparison.
-    order: [Facing; 4],
+    /// Which list `target` indexes into, when the script knows -- and it always does when it has
+    /// just pressed A to open one.
+    ///
+    /// `None` navigates whatever list is up, which is what a step that does not cross a boundary
+    /// wants: the shop's own screens are one [`ListKind`] and the step after a purchase's A press
+    /// is still the counter's.
+    ///
+    /// While the list up is a *different* one, the step waits rather than pressing at it, exactly
+    /// as it waits for a list that reports no cursor at all (section 4: "never by counting
+    /// presses"). Twenty settle frames is not always enough for the cartridge to draw the next
+    /// list, and a step that reads the list it has already answered is pressing blind: it takes
+    /// its length and its direction from four entries that are not the ones it is walking.
+    ///
+    /// Section 12.11 is where this came from, and it is also what *found* the reason `THROW BALL`
+    /// was 63 starts and 63 `blocked`: the step began reporting which list it had been left
+    /// looking at, and the answer was never the bag -- it was the party list, because
+    /// `battle_entry`'s `ITEM` and `PKMN` were the other way round. That is fixed at the
+    /// constants; this rule stands on its own.
+    want: Option<ListKind>,
+    /// The directions to try, in order, aimed at the target from where the cursor actually is.
+    ///
+    /// `None` until the list this step is for is accepting input, because "which way is the
+    /// target" is a fact about that list and not about whatever was up when the script was built.
+    order: Option<[Facing; 4]>,
     /// Which of them is being tried now.
     at: u8,
     /// The cursor value the current pulse started from.
     before: u8,
-    /// Presses left in the budget.
-    left: u8,
+    /// Presses left in the budget, `None` until the list is up: twice the list plus slack, and
+    /// the list whose length that is has to be the one being walked.
+    left: Option<u8>,
     phase: u32,
     /// Frames spent waiting for the list to accept input.
     waited: u32,
@@ -1370,9 +1394,19 @@ fn goal_tile(walk: &Walk) -> Tile {
 /// which is what section 4 means by "never by counting presses": a list that is a column moves
 /// under DOWN and UP, Red's two-by-two battle menu also needs RIGHT and LEFT, and this finds out
 /// which by watching rather than by knowing. A list that is not accepting input yet is *waited*
-/// for, never pressed at.
+/// for, never pressed at -- and since section 12.11 so is a list that is up but is **not the one
+/// this step is walking**, because Red keeps one cursor for every menu in the game and reading the
+/// wrong one is not reading.
 fn cursor_frame(cursor: &mut Cursor, state: &mut dyn MacroState) -> Progress {
-    let Some(list) = listing(state) else {
+    // A confirming press that has begun finishes, and it is read before the list: the press is
+    // what *answers* the list, so on the very frames it is being issued the cartridge is already
+    // drawing the next one, and waiting for the list this step walked would wait for a list the
+    // step has just left.
+    if cursor.confirmed {
+        return pulse(buttons::A, &mut cursor.phase, PRESS_HOLD, PRESS_GAP);
+    }
+    let list = listing(state).filter(|list| cursor.want.is_none_or(|want| want == list.kind));
+    let Some(list) = list else {
         cursor.waited += 1;
         return if cursor.waited > CURSOR_WAIT {
             Progress::Blocked
@@ -1381,9 +1415,6 @@ fn cursor_frame(cursor: &mut Cursor, state: &mut dyn MacroState) -> Progress {
         };
     };
     let here = list.current;
-    if cursor.confirmed {
-        return pulse(buttons::A, &mut cursor.phase, PRESS_HOLD, PRESS_GAP);
-    }
     if here == cursor.target {
         if !cursor.confirm {
             return Progress::Next;
@@ -1392,22 +1423,42 @@ fn cursor_frame(cursor: &mut Cursor, state: &mut dyn MacroState) -> Progress {
         cursor.phase = 0;
         return pulse(buttons::A, &mut cursor.phase, PRESS_HOLD, PRESS_GAP);
     }
-    if cursor.left == 0 || cursor.target > list.max {
+    // The first frame the list this step is for is accepting input is where the navigation is
+    // aimed from and budgeted by. Both are facts about *this* list, and a script that opened it
+    // could not have known either when it was built.
+    let aimed = aim_order(cursor.target, here);
+    let order = *cursor.order.get_or_insert(aimed);
+    let sized = list.max.saturating_add(1).saturating_mul(2).saturating_add(CURSOR_SLACK);
+    let budget = *cursor.left.get_or_insert(sized);
+    if budget == 0 || cursor.target > list.max {
         return Progress::Blocked;
     }
     if cursor.phase == 0 {
         cursor.before = here;
     }
-    let facing = cursor.order[usize::from(cursor.at) % cursor.order.len()];
+    let facing = order[usize::from(cursor.at) % order.len()];
     match pulse(button(facing), &mut cursor.phase, PRESS_HOLD, PRESS_GAP) {
         Progress::Next => {
             let closer = here.abs_diff(cursor.target) < cursor.before.abs_diff(cursor.target);
             cursor.at = if closer { 0 } else { (cursor.at + 1) % 4 };
-            cursor.left -= 1;
+            cursor.left = Some(budget.saturating_sub(1));
             cursor.phase = 0;
             Progress::Hold(buttons::NONE)
         }
         other => other,
+    }
+}
+
+/// The directions a cursor tries, in order, to get from `here` to `target`.
+///
+/// A column moves under DOWN and UP; Red's two-by-two battle menu needs RIGHT and LEFT as well,
+/// and which of the four works is found by watching the cursor rather than by knowing the
+/// geometry, so this only decides which to try *first*.
+const fn aim_order(target: u8, here: u8) -> [Facing; 4] {
+    if target > here {
+        [Facing::Down, Facing::Right, Facing::Up, Facing::Left]
+    } else {
+        [Facing::Up, Facing::Left, Facing::Down, Facing::Right]
     }
 }
 
@@ -1520,7 +1571,7 @@ fn script(
                 } else {
                     cursor_at.filter(|at| *at < count)?
                 };
-                steps.push(cursor(state, target, true));
+                steps.push(cursor_on(target, true, Some(ListKind::BattleMoves)));
                 return Some((steps.into(), aimed));
             }
             // From the menu above, FIGHT has to be chosen first, whether or not anything has PP:
@@ -1529,7 +1580,7 @@ fn script(
             if !in_main_menu(state) {
                 return None;
             }
-            steps.push(cursor(state, battle_entry::FIGHT, true));
+            steps.push(cursor_on(battle_entry::FIGHT, true, Some(ListKind::BattleMain)));
             steps.push(settle());
             // What happens after FIGHT is the cartridge's own answer and it is measured rather
             // than assumed (row 34): with a move that has PP the list opens and this slot is
@@ -1538,7 +1589,7 @@ fn script(
             // second cursor step would press A at text. `MOVE 1` is the button that reaches that
             // state, because it is the only one bound there.
             if slot_has_pp(state, slot) {
-                steps.push(cursor(state, slot, true));
+                steps.push(cursor_on(slot, true, Some(ListKind::BattleMoves)));
             }
             steps
         }
@@ -1550,10 +1601,13 @@ fn script(
             let bag_slot = throw_slot(state)?;
             let mut steps = Vec::new();
             if in_main_menu(state) {
-                steps.push(cursor(state, battle_entry::ITEM, true));
+                steps.push(cursor_on(battle_entry::ITEM, true, Some(ListKind::BattleMain)));
                 steps.push(settle());
             }
-            steps.push(cursor(state, bag_slot, true));
+            // The bag, and it has to *be* the bag: this is the step that reported `blocked` 63
+            // times out of 63 on the cartridge while it was allowed to read the battle menu's
+            // cursor instead (section 12.11).
+            steps.push(cursor_on(bag_slot, true, Some(ListKind::BattleBag)));
             steps
         }
         MacroKind::Switch => {
@@ -1562,10 +1616,10 @@ fn script(
             // A forced switch is already looking at the party list; a chosen switch has to get
             // there through the battle menu's PKMN entry first.
             if in_main_menu(state) {
-                steps.push(cursor(state, battle_entry::PKMN, true));
+                steps.push(cursor_on(battle_entry::PKMN, true, Some(ListKind::BattleMain)));
                 steps.push(settle());
             }
-            steps.push(cursor(state, slot, true));
+            steps.push(cursor_on(slot, true, Some(ListKind::BattleParty)));
             steps.push(settle());
             // The party entry's action list opens on SWITCH.
             steps.push(press(buttons::A));
@@ -1576,17 +1630,19 @@ fn script(
             let active = state.battle().and_then(|battle| battle.own).map(|mon| mon.slot)?;
             let mut steps = Vec::new();
             if in_main_menu(state) {
-                steps.push(cursor(state, battle_entry::ITEM, true));
+                steps.push(cursor_on(battle_entry::ITEM, true, Some(ListKind::BattleMain)));
                 steps.push(settle());
             }
-            steps.push(cursor(state, bag_slot, true));
+            steps.push(cursor_on(bag_slot, true, Some(ListKind::BattleBag)));
             steps.push(settle());
             // Which Pokémon to heal: the one that is out, because that is the HP the precondition
             // measured.
-            steps.push(cursor(state, active, true));
+            steps.push(cursor_on(active, true, Some(ListKind::BattleParty)));
             steps
         }
-        MacroKind::Run => vec![cursor(state, battle_entry::RUN, true)],
+        MacroKind::Run => {
+            vec![cursor_on(battle_entry::RUN, true, Some(ListKind::BattleMain))]
+        }
         MacroKind::BuyPotion => shop_plan(state, item::POTION)?,
         MacroKind::BuyBall => shop_plan(state, item::POKE_BALL)?,
         MacroKind::BuyAntidote => shop_plan(state, item::ANTIDOTE)?,
@@ -1675,24 +1731,31 @@ fn settle() -> Step {
     Step::Settle { phase: 0 }
 }
 
-/// A cursor step aimed at `target`, with its press order and budget taken from the list that is
-/// up right now.
-fn cursor(state: &mut dyn MacroState, target: u8, confirm: bool) -> Step {
-    let list = listing(state);
-    let from = list.map_or(0, |list| list.current);
-    let max = list.map_or(target, |list| list.max);
+/// A cursor step aimed at `target` in whichever list is accepting input when it runs.
+///
+/// For a step that does not cross from one list into another: the shop's own screens, and the
+/// first step of any script, which reads the list its macro was dealt on.
+fn cursor(target: u8, confirm: bool) -> Step {
+    cursor_on(target, confirm, None)
+}
+
+/// A cursor step aimed at `target` in `want`, waiting for that list rather than pressing at
+/// whichever one happens to be up.
+///
+/// The press order and the budget are taken from the list on the first frame it accepts input
+/// ([`cursor_frame`]) and not from here, because a script that has just pressed A to open a list
+/// is still reading the list it pressed A *in*: twenty settle frames is not always enough for the
+/// cartridge to draw the next one, and the one it has is the wrong length and points the wrong
+/// way (section 12.11).
+fn cursor_on(target: u8, confirm: bool, want: Option<ListKind>) -> Step {
     Step::Cursor(Cursor {
         target,
         confirm,
-        order: if target > from {
-            [Facing::Down, Facing::Right, Facing::Up, Facing::Left]
-        } else {
-            [Facing::Up, Facing::Left, Facing::Down, Facing::Right]
-        },
+        want,
+        order: None,
         at: 0,
-        before: from,
-        // Twice the list, plus slack for a press the game swallows while a menu draws.
-        left: max.saturating_add(1).saturating_mul(2).saturating_add(CURSOR_SLACK),
+        before: target,
+        left: None,
         phase: 0,
         waited: 0,
         confirmed: false,
@@ -1902,10 +1965,10 @@ fn shop_plan(state: &mut dyn MacroState, want: u8) -> Option<Vec<Step>> {
     let mut steps = Vec::new();
     if shop_screen(state)? == ShopScreen::BuySellQuit {
         // BUY is the counter menu's first entry.
-        steps.push(cursor(state, 0, true));
+        steps.push(cursor(0, true));
         steps.push(settle());
     }
-    steps.push(cursor(state, index, true));
+    steps.push(cursor(index, true));
     steps.push(settle());
     // The quantity prompt opens on one, and the price confirmation opens on YES.
     steps.push(press(buttons::A));

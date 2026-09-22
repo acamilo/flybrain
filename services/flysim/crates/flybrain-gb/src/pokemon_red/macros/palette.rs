@@ -10,8 +10,8 @@
 
 use super::cartridge::{
     CHEAPEST_PURCHASE, FACINGS, opposite,
-    ExitId, Listing, MacroState, Objective, PARTY_CAPACITY, PURCHASES, TalkTarget, TargetKey,
-    Tile, item, outdoors,
+    ExitId, ListKind, Listing, MacroState, Objective, PARTY_CAPACITY, PURCHASES, TalkTarget,
+    TargetKey, Tile, item, outdoors,
 };
 use crate::adapter::PlaceKind;
 
@@ -484,8 +484,18 @@ pub fn scene_set(scene: Scene, state: &mut dyn MacroState) -> Vec<MacroKind> {
         Scene::Menu => vec![Close, Confirm, Back],
         // Section 9.1's split, plus section 13's errands and centre. Indoors the ways out of a
         // room are the building's door and its passages; outdoors there is no building to leave.
-        // `MENU` is unconditional and last, which is what makes an empty overworld pad impossible
-        // (section 13.1, row 18).
+        //
+        // **`MENU` is on no pad** (section 12.11). It was here as the unconditional button that
+        // made an empty overworld pad impossible, and that is exactly what made it a trap: opening
+        // the start menu changes nothing in the world, so the macro completes where the fly stands
+        // -- section 12.2's rule -- and the scene it opens deals `CLOSE` and `BACK`, which close it
+        // again. Live on rung 10, thirty minutes inside the Pewter museum's upper floor: `MENU` 82
+        // starts, `BACK` 82, `GO FRONTIER` 8, the log alternating `MENU start/done, BACK
+        // start/done`. Nothing in the macro vocabulary uses the start menu for anything -- there is
+        // no SAVE macro and no POKéDEX macro -- so there is nothing behind the button worth
+        // pressing it for. What keeps this pad from being empty instead is the way out, which
+        // [`ways`] offers regardless of the ledgers when nothing else on the map is worth walking
+        // to.
         Scene::Overworld => {
             let mut set = vec![GoObjective];
             if outdoors_now(state) {
@@ -497,7 +507,7 @@ pub fn scene_set(scene: Scene, state: &mut dyn MacroState) -> Vec<MacroKind> {
             if inside_center(state) {
                 set.push(Heal);
             }
-            set.extend([GoShop, GoHeal, GoItem, GoNpc, GoFrontier, Talk, Menu]);
+            set.extend([GoShop, GoHeal, GoItem, GoNpc, GoFrontier, Talk]);
             set
         }
         // Section 12: "Forced switch: SWITCH" -- plus the press that advances a battle, because
@@ -516,7 +526,20 @@ pub fn scene_set(scene: Scene, state: &mut dyn MacroState) -> Vec<MacroKind> {
         // between them. Two buttons that undo each other with nothing else changing are section
         // 12.2's trap spread over two sub-states of one turn.
         Scene::Battle { own_turn: true, .. } => match battle_menu(state) {
-            BattleMenu::Moves { .. } => vec![Move1, Move2, Move3, Move4, Back],
+            // The move list. `BACK` is a button here because there is a list to leave (12.9) --
+            // but only while the moves can be *read*: a battler the seam cannot place leaves all
+            // four `MOVE n` unbound, and a pad of `BACK` alone closes the list that `MOVE 1` on
+            // the menu underneath had just opened. That is 12.10's pair again, with `MOVE 1` in
+            // `NEXT`'s place. With nothing readable the pad is `MOVE 1` alone and its script
+            // confirms wherever the cursor stands, which is the press that ends the turn
+            // (section 12.11).
+            BattleMenu::Moves { .. } => {
+                if state.battle().and_then(|battle| battle.own).is_some() {
+                    vec![Move1, Move2, Move3, Move4, Back]
+                } else {
+                    vec![Move1]
+                }
+            }
             BattleMenu::Party { .. } => vec![Switch, Back],
             // The bag, which is the fly's turn since 12.10. Its three answers: use the thing the
             // cursor is on (`ITEM`), throw the ball (`THROW BALL`), or leave the list (`BACK`).
@@ -579,7 +602,15 @@ pub fn precondition(kind: MacroKind, state: &mut dyn MacroState) -> bool {
         // (only when facing something untalked)"). A tile ahead with nothing on it is not a
         // reason to press A, and a shelf that has been read is not a reason to read it again.
         MacroKind::Talk => facing_untalked(state),
-        // Unconditional: opening the start menu is always available.
+        // The start menu opens from anywhere, and that is exactly why `MENU` is on no pad:
+        // "the precondition is satisfied wherever the fly stands" is section 12.2's trap, and a
+        // macro whose whole effect is a screen its own scene's `BACK` closes again is 12.10's
+        // pair one scene wider (section 12.11). The refusal belongs at the **dealer** and not
+        // here, because this arm is a true fact about the macro and [`scene_set`] is where the
+        // reason lives: nothing in the vocabulary uses the start menu, so there is nothing behind
+        // the button to press it for -- and the day a SAVE macro exists, one row changes.
+        // `MENU` stays a type, a population, a tag and a script, so the roles, the channel order
+        // and `--print-compatibility` are untouched.
         MacroKind::Menu => true,
         // Advancing text, answering a prompt and backing out never need anything.
         MacroKind::Next
@@ -985,7 +1016,17 @@ pub fn ways(state: &mut dyn MacroState, way: Way) -> Vec<Exit> {
     let all = unexcluded_exits(state, way);
     // Tier 3, and only where a map would otherwise be impossible to leave: see the doc comment.
     match way {
-        Way::Exit => all,
+        // A room still has to be leavable, and since section 12.11 that holds even while the
+        // ledgers are resting its one door: `unexcluded_exits` is emptied by the blocked window,
+        // by the rung's own target being on this map (row 29) and by an unfaced counter, and with
+        // `MENU` off the pad an emptied way out is an overworld with nothing on it at all.
+        Way::Exit => {
+            if all.is_empty() {
+                last_resort(state, way)
+            } else {
+                all
+            }
+        }
         // A staircase the run has already been up is exploration already done, and the same bounce
         // `GO ROUTE` had: up, straight back down, up again, once per hold. The exception is the map
         // whose only way anywhere *is* a passage -- Red's bedroom, the upper floor of any house --
@@ -993,6 +1034,8 @@ pub fn ways(state: &mut dyn MacroState, way: Way) -> Vec<Exit> {
         Way::Passage => {
             if path::exits(state).iter().any(|exit| exit.way == Way::Exit) {
                 Vec::new()
+            } else if all.is_empty() {
+                last_resort(state, way)
             } else {
                 all
             }
@@ -1010,17 +1053,29 @@ pub fn ways(state: &mut dyn MacroState, way: Way) -> Vec<Exit> {
         //
         // It also ignores the blocked window, which nothing else does: a target the ledger is
         // resting is still the only place to go.
-        Way::Route => {
-            if stranded(state) {
-                let every: Vec<Exit> =
-                    path::exits(state).into_iter().filter(|exit| exit.way == way).collect();
-                let toward = toward_objective(state, &every);
-                if toward.is_empty() { every } else { toward }
-            } else {
-                Vec::new()
-            }
-        }
+        Way::Route => last_resort(state, way),
     }
+}
+
+/// Every way out of this kind, ignoring the ledgers, when the map offers nothing else at all.
+///
+/// Section 13.1's never-empty rule, and since section 12.11 it is what the rule *rests* on: the
+/// overworld has no unconditional button any more, so the pad of a map with every ledger against it
+/// is this list or nothing. Guarded by [`stranded`], which is built out of [`exit_tiers`] rather
+/// than [`ways`] so that asking "is the fly stranded" cannot recurse into the answer it decides.
+///
+/// It ignores the blocked window, which nothing else does: a target the ledger is resting is still
+/// the only place to go. And it is a last resort rather than a tier -- with anything else on the
+/// pad it stays off, because "all of them, nearest" once per hold is row 2's own loop, measured as
+/// two hours seventeen in and out of one house door.
+fn last_resort(state: &mut dyn MacroState, way: Way) -> Vec<Exit> {
+    if !stranded(state) {
+        return Vec::new();
+    }
+    let every: Vec<Exit> =
+        path::exits(state).into_iter().filter(|exit| exit.way == way).collect();
+    let toward = toward_objective(state, &every);
+    if toward.is_empty() { every } else { toward }
 }
 
 /// The exits of the current map of one kind that no ledger excludes.
@@ -1053,8 +1108,10 @@ fn unexcluded_exits(state: &mut dyn MacroState, way: Way) -> Vec<Exit> {
 /// Section 13.1's pad-empty audit. Deliberately built out of [`exit_tiers`] rather than [`ways`],
 /// so that asking "is the fly stranded" cannot recurse into the fallback the answer decides.
 ///
-/// `MENU` is unconditional, so an overworld pad is never literally empty; what this measures is
-/// the state the operator saw on stream, where the pad has a button that cannot move the fly anywhere.
+/// What this measures is the state the operator saw on stream: a map where nothing the pad offers
+/// can move the fly anywhere. It used to be the weaker claim -- `MENU` was unconditional, so the
+/// pad was never *literally* empty, only useless -- and since section 12.11 took `MENU` off the
+/// overworld it is the literal one, which is why [`last_resort`] is what answers it.
 pub fn stranded(state: &mut dyn MacroState) -> bool {
     objective_goals(state).is_empty()
         && amenity_goals(state, Amenity::Mart).is_empty()
@@ -1599,7 +1656,14 @@ pub fn move_slot_bound(state: &mut dyn MacroState, kind: MacroKind) -> bool {
     if index == 0 && matches!(battle.menu, BattleMenu::Main { .. }) {
         return true;
     }
-    let Some(own) = battle.own else { return false };
+    // And the same backstop over an **open move list** whose battler the seam cannot read
+    // (section 12.11). That frame used to deal `BACK` alone -- the only button on it closed the
+    // list `MOVE 1` on the menu underneath had just opened, which is 12.10's pair with `MOVE 1` in
+    // `NEXT`'s place. `MOVE 1`'s script over an open list confirms wherever the cursor stands, so
+    // it reads no move either, and confirming a move is what ends a turn.
+    let Some(own) = battle.own else {
+        return index == 0 && matches!(battle.menu, BattleMenu::Moves { cursor: Some(_), .. });
+    };
     let holds = |slot: usize| -> Option<&Move> {
         own.moves.get(slot).and_then(|entry| entry.as_ref()).filter(|entry| entry.id != 0)
     };
@@ -1671,28 +1735,42 @@ pub fn throw_slot(state: &mut dyn MacroState) -> Option<u8> {
 pub fn listing(state: &mut dyn MacroState) -> Option<Listing> {
     if let Some(battle) = state.battle() {
         return match battle.menu {
-            BattleMenu::Main { cursor } => Some(Listing { current: cursor, max: 3 }),
-            BattleMenu::Moves { cursor: Some(cursor), count } => {
-                Some(Listing { current: cursor, max: count.saturating_sub(1) })
+            BattleMenu::Main { cursor } => {
+                Some(Listing { kind: ListKind::BattleMain, current: cursor, max: 3 })
             }
+            BattleMenu::Moves { cursor: Some(cursor), count } => Some(Listing {
+                kind: ListKind::BattleMoves,
+                current: cursor,
+                max: count.saturating_sub(1),
+            }),
             BattleMenu::Moves { cursor: None, .. } | BattleMenu::None => None,
-            BattleMenu::Bag { cursor, count } => {
-                (count > 0).then(|| Listing { current: cursor, max: count.saturating_sub(1) })
-            }
+            BattleMenu::Bag { cursor, count } => (count > 0).then(|| Listing {
+                kind: ListKind::BattleBag,
+                current: cursor,
+                max: count.saturating_sub(1),
+            }),
             BattleMenu::Party { cursor } => {
                 let max = u8::try_from(state.party().mons.len().saturating_sub(1)).unwrap_or(0);
-                Some(Listing { current: cursor, max })
+                Some(Listing { kind: ListKind::BattleParty, current: cursor, max })
             }
         };
     }
     if let Some(menu) = state.start_menu() {
-        return Some(Listing { current: menu.cursor.current, max: menu.cursor.max });
+        return Some(Listing {
+            kind: ListKind::StartMenu,
+            current: menu.cursor.current,
+            max: menu.cursor.max,
+        });
     }
     if let Some(shop) = state.shop() {
-        return Some(Listing { current: shop.cursor.current, max: shop.cursor.max });
+        return Some(Listing {
+            kind: ListKind::Shop,
+            current: shop.cursor.current,
+            max: shop.cursor.max,
+        });
     }
     if let Some(pc) = state.pc() {
-        return Some(Listing { current: pc.cursor.current, max: pc.cursor.max });
+        return Some(Listing { kind: ListKind::Pc, current: pc.cursor.current, max: pc.cursor.max });
     }
     None
 }

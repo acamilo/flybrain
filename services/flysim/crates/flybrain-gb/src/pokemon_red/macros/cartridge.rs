@@ -107,8 +107,24 @@ pub const CHEAPEST_PURCHASE: u32 = {
 /// 1 PKMN, 2 ITEM, 3 RUN".
 pub mod battle_entry {
     pub const FIGHT: u8 = 0;
-    pub const PKMN: u8 = 1;
-    pub const ITEM: u8 = 2;
+    /// `$01`. **The left column's second row, not the right column's first.**
+    ///
+    /// Red draws the battle menu as `FIGHT PKMN` over `ITEM RUN`, which reads as two rows -- and
+    /// the game's own index is two *columns*: `wCurrentMenuItem` is the row inside the column the
+    /// cursor is in and selection adds two for the right one. So the order is FIGHT, `ITEM`,
+    /// `PKMN`, RUN, and this pair was the other way round for as long as the four constants have
+    /// existed.
+    ///
+    /// **Measured on the cartridge** (2026-09-22, `infra/docs/macros-traps.md`): a `THROW BALL`
+    /// aiming at 2 walked the cursor to `wTopMenuItemX` 15, `wCurrentMenuItem` 0, pressed A, and
+    /// the **party list** opened -- `wTopMenuItemY` 1, `wTopMenuItemX` 0, `wListMenuID` `$02`.
+    /// The frame after the press the game wrote `wCurrentMenuItem` 2, which is the right column's
+    /// first row plus two, and the right column's first row is PKMN. So `THROW BALL` and `ITEM`
+    /// opened the party list and `SWITCH` opened the bag, every single time: `THROW BALL` was 63
+    /// starts and 63 `blocked` on v0.4.3, and `SWITCH` 15 of them.
+    pub const ITEM: u8 = 1;
+    /// `$02`. The right column's first row: see [`ITEM`].
+    pub const PKMN: u8 = 2;
     pub const RUN: u8 = 3;
 }
 
@@ -272,12 +288,44 @@ pub enum TargetKey {
     Tile(Tile),
 }
 
-/// A cursor the current scene's macros navigate: where it is, and how far it can go.
+/// Which list the shared cursor belongs to right now.
+///
+/// Red keeps one cursor for every menu in the game (`wCurrentMenuItem`), so "where is the cursor"
+/// is only half a question: a script that opens the bag from the battle menu and then navigates to
+/// a bag index has to know that the index it is aiming at belongs to the *bag* and not to the four
+/// entries it was reading a moment ago. Measured on the cartridge 2026-09-22: `THROW BALL` was
+/// **63 starts and 63 `blocked`**, mean sixty-nine frames, because the bag takes longer than the
+/// twenty settle frames to draw -- so the step that should have walked the bag list read the
+/// battle menu's `max` of 3, found the ball's bag index above it, and gave up at once
+/// (`docs/design/macros.md` section 12.11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListKind {
+    /// FIGHT / PKMN / ITEM / RUN.
+    BattleMain,
+    /// The move list.
+    BattleMoves,
+    /// The party list, inside a battle.
+    BattleParty,
+    /// The bag, inside a battle.
+    BattleBag,
+    /// The start menu.
+    StartMenu,
+    /// A mart's counter, on whichever of its screens is up.
+    Shop,
+    /// A PC.
+    Pc,
+}
+
+/// A cursor the current scene's macros navigate: which list it is, where it is, and how far it can
+/// go.
 ///
 /// Derived from whichever of agent A's menus is up, so a script asks "where is the cursor" once
-/// and does not care whether it is in a battle, a mart or the start menu.
+/// and does not care whether it is in a battle, a mart or the start menu -- but it can ask *which*
+/// list answered, which is what a script that crosses from one list into another needs
+/// ([`ListKind`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Listing {
+    pub kind: ListKind,
     pub current: u8,
     pub max: u8,
 }
