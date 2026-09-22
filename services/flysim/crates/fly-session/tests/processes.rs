@@ -358,6 +358,35 @@ async fn a_delayed_one_agent_result_holds_the_world(mode: ExecutionMode) {
 // -------------------------------------------------------------------------------------------
 // Acceptance: worker or helper death has a bounded diagnosed outcome
 
+/// Waits until `worker` is provably inside the operation, then kills it.
+///
+/// Sleeping a fixed time before the kill asserts a race: under load the kill can land before
+/// the call is even dispatched, and then `MutationCertainty::None` is the *correct* answer
+/// because the participant never received anything. The certainty the death rows are about --
+/// `unknown`, because the participant died with work in its hands -- only holds if the work
+/// reached it, so the test waits for the worker's own status to say so rather than guessing
+/// from the clock.
+async fn kill_once_it_is_working(
+    launcher: &mut fly_session::Launcher,
+    worker: &Id,
+    inside: impl Fn(&StatusResult) -> bool,
+) -> ReapOutcome {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Ok(status) = launcher.health_check(worker).await
+            && inside(&status)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{worker} never reported itself inside the operation"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    launcher.kill(worker).await
+}
+
 /// One agent dies in the middle of its Prepare. The epoch fails with a typed cause naming
 /// that agent, within the caller's own budget, and nothing continues on the remainder.
 async fn a_worker_death_has_a_bounded_diagnosed_outcome(mode: ExecutionMode) {
@@ -367,20 +396,21 @@ async fn a_worker_death_has_a_bounded_diagnosed_outcome(mode: ExecutionMode) {
     within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     let started = Instant::now();
 
+    let victim = fly_b();
     let (coordinator, launcher) = f.harness.parts();
     let (stepped, reaped) = tokio::join!(
         async { within("step", coordinator.step()).await },
-        async {
-            tokio::time::sleep(Duration::from_millis(80)).await;
-            launcher.kill(&fly_b()).await
-        }
+        // Killed once it has the Prepare in its hands, not after a fixed sleep: the row is
+        // about a participant that dies *with work*, so the work has to have reached it.
+        kill_once_it_is_working(launcher, &victim, |status| {
+            status.state == WorkerState::Preparing && status.active_request_id.is_some()
+        })
     );
     assert_eq!(reaped, ReapOutcome::Terminated);
     let failure = stepped.expect_err("a dead participant is a failed epoch, not a slow one");
-    assert!(
-        started.elapsed() < Duration::from_secs(20),
-        "the outcome must be bounded, not a hang"
-    );
+    // Boundedness is the suite's own `within` above: the participant is five seconds slow and
+    // `within` gives up at twenty, so returning at all is the claim.
+    let _ = started;
     assert_eq!(
         failure.participant.as_deref(),
         Some(fly_b().as_str()),
@@ -419,14 +449,17 @@ async fn a_helper_death_has_a_bounded_diagnosed_outcome(mode: ExecutionMode) {
     let (coordinator, launcher) = f.harness.parts();
     let (stepped, reaped) = tokio::join!(
         async { within("step", coordinator.step()).await },
-        async {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            launcher.kill(&environment).await
-        }
+        // Killed once the world has recorded the batch, which the arena does before its
+        // injected delay. So the Advance provably reached it and the certainty is `unknown`
+        // rather than `none`; a fixed sleep could land before dispatch under load, and then
+        // `none` would be right and this row would be asserting a race.
+        kill_once_it_is_working(launcher, &environment, |status| {
+            status.last_batch_id.is_some()
+        })
     );
     assert_eq!(reaped, ReapOutcome::Terminated);
     let failure = stepped.expect_err("a dead world is a failed epoch");
-    assert!(started.elapsed() < Duration::from_secs(20), "bounded, not a hang");
+    let _ = started;
     assert_eq!(
         failure.participant.as_deref(),
         Some(environment.as_str()),
