@@ -1,0 +1,25 @@
+[package]
+name = "fly-session"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "The lockstep session coordinator, its phase machine and a synthetic composition over flybus."
+
+[lib]
+name = "fly_session"
+path = "src/lib.rs"
+
+[dependencies]
+flybus = { path = "../flybus" }
+
+ryu-js = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
