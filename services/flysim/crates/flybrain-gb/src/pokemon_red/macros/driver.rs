@@ -18,10 +18,10 @@ use crate::macros::{
 
 use super::super::mapgrid::MapGrids;
 use super::super::state::PokeState;
-use super::cartridge::{Areas, MacroState, Pushed, Stood, Talked, Targets, Tile};
+use super::cartridge::{Areas, Frontiers, MacroState, Pushed, Stood, Talked, Targets, Tile};
 use super::geography;
 use super::executor::{MacroAbort, MacroMachine, Refusal};
-use super::palette::{MacroId, Palette};
+use super::palette::{self, MacroId, Palette};
 use super::plan;
 use super::state::{GameState, Scene};
 
@@ -64,6 +64,15 @@ pub struct PokemonPalette {
     /// centre's own map -- which is the moment the errand is discharged. A purchase or a heal marks
     /// nothing: what the errand asked for was the visit. Session state, not checkpointed.
     areas: Areas,
+    /// Maps whose frontier a `GO FRONTIER` has proved unreachable (`docs/design/macros.md`
+    /// section 12.14).
+    ///
+    /// Owned here beside the other session ledgers and written from the same two places they are:
+    /// the machine's refusal on one side and the frame the fly is standing on new ground on the
+    /// other. Like [`Pushed`] it has no window -- ground the map has fenced off is still fenced
+    /// off ten brain minutes later -- and unlike it, it is *cleared*, by the only event that can
+    /// change the answer.
+    frontiers: Frontiers,
     /// Tiles the cartridge pushes the fly off (`infra/docs/macros-traps.md` row 37).
     ///
     /// Owned here beside the other session ledgers and for the same reason. Unlike the target
@@ -79,6 +88,17 @@ pub struct PokemonPalette {
     /// frame. It is a *cache* rather than a ledger: nothing about the run is in it, only what the
     /// cartridge's own tables say about the ground.
     grids: MapGrids,
+    /// The fewest map hops between the fly and its objective this run has managed, and which
+    /// objective that was (`docs/design/macros.md` section 12.15).
+    ///
+    /// Session state beside the ledgers and never checkpointed, and unlike them it is not a fact
+    /// about the map at all: it is the one reading the *sim loop* takes from the macro layer, for
+    /// the ratchet's stall window. The objective is carried with the number because the ladder's
+    /// next rung changes as the run climbs, and "nearer" means nothing across two different
+    /// places.
+    nearest: Option<(u8, u32)>,
+    /// Whether the last `observe` was the frame that number fell on.
+    nearer: bool,
     /// The brain clock of the frame being decided, from [`MacroPalette::clock`].
     ///
     /// The blocked ledger is a *window*, so it needs the same clock the loop publishes rather
@@ -101,8 +121,11 @@ impl PokemonPalette {
             targets: Targets::new(),
             stood: Stood::default(),
             areas: Areas::default(),
+            frontiers: Frontiers::default(),
             pushed: Pushed::default(),
             grids: MapGrids::default(),
+            nearest: None,
+            nearer: false,
             now_ms: 0.0,
         }
     }
@@ -137,6 +160,11 @@ impl PokemonPalette {
         self.pushed.len()
     }
 
+    /// How many maps have proved their frontier unreachable, for a log line and the tests.
+    pub fn exhausted(&self) -> usize {
+        self.frontiers.len()
+    }
+
     /// Take whatever the machine's last finished macro earned into the session's ledgers.
     fn record_talk(&mut self) {
         if let Some((map, target)) = self.machine.take_talked() {
@@ -154,6 +182,11 @@ impl PokemonPalette {
         if let Some((map, tile)) = self.machine.take_pushed() {
             self.pushed.record(map, tile);
         }
+        // A frontier the walk could not reach any of: a fact about this map's ground, with no
+        // window on it (section 12.14).
+        if let Some(map) = self.machine.take_exhausted() {
+            self.frontiers.record(map);
+        }
         if let Some((map, target, closer)) = self.machine.take_timeout() {
             self.targets.record_timeout(map, target, closer);
         }
@@ -167,14 +200,25 @@ impl MacroPalette for PokemonPalette {
     }
 
     fn observe(&mut self, memory: &mut dyn MemoryReader, ledger: &dyn RunLedger) -> Observed {
-        let (scene, bindings, standing) = {
+        let (scene, bindings, standing, approach) = {
             let Self {
-                machine, mode, palette: cached, talked, targets, stood, areas, pushed, grids, ..
+                machine,
+                mode,
+                palette: cached,
+                talked,
+                targets,
+                stood,
+                areas,
+                frontiers,
+                pushed,
+                grids,
+                ..
             } = self;
             let mut state = PokeState::with_ledgers(
                 memory, ledger, talked, targets, &*stood, &*areas, &*pushed,
             )
-            .caching_grid(grids);
+            .caching_grid(grids)
+            .with_frontiers(&*frontiers);
             // `GameState::scene` is `pokemon_red::scene::detect` over the same reader, so the
             // palette and the scene the feed reports cannot disagree about which frame they are
             // for.
@@ -193,13 +237,27 @@ impl MacroPalette for PokemonPalette {
             // -- the coordinates and the loaded map header are from different frames, and a tile
             // recorded from that pair is a tile of nowhere.
             let standing = (!state.scripted()).then(|| state.player()).flatten();
+            // How far the objective is, over the same map graph `GO OBJECTIVE` walks (section
+            // 12.15). Read from the same frame and the same state everything else is, and only
+            // where the fly is its own master, for the same reason the ground is.
+            let approach = standing.and_then(|player| {
+                let objective = palette::objective_place(&mut state)?;
+                let hops =
+                    geography::hops(geography::region_at(player.map, player.y), objective.map)?;
+                Some((objective.map, hops))
+            });
             *cached = Some(palette);
-            (scene, bindings, standing)
+            (scene, bindings, standing, approach)
         };
         // Section 12.7: the macro layer's own answer to "has the run stood here", because the
         // adapter's reward ledger cannot record a doormat.
         if let Some(player) = standing {
-            self.stood.record(player.map, Tile::new(player.x, player.y));
+            // New ground under the fly is the one thing that can change which tiles of this map
+            // it can reach, so it is what clears the map's frontier mark (section 12.14). A tile
+            // the ledger already had changes nothing and clears nothing.
+            if self.stood.record(player.map, Tile::new(player.x, player.y)) {
+                self.frontiers.clear(player.map);
+            }
             // Section 13's `areaVisited(kind, area)`: the errand is paid on *entering*, so the
             // ledger is written from the same frame that records the ground. Standing on the
             // building's own map is the whole test -- the fly is inside it -- and it is written
@@ -212,6 +270,22 @@ impl MacroPalette for PokemonPalette {
                 self.areas.record(kind, area);
             }
         }
+        // Section 12.15: nearer the objective than this run has ever been, which is the other
+        // thing that is plainly progress and which the ratchet's stall window cannot see in the
+        // exploration ledger. A level, true on the frame the number falls and false after, so
+        // there is nothing to checkpoint and nothing to drift. A different objective starts the
+        // measurement again: the ladder's next rung moves as the run climbs and "nearer" means
+        // nothing across two different places.
+        self.nearer = match (self.nearest, approach) {
+            (_, None) => false,
+            (None, Some(_)) => false,
+            (Some((was, best)), Some((map, hops))) => map == was && hops < best,
+        };
+        self.nearest = match (self.nearest, approach) {
+            (_, None) => self.nearest,
+            (Some((was, best)), Some((map, hops))) if map == was => Some((map, best.min(hops))),
+            (_, Some(now)) => Some(now),
+        };
         // The talked entry `observe_frame` may just have earned, into the ledger the next frame
         // reads.
         self.record_talk();
@@ -240,7 +314,8 @@ impl MacroPalette for PokemonPalette {
                 &self.areas,
                 &self.pushed,
             )
-            .caching_grid(&mut self.grids);
+            .caching_grid(&mut self.grids)
+            .with_frontiers(&self.frontiers);
             self.machine.start(&palette, slot, &mut state)
         };
         let started = match begun {
@@ -281,7 +356,8 @@ impl MacroPalette for PokemonPalette {
                 &self.areas,
                 &self.pushed,
             )
-            .caching_grid(&mut self.grids);
+            .caching_grid(&mut self.grids)
+            .with_frontiers(&self.frontiers);
             self.machine.step(&mut state)
         };
         // A macro that just finished may have been the press that talked to something; the ledger
@@ -305,6 +381,10 @@ impl MacroPalette for PokemonPalette {
         Some((name, outcome(abort)))
     }
 
+    fn nearer_the_objective(&self) -> bool {
+        self.nearer
+    }
+
     fn cancel(&mut self) {
         self.machine.cancel();
         // A cancelled macro talked to nothing, and a stale entry would silence a person for the
@@ -317,8 +397,10 @@ impl MacroPalette for PokemonPalette {
         while self.machine.take_blocked().is_some() {}
         let _ = self.machine.take_timeout();
         let _ = self.machine.take_reached();
-        // A rollback is not the map pushing the fly anywhere.
+        // A rollback is not the map pushing the fly anywhere, nor its frontier going out of
+        // reach: the fly is about to be standing somewhere else.
         let _ = self.machine.take_pushed();
+        let _ = self.machine.take_exhausted();
         // The cached palette was dealt for a frame that is being thrown away. Dropping it makes
         // the next `start` before the next `observe` a nameless refusal, which presses nothing
         // and reports nothing, rather than a named refusal against a scene that no longer exists.
@@ -373,6 +455,8 @@ mod tests {
     use crate::adapter::{MapEdge, MapExit};
     use crate::macros::NoLedger;
     use crate::pokemon_red::fake_wram::{REDS_HOUSE_1F, Wram};
+    use crate::pokemon_red::macros::geography::Amenity;
+    use crate::pokemon_red::maps;
     use crate::pokemon_red::macros::cartridge::{Edge, ExitId, MacroState};
 
     /// A ledger with one exit in it, for the wiring test below.
@@ -399,6 +483,95 @@ mod tests {
             Started::Refused { name: None, reason: "unbound" }
         );
         assert_eq!(palette.take_finished(), None);
+    }
+
+    /// A ledger whose objective is one map, for the approach reading below.
+    struct Bound(u8);
+
+    impl RunLedger for Bound {
+        fn exit_visited(&self, _exit: MapExit) -> bool {
+            false
+        }
+
+        fn objective(&self) -> Option<crate::adapter::MapPlace> {
+            Some(crate::adapter::MapPlace {
+                map: self.0,
+                tile: None,
+                warp: None,
+                edge: None,
+                target: None,
+            })
+        }
+    }
+
+    #[test]
+    fn the_objective_getting_nearer_is_read_once_per_step_of_the_road() {
+        // Section 12.15, the rung-10 stall. The ratchet's stall window is reset by ground never
+        // stood on, and a fly walking a road it has already covered earns none -- so this is the
+        // other reading, and what it has to be is a *level* that is true on the frame the hop
+        // count falls and false on every frame after it. Pewter's own museum is the road: the
+        // upper floor is three hops from the gym, the ground floor two, the town one.
+        let mut wram = Wram::new();
+        wram.started().map(maps::PEWTER_MUSEUM_2F, 4, 4, 3, 6).facing(0).house_collision();
+        let mut palette = PokemonPalette::new(7);
+        // Both of Pewter's errands discharged, so the objective is the rung's own place for the
+        // whole test: section 13 puts an unvisited mart or centre *ahead* of it, and that is a
+        // different place to be near.
+        palette.areas.record(Amenity::Mart, maps::PEWTER_CITY);
+        palette.areas.record(Amenity::Center, maps::PEWTER_CITY);
+        let ledger = Bound(maps::PEWTER_GYM);
+
+        palette.observe(&mut wram, &ledger);
+        assert!(!palette.nearer_the_objective(), "the first reading is a measurement, not a step");
+        palette.observe(&mut wram, &ledger);
+        assert!(!palette.nearer_the_objective(), "standing still is not nearer");
+
+        wram.map(maps::PEWTER_MUSEUM_1F, 4, 4, 3, 6);
+        palette.observe(&mut wram, &ledger);
+        assert!(palette.nearer_the_objective(), "down the stairs is one hop nearer");
+        palette.observe(&mut wram, &ledger);
+        assert!(!palette.nearer_the_objective(), "and it is read once, not held");
+
+        // Back upstairs is not progress, and it does not undo the number either: the measurement
+        // is the best this run has managed, so walking the road twice pays once.
+        wram.map(maps::PEWTER_MUSEUM_2F, 4, 4, 3, 6);
+        palette.observe(&mut wram, &ledger);
+        assert!(!palette.nearer_the_objective());
+        wram.map(maps::PEWTER_MUSEUM_1F, 4, 4, 3, 6);
+        palette.observe(&mut wram, &ledger);
+        assert!(!palette.nearer_the_objective(), "ground already gained is not gained again");
+
+        wram.map(maps::PEWTER_CITY, 4, 4, 3, 6);
+        palette.observe(&mut wram, &ledger);
+        assert!(palette.nearer_the_objective(), "out of the front door is nearer still");
+    }
+
+    #[test]
+    fn standing_on_new_ground_is_what_clears_a_maps_frontier_mark() {
+        // Section 12.14's other half, wired: the mark is written by a `GO FRONTIER` that could
+        // reach none of its goals and cleared by the fly standing somewhere on that map it had
+        // not stood on before -- the only event that can change which tiles it can reach. A tile
+        // the stood ledger already has changes nothing, which is what keeps the mark from being
+        // cleared by the fly pacing the ground it has covered.
+        let mut wram = Wram::overworld();
+        let mut palette = PokemonPalette::new(7);
+        palette.frontiers.record(REDS_HOUSE_1F);
+        assert_eq!(palette.exhausted(), 1);
+
+        palette.observe(&mut wram, &NoLedger);
+        assert_eq!(palette.exhausted(), 0, "the first frame is new ground, so it clears");
+
+        palette.frontiers.record(REDS_HOUSE_1F);
+        palette.observe(&mut wram, &NoLedger);
+        assert_eq!(
+            palette.exhausted(),
+            1,
+            "standing on the same tile again is not new ground and clears nothing"
+        );
+
+        wram.map(REDS_HOUSE_1F, 4, 4, 3, 5);
+        palette.observe(&mut wram, &NoLedger);
+        assert_eq!(palette.exhausted(), 0, "a tile the run had not stood on clears it");
     }
 
     #[test]

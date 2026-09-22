@@ -575,6 +575,14 @@ pub struct MacroMachine {
     /// that finds no route to *any* of its goals has failed at all of them, and each is a key.
     blocked: Vec<(u8, TargetKey)>,
     reached: Option<(u8, TargetKey)>,
+    /// A map whose frontier a `GO FRONTIER` has just proved unreachable, waiting to be taken
+    /// into the session's ledger ([`super::cartridge::Frontiers`], section 12.14).
+    ///
+    /// The same shape as `pushed_tile` and for the same reason: it is a fact about the *ground*
+    /// rather than about a target, so the blocked ledger's ten-minute window is the wrong home
+    /// for it -- the window is what brought forty unreachable museum tiles back every ten
+    /// minutes, once per hold, for hours.
+    exhausted: Option<u8>,
     /// A tile the cartridge pushed the fly off, waiting to be taken into the session's ledger.
     ///
     /// Row 37 of `infra/docs/macros-traps.md`: a scripted push-back is a fact about the *ground*,
@@ -651,6 +659,7 @@ impl MacroMachine {
             outcome: None,
             blocked: Vec::new(),
             reached: None,
+            exhausted: None,
             pushed_tile: None,
             timed_out: None,
             resume: VecDeque::new(),
@@ -695,6 +704,13 @@ impl MacroMachine {
             // could not reach is what empties the list and takes the button off the pad.
             if let Some(map) = state.player().map(|player| player.map) {
                 self.blocked.extend(unreachable.into_iter().map(|key| (map, key)));
+                // And for the frontier, the same fact one level up: every tile of this map the
+                // run has not stood on is unreachable from where the fly is standing. The
+                // blocked ledger is a window and this is not -- ground the map has fenced off is
+                // still fenced off ten brain minutes later (section 12.14).
+                if spec.kind == MacroKind::GoFrontier {
+                    self.exhausted = Some(map);
+                }
             }
             return refuse(self, Refusal::NoRoute);
         };
@@ -857,6 +873,11 @@ impl MacroMachine {
         self.reached.take()
     }
 
+    /// The map a `no route` from `GO FRONTIER` earned, taken rather than read (section 12.14).
+    pub fn take_exhausted(&mut self) -> Option<u8> {
+        self.exhausted.take()
+    }
+
     /// The tile a scripted push-back earned, taken rather than read (row 37).
     pub fn take_pushed(&mut self) -> Option<(u8, Tile)> {
         self.pushed_tile.take()
@@ -883,8 +904,10 @@ impl MacroMachine {
         // that so a cancelled queue cannot leak into the next macro's finish.
         self.blocked.clear();
         self.reached = None;
-        // A rollback is not the map pushing the fly anywhere.
+        // A rollback is not the map pushing the fly anywhere, and it is not the frontier being
+        // out of reach either: the fly is about to be somewhere else entirely.
         self.pushed_tile = None;
+        self.exhausted = None;
         self.timed_out = None;
         // A rollback puts the fly somewhere else on the map, so every suspended route is a route
         // from a tile it is no longer standing on. `take_resume` would refuse them one at a time;

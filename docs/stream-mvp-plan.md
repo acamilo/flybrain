@@ -673,3 +673,14 @@ then purge; then the stale-doc pass.
   naming: a merge that stopped short of the TypeScript half, whose absence silently took its own
   test gate with it, and an unchecked addition that would have wrapped in release. Both fixed
   before merge.
+- 2026-09-22 (v0.4.6, loop review, auto): two rollbacks on rung 10. The "BACK in a text box" was
+  a scripted overworld frame with no box (the cartridge holding the joypad) dealt NEXT/BACK; the
+  museum had no map-graph row so no hop reached the gym; a frontier behind the admission desk
+  never retired; the ratchet counted covered ground as no progress. Fixed: a scripted frame with
+  nothing drawn deals nothing; the museum rows are on the graph; an unreachable frontier is a
+  per-map mark; nearer the objective in map hops counts as progress. ROM test: museum to the gym
+  interior on 15 macros, TALK on the pad at the leader. The trap hunt did NOT improve on the
+  reviewer's criterion (tiles 193 -> 175, windows 59 -> 69) because the after arm reaches new
+  ground with a new trap (row 54: GO FRONTIER, GO HEAL, GO ROUTE cycling, GO HEAL x204 at net 0);
+  Fable shipped it anyway: the hunt criterion compares within ground both arms reach, and a trap on
+  newly opened ground is a new row, not a regression. Row 54 review started at once.

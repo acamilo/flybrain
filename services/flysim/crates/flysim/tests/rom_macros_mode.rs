@@ -63,6 +63,10 @@ const VIRIDIAN_FOREST: u32 = 0x33;
 const PEWTER_POKECENTER: u32 = 0x3a;
 /// The upper floor of the Pewter museum, which is the building the rung-10 stall was inside.
 const MUSEUM_2F: u32 = 0x35;
+/// Pewter City and its two museum floors and gym: the rung-10 loop's whole world.
+const PEWTER_CITY: u32 = 0x02;
+const MUSEUM_1F: u32 = 0x34;
+const PEWTER_GYM: u32 = 0x36;
 /// The forest's *northern* gate, which is the first hop from the forest toward Pewter
 /// (`macros::geography`, and rung 10's own road).
 const VIRIDIAN_FOREST_NORTH_GATE: u32 = 0x2f;
@@ -266,6 +270,31 @@ struct Run {
     ///
     /// The door into the ring (section 12.12). `false` is the claim.
     talk_at_a_rested_nurse: bool,
+    /// `BACK` starts on a frame the scene detector called `dialog` or `unknown` (section 12.13).
+    ///
+    /// The same attribution `examples/trap_hunt.rs` makes, so the number is comparable with the
+    /// residual it comes from: **189** `BACK` in a text box on map `0x02` in twenty brain
+    /// minutes, and 678 starts in the 47 live minutes. `BACK` is on no overworld and no dialog
+    /// pad, so every one of them was dealt by `Unknown`.
+    back_in_a_box: u32,
+    /// Frames where the scene was `unknown`, nothing was drawn, and the pad was **not** empty.
+    ///
+    /// Section 12.13's claim, and it is zero: a frame of the overworld the cartridge is driving
+    /// has nothing an A or a B press can do, so it deals nothing and the fly waits.
+    unknown_pads_with_no_box: u32,
+    /// Maps on whose overworld pad `TALK` was ever bound: where the fly stood facing somebody
+    /// this run has not talked to.
+    ///
+    /// Rung 11 is BOULDER BADGE and its place is a *person* in map `0x36`, so "the fly reaches
+    /// the leader" is this map being in the set: the fly inside the gym, in front of one of its
+    /// people, with the press that talks to them on the pad. Whether it presses is the fly's
+    /// (section 12). Read off the shipping pad rather than recomputed, so it cannot disagree
+    /// with what the fly was actually offered.
+    talk_on_pad_by_map: std::collections::BTreeSet<u32>,
+    /// `TALK` starts by map, for the record beside it.
+    talk_starts_by_map: std::collections::BTreeMap<u32, u32>,
+    /// `GO FRONTIER` starts by map, for the museum (section 12.14).
+    frontier_by_map: std::collections::BTreeMap<u32, u32>,
 }
 
 impl Run {
@@ -362,6 +391,11 @@ impl Run {
             prompt_frames: 0,
             next_on_a_prompt: false,
             talk_at_a_rested_nurse: false,
+            back_in_a_box: 0,
+            unknown_pads_with_no_box: 0,
+            talk_on_pad_by_map: std::collections::BTreeSet::new(),
+            talk_starts_by_map: std::collections::BTreeMap::new(),
+            frontier_by_map: std::collections::BTreeMap::new(),
             menu_alternation: 0,
             last_start: None,
         }
@@ -463,6 +497,11 @@ impl Run {
             prompt_frames: 0,
             next_on_a_prompt: false,
             talk_at_a_rested_nurse: false,
+            back_in_a_box: 0,
+            unknown_pads_with_no_box: 0,
+            talk_on_pad_by_map: std::collections::BTreeSet::new(),
+            talk_starts_by_map: std::collections::BTreeMap::new(),
+            frontier_by_map: std::collections::BTreeMap::new(),
             menu_alternation: 0,
             last_start: None,
         }
@@ -766,6 +805,19 @@ impl Run {
                 *self.started_on_the_first_map.entry(name).or_insert(0) += 1;
             }
             *self.started.entry(name).or_insert(0) += 1;
+            // Section 12.13: which of the two `Unknown`s a `BACK` was dealt on, attributed
+            // exactly as the trap hunt attributes it so the numbers can be compared.
+            if name == "BACK" && matches!(self.layer.scene_name(), "dialog" | "unknown") {
+                self.back_in_a_box += 1;
+            }
+            if name == "GO FRONTIER" {
+                let map = self.map();
+                *self.frontier_by_map.entry(map).or_insert(0) += 1;
+            }
+            if name == "TALK" {
+                let map = self.map();
+                *self.talk_starts_by_map.entry(map).or_insert(0) += 1;
+            }
         }
         self.gb.set_buttons(mask as u8);
         self.gb.run_frame().expect("a frame should complete");
@@ -810,6 +862,13 @@ impl Run {
                 }
             }
         }
+        // Section 12.13's claim, per frame: an `Unknown` with nothing drawn deals nothing.
+        if self.layer.scene_name() == "unknown"
+            && !flybrain_gb::pokemon_red::state::text_box(&mut self.gb).open
+            && !self.layer.bound_channels().is_empty()
+        {
+            self.unknown_pads_with_no_box += 1;
+        }
         if self.layer.scene_name() == "overworld"
             && self.rested_nurse()
             && self.layer.bound_channels().iter().any(|channel| channel.as_str() == "macro_talk")
@@ -826,6 +885,11 @@ impl Run {
             }
             if dealt.iter().any(|channel| channel.as_str() == "macro_menu") {
                 self.menu_on_pad.insert(map);
+            }
+            // Standing in front of somebody this run has not talked to, which on the gym's own
+            // map is standing in front of one of the people rung 11's place names.
+            if dealt.iter().any(|channel| channel.as_str() == "macro_talk") {
+                self.talk_on_pad_by_map.insert(map);
             }
             if dealt.is_empty() {
                 self.empty_overworld_pads.insert(map);
@@ -2179,5 +2243,141 @@ fn the_fly_leaves_the_pokemon_center_from_the_rung_ten_checkpoint() {
         run.macros_on_the_first_map < 400,
         "leaving the centre cost {} macros",
         run.macros_on_the_first_map
+    );
+}
+
+/// The rung-10 Pewter checkpoint, or `None` to skip.
+fn pewter_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_PEWTER_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// From the rung-10 Pewter checkpoint: the fly gets out of the museum and into the gym.
+///
+/// **What was live** (2026-09-22, v0.4.5, rank 10 PEWTER CITY, five and a half hours on the
+/// rung): the fly on **map 0x34**, the museum's ground floor, and since the 11:30 restart the
+/// macro starts were `GO FRONTIER` **1,235**, `BACK` **678**, `GO OBJECTIVE` 267, `GO OUT` 242,
+/// `YES` 169 -- with the objective, rung 11's BOULDER BADGE, two doors away in map `0x36`. Two
+/// "Stuck" rollbacks fired inside the last half hour and put the fly back where it started.
+///
+/// **What the survey found** (`infra/docs/macros-traps.md`, 2026-09-22, and
+/// `examples/scene_probe.rs`): three things, none of them the text box the brief expected.
+///
+/// - `BACK` was not in a text box at all. It is on no overworld and no dialog pad, so every one
+///   of those 678 was `Scene::Unknown` -- which is *also* what a frame of the overworld reads as
+///   while the cartridge drives the fly through a door. An A and a B press into somebody else's
+///   script (section 12.13).
+/// - the museum had **no row on the map graph**, so from inside it `next_hop` answered nothing
+///   and `GO OBJECTIVE` had no goal: the road to the gym did not exist indoors (12.7's rule, and
+///   the residual the previous review named).
+/// - the museum's frontier is 39 tiles the run has never stood on, of which almost all are
+///   behind the admission desk: unreachable, refused `no route`, excluded for ten brain minutes
+///   by the blocked ledger and then offered again, once per hold (section 12.14).
+///
+/// The claims, none of them about which button the fly presses:
+///
+/// - the fly reaches **map 0x36**, the gym's own interior, on a bounded number of macros;
+/// - it stands **facing the thing the rung names** while it is there, which is all `GO OBJECTIVE`
+///   ever promises (12.5);
+/// - `BACK` on a `dialog` or `unknown` frame stays **under five**, against 189 in the hunt;
+/// - no frame deals a pad on an `Unknown` with nothing drawn on it.
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_PEWTER_CHECKPOINT=.local/checkpoints/release-rank10-pewter.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture
+/// ```
+#[test]
+fn the_fly_reaches_the_pewter_gym_from_the_rung_ten_checkpoint() {
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = pewter_checkpoint() else {
+        eprintln!("skipped: no FLY_PEWTER_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    let from = run.map();
+    assert_eq!(from, MUSEUM_1F, "the checkpoint is the room the stream stalled in");
+
+    let mut reached = None;
+    let mut macros_to_the_gym = 0;
+    for frame in 0..200_000u32 {
+        run.frame();
+        if reached.is_none() {
+            macros_to_the_gym = run.started.values().sum::<u32>();
+            if run.map() == PEWTER_GYM {
+                reached = Some(frame);
+            }
+        }
+    }
+    eprintln!(
+        "from map {from:#04x} in {:.1} brain minutes: route {:?}, macros {:?}, GO FRONTIER by \
+         map {:?}, TALK on the pad on {:?}, TALK starts {:?}, BACK in a box {}, unknown pads \
+         with no box {}",
+        run.ms / 60_000.0,
+        run.route,
+        run.started,
+        run.frontier_by_map,
+        run.talk_on_pad_by_map,
+        run.talk_starts_by_map,
+        run.back_in_a_box,
+        run.unknown_pads_with_no_box
+    );
+
+    let Some(frame) = reached else {
+        panic!(
+            "the fly never reached the gym (map {:#04x}, route {:?}, macros {:?})",
+            run.map(),
+            run.route,
+            run.started
+        )
+    };
+    let progress = run.adapter.progress();
+    eprintln!(
+        "it reached map {PEWTER_GYM:#04x} on frame {frame}, on {macros_to_the_gym} macros; \
+         the run ends on rank {} ({}) with {} badges",
+        progress.rank,
+        progress.rank_label,
+        run.gb.read_wram(flybrain_gb::pokemon_red::symbols::ram::wObtainedBadges).count_ones()
+    );
+    assert!(
+        macros_to_the_gym < 600,
+        "reaching the gym cost {macros_to_the_gym} macros: {:?}",
+        run.started
+    );
+    assert!(
+        run.talk_on_pad_by_map.contains(&PEWTER_GYM),
+        "the fly never stood in front of one of the gym's people: {:?}",
+        run.talk_on_pad_by_map
+    );
+    assert!(
+        run.objective_on_pad.contains(&PEWTER_GYM),
+        "`GO OBJECTIVE` had nothing to aim at inside the gym: {:?}",
+        run.objective_on_pad
+    );
+    // Section 12.13, against the 189 the hunt measured on map 0x02 alone.
+    assert!(
+        run.back_in_a_box < 5,
+        "`BACK` was dealt {} times on a dialog or unknown frame",
+        run.back_in_a_box
+    );
+    assert_eq!(
+        run.unknown_pads_with_no_box, 0,
+        "a pad was dealt on an unknown frame with nothing drawn on it"
+    );
+    // Section 12.14: the museum's frontier is proved unreachable once and then left alone. The
+    // live run started GO FRONTIER 1,235 times over these two floors and a town.
+    let museum: u32 = run.frontier_by_map.get(&MUSEUM_1F).copied().unwrap_or(0)
+        + run.frontier_by_map.get(&MUSEUM_2F).copied().unwrap_or(0);
+    assert!(
+        museum < 40,
+        "`GO FRONTIER` started {museum} times on the museum's floors: {:?}",
+        run.frontier_by_map
+    );
+    assert!(
+        run.route.contains(&PEWTER_CITY),
+        "the road to the gym is out of the museum's front door: {:?}",
+        run.route
     );
 }

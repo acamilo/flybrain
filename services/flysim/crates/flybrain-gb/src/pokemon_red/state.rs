@@ -25,8 +25,9 @@ use crate::adapter::{MapEdge, MapExit, MapTile, MemoryReader};
 use crate::macros::{RunLedger, NoLedger};
 
 use super::macros::cartridge::{
-    AreaLedger, Edge, ExitId, MacroState, NoAreas, NoPushed, NoStood, NoTalk, NoTargets,
-    Objective, PushedLedger, StoodLedger, TalkLedger, TalkTarget, TargetKey, TargetLedger, Tile,
+    AreaLedger, Edge, ExitId, FrontierLedger, MacroState, NoAreas, NoFrontiers, NoPushed, NoStood,
+    NoTalk, NoTargets, Objective, PushedLedger, StoodLedger, TalkLedger, TalkTarget, TargetKey,
+    TargetLedger, Tile,
 };
 use super::macros::geography::Amenity;
 use super::mapgrid::{self, MapGrids};
@@ -937,6 +938,33 @@ impl GridRefusal {
 /// ([`GridRefusal::NoScreen`]) rather than trusted, because `wOverworldMap` shares its bytes with
 /// the picture buffer and a battle is exactly when the blocks under it are somebody else's.
 pub fn map_grid(memory: &mut dyn MemoryReader) -> Result<MapGrid, GridRefusal> {
+    // The decode first, so a frame with no header answers `NoHeader` rather than whatever the
+    // player's coordinates happen to read as: the refusals are in the order they are checked.
+    let grid = map_grid_decode(memory)?;
+    let player = player(memory).ok_or(GridRefusal::NoPlayer)?;
+    // The cross-check. `map_tile_id` reads the screen buffer at the offset
+    // `_GetTileAndCoordsInFrontOfPlayer` uses, so agreeing with it on the tiles it can answer for
+    // is agreeing with the cartridge's own reading of the same ground.
+    let mut checked = 0;
+    for (x, y) in neighbourhood(player.x, player.y) {
+        let Some(screen) = map_tile_id(memory, x, y) else { continue };
+        if grid.tile_id(x, y) != Some(screen) {
+            return Err(GridRefusal::ScreenDisagrees);
+        }
+        checked += 1;
+    }
+    if checked == 0 {
+        return Err(GridRefusal::NoScreen);
+    }
+    Ok(grid)
+}
+
+/// [`map_grid`] without the cross-check: the blocks, the blockset and the collision list, decoded.
+///
+/// Split out so [`grid_disagreement`] can say what the decode answered on a frame the check
+/// refused. Nothing outside this module and the probes may use it: a grid that has not been
+/// checked against the screen is exactly the reading section 15 refuses to trust.
+fn map_grid_decode(memory: &mut dyn MemoryReader) -> Result<MapGrid, GridRefusal> {
     let size = map_size(memory).ok_or(GridRefusal::NoHeader)?;
     let player = player(memory).ok_or(GridRefusal::NoPlayer)?;
     let passable = collision_list(memory).ok_or(GridRefusal::NoCollisionList)?;
@@ -979,21 +1007,26 @@ pub fn map_grid(memory: &mut dyn MemoryReader) -> Result<MapGrid, GridRefusal> {
     if grid.width() != size.width || grid.height() != size.height {
         return Err(GridRefusal::NoHeader);
     }
-    // The cross-check. `map_tile_id` reads the screen buffer at the offset
-    // `_GetTileAndCoordsInFrontOfPlayer` uses, so agreeing with it on the tiles it can answer for
-    // is agreeing with the cartridge's own reading of the same ground.
-    let mut checked = 0;
-    for (x, y) in neighbourhood(player.x, player.y) {
-        let Some(screen) = map_tile_id(memory, x, y) else { continue };
-        if grid.tile_id(x, y) != Some(screen) {
-            return Err(GridRefusal::ScreenDisagrees);
-        }
-        checked += 1;
-    }
-    if checked == 0 {
-        return Err(GridRefusal::NoScreen);
-    }
     Ok(grid)
+}
+
+/// The decode and the screen, tile by tile, for the five tiles [`map_grid`] cross-checks.
+///
+/// The diagnostic half of [`GridRefusal::ScreenDisagrees`]: the refusal says the two readings
+/// disagree and this says *where* and *by how much*, which is the difference between "the grid is
+/// off on this map" and "this frame was mid-warp". `(x, y, decoded, screen)`, with `None` for a
+/// tile either reading cannot answer for. It decodes the map a second time rather than being
+/// folded into [`map_grid`], because the check's job on the hot path is to refuse and this is only
+/// ever asked by a probe.
+pub fn grid_disagreement(memory: &mut dyn MemoryReader) -> Vec<(u8, u8, Option<u8>, Option<u8>)> {
+    let Some(player) = player(memory) else { return Vec::new() };
+    let grid = map_grid_decode(memory).ok();
+    neighbourhood(player.x, player.y)
+        .into_iter()
+        .map(|(x, y)| {
+            (x, y, grid.as_ref().and_then(|grid| grid.tile_id(x, y)), map_tile_id(memory, x, y))
+        })
+        .collect()
 }
 
 /// Whether a cached grid is still the map that is loaded, checked from the tile the fly is on.
@@ -1164,6 +1197,10 @@ pub struct PokeState<'a> {
     /// ([`PokeState::caching_grid`]) so that a precondition asking for the frontier costs a
     /// refcount instead of a map.
     grids: Option<&'a mut MapGrids>,
+    /// Which maps have proved their frontier unreachable (`docs/design/macros.md` section
+    /// 12.14). A builder rather than a constructor parameter, exactly as the grid cache is: the
+    /// sim loop passes one and everything else narrows to "nothing proved".
+    frontiers: &'a dyn FrontierLedger,
 }
 
 impl<'a> PokeState<'a> {
@@ -1182,6 +1219,7 @@ impl<'a> PokeState<'a> {
             areas: &NoAreas,
             pushed: &NoPushed,
             grids: None,
+            frontiers: &NoFrontiers,
         }
     }
 
@@ -1196,6 +1234,7 @@ impl<'a> PokeState<'a> {
             areas: &NoAreas,
             pushed: &NoPushed,
             grids: None,
+            frontiers: &NoFrontiers,
         }
     }
 
@@ -1213,7 +1252,7 @@ impl<'a> PokeState<'a> {
         areas: &'a dyn AreaLedger,
         pushed: &'a dyn PushedLedger,
     ) -> Self {
-        Self { memory, ledger, talk, targets, stood, areas, pushed, grids: None }
+        Self { memory, ledger, talk, targets, stood, areas, pushed, grids: None, frontiers: &NoFrontiers }
     }
 
     /// Keep the decoded map grid in `grids` instead of decoding it per question.
@@ -1224,6 +1263,16 @@ impl<'a> PokeState<'a> {
     /// cartridge on the first overworld frame after a restore.
     pub fn caching_grid(mut self, grids: &'a mut MapGrids) -> Self {
         self.grids = Some(grids);
+        self
+    }
+
+    /// Answer [`MacroState::frontier_exhausted`] from `frontiers` instead of "nothing proved".
+    ///
+    /// A builder for the same reason the grid cache is one: it is the sim loop's own session
+    /// state ([`super::macros::driver::PokemonPalette`]) and every other caller -- the tests, the
+    /// probes, the ROM harnesses -- wants the narrowing.
+    pub fn with_frontiers(mut self, frontiers: &'a dyn FrontierLedger) -> Self {
+        self.frontiers = frontiers;
         self
     }
 }
@@ -1308,6 +1357,14 @@ impl GameState for PokeState<'_> {
 impl MacroState for PokeState<'_> {
     fn scripted(&mut self) -> bool {
         !controllable(self.memory)
+    }
+
+    fn text_open(&mut self) -> bool {
+        text_box(self.memory).open
+    }
+
+    fn frontier_exhausted(&mut self) -> bool {
+        player(self.memory).is_some_and(|player| self.frontiers.frontier_exhausted(player.map))
     }
 
     fn yes_no_prompt(&mut self) -> bool {
