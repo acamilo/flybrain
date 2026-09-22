@@ -633,3 +633,10 @@ then purge; then the stale-doc pass.
   input-accepting cursor, MOVE 1 is the main menu backstop, the bag is the fly's turn. ROM test
   fails on v0.4.2 and passes here. Trap hunt: 1 -> 260 tiles, windows under four tiles 73 -> 2.
   Ships with map-aware walks. Ethos check held.
+- 2026-09-22 (v0.4.4, loop review, auto): rung 10 reached 06:49 UTC. In the Pewter museum's upper
+  floor every list emptied (no geography row, exhibits reached, staircase blocked-windowed), leaving
+  MENU alone; the menu scene's BACK undid it. MENU is off every pad; a stranded room offers its
+  way out regardless of ledger windows. Also found: the battle menu is two columns, so ITEM opened
+  the party list and SWITCH the bag since v0.4.0; fixed, THROW BALL now 15/0 in the forest run.
+  ROM test fails on v0.4.3 and passes here. Ethos check held. Row 41 (a nurse box answered YES
+  1,278 times) is next.
