@@ -1298,9 +1298,23 @@ fn exit_tiers(state: &mut dyn MacroState, way: Way) -> Vec<Exit> {
         let known_visited = match exit.destination(here) {
             Some(map) => state.map_visited(map),
             // A front door nobody can name opens on the map the fly came in from, which is a map
-            // this run has stood on by construction. Every other unnameable destination stays a
-            // candidate.
-            None => exit.way == Way::Exit,
+            // this run has stood on by construction.
+            None if exit.way == Way::Exit => true,
+            // **An edge the geography table has no row for** (2026-09-22, the rung-11 reading of
+            // row 54). A warp's destination is a byte the cartridge publishes, so `None` there is
+            // the `LAST_MAP` case above; an edge's destination comes only from
+            // [`geography::connected`], so `None` here means the table cannot name the map on the
+            // other side and never will. Route 3 is the measured one: the cartridge reports its
+            // connections as **north and west** while the table carries west and *east*, so its
+            // seven walkable north-edge tiles answered "leads somewhere this run has not stood
+            // on" on every hold for ever, and `GO ROUTE` aimed at them once per hold.
+            //
+            // The only record left is the adapter's own boundary ledger, which is what section
+            // 9.2 replaced as the *general* test and which is still the honest answer for an exit
+            // nothing else can say anything about: an edge the run has already stood on is not
+            // somewhere new. It narrows, so a genuinely new edge is still first-tier until the
+            // fly reaches it.
+            None => state.exit_visited(exit.id),
         };
         if !known_visited {
             fresh.push(*exit);

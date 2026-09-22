@@ -3971,6 +3971,37 @@ fn go_shop_and_go_heal_are_on_the_pad_while_their_errand_stands() {
 }
 
 #[test]
+fn an_edge_the_table_cannot_name_stops_being_somewhere_new_once_it_is_stood_on() {
+    // The rung-11 reading of row 54 (`infra/docs/macros-traps.md`). The cartridge reports Route
+    // 3's connections as north and west; `geography`'s row carries west and east, so the north
+    // edge's destination is unnameable -- and an unnameable destination counted as *unvisited*,
+    // which made those tiles first-tier for `GO ROUTE` on every hold for ever, with
+    // `GO OBJECTIVE` off the pad beside them because nothing on this map leads to the objective.
+    let mut world = World::room();
+    world.map = maps::ROUTE_3;
+    world.size = MapSize { width: 8, height: 8 };
+    world.player = Tile::new(4, 4);
+    world.connections = Connections { north: true, south: false, east: false, west: true };
+    // West is Pewter City, which the table does name and the run has stood on.
+    world.seen_maps.insert(maps::PEWTER_CITY);
+
+    let north: Vec<ExitId> = ways(&mut world, Way::Route).iter().map(|exit| exit.id).collect();
+    assert!(
+        north.iter().all(|id| *id == ExitId::Edge(Edge::North)),
+        "the unnameable north edge is the only fresh way out: {north:?}"
+    );
+
+    // Stood on, and it is no longer somewhere new -- so the walk falls to the tier that leads
+    // toward the objective instead of aiming at the same edge once per hold for ever.
+    world.visited.insert(ExitId::Edge(Edge::North));
+    let left: Vec<ExitId> = ways(&mut world, Way::Route).iter().map(|exit| exit.id).collect();
+    assert!(
+        !left.contains(&ExitId::Edge(Edge::North)),
+        "an edge nothing can name, already crossed, is not first-tier: {left:?}"
+    );
+}
+
+#[test]
 fn an_errand_does_not_settle_on_the_doormat_it_is_standing_on() {
     // Row 54 of `infra/docs/macros-traps.md`, and section 12.2's rule: "a macro that completes
     // without moving because its precondition is already satisfied where the fly stands is a
