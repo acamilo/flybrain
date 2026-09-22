@@ -178,8 +178,40 @@ struct Run {
     /// The rung-9 trap: between turns there is nothing to back out of, so the press completes
     /// where the fly stands and the turn does not move. `false` is the assertion.
     back_without_a_list: bool,
+    /// Where a `BACK` or a `NEXT` on a battle frame was dealt, as `scene/sub-state`.
+    ///
+    /// The bool above says a rule broke; this says on which frame, which is the difference
+    /// between a pad rule to fix and a scene the detector cannot name.
+    battle_back_where: std::collections::BTreeSet<String>,
+    battle_next_where: std::collections::BTreeSet<String>,
     /// Whether `THROW BALL` ever started at a species the party already held (section 12.9).
     threw_at_a_held_species: bool,
+    /// Whether one battle pad ever held both `NEXT` and `BACK` (section 12.10).
+    ///
+    /// The pair is the trap: `NEXT` is the A that advances text, `BACK` is the B that leaves a
+    /// list, and a pad with both has two buttons that undo each other with nothing else changing.
+    next_and_back_on_one_pad: bool,
+    /// Whether `NEXT` was ever on the pad while a battle menu was accepting input.
+    ///
+    /// The live v0.4.2 shape: `NEXT` on the top-level menu was an A press on FIGHT, so it opened
+    /// the move list that `BACK` closed again -- 1264 starts against 1241 in 71 hours.
+    next_on_a_menu_accepting_input: bool,
+    /// The longest chain of battle macro starts that alternated `NEXT`, `BACK`, `NEXT`, `BACK`.
+    ///
+    /// Two is an accident of the rotation; the live log did it for seventy-one hours. Only the
+    /// previous battle start has to be kept to measure the chain.
+    longest_next_back_alternation: u32,
+    alternation: u32,
+    last_battle_start: Option<&'static str>,
+    /// Macros started inside the battle that is running, and the worst any *finished* battle cost.
+    ///
+    /// The claim the rung-9 loop breaks is that a battle **ends**, and that it ends on a bounded
+    /// number of macros rather than on however many holds the 2-cycle takes to fall out of.
+    macros_this_battle: u32,
+    worst_battle_macros: u32,
+    battles_entered: u32,
+    battles_ended: u32,
+    was_in_battle: bool,
     /// Maps on whose *overworld* pad `GO OBJECTIVE` was ever bound.
     ///
     /// The objective is the road out: on rung 9 in the forest it has to be there, or the only way
@@ -256,7 +288,19 @@ impl Run {
             move_button_on_battle_pad: false,
             battle_pad: None,
             back_without_a_list: false,
+            battle_back_where: std::collections::BTreeSet::new(),
+            battle_next_where: std::collections::BTreeSet::new(),
             threw_at_a_held_species: false,
+            next_and_back_on_one_pad: false,
+            next_on_a_menu_accepting_input: false,
+            longest_next_back_alternation: 0,
+            alternation: 0,
+            last_battle_start: None,
+            macros_this_battle: 0,
+            worst_battle_macros: 0,
+            battles_entered: 0,
+            battles_ended: 0,
+            was_in_battle: false,
             objective_on_pad: std::collections::BTreeSet::new(),
         }
     }
@@ -332,7 +376,19 @@ impl Run {
             move_button_on_battle_pad: false,
             battle_pad: None,
             back_without_a_list: false,
+            battle_back_where: std::collections::BTreeSet::new(),
+            battle_next_where: std::collections::BTreeSet::new(),
             threw_at_a_held_species: false,
+            next_and_back_on_one_pad: false,
+            next_on_a_menu_accepting_input: false,
+            longest_next_back_alternation: 0,
+            alternation: 0,
+            last_battle_start: None,
+            macros_this_battle: 0,
+            worst_battle_macros: 0,
+            battles_entered: 0,
+            battles_ended: 0,
+            was_in_battle: false,
             objective_on_pad: std::collections::BTreeSet::new(),
         }
     }
@@ -365,6 +421,37 @@ impl Run {
     ///
     /// Section 12.9's question, through the same seam the macros read: `BACK` is a button where
     /// there is a list to leave and nowhere else.
+    /// Whether the pad on this frame is a **battle** pad.
+    ///
+    /// The scene the palette was dealt for, not `wIsInBattle`. The two differ on the `$ff` frame a
+    /// lost battle passes through and on a Safari or tutorial battle, where `state::battle` reads
+    /// nothing and `scene::detect` answers `Unknown` -- whose pad is `NEXT, BACK` by contract
+    /// (section 12.2, row 9: B is what leaves the Pokédex, the trainer card and OPTION). Asking
+    /// the cartridge byte instead accused that row of a battle rule it is not under.
+    fn battle_pad(&self) -> bool {
+        self.layer.scene_name() == "battle" || self.layer.scene_name() == "battle-switch"
+    }
+
+    /// The battle sub-state the seam reports, as a word, for the record and the failure message.
+    fn battle_sub_state(&mut self) -> &'static str {
+        use flybrain_gb::pokemon_red::macros::state::{BattleMenu, GameState};
+        let ledger = AdapterLedger(&self.adapter);
+        let mut state =
+            flybrain_gb::pokemon_red::state::PokeState::with_ledger(&mut self.gb, &ledger);
+        match state.battle() {
+            None => "no-battle",
+            Some(battle) => match battle.menu {
+                BattleMenu::Main { .. } => "main",
+                BattleMenu::Moves { cursor: Some(_), .. } => "moves",
+                BattleMenu::Moves { cursor: None, .. } => "moves-unplaceable",
+                BattleMenu::Party { .. } if battle.forced_switch => "party-forced",
+                BattleMenu::Party { .. } => "party",
+                BattleMenu::Bag { .. } => "bag",
+                BattleMenu::None => "between-turns",
+            },
+        }
+    }
+
     fn battle_list_open(&mut self) -> bool {
         use flybrain_gb::pokemon_red::macros::state::{BattleMenu, GameState};
         let ledger = AdapterLedger(&self.adapter);
@@ -483,9 +570,30 @@ impl Run {
         }
         // Section 12.9, on the cartridge: `BACK` belongs to a list. A battle frame with no list
         // accepting input and `BACK` on the pad is the rung-9 trap itself.
-        if self.in_battle() != 0 && !self.battle_list_open() {
-            self.back_without_a_list |=
-                bound.iter().any(|channel| channel.as_str() == "macro_back");
+        if self.battle_pad() {
+            let back = bound.iter().any(|channel| channel.as_str() == "macro_back");
+            if back {
+                let where_ = format!("{}/{}", self.layer.scene_name(), self.battle_sub_state());
+                self.battle_back_where.insert(where_);
+            }
+            if back && !self.battle_list_open() {
+                self.back_without_a_list = true;
+            }
+        }
+        // Section 12.10, on the cartridge: no battle pad holds a pair that undoes itself, and
+        // `NEXT` is on no frame with a cursor accepting input. The second is the stronger of the
+        // two -- the live pair was split across two sub-states, so no single pad held both.
+        if self.battle_pad() {
+            let next = bound.iter().any(|channel| channel.as_str() == "macro_next");
+            let back = bound.iter().any(|channel| channel.as_str() == "macro_back");
+            self.next_and_back_on_one_pad |= next && back;
+            if next {
+                let where_ = format!("{}/{}", self.layer.scene_name(), self.battle_sub_state());
+                self.battle_next_where.insert(where_);
+            }
+            if next && self.own_turn() {
+                self.next_on_a_menu_accepting_input = true;
+            }
         }
         // A facing window opens when `TALK`'s channel joins the pad and closes when it leaves.
         let talk_bound = bound.iter().any(|channel| channel.ends_with("talk"));
@@ -506,10 +614,31 @@ impl Run {
                 .collect();
             (decision.mask, started)
         };
+        let in_battle_now = self.in_battle() != 0;
+        let on_a_battle_pad = self.battle_pad();
         for name in started {
             // Section 12.9's other half: a ball is never thrown at a species the party holds.
             if name == "THROW BALL" && self.enemy_species_in_party() {
                 self.threw_at_a_held_species = true;
+            }
+            // Section 12.10's own signature, as the live event log printed it: `NEXT start/done,
+            // BACK start/done`, every hold, for seventy-one hours. Measured as the longest chain
+            // of consecutive battle starts drawn from those two alone and strictly alternating.
+            if in_battle_now {
+                self.macros_this_battle += 1;
+            }
+            if on_a_battle_pad {
+                let two = name == "NEXT" || name == "BACK";
+                self.alternation = match self.last_battle_start {
+                    Some(last) if two && (last == "NEXT" || last == "BACK") && last != name => {
+                        self.alternation.max(1) + 1
+                    }
+                    _ if two => 1,
+                    _ => 0,
+                };
+                self.longest_next_back_alternation =
+                    self.longest_next_back_alternation.max(self.alternation);
+                self.last_battle_start = Some(name);
             }
             *self.started.entry(name).or_insert(0) += 1;
         }
@@ -522,6 +651,24 @@ impl Run {
             let ledger = AdapterLedger(&self.adapter);
             let _ = self.layer.observe(&mut self.gb, &ledger, ms);
         }
+        // Battle boundaries, after the frame: what a battle cost in macros, and whether it ended.
+        let now_in_battle = self.in_battle() != 0;
+        match (self.was_in_battle, now_in_battle) {
+            (false, true) => {
+                self.battles_entered += 1;
+                self.macros_this_battle = 0;
+                self.last_battle_start = None;
+                self.alternation = 0;
+            }
+            (true, false) => {
+                self.battles_ended += 1;
+                self.worst_battle_macros =
+                    self.worst_battle_macros.max(self.macros_this_battle);
+                self.macros_this_battle = 0;
+            }
+            _ => {}
+        }
+        self.was_in_battle = now_in_battle;
         let map = self.map();
         if self.route.last() != Some(&map) && map != u32::MAX {
             self.route.push(map);
@@ -744,7 +891,8 @@ fn forest_checkpoint() -> Option<flysim::store::Checkpoint> {
     )
 }
 
-/// From the rung-9 forest checkpoint: the turns advance, and `BACK` is never a battle's whole pad.
+/// From the rung-9 forest checkpoint: the turns advance, the battles end, and no two buttons on a
+/// battle pad undo each other.
 ///
 /// **What was live** (2026-09-22, `infra/docs/macros-traps.md`): rank 9, VIRIDIAN FOREST, 69 hours
 /// on the rung, the ratchet's three attempts spent, and since the restart the macro starts were
@@ -754,9 +902,18 @@ fn forest_checkpoint() -> Option<flysim::store::Checkpoint> {
 /// `THROW BALL` spent balls on the species already in the party, each catch opening a nickname
 /// screen the pad cannot leave.
 ///
-/// The claim is about the *turn*, not about the fight: that a battle from this state ends, that the
-/// fly's own presses are what ends it, and that neither of the two traps is on the pad any more.
-/// Which move it picks and whether it wins are the fly's.
+/// **What was live again** (2026-09-22, thirty-five minutes after v0.4.2): the same rung, the same
+/// forest, and the macro starts since the restart were `NEXT` 1264, `BACK` 1241, `THROW BALL` 5 and
+/// `GO WARP` 3, the event log alternating `NEXT start/done, BACK start/done` every hold. The pair
+/// was split across two sub-states of one turn, so 12.9's rule held and the loop survived it:
+/// `NEXT` on the top-level menu was an A press on FIGHT, which **opened** the move list, and `BACK`
+/// on the move list **closed** it again. Section 12.10 takes `NEXT` off every pad with a cursor
+/// accepting input and gives the bag its own; `MOVE 1` is the backstop the top-level menu keeps.
+///
+/// The claim is about the *turn*, not about the fight: that a battle from this state ends, that it
+/// ends on a bounded number of macros, that the fly's own presses are what ends it, and that none
+/// of the three traps is on the pad any more. Which move it picks and whether it wins are the
+/// fly's.
 ///
 /// ```sh
 /// FLY_ROM=/path/to/pokemon-red.gb \
@@ -813,9 +970,34 @@ fn the_battles_turns_advance_from_the_rung_nine_forest_checkpoint() {
         run.objective_on_pad
     );
 
-    // The two traps, as assertions on the cartridge.
-    assert!(!run.back_without_a_list, "`BACK` was on a battle pad with no list open");
+    // The traps, as assertions on the cartridge.
+    eprintln!(
+        "`BACK` in a battle was dealt on {:?}; `NEXT` on {:?}",
+        run.battle_back_where, run.battle_next_where
+    );
+    assert!(
+        !run.back_without_a_list,
+        "`BACK` was on a battle pad with no list open: {:?}",
+        run.battle_back_where
+    );
     assert!(!run.threw_at_a_held_species, "a ball was thrown at a species the party holds");
+    // Section 12.10, the two halves of it.
+    assert!(
+        !run.next_and_back_on_one_pad,
+        "a battle pad held both `NEXT` and `BACK`: two buttons that undo each other"
+    );
+    assert!(
+        !run.next_on_a_menu_accepting_input,
+        "`NEXT` was on the pad while a battle menu was accepting input, where A opens rather \
+         than advances"
+    );
+    // And the shape the log had, rather than only the pads it came from. Two in a row is the
+    // rotation happening to deal the pair; the live run did it for seventy-one hours.
+    assert!(
+        run.longest_next_back_alternation < 4,
+        "`NEXT`/`BACK` alternated {} times in a row",
+        run.longest_next_back_alternation
+    );
 
     // The turn moves: the fly's own battle presses happen, and a battle this run entered or
     // resumed finishes.
@@ -828,6 +1010,33 @@ fn the_battles_turns_advance_from_the_rung_nine_forest_checkpoint() {
         .sum();
     assert!(battle_presses > 0, "no move and no ball: {:?}", run.started);
     assert!(ended > 0, "no battle ever ended: {battles} entered");
+    // **Every battle that started, finished**, and each one on a bounded number of macros. That is
+    // the claim the 2-cycle breaks, and the way it breaks it is the opposite of a slow fight: the
+    // battle never leaves the fly's own turn at all, so the count grows with the *run*. On v0.4.2
+    // from this same checkpoint the trap hunt spent all twenty of its brain minutes -- 71,673
+    // frames, 1,489 macros, 73 of 73 windows flagged -- inside **one** battle that never ended,
+    // with `BACK` 739 starts on the move list and `NEXT` 739 on the top-level menu. Four hundred
+    // is generous against the 275 this run's worst battle measured and far under an unbounded
+    // cycle.
+    assert!(
+        run.battles_ended + 1 >= run.battles_entered,
+        "{} battles entered and only {} left: a battle was entered and never got out",
+        run.battles_entered,
+        run.battles_ended
+    );
+    assert!(
+        run.worst_battle_macros > 0 && run.worst_battle_macros < 400,
+        "the worst battle cost {} macros over {} that ended",
+        run.worst_battle_macros,
+        run.battles_ended
+    );
+    eprintln!(
+        "battles: {} entered, {} ended, worst {} macros; longest NEXT/BACK alternation {}",
+        run.battles_entered,
+        run.battles_ended,
+        run.worst_battle_macros,
+        run.longest_next_back_alternation
+    );
     // `BACK` is still pressed, and that is the contract rather than a residual: over the move list
     // and over a one-Pokemon party list it is one of the two answers a list has, and where it
     // leads is a menu with the move buttons on it (row 34). Its share is *reported* -- under this

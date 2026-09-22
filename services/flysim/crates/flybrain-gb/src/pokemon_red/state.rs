@@ -460,11 +460,13 @@ pub fn battle(memory: &mut dyn MemoryReader) -> Option<Battle> {
         // frame is between turns, which is what it was before this change.
         BattleMenu::Moves { cursor, .. } => cursor.is_some(),
         BattleMenu::Party { .. } => !forced_switch,
-        // The bag is a list the fly opened *during* its turn, but it is not the turn's own menu:
-        // the pad that belongs to it is the list's two answers, which is what the between-turns
-        // row deals (`NEXT`, `BACK`). Reporting it as the own turn would put the move buttons on
-        // a screen they cannot press.
-        BattleMenu::Bag { .. } => false,
+        // The bag is a list the fly opened *during* its turn, and it is a menu cursor accepting
+        // input, so by the rule above it is the fly's turn (2026-09-22, section 12.10). Reading it
+        // as nobody's turn put it on the between-turns row, whose one button is the `NEXT` that
+        // advances *text* -- and on an open bag that same A press *uses* whatever the cursor
+        // happens to be sitting on. The pad that belongs to a bag is the bag's own three answers,
+        // `ITEM`, `THROW BALL` and `BACK`, which is what `palette::scene_set` deals here now.
+        BattleMenu::Bag { .. } => true,
         BattleMenu::None => false,
     };
     Some(Battle {

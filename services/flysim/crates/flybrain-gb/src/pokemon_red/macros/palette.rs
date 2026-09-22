@@ -504,35 +504,44 @@ pub fn scene_set(scene: Scene, state: &mut dyn MacroState) -> Vec<MacroKind> {
         // `SWITCH` needs a Pokémon to switch *to* and a forced switch with none leaves a menu the
         // game will not let the fly cancel and a pad with nothing on it (row 8).
         Scene::Battle { forced_switch: true, .. } => vec![Switch, Next],
-        // The fly's turn, by which menu of it is accepting input (section 12.6). `NEXT` is on none
-        // of the two lists: an A press on whatever the cursor happens to be sitting on is what the
-        // live loop was made of.
+        // The fly's turn, by which menu of it is accepting input (section 12.6). **`NEXT` is on
+        // no own-turn pad at all** (section 12.10): it is the A that advances *text*, and on a menu
+        // that is accepting input the same A press opens or confirms whatever the cursor happens to
+        // be sitting on, which is never one of the answers to that menu.
+        //
+        // Live on rung 9 after v0.4.2, 71 hours in Viridian Forest: `NEXT` 1264 macro starts and
+        // `BACK` 1241, the log alternating `NEXT start/done, BACK start/done` every hold. `NEXT` on
+        // the *top-level* menu pressed A on FIGHT and opened the move list; `BACK` on the *move
+        // list* closed it again; neither spent a turn, and the two of them were half the pad
+        // between them. Two buttons that undo each other with nothing else changing are section
+        // 12.2's trap spread over two sub-states of one turn.
         Scene::Battle { own_turn: true, .. } => match battle_menu(state) {
             BattleMenu::Moves { .. } => vec![Move1, Move2, Move3, Move4, Back],
             BattleMenu::Party { .. } => vec![Switch, Back],
-            // The bag reads as nobody's turn (`state::battle`), so it cannot land here; the arm
-            // exists because `own_turn` is a boolean and this match is over the menu.
-            BattleMenu::Bag { .. } => vec![Confirm, Back],
+            // The bag, which is the fly's turn since 12.10. Its three answers: use the thing the
+            // cursor is on (`ITEM`), throw the ball (`THROW BALL`), or leave the list (`BACK`).
+            // `CONFIRM` was an A press on whatever the cursor held, which is the same press
+            // `NEXT` was and reads nothing; the two scripts navigate the list's own cursor.
+            BattleMenu::Bag { .. } => vec![Item, ThrowBall, Back],
+            // `None` cannot land here -- `own_turn` is false for it -- and the arm exists because
+            // `own_turn` is a boolean and this match is over the menu. `MOVE 1` is what keeps this
+            // pad from ever being one the fly cannot end the turn from: FIGHT is one of these four
+            // entries and it always opens (section 12.8), which is the backstop `NEXT` was.
             BattleMenu::Main { .. } | BattleMenu::None => {
-                vec![Move1, Move2, Move3, Move4, Switch, Item, ThrowBall, Run, Next]
+                vec![Move1, Move2, Move3, Move4, Switch, Item, ThrowBall, Run]
             }
         },
         // 2026-09-16 hotfix (live deadlock on Route 1): battle text between turns waits for a
-        // press exactly like a dialog. Section 13.1 added `BACK` here for the bag a battle's ITEM
-        // entry opens, which is none of `BattleMenu`'s three and reads as nobody's turn -- and
-        // section 12.9 narrows it back to that list.
+        // press exactly like a dialog.
         //
-        // **`BACK` is a button only where there is a list to leave.** Live on rung 9, 69 hours in
-        // Viridian Forest: `BACK` was 135 of 183 macro starts since the restart, `RUN blocked,
-        // BACK start, BACK done` over and over. Between turns there is nothing open to back out
-        // of, so the B press changes nothing the `NEXT` beside it does not, the macro completes on
-        // the tile it started on in a handful of frames, and the roll lands on it most holds while
-        // the turn does not move. That is section 12.2's trap exactly: a macro that completes
-        // without moving because its precondition is already satisfied where the fly stands.
-        Scene::Battle { .. } => match battle_menu(state) {
-            BattleMenu::Bag { .. } => vec![Next, Back],
-            _ => vec![Next],
-        },
+        // **One button, and it is the A that advances text.** Section 13.1 added `BACK` here for
+        // the bag, because a bag read as nobody's turn; 12.9 narrowed it back to the bag alone;
+        // 12.10 moves the bag to the own turn where its cursor says it belongs, so nothing is open
+        // on this row any more and nothing but `NEXT` is on it. A frame that reaches here has no
+        // cursor accepting input -- text, an animation, a turn resolving -- so there is nothing to
+        // back out of (`BACK` would be 12.2's trap, the rung-9 loop of 12.9) and nothing for an A
+        // press to open (`NEXT` here cannot be the press that opened a menu, which is 12.10).
+        Scene::Battle { .. } => vec![Next],
         // Section 13: the shop's buttons are the four purchases, plus the two answers any list has.
         Scene::Shop => vec![BuyPotion, BuyBall, BuyAntidote, BuyRepel, Confirm, Leave],
         // Section 13.1: `CONFIRM` as well as `LEAVE`, so a PC the fly opened is a list it can
@@ -1579,7 +1588,18 @@ pub const fn move_index(kind: MacroKind) -> Option<u8> {
 /// one at all -- which nothing in the game reaches -- is the one case that still answers `false`.
 pub fn move_slot_bound(state: &mut dyn MacroState, kind: MacroKind) -> bool {
     let Some(index) = move_index(kind) else { return false };
-    let Some(own) = state.battle().and_then(|battle| battle.own) else { return false };
+    let Some(battle) = state.battle() else { return false };
+    // Over the **top-level menu** the question is section 12.8's -- "is there a move list to
+    // open" -- and FIGHT always opens: what is behind it is the cartridge's business, because
+    // `CheckPlayerHasUsableMoves` prints "has no moves left!" and sets Struggle without opening
+    // the list. `MOVE 1`'s script over that menu is "confirm FIGHT and stop" and reads no move at
+    // all, so the button is bound there whatever the seam can make of the battler. That is the
+    // backstop `NEXT` used to be on this row (section 12.10): the own turn's main menu always has
+    // a button that ends the turn, and it is never one that merely reopens a list.
+    if index == 0 && matches!(battle.menu, BattleMenu::Main { .. }) {
+        return true;
+    }
+    let Some(own) = battle.own else { return false };
     let holds = |slot: usize| -> Option<&Move> {
         own.moves.get(slot).and_then(|entry| entry.as_ref()).filter(|entry| entry.id != 0)
     };
