@@ -364,75 +364,58 @@ async fn write_selected<W: AsyncWrite + Unpin>(
     let mut frame = Vec::with_capacity(bytes.len() + 4);
     frame.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
     frame.extend_from_slice(bytes);
-    {
-        let mut gate = signals.write_gate.lock().unwrap_or_else(|e| e.into_inner());
-        if !gate.begin_frame(frame.len()) {
-            return SelectedWrite::Closing {
-                partial: gate.cut_partial(),
-            };
-        }
+    let closing = || SelectedWrite::Closing {
+        partial: signals.write_gate.cut_partial(),
+    };
+    let interrupted = || io::Error::new(io::ErrorKind::Interrupted, "connection closing");
+    if !signals.write_gate.begin_frame(frame.len()) {
+        return closing();
     }
 
     let mut written = 0;
     while written < frame.len() {
         let polled = std::future::poll_fn(|cx| {
-            let mut gate = signals.write_gate.lock().unwrap_or_else(|e| e.into_inner());
-            if gate.closing() {
-                return std::task::Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "connection closing",
-                )));
+            if !signals.write_gate.enter_poll() {
+                return std::task::Poll::Ready(Err(interrupted()));
             }
-            match std::pin::Pin::new(&mut *wr).poll_write(cx, &frame[written..]) {
+            let polled = std::pin::Pin::new(&mut *wr).poll_write(cx, &frame[written..]);
+            let wrote = match polled {
+                std::task::Poll::Ready(Ok(n)) => n,
+                _ => 0,
+            };
+            signals.write_gate.leave_poll(wrote);
+            match polled {
                 std::task::Poll::Ready(Ok(0)) => std::task::Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::WriteZero,
                     "failed to write router frame",
                 ))),
-                std::task::Poll::Ready(Ok(n)) => {
-                    gate.wrote(n);
-                    std::task::Poll::Ready(Ok(n))
-                }
                 other => other,
             }
         })
         .await;
         match polled {
             Ok(n) => written += n,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {
-                let gate = signals.write_gate.lock().unwrap_or_else(|e| e.into_inner());
-                return SelectedWrite::Closing {
-                    partial: gate.cut_partial(),
-                };
-            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => return closing(),
             Err(_) => return SelectedWrite::Failed,
         }
     }
 
     let flushed = std::future::poll_fn(|cx| {
-        let gate = signals.write_gate.lock().unwrap_or_else(|e| e.into_inner());
-        if gate.closing() {
-            return std::task::Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "connection closing",
-            )));
+        if !signals.write_gate.enter_poll() {
+            return std::task::Poll::Ready(Err(interrupted()));
         }
-        std::pin::Pin::new(&mut *wr).poll_flush(cx)
+        let polled = std::pin::Pin::new(&mut *wr).poll_flush(cx);
+        signals.write_gate.leave_poll(0);
+        polled
     })
     .await;
     if let Err(e) = flushed {
         if e.kind() == io::ErrorKind::Interrupted {
-            let gate = signals.write_gate.lock().unwrap_or_else(|e| e.into_inner());
-            return SelectedWrite::Closing {
-                partial: gate.cut_partial(),
-            };
+            return closing();
         }
         return SelectedWrite::Failed;
     }
-    signals
-        .write_gate
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .finish_frame();
+    signals.write_gate.finish_frame();
     SelectedWrite::Complete
 }
 
@@ -452,13 +435,9 @@ async fn write_loop<W: AsyncWrite + Unpin>(
                 tokio::pin!(write);
                 let selected = tokio::select! {
                     result = &mut write => result,
-                    _ = stopped(&mut shutdown) => {
-                        let gate = signals
-                            .write_gate
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner());
-                        SelectedWrite::Closing { partial: gate.cut_partial() }
-                    }
+                    _ = stopped(&mut shutdown) => SelectedWrite::Closing {
+                        partial: signals.write_gate.cut_partial(),
+                    },
                 };
                 match selected {
                     SelectedWrite::Complete => {}

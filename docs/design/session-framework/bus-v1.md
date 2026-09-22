@@ -43,7 +43,7 @@ Illustrative Rust surface (not yet implemented):
 ```rust
 let bus = Client::connect(config).await?;
 let service = bus.register("agent.fly-a", service_config).await?;
-let reply = bus.call(target, "Agent.Prepare", payload, attachments, budget).await?;
+let reply = timeout(deadline, bus.call(target, "Agent.Prepare", payload, attachments)).await?;
 let subscription = bus.subscribe("session.demo.snapshots", subscription_config).await?;
 bus.publish("session.demo.snapshots", payload, attachments).await?;
 
@@ -422,7 +422,8 @@ Configure limits explicitly; these defaults are a prototype starting point, not 
 | Bounded subscription queued / in-flight deliveries | 64 / 16 |
 | Active owners per client | 256 |
 | Total artifact storage / per object | 512 MiB / 128 MiB |
-| Per-client ordinary queued envelope bytes | 1 MiB |
+| Per-client ordinary bounded queued envelope bytes | 1 MiB |
+| Latest subscription slots | subscriptions × 64 KiB |
 | Reserved management/reply lane | 128 frames and 1 MiB per client |
 
 Reserve an owner allowance for lifecycle/results separately from ordinary telemetry; memory
@@ -438,7 +439,8 @@ bounded; rejected callers choose their own retry/fail/pause policy.
 
 Transport errors include `INVALID_ENVELOPE`, `VERSION_MISMATCH`, `NOT_AUTHORIZED`,
 `NO_SERVICE`, `TARGET_CHANGED`, `BACKPRESSURE`, `CALL_GONE`, `ARTIFACT_UNSEALED`,
-`ARTIFACT_GONE`, `OWNER_INVALID`, `QUOTA_EXCEEDED`, `STORE_FAILURE`, `ROUTER_LOST`.
+`ARTIFACT_GONE`, `OWNER_INVALID`, `QUOTA_EXCEEDED`, `STORE_FAILURE`, `ROUTER_LOST`, and the
+three of section 12.
 Before admission use dispatch:not-dispatched. Once dispatch might have occurred, report
 unknown/dispatched conservatively; a caller-side timeout must not imply no mutation.
 
@@ -484,3 +486,40 @@ pipeline may itself exchange large artifacts through this same bus if useful.
 The first executable example should show a counter RPC, a pub/sub observer, and a frame
 artifact held past message consumption in one small Rust program. No game or browser required.
 Distributed simulation ordering remains the [session contract's](step-v1.md) responsibility.
+
+## 12. Amendments
+
+Draft 1 stands as written above. Each amendment below names something the draft requires but
+left unnamed, and is dated. The implementation and the sentence-by-sentence audit behind these
+entries are in the [conformance report](bus-conformance.md).
+
+**2026-09-22, from the flybus conformance audit.** Three error codes, because section 9's list
+is inclusive and these three refusals had no name:
+
+| Code | Reason |
+| --- | --- |
+| `CONFLICT` | Section 3's duplicate registration, section 5's conflicting topic redeclaration and section 5's `topic.delete` with subscribers are refusals of a live claim, not a missing route, a quota or a bad envelope. |
+| `NO_TOPIC` | Publishing to or subscribing to a name nobody declared is a missing topic, and `NO_SERVICE` names the service case only. |
+| `ARTIFACT_MISMATCH` | Section 9's "hash mismatch returns a typed artifact error", plus a sealed length that disagrees with the allocation and a reference that disagrees with the artifact it names; `STORE_FAILURE` would blame the store for the caller's claim. |
+
+**2026-09-22, same audit.** One added operation, because section 6 requires bounded call
+correlation and gives no way to end it when a handler keeps reply authority after releasing the
+request delivery:
+
+| Command | Body / reply value | Semantics |
+| --- | --- | --- |
+| `rpc.responder.release` | `{callId, requestDeliveryId}` -> `{released}` | The recipient gives up reply authority for a dispatched call. The final release for an attached call retires the correlation and emits `call.failed` with dispatch `dispatched`: `CALL_GONE` while the route is live, `NO_SERVICE` after route loss. Request consumption (section 8.3) stays independent of it. |
+
+Both amendments change `contractDigest`, which section 4 already provides for.
+
+**2026-09-22, coordinator decision on the audit's contradiction 1.** Section 9's table row
+"Per-client ordinary queued envelope bytes | 1 MiB" now reads "Per-client ordinary **bounded**
+queued envelope bytes", and latest slots get their own row, "subscriptions × 64 KiB", because
+section 7's unconditional one-slot guarantee and the structural 1/2 cap outweigh one imprecise
+table row: a budget whose overflow rejects a publication cannot contain a subscription that
+this same section forbids to reject one.
+
+**2026-09-22, coordinator decision on the audit's contradiction 2.** Section 2's sketch no
+longer passes a `budget` into `bus.call` and shows the deadline at the caller instead, because
+section 5's wire contract for `rpc.call` has no budget field and section 2 is self-labelled
+illustrative.

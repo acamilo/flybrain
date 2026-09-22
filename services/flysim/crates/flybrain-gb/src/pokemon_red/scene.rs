@@ -104,7 +104,7 @@ pub fn why_unknown(memory: &mut dyn MemoryReader) -> String {
     let box_corners = state::dialog_corners(memory);
     format!(
         "started={} map={:?} party={} battle={} type={} font={:#04x} textbox={:#04x} \
-         list={:#04x} cursor=({},{},{},{},{:#04x}) joy={} sim={} flags5={:#04x} \
+         list={:#04x} cursor=({},{},{},{},{:#04x}) prompt={} joy={} sim={} flags5={:#04x} \
          flags6={:#04x} move={:#04x} \
          corners=({:#04x},{:#04x},{:#04x},{:#04x})",
         state::started(memory),
@@ -120,6 +120,7 @@ pub fn why_unknown(memory: &mut dyn MemoryReader) -> String {
         memory.read8(ram::wCurrentMenuItem),
         memory.read8(ram::wMaxMenuItem),
         memory.read8(ram::wMenuWatchedKeys),
+        state::yes_no_prompt(memory),
         memory.read8(ram::wJoyIgnore),
         memory.read8(ram::wSimulatedJoypadStatesIndex),
         memory.read8(ram::wStatusFlags5),

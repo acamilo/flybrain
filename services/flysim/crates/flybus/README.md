@@ -10,7 +10,9 @@ ownership; it does not know what the messages mean.
 This crate implements the Flybus v1 draft (session-framework design, `bus-v1`, draft 1 of
 2026-09-18), using the scalar encodings of its companion `ipc-v1` (`Id`, `U64`, `Digest`).
 Where this crate narrows or extends the draft, the difference is listed under
-[Differences from the draft](#differences-from-the-draft).
+[Differences from the draft](#differences-from-the-draft). Every sentence of the draft's
+sections 2 to 11 is audited against this code, with the test that proves it, in
+`docs/design/session-framework/bus-conformance.md`.
 
 Nothing in the crate is specific to a game, a brain or a stream. It is a workspace member and
 no other crate depends on it yet.
@@ -256,11 +258,13 @@ before admission are `not-dispatched`. A command in flight when the connection i
   connection rather than drop a release.
 - **No waiting on readers.** A client that stops reading stalls only its own writer task. The
   router keeps admitting until that client's queues refuse, then returns `BACKPRESSURE` to
-  publishers of bounded topics. Connection teardown is synchronized with each synchronous
-  `poll_write`/`poll_flush` call without holding a mutex across an await. Teardown either observes
-  a complete frame before reclaiming its delivery owner, or marks a partial frame canceled before
-  cleanup and appends no final notice to the truncated stream. At a frame boundary, normal final
-  notices are still attempted.
+  publishers of bounded topics. Connection teardown is ordered against each synchronous
+  `poll_write`/`poll_flush` call without holding a mutex across an await: it marks the stream
+  closing once, without waiting, and only then waits for a poll already in progress, so no
+  later poll reaches the transport however long the writer had been holding it. Teardown either
+  observes a complete frame before reclaiming its delivery owner, or marks a partial frame
+  canceled before cleanup and appends no final notice to the truncated stream. At a frame
+  boundary, normal final notices are still attempted.
 - **RPC.** First dispatch is FIFO per service, which includes per caller. A call is marked
   dispatched when its bytes are about to be written. Replies correlate by call id and may
   arrive in any order. A second reply to one call fails with `CALL_GONE`. A reply to a detached
@@ -276,7 +280,8 @@ before admission are `not-dispatched`. A command in flight when the connection i
 1. **Extra error codes.** `CONFLICT` covers a duplicate registration, a conflicting topic
    redeclaration and deleting a topic that has subscribers. `NO_TOPIC` covers publishing or
    subscribing to an undeclared topic. `ARTIFACT_MISMATCH` covers a seal whose length or digest
-   is wrong, and a reference that disagrees with the artifact it names.
+   is wrong, and a reference that disagrees with the artifact it names. All three are now
+   amendments to the draft (bus-v1 section 12), which its inclusive error list allows.
 2. **Topics must be declared.** Publish and subscribe fail with `NO_TOPIC` otherwise.
    `topic.delete` of an unknown topic returns `deleted:false`. `topic.clear` of an unknown
    topic returns `NO_TOPIC`.
@@ -286,9 +291,11 @@ before admission are `not-dispatched`. A command in flight when the connection i
    - `route.removed` goes to callers with queued or dispatched calls on the removed
      registration, not to every client.
    - `connection.closing` is an extra notice that precedes every router-initiated close.
-4. **Byte budgets.**
+4. **Byte budgets.** No longer a difference: the draft's section 9 table was amended on
+   2026-09-22 to name the bounded pool and to bound latest slots separately.
    - `max_queued_bytes_per_client` counts only `bounded` subscriptions. A `latest` slot is bounded
-     by subscription count times envelope size.
+     by subscription count times envelope size, because a latest subscriber may never be the
+     reason a publication is refused.
    - `max_retained_bytes` (not in the draft's table) counts the artifact bytes pinned by
      retained values, once per topic.
 5. **Delivery size.** Admission computes the delivery's size with the router-added ids at their
@@ -300,11 +307,14 @@ before admission are `not-dispatched`. A command in flight when the connection i
    distinct client id ever seen.
 7. **Seal reply.** The reply's `ownerId` is the writer's own id, now an explicit hold.
 8. **No `budget` argument on calls, and no router executable.** Timeouts are the caller's
-   (`tokio::time::timeout` plus `cancel`). The draft's executable is optional; embed `Router`.
+   (`tokio::time::timeout` plus `cancel`); the draft's section 2 sketch was amended on
+   2026-09-22 to show the deadline there too. The draft's executable is optional; embed
+   `Router`.
 9. **Wire strictness.** Management bodies reject unknown fields. After hello, envelopes must
    carry `minor: 0`.
 10. **Reply capability release.** The SDK sends `rpc.responder.release {callId,
-    requestDeliveryId} -> {released}` when the last local reply capability is dropped. This
+    requestDeliveryId} -> {released}` when the last local reply capability is dropped, an
+    operation the draft does not list and now carries as an amendment (bus-v1 section 12). This
     keeps request consumption independent from late-reply correlation while bounding that
     correlation under the service connection's owner limit. For an attached dispatched call,
     final release atomically retires the correlation and caller slot and emits `call.failed`
@@ -330,13 +340,16 @@ before admission are `not-dispatched`. A command in flight when the connection i
   only when a new router starts on the same root. A directory counts as orphaned when it carries
   the store marker and its `flock` is free.
 - **Rust only.** There are no other language bindings.
-- **Two perf runs.** `tests/perf.rs` (ignored by default) measured 640x480 RGBA frames at
-  60 Hz over a Unix socket to three latest-mode consumers, one delayed 40 ms per frame. It ran
-  twice, on a laptop under WSL, release build, router and clients in one process. Allocate,
-  write and seal took p50 1.2 to 1.3 ms and p99 1.5 to 2.0 ms per 1.2 MB frame. Publish
-  admission took p50 0.2 ms. The RPC round trip took p50 0.24 / 0.29 to 0.31 / 0.50 ms with
-  1 / 2 / 4 agents. The whole process used 0.18 to 0.25 cores and about 15 MB RSS. The store
-  peaked at 3.7 MB. These are two runs, not capacity data.
+- **Two perf runs, not capacity data.** `tests/perf.rs` (ignored by default) measures 640x480
+  RGBA frames at 60 Hz over a Unix socket to three latest-mode consumers, one delayed 40 ms per
+  frame, with 1, 2 and 4 agent services called every frame. The router gets its own two-thread
+  runtime with a distinct thread name, so its CPU is separable from the clients' in the same
+  process. Two release runs on a shared 4-CPU development VM: producer copy into staging p50
+  0.4 ms, seal copy p50 1.1 to 1.4 ms, consumer readback p50 0.7 to 1.0 ms, publish admission
+  p50 0.4 ms, RPC round trip p50 0.5 to 1.1 ms; router 0.18 to 0.22 cores, whole process 0.33
+  to 0.46; 11 to 17 MB RSS; store peak 3.7 MB and zero live after drain. The second run's p99s
+  were three to five times the first's because other work shared the host. The full table, and
+  what it does not claim, are in `docs/design/session-framework/bus-conformance.md`.
 
 ## Tests
 
@@ -368,3 +381,16 @@ socket, through the same router code:
   router restarts.
 - `tests/integration.rs`: two agents called in parallel with a forwarded frame, an environment
   service, committed snapshot publication, a slow latest consumer and a bounded recorder.
+- `tests/bus_acceptance.rs`: the implementation guide's BUS-01/02/03 acceptance bullets that the
+  suites above do not already prove, one test per bullet - a lost result, a retransmission
+  fixture, no failover onto a replacement registration, a status RPC answering while another
+  handler is delayed, and a disconnect that reclaims ownership without touching an open file -
+  plus `both_transports_produce_equivalent_behaviour_traces`, which replays one RPC scenario
+  and one pub/sub-and-artifact scenario through the `Trace` recorder in `tests/common/mod.rs`
+  and requires the two transports to record the same 29 behaviour events. `Trace::record`
+  panics on a router-issued id, so a trace cannot drift into operational detail.
+  `FLYBUS_TRACE=1` prints it.
+  It also holds the two rules an audit reviewer found cited but unproven: a latest subscriber
+  flooded with 100 publications of 60 KB never refuses one, and a topic named exactly like a
+  router notice is still delivered as topic data.
+- `tests/example_demo.rs`: runs `examples/demo.rs` and asserts every line it prints.

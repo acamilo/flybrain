@@ -734,8 +734,17 @@ async fn teardown_waits_for_an_active_transport_poll_before_reclaiming() {
         .store_dir()
         .join("sealed")
         .join(&artifact.reference().artifact_id);
+    // A deliberately large delivery: the transport under the gate writes one byte per poll,
+    // so a writer that resumes cannot possibly finish this frame inside the window between
+    // releasing the held poll and teardown marking the stream closing. Without that, a short
+    // frame sometimes completes first, which is teardown's other legal arm and would make the
+    // assertions below a coin toss rather than a test of the ordering.
     publisher
-        .publish("t.poll-gate", obj(json!({})), &[("data", &artifact)])
+        .publish(
+            "t.poll-gate",
+            obj(json!({"blob": "p".repeat(50_000)})),
+            &[("data", &artifact)],
+        )
         .await
         .unwrap();
     drop(artifact);
@@ -745,19 +754,27 @@ async fn teardown_waits_for_an_active_transport_poll_before_reclaiming() {
     let done = Arc::new(AtomicBool::new(false));
     let shutdown_done = done.clone();
     let shutdown_router = router.clone();
+    // The thread announces itself before calling shutdown, so the assertions below need no
+    // sleep: teardown cannot get past the write gate until the held poll returns, which only
+    // `hold.release()` allows.
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
     let shutdown = std::thread::spawn(move || {
+        started_tx.send(()).expect("the test is waiting");
         shutdown_router.shutdown();
         shutdown_done.store(true, Ordering::SeqCst);
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(
-        !done.load(Ordering::SeqCst),
-        "teardown completed while poll_write was active"
-    );
-    assert!(
-        sealed_path.exists(),
-        "artifact was reclaimed while poll_write was active"
-    );
+    started_rx.recv().expect("shutdown thread started");
+    for _ in 0..64 {
+        assert!(
+            !done.load(Ordering::SeqCst),
+            "teardown completed while poll_write was active"
+        );
+        assert!(
+            sealed_path.exists(),
+            "artifact was reclaimed while poll_write was active"
+        );
+        tokio::task::yield_now().await;
+    }
 
     hold.release();
     shutdown.join().unwrap();
@@ -765,12 +782,23 @@ async fn teardown_waits_for_an_active_transport_poll_before_reclaiming() {
     assert_eq!(router.stats().owners, 0);
     assert_eq!(router.stats().artifacts, 0);
     assert!(!sealed_path.exists());
+    let mut ops = Vec::new();
     while let Some(envelope) = within("poll-gate close", raw.recv()).await {
         assert_ne!(
             envelope.op, "topic.message",
             "delivery completed after teardown reclaimed its owner"
         );
+        ops.push(envelope.op);
     }
+    // The delivery never completes, so only teardown's two shapes are legal: the frame was
+    // cut short and nothing whatever follows it, or it never began and the stream is still
+    // frame aligned, in which case the closing notices are all that follow.
+    assert!(
+        ops.is_empty()
+            || ops == ["subscription.closed".to_owned(), "connection.closing".to_owned()],
+        "a cut stream carries nothing more and an aligned one exactly the closing notices: \
+         {ops:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

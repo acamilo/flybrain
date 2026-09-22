@@ -329,6 +329,131 @@ fn battle_dump(gb: &mut Emulator, adapter: &PokemonRedReward, pad: &[String], la
     println!("- money: {}", state.money());
 }
 
+/// One line of the dialogue box, decoded through `constants/charmap.asm`.
+///
+/// The survey below is about *which box* is open, and the only thing on screen that says so is the
+/// text in it: `wTextBoxID` is `$01` for every ordinary `TX_FAR` box the nurse draws, so the id
+/// cannot tell the welcome from the prompt from the closing line. The tiles can.
+fn box_line(gb: &mut Emulator, y: u16) -> String {
+    (1..19u16)
+        .map(|x| match gb.read8(ram::wTileMap + y * 20 + x) {
+            0x7f => ' ',
+            byte @ 0x80..=0x99 => (b'A' + (byte - 0x80)) as char,
+            byte @ 0xa0..=0xb9 => (b'a' + (byte - 0xa0)) as char,
+            0xba => 'e',
+            0xe3 => '-',
+            0xe6 => '?',
+            0xe7 => '!',
+            0xe8 => '.',
+            0xef => 'M',
+            0xee => '\u{25bc}',
+            byte @ 0xf6..=0xff => (b'0' + (byte - 0xf6)) as char,
+            _ => '.',
+        })
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+}
+
+/// The top-right corner of the screen, where a two-option menu's own little box is drawn: the
+/// tiles at (11..20, 6..11) reduced to which of them hold a text-box frame tile.
+fn corner_box(gb: &mut Emulator) -> String {
+    let mut out = String::new();
+    for y in 6..12u16 {
+        for x in 11..20u16 {
+            let byte = gb.read8(ram::wTileMap + y * 20 + x);
+            out.push(match byte {
+                0x79 | 0x7b | 0x7d | 0x7e => '+',
+                0x7a | 0x7c => '|',
+                0x7f => '_',
+                _ => '.',
+            });
+        }
+        out.push('/');
+    }
+    out
+}
+
+/// Everything that tells one of the nurse's boxes from another, on one line.
+fn nurse_frame(gb: &mut Emulator) -> String {
+    let text = state::text_box(gb);
+    format!(
+        "{:?} open={} waiting={} cursor=({},{},{},{},{:#04x}) yesno={} | {} | {}",
+        scene::detect(gb),
+        text.open,
+        text.waiting,
+        gb.read8(ram::wTopMenuItemY),
+        gb.read8(ram::wTopMenuItemX),
+        gb.read8(ram::wCurrentMenuItem),
+        gb.read8(ram::wMaxMenuItem),
+        gb.read8(ram::wMenuWatchedKeys),
+        corner_box(gb),
+        box_line(gb, 14),
+        box_line(gb, 16),
+    )
+}
+
+/// The Pokémon Center nurse's whole conversation, box by box, with raw presses (row 41).
+///
+/// The rung-10 loop of 2026-09-22 was `YES` 2,142 macro starts on one tile of map `0x3a`, so the
+/// question the fix turns on is **which box each A press answers**. `wTextBoxID` cannot say --
+/// every box the nurse draws is `$01` -- and `docs/design/macros-wram.md` says outright that there
+/// is no "a choice is open" flag, so the reading has to be surveyed: leave the box with B, then
+/// pulse A and print every state the conversation passes through, with the two-option menu's own
+/// geometry beside it. The party is printed first because `HEAL`'s precondition is the party and
+/// the loop's premise is that it is already full.
+fn nurse_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64) {
+    use flybrain_gb::pokemon_red::macros::cartridge::MacroState;
+
+    println!("\n## The party at the checkpoint\n");
+    {
+        let ledger = AdapterLedger(adapter);
+        let mut poke = flybrain_gb::pokemon_red::state::PokeState::with_ledger(gb, &ledger);
+        let state: &mut dyn MacroState = &mut poke;
+        for mon in &state.party().mons {
+            println!(
+                "- slot {} species {:#04x} level {} hp {}/{} status {:?}",
+                mon.slot, mon.species, mon.level, mon.hp, mon.max_hp, mon.status
+            );
+        }
+        println!(
+            "- `party_needs_rest` = {}, `party_rested` = {}",
+            flybrain_gb::pokemon_red::macros::palette::party_needs_rest(state),
+            flybrain_gb::pokemon_red::macros::palette::party_rested(state),
+        );
+    }
+
+    let pulse = |gb: &mut Emulator, adapter: &mut PokemonRedReward, mask: u8, ms: &mut f64| {
+        for phase in 0..16 {
+            gb.set_buttons(if phase < 8 { mask } else { 0 });
+            gb.run_frame().expect("a frame should complete");
+            *ms += MS_PER_FRAME;
+            adapter.sample(gb, *ms);
+        }
+    };
+
+    println!("\n## The nurse's conversation, one raw A pulse at a time\n");
+    println!("- at the checkpoint: {}", nurse_frame(gb));
+    for _ in 0..20 {
+        if scene::detect(gb) == scene::Scene::Overworld {
+            break;
+        }
+        pulse(gb, adapter, flybrain_gb::buttons::B, ms);
+    }
+    println!("- after B until the box closes: {}", nurse_frame(gb));
+    println!("\n```");
+    let mut last = String::new();
+    for index in 0..env_usize("FLY_PROBE_PULSES", 120) {
+        pulse(gb, adapter, flybrain_gb::buttons::A, ms);
+        let now = nurse_frame(gb);
+        if now != last {
+            println!("A#{index:<3} {now}");
+            last = now;
+        }
+    }
+    println!("```");
+}
+
 fn main() {
     let Some(path) = std::env::var_os("FLY_ROM") else {
         println!("FLY_ROM is not set, so there is nothing to probe.");
@@ -367,6 +492,12 @@ fn main() {
     cartridge(&mut gb, &adapter, "The save at the checkpoint");
     dump(&mut gb, "At the checkpoint");
     pad(&mut gb, &adapter, "The pad at the checkpoint");
+
+    let catch_nurse = std::env::var("FLY_PROBE_CATCH").is_ok_and(|value| value == "nurse");
+    if catch_nurse {
+        nurse_survey(&mut gb, &mut adapter, &mut ms);
+        return;
+    }
 
     let budget = env_usize("FLY_PROBE_FRAMES", 200_000);
     let stuck_after = env_usize("FLY_PROBE_STUCK", 600);

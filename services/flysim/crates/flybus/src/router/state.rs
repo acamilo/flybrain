@@ -42,56 +42,98 @@ pub(crate) struct ConnSignals {
     pub wake: Notify,
     /// Flips to true when the connection is closed; both tasks watch it.
     pub shutdown: watch::Sender<bool>,
-    /// Serializes synchronous transport polls with connection teardown. It is never held
-    /// across an await.
-    pub write_gate: std::sync::Mutex<WriteGate>,
+    /// Orders connection teardown against the synchronous transport polls of the writer.
+    pub write_gate: WriteGate,
     /// The last frames to write before closing: a refusal or `connection.closing` notice,
     /// preceded on router shutdown by `subscription.closed` notices.
     pub final_frames: std::sync::Mutex<Vec<Vec<u8>>>,
 }
 
+/// Orders teardown against the writer's synchronous transport polls.
+///
+/// Teardown marks the stream closing *before* it waits for a poll already in progress, so at
+/// most that one poll can still write and every later one is refused, whichever task reaches
+/// the lock first. The earlier design held one mutex across each poll instead, which a writer
+/// sending a frame a byte per poll re-acquired hundreds of times while teardown waited for it:
+/// teardown could be starved for a whole frame and the frame completed just before its
+/// delivery owner was reclaimed. The lock is held only for these bookkeeping steps, never
+/// across an await.
 #[derive(Default)]
 pub(crate) struct WriteGate {
+    state: std::sync::Mutex<GateState>,
+    /// Signalled when a poll leaves the transport.
+    idle: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct GateState {
     closing: bool,
+    /// A writer is inside a synchronous transport poll right now.
+    polling: bool,
     frame_len: usize,
     written: usize,
     cut_partial: bool,
 }
 
 impl WriteGate {
-    pub(crate) fn begin_frame(&mut self, len: usize) -> bool {
-        if self.closing {
+    fn lock(&self) -> std::sync::MutexGuard<'_, GateState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Starts one frame. False once teardown has begun.
+    pub(crate) fn begin_frame(&self, len: usize) -> bool {
+        let mut g = self.lock();
+        if g.closing {
             return false;
         }
-        self.frame_len = len;
-        self.written = 0;
+        g.frame_len = len;
+        g.written = 0;
         true
     }
 
-    pub(crate) fn wrote(&mut self, len: usize) {
-        self.written += len;
-        debug_assert!(self.written <= self.frame_len);
+    /// Claims the transport for one synchronous poll. False once teardown has begun.
+    pub(crate) fn enter_poll(&self) -> bool {
+        let mut g = self.lock();
+        if g.closing {
+            return false;
+        }
+        debug_assert!(!g.polling, "one writer task polls one connection");
+        g.polling = true;
+        true
     }
 
-    pub(crate) fn finish_frame(&mut self) {
-        if !self.closing {
-            debug_assert_eq!(self.written, self.frame_len);
-            self.frame_len = 0;
-            self.written = 0;
+    /// Releases the transport, accounting for what that poll wrote.
+    pub(crate) fn leave_poll(&self, wrote: usize) {
+        let mut g = self.lock();
+        g.polling = false;
+        g.written += wrote;
+        debug_assert!(g.written <= g.frame_len);
+        drop(g);
+        self.idle.notify_all();
+    }
+
+    pub(crate) fn finish_frame(&self) {
+        let mut g = self.lock();
+        if !g.closing {
+            debug_assert_eq!(g.written, g.frame_len);
+            g.frame_len = 0;
+            g.written = 0;
         }
     }
 
-    fn begin_close(&mut self) {
-        self.closing = true;
-        self.cut_partial = self.written > 0 && self.written < self.frame_len;
-    }
-
-    pub(crate) fn closing(&self) -> bool {
-        self.closing
+    /// Refuses every later poll, then waits for one already in progress and records whether it
+    /// left a frame half written. The caller may reclaim owners once this returns.
+    fn begin_close(&self) {
+        let mut g = self.lock();
+        g.closing = true;
+        while g.polling {
+            g = self.idle.wait(g).unwrap_or_else(|e| e.into_inner());
+        }
+        g.cut_partial = g.written > 0 && g.written < g.frame_len;
     }
 
     pub(crate) fn cut_partial(&self) -> bool {
-        self.cut_partial
+        self.lock().cut_partial
     }
 }
 
@@ -100,7 +142,7 @@ impl ConnSignals {
         ConnSignals {
             wake: Notify::new(),
             shutdown: watch::Sender::new(false),
-            write_gate: std::sync::Mutex::new(WriteGate::default()),
+            write_gate: WriteGate::default(),
             final_frames: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -705,15 +747,14 @@ impl State {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .extend(final_frames);
-        // A transport poll that is already in progress finishes before this lock is acquired.
-        // Once acquired, teardown marks the stream closing before reclaiming any owner, and no
-        // later normal-frame poll is allowed through.
-        let mut write_gate = signals.write_gate.lock().unwrap_or_else(|e| e.into_inner());
-        write_gate.begin_close();
+        // Teardown refuses every later transport poll first, then waits for a poll already in
+        // progress, and only then reclaims what the connection owned. So a delivery frame is
+        // either complete before its owner is reclaimed, or left truncated with nothing more
+        // appended to the stream; the writer can never finish it afterwards.
+        signals.write_gate.begin_close();
         self.disconnect(c);
         signals.shutdown.send_replace(true);
         signals.wake.notify_one();
-        drop(write_gate);
         self.flush_notices();
     }
 
