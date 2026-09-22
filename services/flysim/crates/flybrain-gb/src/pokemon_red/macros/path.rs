@@ -13,16 +13,29 @@
 //! minimum Manhattan distance to any goal. That stays admissible because a step costs one and
 //! moves one tile.
 //!
-//! **The walkable predicate has a window.** Agent A's [`Walkable::Unknown`] is load-bearing: the
-//! tile ids a walkability test needs live in the screen buffer, so only the tiles around the
-//! player can be answered at all. An unknown tile is *expensive* to path through rather than
-//! forbidden ([`UNKNOWN_STEP`]): a known-walkable way round is always preferred, and the search
-//! steps into the unknown only when nothing known gets any closer. That is what a map edge six
-//! tiles away needs — it is off the screen by definition, so a search that refused every unknown
-//! tile could not plan a single step toward Route 1 from the middle of Pallet Town, which is half
-//! of why the fly never took it (`infra/docs/macros-bench.md`, 2026-09-16). The guess is cheap and
-//! bounded: [`super::executor`] re-plans after every tile with a per-step check that the player
-//! moved, and three failed steps abort as `Blocked`.
+//! **It plans over the whole map when the map can be decoded** (`docs/design/macros.md` section
+//! 15, the operator 2026-09-22: "the frontier and warp macros need to be map aware: A* over
+//! walkable tiles"). [`MacroState::map_grid`] is every tile of the loaded map, walkability and
+//! directed walls, decoded from the block and collision tables the cartridge has loaded
+//! ([`crate::pokemon_red::mapgrid`]). With it, one plan crosses a town: `GO WARP` routes to its
+//! warp tile, `GO OUT` and `GO ROUTE` to their door or connection tile, and the frontier is the
+//! nearest unstood ground *anywhere on the map* rather than the nearest on screen.
+//!
+//! **Without it, the window is still the fallback.** Agent A's [`Walkable::Unknown`] is
+//! load-bearing on a frame the grid cannot be decoded — no cartridge behind the seam, a battle or
+//! a text box over the map, a header that is not loaded
+//! ([`crate::pokemon_red::state::GridRefusal`] says which): the tile ids a walkability test needs
+//! live in the screen buffer then, so only the tiles around the player can be answered at all. An
+//! unknown tile is *expensive* to path through rather than forbidden ([`UNKNOWN_STEP`]): a
+//! known-walkable way round is always preferred, and the search steps into the unknown only when
+//! nothing known gets any closer. That is what a map edge six tiles away needed — it is off the
+//! screen by definition, so a search that refused every unknown tile could not plan a single step
+//! toward Route 1 from the middle of Pallet Town, which was half of why the fly never took it
+//! (`infra/docs/macros-bench.md`, 2026-09-16).
+//!
+//! Either way the walk is re-planned only when the ground says so — a refusal, or the player not
+//! where the plan expects it — which is [`super::executor`]'s committed route and not this
+//! module's business.
 //!
 //! The search still has its second answer for a goal it cannot reach at all: when no goal is
 //! reachable, it returns the route to the reachable tile that gets closest to one.
@@ -34,7 +47,24 @@ use super::cartridge::{
     Edge, ExitId, LAST_MAP, MacroState, TalkTarget, Tile, destination_outdoors, outdoors,
 };
 use super::geography;
-use super::state::{Facing, Walkable};
+use super::state::{Facing, MapGrid, Walkable};
+
+/// Whether the player could stand on a tile of the current map: the grid's answer, or the
+/// window's when there is no grid.
+///
+/// One place asks the question so that the search, the exit list and the frontier cannot disagree
+/// about which reading they are on (`docs/design/macros.md` section 15).
+fn walkable_at(
+    state: &mut dyn MacroState,
+    grid: Option<&MapGrid>,
+    x: u8,
+    y: u8,
+) -> Walkable {
+    match grid {
+        Some(grid) => grid.walkable(x, y),
+        None => state.walkable(x, y),
+    }
+}
 
 /// What one step onto a tile the walkable predicate cannot answer for costs.
 ///
@@ -156,6 +186,10 @@ pub fn route_avoiding(
     }
     let player = state.player()?;
     let size = state.map_size()?;
+    // One decode per plan, from the cache the sim loop keeps: with a grid the search is over the
+    // whole map, without one it is over the ten-by-nine window as it always was.
+    let grid = state.map_grid();
+    let grid = grid.as_deref();
     let start = Tile::new(player.x, player.y);
     if let Some(goal) = goals.iter().position(|tile| *tile == start) {
         return Some(Route { goal: Some(goal), steps: Vec::new() });
@@ -191,6 +225,12 @@ pub fn route_avoiding(
             if refused.contains(&(tile, facing)) {
                 continue;
             }
+            // A step the *tables* refuse: a tile-pair collision, which is passable ground on both
+            // sides and a wall between them (`mapgrid::TILE_PAIRS_LAND`). The walk used to learn
+            // each of these by spending a step on it; with the grid the first plan goes round.
+            if grid.is_some_and(|grid| grid.walled(tile.x, tile.y, facing)) {
+                continue;
+            }
             // **A tile the cartridge pushes the fly off is not a tile to walk through**, either
             // (row 37 of `infra/docs/macros-traps.md`). Excluding it as a *goal* was half the fix
             // and the measurement said so: Viridian City's (19, 9) went from 53,266 text-box
@@ -200,10 +240,11 @@ pub fn route_avoiding(
             if next != start && state.pushed_tile(next.x, next.y) {
                 continue;
             }
-            let step = match state.walkable(next.x, next.y) {
+            let step = match walkable_at(state, grid, next.x, next.y) {
                 _ if next == start => 1,
                 Walkable::Yes => 1,
-                // Off the screen buffer: plausible ground, priced so that anything known beats it.
+                // Off the screen buffer, or a block the blockset was read short of: plausible
+                // ground, priced so that anything known beats it.
                 Walkable::Unknown => UNKNOWN_STEP,
                 Walkable::No => continue,
             };
@@ -334,6 +375,8 @@ pub fn target_at(state: &mut dyn MacroState, tile: Tile) -> Option<TalkTarget> {
 pub fn exits(state: &mut dyn MacroState) -> Vec<Exit> {
     let Some(size) = state.map_size() else { return Vec::new() };
     let Some(player) = state.player() else { return Vec::new() };
+    let grid = state.map_grid();
+    let grid = grid.as_deref();
     let here_outdoors = outdoors(player.map);
     let mut out = Vec::new();
     for (index, warp) in state.warps().iter().enumerate() {
@@ -373,13 +416,16 @@ pub fn exits(state: &mut dyn MacroState) -> Vec<Exit> {
         let way = if here_outdoors { Way::Route } else { Way::Exit };
         let into = geography::connected(player.map, edge);
         for tile in edge_tiles(facing, size.width, size.height) {
-            // Not `== Yes`: the walkable predicate's window is the screen, so the far edge of an
-            // outdoor map reads `Unknown` from anywhere but next to it, and filtering on `Yes`
-            // left a town's connections out of the exit list entirely -- which is half of why
-            // nothing could ever aim at Route 1 from the middle of Pallet Town. An unknown tile is
-            // a goal worth walking towards; the route search's own approach answer handles a goal
-            // it cannot reach yet, and a tile that turns out to be a wall costs one blocked walk.
-            if state.walkable(tile.x, tile.y) != Walkable::No {
+            // Not `== Yes`: without a grid the walkable predicate's window is the screen, so the
+            // far edge of an outdoor map reads `Unknown` from anywhere but next to it, and
+            // filtering on `Yes` left a town's connections out of the exit list entirely -- which
+            // is half of why nothing could ever aim at Route 1 from the middle of Pallet Town. An
+            // unknown tile is a goal worth walking towards; the route search's own approach answer
+            // handles a goal it cannot reach yet, and a tile that turns out to be a wall costs one
+            // blocked walk. With a grid the answer is `Yes` or `No` for every edge tile of the map
+            // and this rejects the walls, which is what lets one plan reach the right end of a
+            // connection instead of the nearest of twenty tiles along it.
+            if walkable_at(state, grid, tile.x, tile.y) != Walkable::No {
                 out.push(Exit { id: ExitId::Edge(edge), tile, press: Some(facing), way, into });
             }
         }
@@ -396,9 +442,12 @@ pub fn exits(state: &mut dyn MacroState) -> Vec<Exit> {
 /// Each answer is a tile to stand on paired with the direction the new ground lies in, which is
 /// the same shape `GO NPC` and `GO ITEM` use -- and the same press, which in the overworld walks
 /// onto the tile when it is walkable, so the frontier the fly is looking at becomes ground it has
-/// stood on. Both tiles have to be walkable: an unreachable one is not ground, and the walkable
-/// predicate's window means the answer is always local to the player, which is what makes the
-/// re-plan after every tile do the work of a long walk.
+/// stood on. Both tiles have to be walkable: an unreachable one is not ground.
+///
+/// **With a grid this is the whole map** (`docs/design/macros.md` section 15): the nearest unstood
+/// walkable tile anywhere on it, which is what the operator asked for and what the route search
+/// then plans one walk to. Without a grid it is what it always was -- the ten-by-nine window, so
+/// the answer is local to the player and the long walk is done by re-planning.
 ///
 /// Deduplicated by the tile to stand on, in tile order, so the choice between two equally near
 /// frontiers does not depend on iteration order.
@@ -415,13 +464,15 @@ pub fn exits(state: &mut dyn MacroState) -> Vec<Exit> {
 pub fn frontier(state: &mut dyn MacroState) -> Vec<(Tile, Facing)> {
     let Some(size) = state.map_size() else { return Vec::new() };
     let Some(player) = state.player() else { return Vec::new() };
+    let grid = state.map_grid();
+    let grid = grid.as_deref();
     let here = Tile::new(player.x, player.y);
     let held: Vec<Tile> = state.npcs().iter().map(|npc| Tile::new(npc.x, npc.y)).collect();
     let mut out: Vec<(Tile, Facing)> = Vec::new();
     for y in 0..size.height {
         for x in 0..size.width {
             let tile = Tile::new(x, y);
-            if tile != here && state.walkable(x, y) != Walkable::Yes {
+            if tile != here && walkable_at(state, grid, x, y) != Walkable::Yes {
                 continue;
             }
             if tile != here && held.contains(&tile) {
@@ -432,7 +483,12 @@ pub fn frontier(state: &mut dyn MacroState) -> Vec<(Tile, Facing)> {
                 if next.x >= size.width || next.y >= size.height || next == here {
                     continue;
                 }
-                if state.walkable(next.x, next.y) != Walkable::Yes {
+                if walkable_at(state, grid, next.x, next.y) != Walkable::Yes {
+                    continue;
+                }
+                // A step the tables refuse is not a way onto that ground, so the tile it leads to
+                // is not this tile's frontier -- somebody else's, if anything reaches it.
+                if grid.is_some_and(|grid| grid.walled(tile.x, tile.y, facing)) {
                     continue;
                 }
                 if held.contains(&next) {
