@@ -261,15 +261,40 @@ impl Wram {
         self.set(ram::wTextBoxID, poke::BATTLE_MENU_TEMPLATE).cursor(14, x, current, 1, keys)
     }
 
-    /// The move list, `MoveSelectionMenu`'s regular menu. `slot` is the 0-based move.
+    /// The move list, `MoveSelectionMenu`'s regular menu, open and accepting input. `slot` is the
+    /// 0-based move.
+    ///
+    /// Both halves, because since row 50 the seam reads both: the cursor bytes *and* the box the
+    /// menu draws. Use [`Self::move_menu_stale`] for the state a turn spends its text and animation
+    /// in, which is these bytes with no box on screen.
     pub fn move_menu(&mut self, slot: u8, moves: u8) -> &mut Self {
+        self.move_menu_stale(slot, moves).draw_move_list()
+    }
+
+    /// The bytes `MoveSelectionMenu` wrote, with its box no longer on screen.
+    ///
+    /// Nothing in the game clears `wTopMenuItemY` / `wTopMenuItemX` / `wCurrentMenuItem`, so this
+    /// is what every frame of a turn's text, animation and reply reads back once a move has been
+    /// chosen (`infra/docs/macros-traps.md` row 50). Note that `SelectMenuItem` decrements
+    /// `wCurrentMenuItem` back to the 0-based slot on its way out, so `slot` here is one lower than
+    /// the slot the fly chose.
+    pub fn move_menu_stale(&mut self, slot: u8, moves: u8) -> &mut Self {
         self.set(ram::wNumMovesMinusOne, moves.saturating_sub(1)).cursor(
-            12,
-            5,
+            poke::MOVE_LIST_CURSOR_Y,
+            poke::MOVE_LIST_CURSOR_X,
             slot + 1,
             moves + 1,
             poke::pad::UP | poke::pad::DOWN | poke::pad::A,
         )
+    }
+
+    /// The figure `MoveSelectionMenu` draws: a box at (4, 12) with a horizontal run over its
+    /// top-left corner and the `┘` junction at (10, 12).
+    pub fn draw_move_list(&mut self) -> &mut Self {
+        let (left, top, right, bottom) = poke::MOVE_LIST_BOX;
+        self.draw_box(left, top, right, bottom)
+            .screen_tile(left, top, poke::frame::HORIZONTAL)
+            .screen_tile(poke::MOVE_LIST_JOIN, top, poke::frame::BOTTOM_RIGHT)
     }
 
     /// The party list. `forced` is the state `ChooseNextMon` leaves: A only, no way out.

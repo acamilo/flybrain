@@ -87,6 +87,18 @@ pub mod poke {
     pub const YES_NO_CURSOR_Y: u8 = 8;
     pub const YES_NO_CURSOR_X: u8 = 12;
 
+    /// The move list's own box, and the junction tile in its top edge
+    /// (`infra/docs/macros-traps.md`, row 50).
+    ///
+    /// `MoveSelectionMenu`'s regular menu draws a `TextBoxBorder` at (4, 12) fourteen wide and
+    /// four tall, then writes a horizontal run over its top-left corner and a `┘` over (10, 12).
+    /// Values rather than symbols, like `YES_NO_BOX`: this is a figure on screen, not a byte.
+    pub const MOVE_LIST_BOX: (u16, u16, u16, u16) = (4, 12, 19, 17);
+    pub const MOVE_LIST_JOIN: u16 = 10;
+    /// Where `MoveSelectionMenu` parks the shared cursor: row 12, column 5.
+    pub const MOVE_LIST_CURSOR_Y: u8 = 12;
+    pub const MOVE_LIST_CURSOR_X: u8 = 5;
+
     /// `constants/ram_constants.asm`: `wMiscFlags` bit 3.
     pub const BIT_USING_GENERIC_PC: u8 = 1 << 3;
     /// `wFontLoaded` bit 0.
@@ -428,9 +440,22 @@ pub fn battle(memory: &mut dyn MemoryReader) -> Option<Battle> {
         // round, so `ITEM` and `THROW BALL` opened the party list and `SWITCH` opened the bag.
         let column = if right { 2 } else { 0 };
         BattleMenu::Main { cursor: column + cursor.current.min(1) }
-    } else if cursor.top_y == 12 && cursor.top_x == 5 {
+    } else if cursor.top_y == poke::MOVE_LIST_CURSOR_Y
+        && cursor.top_x == poke::MOVE_LIST_CURSOR_X
+        && move_list_drawn(memory)
+    {
         // MoveSelectionMenu's regular menu. Its list is one-based: `wCurrentMenuItem` is
         // `wPlayerMoveListIndex + 1` and `wMaxMenuItem` is the move count plus one.
+        //
+        // **Both halves are load-bearing** (row 50, 2026-09-22). The cursor bytes are written once
+        // and never cleared, so the geometry alone is true for the whole turn -- the text, the
+        // animation, the enemy's reply -- and `SelectMenuItem` decrements `wCurrentMenuItem` back
+        // to a 0-based slot as it leaves, which lands right back inside this accessor's one-based
+        // range. So a frame of battle text read as an open move list with a placeable cursor, the
+        // pad dealt `MOVE 1..4` on it, and the cursor step pressed at a list nobody was reading:
+        // `MOVE n` reported `blocked` 890 times in 1,431 macros. The box on screen is what says the
+        // list is up, and it is the same construction `text_box`'s `waiting` and `yes_no_prompt`
+        // already make.
         let count = read(memory, ram::wNumMovesMinusOne).saturating_add(1).min(4);
         let slot = cursor.current.checked_sub(1).filter(|slot| *slot < count);
         BattleMenu::Moves { cursor: slot, count }
@@ -476,6 +501,10 @@ pub fn battle(memory: &mut dyn MemoryReader) -> Option<Battle> {
         // still 0 rather than the one-based slot the menu keeps. Measured on the cartridge: a wild
         // Weedle's opening frame reads `Moves { cursor: None, count: 2 }` with `own: None`. That
         // frame is between turns, which is what it was before this change.
+        //
+        // A move list that is *not on screen* never reaches this arm at all since row 50: the menu
+        // above reads `None` for it, so the frame is between turns and its pad is the one `NEXT`
+        // that advances text (section 12.10).
         BattleMenu::Moves { cursor, .. } => cursor.is_some(),
         BattleMenu::Party { .. } => !forced_switch,
         // The bag is a list the fly opened *during* its turn, and it is a menu cursor accepting
@@ -574,6 +603,49 @@ pub fn yes_no_prompt(memory: &mut dyn MemoryReader) -> bool {
     }
     let (left, top, right, bottom) = poke::YES_NO_BOX;
     border_drawn(memory, left, top, right, bottom)
+}
+
+/// Whether `MoveSelectionMenu`'s own box is the figure on screen (`infra/docs/macros-traps.md`,
+/// row 50).
+///
+/// The cursor bytes alone are not the move list. `wTopMenuItemY` 12 and `wTopMenuItemX` 5 are
+/// written by `MoveSelectionMenu` and **nothing clears them**, exactly as the two-option box's
+/// geometry outlives its box (`yes_no_prompt` above): the whole rest of the turn -- the text, the
+/// animation, the damage, the enemy's reply -- reads back the same five bytes. Surveyed on the
+/// cartridge over 1,878 battle frames at the rung-9 forest checkpoint, one rollback pulse per frame
+/// (`examples/scene_probe.rs`, `FLY_PROBE_CATCH=accept`): with this box **not** drawn a real
+/// directional press moved `wCurrentMenuItem` on 15 frames of 1,731, and with it drawn on 140 of
+/// 147. The cursor geometry on its own is honoured on 155 of 1,878.
+///
+/// The figure is `MoveSelectionMenu`'s regular menu and only it: a `TextBoxBorder` at (4, 12)
+/// fourteen wide and four tall, with two tiles written over it afterwards -- the top-left corner
+/// becomes a horizontal run and (10, 12) becomes the `┘` junction with the PP box above. The
+/// mimic and relearn menus draw at row 7 and never reach a battle's own turn. Read whole, like
+/// every other box in this module, because a single tile id is an ordinary character.
+fn move_list_drawn(memory: &mut dyn MemoryReader) -> bool {
+    let (left, top, right, bottom) = poke::MOVE_LIST_BOX;
+    if screen_tile(memory, left, top) != poke::frame::HORIZONTAL
+        || screen_tile(memory, poke::MOVE_LIST_JOIN, top) != poke::frame::BOTTOM_RIGHT
+        || screen_tile(memory, right, top) != poke::frame::TOP_RIGHT
+        || screen_tile(memory, left, bottom) != poke::frame::BOTTOM_LEFT
+        || screen_tile(memory, right, bottom) != poke::frame::BOTTOM_RIGHT
+    {
+        return false;
+    }
+    for x in (poke::MOVE_LIST_JOIN + 1)..right {
+        if screen_tile(memory, x, top) != poke::frame::HORIZONTAL {
+            return false;
+        }
+    }
+    for x in (left + 1)..right {
+        if screen_tile(memory, x, bottom) != poke::frame::HORIZONTAL {
+            return false;
+        }
+    }
+    (top + 1..bottom).all(|y| {
+        screen_tile(memory, left, y) == poke::frame::VERTICAL
+            && screen_tile(memory, right, y) == poke::frame::VERTICAL
+    })
 }
 
 /// The four screen tiles the dialogue box's `waiting` test reads, in the order `box_drawn` reads
