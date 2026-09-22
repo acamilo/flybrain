@@ -868,7 +868,17 @@ pub fn errand(state: &mut dyn MacroState, kind: Amenity) -> Option<u8> {
     if kind == Amenity::Mart && state.money() < CHEAPEST_PURCHASE {
         return None;
     }
-    geography::amenity_of(area, kind)
+    let map = geography::amenity_of(area, kind)?;
+    // **A building this run has already been inside is an errand already discharged.** The session
+    // ledger above is the errand's own record and it is the one that can be missing: it is written
+    // from the frame the fly stands on the building's map, so a restore starts with it empty and
+    // the run walks back to a counter it has already used. [`MacroState::map_visited`] is the
+    // adapter's lifetime answer to the same question and it does survive, so the two together are
+    // "has this run been in there", asked twice (`infra/docs/macros-traps.md` row 54).
+    if state.map_visited(map) {
+        return None;
+    }
+    Some(map)
 }
 
 /// The errand `GO OBJECTIVE` puts *ahead* of the rung's place, when this area has one.
@@ -930,7 +940,21 @@ pub fn amenity_goals(state: &mut dyn MacroState, kind: Amenity) -> Vec<Aim> {
         return counter_aims(state, counter_sprite(kind));
     }
     match errand(state, kind) {
-        Some(map) => goals_toward(state, map),
+        Some(map) => {
+            let here = state.player().map(|player| Tile::new(player.x, player.y));
+            goals_toward(state, map)
+                .into_iter()
+                // **An errand arrives inside the building, never on the doormat outside it**
+                // (section 12.2's rule, row 54). An aim with no press settles where it stands, so
+                // an aim on the tile the fly is already on is `Done` in `SETTLE_FRAMES` with the
+                // world exactly as it was -- and a completed errand walk writes the reached ledger,
+                // so the same button is dealt on the next hold and the same nothing happens again:
+                // `GO HEAL` 204 starts at a mean net of 0.0 tiles and a mean reach of 0.0. The same
+                // exclusion [`super::executor::exit_goals`] has made since row 13, for the same
+                // reason, on the one walk that did not have it.
+                .filter(|aim| aim.press.is_some() || Some(aim.tile) != here)
+                .collect()
+        }
         None => Vec::new(),
     }
 }
@@ -1274,9 +1298,23 @@ fn exit_tiers(state: &mut dyn MacroState, way: Way) -> Vec<Exit> {
         let known_visited = match exit.destination(here) {
             Some(map) => state.map_visited(map),
             // A front door nobody can name opens on the map the fly came in from, which is a map
-            // this run has stood on by construction. Every other unnameable destination stays a
-            // candidate.
-            None => exit.way == Way::Exit,
+            // this run has stood on by construction.
+            None if exit.way == Way::Exit => true,
+            // **An edge the geography table has no row for** (2026-09-22, the rung-11 reading of
+            // row 54). A warp's destination is a byte the cartridge publishes, so `None` there is
+            // the `LAST_MAP` case above; an edge's destination comes only from
+            // [`geography::connected`], so `None` here means the table cannot name the map on the
+            // other side and never will. Route 3 is the measured one: the cartridge reports its
+            // connections as **north and west** while the table carries west and *east*, so its
+            // seven walkable north-edge tiles answered "leads somewhere this run has not stood
+            // on" on every hold for ever, and `GO ROUTE` aimed at them once per hold.
+            //
+            // The only record left is the adapter's own boundary ledger, which is what section
+            // 9.2 replaced as the *general* test and which is still the honest answer for an exit
+            // nothing else can say anything about: an edge the run has already stood on is not
+            // somewhere new. It narrows, so a genuinely new edge is still first-tier until the
+            // fly reaches it.
+            None => state.exit_visited(exit.id),
         };
         if !known_visited {
             fresh.push(*exit);

@@ -313,6 +313,27 @@ fn pad(gb: &mut Emulator, adapter: &PokemonRedReward, label: &str) {
             ways.iter().map(|exit| exit.id).collect::<Vec<_>>()
         );
     }
+    // Section 13's two errands, which is what row 54's `GO HEAL` cycle turns on: which building
+    // the errand names, whether the ledgers have paid it, and what the walk would aim at. An aim
+    // with no press settles where it stands, so an aim on the fly's own tile is a macro that
+    // completes without moving.
+    println!("\n### The errands\n");
+    println!("- `area_here` = {:?}", palette::area_here(state));
+    for kind in [geography::Amenity::Mart, geography::Amenity::Center] {
+        let at = geography::amenity_of(palette::area_here(state).unwrap_or(0), kind);
+        let paid = at.is_some_and(|map| state.map_visited(map));
+        println!(
+            "- {kind:?}: building {:?} (map_visited {paid}), `errand` = {:?}, `amenity_goals` = {:?}",
+            at,
+            palette::errand(state, kind),
+            palette::amenity_goals(state, kind),
+        );
+    }
+    println!("- `counter_pending` = {}", palette::counter_pending(state));
+    println!("- `heal_goals` = {:?}", palette::heal_goals(state));
+    println!("- `errand_place` = {:?}", palette::errand_place(state));
+    println!("- `stranded` = {}", palette::stranded(state));
+    println!();
     println!("- `objective_goals` = {:?}", palette::objective_goals(state));
     println!("- `objective_targets` = {:?}", palette::objective_targets(state));
     println!("- `untalked_people` = {:?}", palette::untalked_people(state));
@@ -482,6 +503,113 @@ fn nurse_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64)
     println!("```");
 }
 
+/// The survey the whole-map grid's mid-step refusal turns on (`infra/docs/macros-traps.md` row 54).
+///
+/// Section 15 checks the decode against the screen buffer over the fly's own tile and its four
+/// neighbours, and the residual of 2026-09-22 measured that check refusing on **every frame the
+/// fly is mid-step**: standing still Pewter City decoded on 118 of 120 frames, and the one frame
+/// the survey caught disagreed by exactly one tile row in the direction of travel. A walk planned
+/// on such a frame is planned over the ten-by-nine window, which is the oscillation of row 23.
+///
+/// Two things have to be measured before that can be fixed honestly, and neither can be argued
+/// from the disassembly alone:
+///
+/// 1. **when `wXCoord` / `wYCoord` change** — at the start of a step or at the end of it. That
+///    decides whether the screen is behind the coordinates or the coordinates ahead of the screen.
+/// 2. **which byte says "a step is in progress"**. `docs/design/macros-wram.md` says the reviewed
+///    symbol list carries none, so every plausible candidate is dumped across a whole step and the
+///    one that tracks it is the reading.
+///
+/// It holds one direction from the checkpoint and prints a line per frame: the coordinates, the
+/// grid's verdict, the tiles the cross-check disagreed on, and the candidates.
+fn step_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64) {
+    use flybrain_gb::pokemon_red::macros::state::Walkable;
+
+    let frames = env_usize("FLY_PROBE_STEP_FRAMES", 96);
+    let step = |gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64, mask: u8| {
+        gb.set_buttons(mask);
+        gb.run_frame().expect("a frame should complete");
+        *ms += MS_PER_FRAME;
+        adapter.sample(gb, *ms);
+    };
+
+    // Somewhere the fly is its own master and the map is on screen, so that a refusal below is
+    // about the step and not about a text box.
+    for _ in 0..600 {
+        if scene::detect(gb) == scene::Scene::Overworld && state::controllable(gb) {
+            break;
+        }
+        step(gb, adapter, ms, flybrain_gb::buttons::B);
+    }
+
+    let Some(here) = state::player(gb) else {
+        println!("\nNo player at the checkpoint, so there is no step to survey.");
+        return;
+    };
+    println!("\n## The mid-step survey, on map {:#04x} from ({}, {})\n", here.map, here.x, here.y);
+
+    // A direction with walkable ground on the other side of it, so the hold is a step rather than
+    // a turn into a wall.
+    let facings = [
+        (flybrain_gb::buttons::DOWN, 0i16, 1i16, "DOWN"),
+        (flybrain_gb::buttons::UP, 0, -1, "UP"),
+        (flybrain_gb::buttons::LEFT, -1, 0, "LEFT"),
+        (flybrain_gb::buttons::RIGHT, 1, 0, "RIGHT"),
+    ];
+    let mut chosen = None;
+    for (mask, dx, dy, name) in facings {
+        let (Ok(x), Ok(y)) =
+            (u8::try_from(i16::from(here.x) + dx), u8::try_from(i16::from(here.y) + dy))
+        else {
+            continue;
+        };
+        if state::walkable(gb, x, y) == Walkable::Yes {
+            chosen = Some((mask, name));
+            break;
+        }
+    }
+    let Some((mask, name)) = chosen else {
+        println!("Every neighbour of the fly is a wall, so there is no step to survey.");
+        return;
+    };
+    println!("Holding {name} for {frames} frames.\n");
+    println!("```");
+    println!(
+        "frame  coords    grid                            s1+1,+3,+5,+7,+8,+9  scy scx  cfc5 d730 d736"
+    );
+    for frame in 0..frames {
+        let sprite: Vec<String> = [1u16, 3, 5, 7, 8, 9]
+            .into_iter()
+            .map(|offset| format!("{:02x}", gb.read8(ram::wSpriteStateData1 + offset)))
+            .collect();
+        let scy = gb.read8(0xff42);
+        let scx = gb.read8(0xff43);
+        let cfc5 = gb.read8(0xcfc5);
+        let d730 = gb.read8(ram::wStatusFlags5);
+        let d736 = gb.read8(ram::wMovementFlags);
+        let verdict = match state::map_grid(gb) {
+            Ok(_) => "ok".to_string(),
+            Err(refusal) => {
+                let shown: Vec<String> = state::grid_disagreement(gb)
+                    .into_iter()
+                    .filter(|(_, _, decoded, screen)| decoded != screen)
+                    .map(|(x, y, decoded, screen)| format!("({x},{y}){decoded:?}/{screen:?}"))
+                    .collect();
+                format!("{} {}", refusal.label(), shown.join(" "))
+            }
+        };
+        let coords = state::player(gb)
+            .map(|player| format!("({:>2},{:>2})", player.x, player.y))
+            .unwrap_or_else(|| "  none  ".to_string());
+        println!(
+            "{frame:>5}  {coords}  {verdict:<30}  {}  {scy:>3} {scx:>3}  {cfc5:02x}   {d730:02x}   {d736:02x}",
+            sprite.join(",")
+        );
+        step(gb, adapter, ms, mask);
+    }
+    println!("```");
+}
+
 fn main() {
     let Some(path) = std::env::var_os("FLY_ROM") else {
         println!("FLY_ROM is not set, so there is nothing to probe.");
@@ -524,6 +652,13 @@ fn main() {
     let catch_nurse = std::env::var("FLY_PROBE_CATCH").is_ok_and(|value| value == "nurse");
     if catch_nurse {
         nurse_survey(&mut gb, &mut adapter, &mut ms);
+        return;
+    }
+
+    // Row 54's mid-step survey: hold one direction and watch the grid's cross-check, the
+    // coordinates and every candidate for "a step is in progress" across a whole step.
+    if std::env::var("FLY_PROBE_CATCH").is_ok_and(|value| value == "step") {
+        step_survey(&mut gb, &mut adapter, &mut ms);
         return;
     }
 

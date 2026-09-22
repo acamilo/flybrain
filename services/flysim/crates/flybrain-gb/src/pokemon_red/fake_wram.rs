@@ -413,6 +413,64 @@ impl Wram {
         self
     }
 
+    /// A map ten blocks by nine -- twenty tiles by eighteen, wider than the ten-by-nine window
+    /// -- with a wall down one column of blocks, and a screen buffer that agrees with it.
+    ///
+    /// The three tables the grid is decoded from, all synthetic: block ids in `wOverworldMap`, a
+    /// blockset in a ROM bank that is not bank 0, and a collision list in bank 0 where
+    /// `wTilesetCollisionPtr` points. The blocks and the blockset come back so that a caller can
+    /// redraw the screen ([`Wram::mid_step`]).
+    pub fn town() -> (Self, Vec<u8>, Vec<[u8; 16]>) {
+        const FLOOR: u8 = 0x01;
+        let blockset = vec![[FLOOR; 16], [WALL_TILE; 16]];
+        let (wide, high) = (10usize, 9usize);
+        let mut blocks = vec![0u8; wide * high];
+        for row in 0..high {
+            blocks[row * wide + 5] = 1;
+        }
+        // Two landmarks beside the fly's own tile, one on each axis. A map whose neighbourhood is
+        // the same tile id in every direction cannot tell a view centred on the fly from a view
+        // centred one tile away, which is exactly what a mid-step frame is ([`Wram::mid_step`]).
+        // The fly stands on (3, 4) of the decoded map: these make (2..3, 2..3) and (0..1, 4..5)
+        // wall, leaving (3, 4) and every tile it can step to walkable.
+        blocks[wide + 1] = 1;
+        blocks[2 * wide] = 1;
+        let mut wram = Self::new();
+        wram.started()
+            .map(PALLET_TOWN, wide as u8, high as u8, 3, 4)
+            .facing(0)
+            .house_collision()
+            .tileset(0)
+            .blockset(&blockset)
+            .map_blocks(&blocks)
+            .fill_screen(WALL_TILE)
+            .screen_from_blocks(&blocks, &blockset);
+        (wram, blocks, blockset)
+    }
+
+    /// The screen buffer centred one tile away from `wXCoord` / `wYCoord`, which is what a frame
+    /// **mid-step** looks like on the cartridge.
+    ///
+    /// Measured 2026-09-22 (`infra/docs/macros-traps.md` row 54): the coordinates change at the
+    /// *end* of a sixteen-frame step and the background scrolls throughout it, so for fifteen
+    /// frames of every sixteen the two readings are one tile apart in the direction of travel.
+    /// This draws exactly that: the view is rendered from `(x + dx, y + dy)` and the coordinates
+    /// are put back.
+    pub fn mid_step(
+        &mut self,
+        dx: i16,
+        dy: i16,
+        blocks: &[u8],
+        blockset: &[[u8; 16]],
+    ) -> &mut Self {
+        let (x, y) = (self.peek(ram::wXCoord), self.peek(ram::wYCoord));
+        self.set(ram::wXCoord, (i16::from(x) + dx) as u8);
+        self.set(ram::wYCoord, (i16::from(y) + dy) as u8);
+        self.fill_screen(WALL_TILE).screen_from_blocks(blocks, blockset);
+        self.set(ram::wXCoord, x).set(ram::wYCoord, y);
+        self
+    }
+
     /// A playable overworld frame: Red's ground floor, the fly standing where a cold boot's walk
     /// out of the bedroom lands it, every tile a wall until a test opens one.
     pub fn overworld() -> Self {

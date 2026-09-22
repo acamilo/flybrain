@@ -685,24 +685,7 @@ fn the_live_implementation_answers_the_whole_trait() {
 /// blockset in a ROM bank that is not bank 0, and a collision list in bank 0 where
 /// `wTilesetCollisionPtr` points.
 fn town() -> (Wram, Vec<u8>, Vec<[u8; 16]>) {
-    const FLOOR: u8 = 0x01;
-    let blockset = vec![[FLOOR; 16], [WALL_TILE; 16]];
-    let (wide, high) = (10usize, 9usize);
-    let mut blocks = vec![0u8; wide * high];
-    for row in 0..high {
-        blocks[row * wide + 5] = 1;
-    }
-    let mut wram = Wram::new();
-    wram.started()
-        .map(fake_wram::PALLET_TOWN, wide as u8, high as u8, 3, 4)
-        .facing(0)
-        .house_collision()
-        .tileset(0)
-        .blockset(&blockset)
-        .map_blocks(&blocks)
-        .fill_screen(WALL_TILE)
-        .screen_from_blocks(&blocks, &blockset);
-    (wram, blocks, blockset)
+    Wram::town()
 }
 
 #[test]
@@ -728,6 +711,43 @@ fn the_whole_map_decodes_from_the_block_and_collision_tables() {
             }
         }
     }
+}
+
+#[test]
+fn a_frame_mid_step_is_read_from_the_tile_the_screen_is_centred_on() {
+    // Row 54 of `infra/docs/macros-traps.md`, measured on the cartridge: `wXCoord` and `wYCoord`
+    // change at the *end* of a step, so for fifteen frames of every sixteen the screen buffer is
+    // centred one tile ahead of them. The old cross-check compared the decode of the fly's tile
+    // against the screen's reading of the tile ahead and refused; Pewter City decoded on 118 of
+    // 120 standing frames and on none of the moving ones, and every walk the fly actually took was
+    // planned over the ten-by-nine window instead.
+    let (mut wram, blocks, blockset) = town();
+    wram.mid_step(-1, 0, &blocks, &blockset);
+
+    // The trap itself, stated as a reading: the two answers for a tile beside the fly disagree.
+    let naive = map_tile_id(&mut wram, 2, 4);
+    let grid = map_grid(&mut wram).expect("a mid-step frame still decodes");
+    assert_ne!(grid.tile_id(2, 4), naive, "the screen is one column ahead of the coordinates");
+    assert_eq!(grid.tile_id(1, 4), naive, "and that column is the one the step is landing on");
+
+    // Which is what the reader now says out loud, for the stood ledger.
+    assert_eq!(step_destination(&mut wram, &grid), Some((2, 4)));
+    // Standing still there is no step to name.
+    let (mut still, _, _) = town();
+    let standing = map_grid(&mut still).expect("a decodable map");
+    assert_eq!(step_destination(&mut still, &standing), None);
+}
+
+#[test]
+fn a_decode_the_screen_disagrees_with_is_refused_mid_step_too() {
+    // The check has to keep refusing a decode that is simply wrong, and the anchor search is what
+    // could have weakened it: five anchors instead of one. A wrong stride, a wrong quadrant or a
+    // half-loaded map agrees with none of them, because the whole neighbourhood has to agree under
+    // one anchor rather than each tile finding an anchor of its own.
+    let (mut wram, blocks, blockset) = town();
+    wram.mid_step(-1, 0, &blocks, &blockset);
+    wram.map_tile(3, 4, 0x77);
+    assert_eq!(map_grid(&mut wram), Err(GridRefusal::ScreenDisagrees));
 }
 
 #[test]

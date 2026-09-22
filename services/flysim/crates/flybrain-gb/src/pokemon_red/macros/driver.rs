@@ -200,7 +200,7 @@ impl MacroPalette for PokemonPalette {
     }
 
     fn observe(&mut self, memory: &mut dyn MemoryReader, ledger: &dyn RunLedger) -> Observed {
-        let (scene, bindings, standing, approach) = {
+        let (scene, bindings, standing, stepping, approach) = {
             let Self {
                 machine,
                 mode,
@@ -237,6 +237,9 @@ impl MacroPalette for PokemonPalette {
             // -- the coordinates and the loaded map header are from different frames, and a tile
             // recorded from that pair is a tile of nowhere.
             let standing = (!state.scripted()).then(|| state.player()).flatten();
+            // And the tile the step in flight is landing on (row 54). Read from the same frame and
+            // behind the same "the fly is its own master" gate as the ground itself.
+            let stepping = standing.and_then(|_| state.stepping_onto());
             // How far the objective is, over the same map graph `GO OBJECTIVE` walks (section
             // 12.15). Read from the same frame and the same state everything else is, and only
             // where the fly is its own master, for the same reason the ground is.
@@ -247,7 +250,7 @@ impl MacroPalette for PokemonPalette {
                 Some((objective.map, hops))
             });
             *cached = Some(palette);
-            (scene, bindings, standing, approach)
+            (scene, bindings, standing, stepping, approach)
         };
         // Section 12.7: the macro layer's own answer to "has the run stood here", because the
         // adapter's reward ledger cannot record a doormat.
@@ -256,6 +259,16 @@ impl MacroPalette for PokemonPalette {
             // it can reach, so it is what clears the map's frontier mark (section 12.14). A tile
             // the ledger already had changes nothing and clears nothing.
             if self.stood.record(player.map, Tile::new(player.x, player.y)) {
+                self.frontiers.clear(player.map);
+            }
+            // The tile a step in flight is landing on is ground this run has covered: the
+            // cartridge owns the animation and no press stops it, and the screen has already
+            // centred on it. Without this the fly's own next tile is a frontier for the fifteen
+            // frames it takes to get there, which `GO FRONTIER` arrives at without moving
+            // (`infra/docs/macros-traps.md` row 54).
+            if let Some(onto) = stepping
+                && self.stood.record(player.map, onto)
+            {
                 self.frontiers.clear(player.map);
             }
             // Section 13's `areaVisited(kind, area)`: the errand is paid on *entering*, so the
@@ -454,7 +467,7 @@ mod tests {
     use super::*;
     use crate::adapter::{MapEdge, MapExit};
     use crate::macros::NoLedger;
-    use crate::pokemon_red::fake_wram::{REDS_HOUSE_1F, Wram};
+    use crate::pokemon_red::fake_wram::{self, REDS_HOUSE_1F, WALL_TILE, Wram};
     use crate::pokemon_red::macros::geography::Amenity;
     use crate::pokemon_red::maps;
     use crate::pokemon_red::macros::cartridge::{Edge, ExitId, MacroState};
@@ -466,6 +479,34 @@ mod tests {
         fn exit_visited(&self, exit: MapExit) -> bool {
             exit == self.0
         }
+    }
+
+    #[test]
+    fn the_tile_a_step_is_landing_on_is_ground_the_run_has_covered() {
+        // Row 54 of `infra/docs/macros-traps.md`. `wXCoord` and `wYCoord` are the tile the step
+        // began on until the frame it ends, so without this the ground under the fly is unrecorded
+        // for fifteen frames of every sixteen: `path::frontier` keeps offering the tile the fly is
+        // already halfway onto, `GO FRONTIER` is dealt aiming at it, and `Arrival::Step` reports
+        // `done` the instant the step it did not make lands -- a macro that completes without
+        // changing anything, which is section 12.2's trap.
+        let (mut wram, blocks, blockset) = Wram::town();
+        let mut palette = PokemonPalette::new(7);
+        palette.observe(&mut wram, &NoLedger);
+        assert_eq!(palette.stood(), 1, "standing still, the tile under the fly and nothing else");
+
+        // Mid-step west: the coordinates still read (3, 4), the screen is already centred on
+        // (2, 4).
+        wram.mid_step(-1, 0, &blocks, &blockset);
+        palette.observe(&mut wram, &NoLedger);
+        assert_eq!(palette.stood(), 2, "and the tile the step is landing on");
+
+        // The step lands. The ledger had it already, so nothing new is recorded and the frontier
+        // mark is not cleared a second time.
+        wram.map(fake_wram::PALLET_TOWN, 10, 9, 2, 4)
+            .fill_screen(WALL_TILE)
+            .screen_from_blocks(&blocks, &blockset);
+        palette.observe(&mut wram, &NoLedger);
+        assert_eq!(palette.stood(), 2, "the tile it landed on was already ground it had covered");
     }
 
     #[test]
