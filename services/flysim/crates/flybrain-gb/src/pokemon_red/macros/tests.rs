@@ -3210,6 +3210,46 @@ fn no_playable_scene_deals_an_empty_pad() {
 }
 
 #[test]
+fn the_badges_rung_resolves_to_the_person_standing_in_the_gym() {
+    // Rung 11 is BOULDER BADGE and `docs/design/ladder.md` gives its place as a *person* in the
+    // Pewter gym (12.5's `PlaceKind`). What the rung-10 loop needed was the two halves of that
+    // working together: the road into map `0x36` (`geography`, the museum rows and the gym's
+    // own), and, once inside, the objective naming somebody to walk to rather than a map to be
+    // on. This is the second half, on the map the rung is earned on.
+    let mut world = World::room();
+    world.map = maps::PEWTER_GYM;
+    // Both of Pewter's errands discharged. Section 13 puts an unvisited mart or centre *ahead*
+    // of the rung's place, and the gym is inside Pewter's area like everything else in the town,
+    // so until they are paid the objective is a building and not the leader. That is the errand
+    // working, and it is why the ROM run below spends its first minutes in the town's shops.
+    world.areas.insert((Amenity::Mart, maps::PEWTER_CITY));
+    world.areas.insert((Amenity::Center, maps::PEWTER_CITY));
+    world.npcs = vec![Npc { slot: 1, picture: 0x05, x: 4, y: 2, facing: Facing::Down }];
+    world.objective = Some(Objective {
+        map: maps::PEWTER_GYM,
+        tile: None,
+        warp: None,
+        edge: None,
+        target: Some(PlaceKind::Person),
+    });
+    let targets = super::palette::objective_targets(&mut world);
+    assert_eq!(targets.len(), 1, "the person the rung names: {targets:?}");
+    assert_eq!(targets[0].0, Tile::new(4, 2));
+    // And the walk aims at standing beside them and turning to face them, which is `GO NPC`'s own
+    // arrival and all `GO OBJECTIVE` ever promises: the press is `TALK`'s and the fly's.
+    let goals: Vec<Tile> = objective_goals(&mut world).into_iter().map(|aim| aim.tile).collect();
+    assert!(goals.contains(&Tile::new(4, 3)), "a tile beside them: {goals:?}");
+    assert!(goals.iter().all(|tile| tile.distance(Tile::new(4, 2)) == 1), "{goals:?}");
+    // The room the rung is in is not left while the thing that earns it is standing in it (12.5).
+    assert!(ways(&mut world, Way::Exit).is_empty(), "the gym's door is not a candidate yet");
+    // Talked to, and the objective has nothing left here: the button leaves the pad and the ways
+    // out come back, which is what carries the run on to the next rung.
+    world.talked.insert(targets[0].1);
+    assert!(super::palette::objective_targets(&mut world).is_empty());
+    assert!(objective_goals(&mut world).is_empty());
+}
+
+#[test]
 fn a_frontier_no_walk_can_reach_takes_go_frontier_off_the_pad_and_keeps_it_off() {
     // Section 12.14, the rung-10 museum. The sealed pocket below is map `0x34` in miniature: the
     // unstood ground is real and it is fenced off, so `GO FRONTIER` refuses `no route` and writes
