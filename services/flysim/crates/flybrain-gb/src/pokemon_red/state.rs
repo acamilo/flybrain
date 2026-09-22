@@ -75,6 +75,17 @@ pub mod poke {
     /// `constants/menu_constants.asm` party menu types.
     pub const BATTLE_PARTY_MENU: u8 = 0x02;
 
+    /// The two-option YES/NO box, as surveyed on the cartridge (`infra/docs/macros-traps.md`,
+    /// row 41): the border `DisplayTwoOptionMenu` draws, and where it parks the cursor.
+    ///
+    /// Values rather than a symbol because `wTwoOptionMenuID` is not in the reviewed address list
+    /// and the box's geometry is what is on screen. Read from the rung-10 Pokemon Center
+    /// checkpoint, one raw A pulse at a time: a box at (11, 6)-(19, 11) with the cursor at
+    /// row 8, column 12, one item below the first, watching A and B.
+    pub const YES_NO_BOX: (u16, u16, u16, u16) = (11, 6, 19, 11);
+    pub const YES_NO_CURSOR_Y: u8 = 8;
+    pub const YES_NO_CURSOR_X: u8 = 12;
+
     /// `constants/ram_constants.asm`: `wMiscFlags` bit 3.
     pub const BIT_USING_GENERIC_PC: u8 = 1 << 3;
     /// `wFontLoaded` bit 0.
@@ -532,6 +543,36 @@ fn enemy_mon(memory: &mut dyn MemoryReader) -> Option<EnemyMon> {
 pub fn text_box(memory: &mut dyn MemoryReader) -> TextBox {
     let open = read(memory, ram::wFontLoaded) & poke::BIT_FONT_LOADED != 0;
     TextBox { open, waiting: open && border_drawn(memory, 0, 12, 19, 17) }
+}
+
+/// Whether the two-option YES/NO box is the thing on screen: a *choice*, not a plain text box.
+///
+/// `docs/design/macros-wram.md` says there is no "a choice is open" flag, and there is not -- so
+/// this is the same construction [`text_box`] makes for `waiting`: a WRAM flag plus the figure the
+/// game draws. `DisplayTwoOptionMenu` draws its own little box in the top right and parks the
+/// shared cursor inside it, and **both halves are needed**: the cursor bytes are not cleared when
+/// the box closes, so at the rung-10 checkpoint every one of the nurse's forty-six text frames
+/// reads `wTopMenuItemY` 8, `wTopMenuItemX` 12, `wMaxMenuItem` 1 and `wMenuWatchedKeys` `$03`
+/// while the box itself is drawn on exactly one of them (`infra/docs/macros-traps.md`, row 41).
+///
+/// **What it does not claim.** Red places a two-option menu where the script that asks for it
+/// says, so a prompt drawn somewhere else reads `false` here and its dialog keeps the pad it has
+/// always had. This is the box the nurse's "heal your POKeMON?" is drawn in, surveyed; it is not a
+/// general answer to "is a choice open", and nothing in the palette treats it as one.
+pub fn yes_no_prompt(memory: &mut dyn MemoryReader) -> bool {
+    if read(memory, ram::wFontLoaded) & poke::BIT_FONT_LOADED == 0 {
+        return false;
+    }
+    let cursor = cursor(memory);
+    if cursor.top_y != poke::YES_NO_CURSOR_Y
+        || cursor.top_x != poke::YES_NO_CURSOR_X
+        || cursor.max != 1
+        || cursor.watched_keys != poke::pad::A | poke::pad::B
+    {
+        return false;
+    }
+    let (left, top, right, bottom) = poke::YES_NO_BOX;
+    border_drawn(memory, left, top, right, bottom)
 }
 
 /// The four screen tiles the dialogue box's `waiting` test reads, in the order `box_drawn` reads
@@ -1267,6 +1308,10 @@ impl GameState for PokeState<'_> {
 impl MacroState for PokeState<'_> {
     fn scripted(&mut self) -> bool {
         !controllable(self.memory)
+    }
+
+    fn yes_no_prompt(&mut self) -> bool {
+        yes_no_prompt(self.memory)
     }
 
     /// The whole loaded map's walkability, from the cache when it is for this map
