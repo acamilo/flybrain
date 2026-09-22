@@ -199,6 +199,9 @@ pub struct AgentFaults {
     /// Refuse `State.ActivateRestore` after this worker has already staged, so a group meets
     /// a failure halfway through activation.
     pub fail_activate_restore: bool,
+    /// Add this id to every `Worker.Acknowledge` reply, so the caller meets a worker
+    /// reporting about an id it was never asked about.
+    pub acknowledge_extra_id: Option<Id>,
 }
 
 /// One fake agent worker's configuration.
@@ -212,6 +215,10 @@ pub struct AgentConfig {
     /// The thread allocation the launcher started this worker within. `workers-v1` requires
     /// `Agent.Initialize`'s `workerThreads` to lie inside it.
     pub worker_threads: usize,
+    /// Which graph this fly built. Two variants have the same `neuronCount` and different
+    /// `indexDigest`, which is the case `publishing-v1` section 3 says a consumer must not
+    /// mistake for the same mapping.
+    pub graph_variant: u64,
     /// Records every view this agent read, so a test can see which artifact reached it.
     ///
     /// It is this process's log: an agent with a process of its own writes to its own copy,
@@ -456,6 +463,9 @@ impl FakeAgentWorker {
             committed_step: 0,
             decision_context_digest: self.context_digest.clone().expect("just set"),
             telemetry: self.model.telemetry(),
+            // The worker attests to the graph it loaded. A descriptor built from this can
+            // disagree with the composition; one built from the composition never could.
+            graph: synthetic_graph(&self.config.agent_id, self.config.graph_variant),
         };
         Ok(HandlerReply::from(&result))
     }
@@ -507,6 +517,7 @@ impl FakeAgentWorker {
         }
         for stimulus in &params.pre_step_stimulations {
             stimulus.validate().map_err(DomainError::invalid)?;
+            check_supported(stimulus)?;
         }
         let available =
             FakeAgentWorker::available_actions(self.context.as_ref().expect("initialized"))?;
@@ -594,6 +605,7 @@ impl FakeAgentWorker {
         }
         for stimulus in &params.task_stimulations {
             stimulus.validate().map_err(DomainError::invalid)?;
+            check_supported(stimulus)?;
         }
         params.next_decision_context.validate().map_err(DomainError::invalid)?;
         FakeAgentWorker::available_actions(&params.next_decision_context)?;
@@ -689,6 +701,10 @@ impl WorkerEndpoint for FakeAgentWorker {
         self.config.worker_threads as u64
     }
 
+    fn acknowledge_extra_id(&self) -> Option<Id> {
+        self.config.faults.acknowledge_extra_id.clone()
+    }
+
     fn methods(&self) -> Vec<&'static str> {
         vec![
             "Agent.Initialize",
@@ -733,13 +749,61 @@ pub fn agent_op_class(method: &str) -> Option<OpClass> {
 }
 
 /// A synthetic profile asset for one agent. The digest covers its effective identities.
+/// Refuses a stimulus kind this profile does not resolve, before the model is touched.
+///
+/// `supportedStimuli` in a published descriptor is exactly this list, so the declaration is
+/// what the worker enforces rather than a label printed beside it.
+fn check_supported(stimulus: &Stimulus) -> DomainResult<()> {
+    if SUPPORTED_STIMULI.contains(&stimulus.kind_id.as_str()) {
+        return Ok(());
+    }
+    Err(DomainError::before(
+        ErrorCode::Unsupported,
+        format!(
+            "stimulus kind {} is not one this profile resolves",
+            stimulus.kind_id
+        ),
+    ))
+}
+
+/// The rate roles this fake model reports, in the order it reports them.
+pub const RATE_ROLES: [&str; 2] = ["kc", "mbon"];
+
+/// The stimulus kinds this synthetic profile resolves. An undeclared kind is refused before
+/// the model is touched, so `supportedStimuli` in a descriptor is what the worker enforces
+/// rather than a label beside it.
+pub const SUPPORTED_STIMULI: [&str; 1] = ["arena.milestone"];
+
+/// This fly's graph identity. Every variant has the same neuron count and its own index, so
+/// "the same number of neurons" can never be mistaken for the same mapping.
+pub const NEURON_COUNT: u64 = 1024;
+
+pub fn synthetic_graph(agent_id: &Id, variant: u64) -> AgentGraph {
+    AgentGraph {
+        dataset_digest: digest_of_bytes(
+            format!("arena-dataset-v1\nvariant={variant}\n").as_bytes(),
+        ),
+        index_digest: digest_of_bytes(
+            format!(
+                "arena-index-v1\nagent={agent_id}\nvariant={variant}\nneurons={NEURON_COUNT}\n"
+            )
+            .as_bytes(),
+        ),
+        neuron_count: NEURON_COUNT,
+        rate_roles: RATE_ROLES.iter().map(|r| id(r)).collect(),
+        supported_stimuli: SUPPORTED_STIMULI.iter().map(|s| id(s)).collect(),
+    }
+}
+
 pub fn synthetic_profile(agent_id: &Id, tick_duration: &RationalNs, warmup_ticks: u64) -> AssetRef {
     let text = format!(
         "arena-direct-v1\nagent={agent_id}\ntick={}/{}\nwarmup={warmup_ticks}\n",
         tick_duration.numerator, tick_duration.denominator
     );
     AssetRef {
-        id: id("arena-direct-v1"),
+        // One installed asset per fly: a descriptor's `assets` are unique by id, and two
+        // profiles that differ in content are two assets, not one id with two digests.
+        id: parse_id(&format!("arena-direct-v1-{agent_id}")).expect("a prefix plus an agent id"),
         digest: digest_of_bytes(text.as_bytes()),
         byte_length: text.len() as u64,
         format: id("fly-profile-v1"),
@@ -787,6 +851,7 @@ pub fn agent_compatibility_digest(
     model_version: &str,
     plasticity_version: &str,
     seed: i32,
+    index_digest: &Digest,
 ) -> Digest {
     let value = serde_json::json!({
         "agentId": agent_id.as_str(),
@@ -795,6 +860,11 @@ pub fn agent_compatibility_digest(
         "modelVersion": model_version,
         "plasticityVersion": plasticity_version,
         "seed": seed,
+        // The index the worker actually built, not a value recomputed from the dataset: the
+        // whole point is that the two can disagree. Without it a replacement fly that built
+        // another graph restores cleanly and is then published under its predecessor's
+        // `indexDigest`, which is the predecessor's graph identity crossing a recovery.
+        "indexDigest": index_digest.as_str(),
     });
     digest_of(&value).expect("an agent compatibility block canonicalizes")
 }
@@ -883,13 +953,15 @@ struct StagedAgent {
 impl FakeAgentWorker {
     /// This worker's own compatibility identity, from its configuration and a resolved seed.
     fn compatibility_digest(&self, profile: &AssetRef, seed: i32) -> Digest {
+        let graph = synthetic_graph(&self.config.agent_id, self.config.graph_variant);
         agent_compatibility_digest(
             &self.config.agent_id,
             &profile.digest,
-            &dataset_digest(),
+            &graph.dataset_digest,
             MODEL_VERSION,
             PLASTICITY_VERSION,
             seed,
+            &graph.index_digest,
         )
     }
 
@@ -1090,10 +1162,16 @@ worker; this worker is {other:?}"
         // of another agent's brain, fails here and never reaches activation.
         let computed = self.compatibility_digest(&profile, model.seed());
         if computed != params.compatibility_digest {
+            let graph = synthetic_graph(&self.config.agent_id, self.config.graph_variant);
             return Err(incompatible(format!(
-                "the staged state's compatibility {computed} is not the {} the restore \
-requires",
-                params.compatibility_digest
+                "the staged state's compatibility {} is not the {computed} this worker is: \
+profile {}, dataset {}, index {}, model {MODEL_VERSION}, plasticity {PLASTICITY_VERSION}, \
+seed {}",
+                params.compatibility_digest,
+                profile.digest,
+                graph.dataset_digest,
+                graph.index_digest,
+                model.seed()
             )));
         }
         let accumulator_value = value

@@ -744,3 +744,43 @@ rewritten separately.
   a v5 checkpoint instead of refusing it. `fly-reset-to-milestone <N>` restarts the run from a
   ladder rung (archives both stores first). The live run restarts from rung 7 with this release, so
   the ladder is climbed again with the catch reward and the row-54 walks in place.
+- 2026-09-22 19:59 UTC (v0.5.0 deployed): rung 7 had no milestone archive (the ratchet passed it
+  inside one commit), so the run restarted from rung 8, VIRIDIAN CITY, with
+  `fly-reset-to-milestone 8`; the v5 checkpoint migrated to v6 as designed. The previous state is
+  archived beside the store.
+
+## 2026-09-22 - session framework: what landed and what stopped
+
+The session framework slices from docs/design/session-framework/implementation.md were built
+in ordered waves, each on its own branch with an independent review before merge.
+
+Landed on main: CONTRACT-01, BUS-01 through BUS-03, SESSION-01, SESSION-02, MEDIA-01,
+STATE-01 and PUBLISH-01. Together they give the repo an executable session contract with a
+TypeScript oracle, a conforming bus with a written conformance table, a lockstep session that
+runs in process, on threads or as one process per fly, native frame and audio observations
+with spectator isolation, a coherent all-participant checkpoint with group restore and a
+liftable fence, and an internal publication boundary with committed snapshots over the same
+bus. Every contract silence met on the way was closed by a dated amendment in the affected
+document rather than by convention; none touched doctrine.
+
+Also landed: the bus test suite asserts guarantees rather than the machine's timing, and a
+coordinator defect found through one of those flakes is fixed, where a lifecycle
+acknowledgement that legitimately releases nothing was treated as a fault.
+
+Stopped: AGENT-01 and ENV-01 are blocked on FOUNDATION-02 and RUNTIME-01 from the MaleCNS
+backlog, which do not exist yet. The profile contract and the environment boundary are
+decisions for the operator, so the swarm stopped here. DOLPHIN-01 was never in scope.
+
+Measured on the development box, not capacity claims: bus RPC near one millisecond at the
+median; a two-fly transition near 10 to 12 ms at the median in every execution mode; about
+5.7 MiB per participant process when split.
+- 2026-09-22 (v0.5.1, loop review, auto): row 50. The cartridge never clears the move-list cursor
+  bytes after a turn, so every frame of a turn's text, animation and reply read as the fly's own
+  turn on an open list; the pad dealt MOVE 1-4 and BACK on all of them and the cursor step pressed
+  at a list nobody was reading. Surveyed by pressing: a press was honoured on 231 of 231 frames
+  where the menu box is drawn and on none where it is not. Fix: one gate on the drawn box in the
+  battle seam; a frame with no box is between turns, NEXT only. From the forest checkpoint MOVE n
+  blocked starts 838 -> 0, every battle entered is ended, worst battle 503 -> 283 macros; hunt
+  tiles up on both arms (296 -> 430 forest, 163 -> 184 Route 3), flagged windows again rise
+  because the fly is inside battles it is fighting (same judgement as v0.4.6). Next row: the
+  battle bag's list id outlives the bag the same way.

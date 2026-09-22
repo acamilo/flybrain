@@ -470,11 +470,24 @@
             "changed": "2",
             "signal": 0.5
           }
+        },
+        "graph": {
+          "datasetDigest": "6c0af1f0784ef63a393ee77d614e8246c625051360f3f1a48838374c5d355b52",
+          "indexDigest": "52a7a9b441f686ebea398e3d65dbaa87b4fde4f8b2231fff951700548f6a4e42",
+          "neuronCount": "139255",
+          "rateRoles": [
+            "kenyon",
+            "mbon"
+          ],
+          "supportedStimuli": [
+            "sugar",
+            "shock"
+          ]
         }
       },
       "note": "",
-      "canonical": "{\"agentId\":\"fly-a\",\"committedStep\":\"0\",\"decisionContextDigest\":\"ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"telemetry\":{\"brainTicks\":\"2500\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}]},\"tickDuration\":{\"denominator\":\"1\",\"numerator\":\"1000000\"},\"warmupTicks\":\"2500\"}",
-      "digest": "a220160c75d758720fe43145089939201ee35c86bb100fae0c4efdd3c4eafaa6"
+      "canonical": "{\"agentId\":\"fly-a\",\"committedStep\":\"0\",\"decisionContextDigest\":\"ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4\",\"graph\":{\"datasetDigest\":\"6c0af1f0784ef63a393ee77d614e8246c625051360f3f1a48838374c5d355b52\",\"indexDigest\":\"52a7a9b441f686ebea398e3d65dbaa87b4fde4f8b2231fff951700548f6a4e42\",\"neuronCount\":\"139255\",\"rateRoles\":[\"kenyon\",\"mbon\"],\"supportedStimuli\":[\"sugar\",\"shock\"]},\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"telemetry\":{\"brainTicks\":\"2500\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}]},\"tickDuration\":{\"denominator\":\"1\",\"numerator\":\"1000000\"},\"warmupTicks\":\"2500\"}",
+      "digest": "707803be4867dc2f0f3d4bccedfaa7b97b1e52b9af78d21ae6957caba1a7e3f8"
     },
     {
       "name": "prepare params",
@@ -2597,6 +2610,100 @@
       "note": "",
       "canonical": "{\"agents\":[{\"agentId\":\"fly-a\",\"appliedControls\":{\"axes\":[{\"id\":\"stick-x\",\"value\":0},{\"id\":\"trigger\",\"value\":0}],\"buttons\":[{\"down\":true,\"id\":\"a\"},{\"down\":false,\"id\":\"b\"},{\"down\":false,\"id\":\"start\"},{\"down\":false,\"id\":\"select\"},{\"down\":false,\"id\":\"up\"},{\"down\":false,\"id\":\"down\"},{\"down\":false,\"id\":\"left\"},{\"down\":false,\"id\":\"right\"}],\"portId\":\"port-1\"},\"selectedDecision\":{\"schema\":{\"digest\":\"e70451b26fb5462ec63729d8355912dad01c3963a95bec0e6a8452375717ad9d\",\"id\":\"gameboy.intent.v1\",\"version\":1},\"value\":{\"press\":\"a\"}},\"telemetry\":{\"brainTicks\":\"2534\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}]}}],\"descriptorRevision\":\"7\",\"episodeId\":\"episode-1\",\"eventIds\":[\"evt-1\"],\"media\":{\"audio\":[{\"discontinuity\":false,\"firstSample\":\"33600\",\"sampleFrames\":800,\"samples\":{\"artifactId\":\"audio-1\",\"byteLength\":\"6400\",\"contentType\":\"audio/x-f32le\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"streamId\":\"mix\"}],\"views\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"42\",\"viewId\":\"screen\"}]},\"progress\":{\"schema\":{\"digest\":\"80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1\",\"id\":\"pokemon.progress.v1\",\"version\":1},\"value\":{\"rank\":10}},\"publisherIncarnation\":\"pub-1\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"42\"},\"sequence\":\"42\",\"worldTime\":{\"denominator\":\"1\",\"numerator\":\"700000000\"}}",
       "digest": "d5ed83ccb866318b3cf17b53c8a5b1dea2f404b10649f6b640bf5f2b88a31435"
+    },
+    {
+      "name": "committed snapshot at a boundary installed by a restore",
+      "type": "CommittedSnapshot",
+      "value": {
+        "descriptorRevision": "7",
+        "publisherIncarnation": "pub-1",
+        "scope": {
+          "sessionId": "demo",
+          "epoch": "epoch-1",
+          "step": "42"
+        },
+        "episodeId": "episode-1",
+        "sequence": "42",
+        "worldTime": {
+          "numerator": "700000000",
+          "denominator": "1"
+        },
+        "agents": [
+          {
+            "agentId": "fly-a",
+            "telemetry": {
+              "brainTicks": "2534",
+              "populationRateHz": 12.5,
+              "rates": [
+                {
+                  "roleId": "kenyon",
+                  "hz": 3.25
+                },
+                {
+                  "roleId": "mbon",
+                  "hz": 0.0
+                }
+              ],
+              "learning": {
+                "enabled": true,
+                "updates": "4",
+                "changed": "2",
+                "signal": 0.5
+              }
+            },
+            "selectedDecision": null,
+            "appliedControls": null
+          }
+        ],
+        "progress": {
+          "schema": {
+            "id": "pokemon.progress.v1",
+            "version": 1,
+            "digest": "80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1"
+          },
+          "value": {
+            "rank": 10
+          }
+        },
+        "media": {
+          "views": [
+            {
+              "viewId": "screen",
+              "producedStep": "42",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "audio": [
+            {
+              "streamId": "mix",
+              "firstSample": "33600",
+              "sampleFrames": 800,
+              "samples": {
+                "storeId": "store-1",
+                "artifactId": "audio-1",
+                "generation": "1",
+                "byteLength": "6400",
+                "contentType": "audio/x-f32le",
+                "digest": null
+              },
+              "discontinuity": false
+            }
+          ]
+        },
+        "eventIds": [
+          "evt-1"
+        ]
+      },
+      "note": "a restore re-establishes a committed boundary this epoch did not run a transition into",
+      "canonical": "{\"agents\":[{\"agentId\":\"fly-a\",\"appliedControls\":null,\"selectedDecision\":null,\"telemetry\":{\"brainTicks\":\"2534\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}]}}],\"descriptorRevision\":\"7\",\"episodeId\":\"episode-1\",\"eventIds\":[\"evt-1\"],\"media\":{\"audio\":[{\"discontinuity\":false,\"firstSample\":\"33600\",\"sampleFrames\":800,\"samples\":{\"artifactId\":\"audio-1\",\"byteLength\":\"6400\",\"contentType\":\"audio/x-f32le\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"streamId\":\"mix\"}],\"views\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"42\",\"viewId\":\"screen\"}]},\"progress\":{\"schema\":{\"digest\":\"80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1\",\"id\":\"pokemon.progress.v1\",\"version\":1},\"value\":{\"rank\":10}},\"publisherIncarnation\":\"pub-1\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"42\"},\"sequence\":\"42\",\"worldTime\":{\"denominator\":\"1\",\"numerator\":\"700000000\"}}",
+      "digest": "79a0ef10ed65c0720c34c7d99de1fe87ec2f0c26028994562cc4655b0f6acd1f"
     },
     {
       "name": "transition trace",

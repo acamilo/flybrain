@@ -194,6 +194,13 @@ pub trait WorkerEndpoint: Send + 'static {
     /// allocation" can read the allocation instead of being told it out of band.
     fn worker_threads(&self) -> u64;
 
+    /// An id this worker will add to every `Worker.Acknowledge` reply, for a test that needs a
+    /// worker reporting about something it was never asked about. `None` for a worker that
+    /// behaves.
+    fn acknowledge_extra_id(&self) -> Option<Id> {
+        None
+    }
+
     /// The domain methods this endpoint implements, beyond the common `Worker.*` set.
     /// Anything else returns UNSUPPORTED without entering the endpoint.
     fn methods(&self) -> Vec<&'static str>;
@@ -281,7 +288,8 @@ async fn run<E: WorkerEndpoint>(
 ) {
     // Identity and capabilities are fixed for the endpoint's lifetime, so the shell reads them
     // once and never takes the endpoint mutex to answer Hello or Status.
-    let (worker_id, incarnation_id, session_id, role, capabilities, status, methods, threads) = {
+    #[allow(clippy::type_complexity)]
+    let (worker_id, incarnation_id, session_id, role, capabilities, status, methods, threads, extra_ack) = {
         let e = endpoint.lock().await;
         (
             e.worker_id(),
@@ -292,6 +300,7 @@ async fn run<E: WorkerEndpoint>(
             e.status_cell(),
             e.methods(),
             e.worker_threads(),
+            e.acknowledge_extra_id(),
         )
     };
     let mut running: Vec<tokio::task::JoinHandle<()>> = Vec::new();
@@ -345,7 +354,7 @@ async fn run<E: WorkerEndpoint>(
                 continue;
             }
             "Worker.Acknowledge" => {
-                let outcome = match acknowledge(&request, &cache).await {
+                let outcome = match acknowledge(&request, &cache, extra_ack.as_ref()).await {
                     Ok(result) => success(&request, &worker_id, &incarnation_id, result),
                     Err(e) => {
                         failure(&request.request_id, &worker_id, &incarnation_id, request.scope.clone(), e)
@@ -717,16 +726,24 @@ fn hello(
 async fn acknowledge(
     request: &SessionRpcRequest,
     cache: &Arc<tokio::sync::Mutex<ResultCache>>,
+    extra: Option<&Id>,
 ) -> DomainResult<Map<String, Value>> {
     let params: AcknowledgeParams = AcknowledgeParams::from_json(&request.params)
         .map_err(|e| DomainError::invalid(format!("Worker.Acknowledge: {e}")))?;
     if params.request_ids.is_empty() || params.request_ids.len() > MAX_ACKNOWLEDGE {
         return Err(DomainError::invalid("Worker.Acknowledge takes 1..=16 request ids"));
     }
-    let acknowledged = {
+    let mut acknowledged = {
         let mut c = cache.lock().await;
         c.acknowledge(&params.request_ids)
     };
+    // A deliberately misbehaving worker, for the caller-side subset check to refuse.
+    if let Some(extra) = extra
+        && let Ok(id) = DomainRequestId::parse(extra)
+        && !params.request_ids.contains(&id)
+    {
+        acknowledged.push(id);
+    }
     let result = AcknowledgeResult { acknowledged };
     Ok(object(result.to_json()))
 }

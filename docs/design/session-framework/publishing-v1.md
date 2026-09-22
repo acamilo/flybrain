@@ -42,6 +42,20 @@ Example addresses (chosen by composition, not recognized by router code):
 | `app.pokemon.cues` | Pub/sub: application narrative/presentation events under declared delivery policy |
 | `app.pokemon` | RPC: application queries/admission, e.g. restore UI state or request a supported effect |
 
+**Amendment, 2026-09-22 (PUBLISH-01).** The repair path above needs exact methods, and
+"exact methods require session API schemas" left the row unbuildable. The session registers
+one **read-only** service, `session.<id>.query`, with exactly two methods, both ordinary
+[session RPCs](ipc-v1.md) answering from what the session already published:
+`Session.GetDescriptor` takes an optional `{revision: U64}` and returns that `SessionDescriptor`
+or, with no revision, the newest; `Session.GetSnapshot` takes no parameters and returns the
+latest `CommittedSnapshot`. A revision the session never published is `IDENTITY_MISMATCH`, not
+an empty answer. Nothing on this service mutates, selects a participant or reaches a worker, so
+it is not the controller API section 7 rules out; adding a third method that did would be.
+These two names are **internal and provisional**: they are what the internal boundary needs in
+order to be buildable now, and the later public v2 step is free to rename them, supersede them
+or expose a different repair surface entirely. Nothing about them is browser-facing, and the
+public step does not inherit them by default merely because they landed first.
+
 Descriptor revisions and scope link observations to schemas. Cross-topic ordering is not
 guaranteed; a subscriber receiving an unknown descriptor revision must fetch it through the
 application/session query contract or buffer a bounded number of snapshots, not infer shape.
@@ -76,6 +90,16 @@ interface CommittedSnapshot {
   eventIds: Id[];
 }
 ```
+
+**Amendment, 2026-09-22 (PUBLISH-01).** "Null at initial boundary 0" is the rule for a
+boundary this epoch *produced*. A group restore ([state/media](state-media-v1.md) section 5)
+re-establishes a committed boundary `k > 0` that this epoch did not run a transition into, and
+the abandoned epoch's decisions are not this session's to republish under a new epoch. So the
+rule is: `selectedDecision` and `appliedControls` are null at boundary 0 and at a boundary
+*installed* by a restore, present otherwise, and always **together** and for **every agent or
+none**. A snapshot where one fly carries an action and another does not would be two different
+boundaries in one value, and is refused. Without this, the section 6 requirement to publish the
+recovery could not be met at all: the restored boundary's snapshot would be unrepresentable.
 
 Publish only after all agent commits establish Ready(k). Decisions/controls describe the
 transition ending at that boundary, null at initial boundary 0. Health updates are separate

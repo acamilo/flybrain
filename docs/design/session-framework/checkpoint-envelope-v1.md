@@ -100,10 +100,20 @@ names; a manifest missing any of them is not a complete checkpoint.
 | `compositionDigest` | Coordinator scheduler and configuration identity |
 | `portMap` | The exact port-to-agent map, `[{portId, agentId}]` |
 | `compatibility` | Backend, content, patch, controller, parser and state-format identities |
-| `agents` | Per agent: profile, dataset and model identities, resolved seed, tick count, remainder and the payload name holding its state |
+| `agents` | Per agent: profile, dataset, **index** and model identities, resolved seed, tick count, remainder and the payload name holding its state |
 | `coordinator` | Task ledger, prior world inspection, per-agent executor state, admission state and event watermarks, each as a payload name or an inline value |
 | `helperState` | External-helper state required for exact resume, as payload names |
 | `payloads` | `[{name, byteLength, digest}]`, mirroring the payload table |
+
+**Amendment, 2026-09-22 (PUBLISH-01).** The `agents` row gains `indexDigest`, the index the
+agent attested to at `Agent.Initialize`, and it joins that agent's compatibility identity.
+Without it a replacement fly that built another graph -- the same dataset, the same neuron
+count, another index -- passed the group check and was then published under its predecessor's
+`indexDigest`, which is a graph identity crossing a recovery and exactly what section 5's rules
+exist to prevent. It is recorded from the worker's attestation rather than recomputed from the
+dataset, because the point is that the two can disagree. `envelopeVersion` stays `1`, which the
+required-manifest-field rule below allows only while no production `FLYSESS1` file exists; once
+one does, adding a required manifest field must bump it.
 
 **Amendment, 2026-09-22 (STATE-01).** The table above names a holder for every payload except
 the environment's own, although section 6's fixture has one (`world`) and a group install has

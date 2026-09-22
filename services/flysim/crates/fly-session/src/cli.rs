@@ -204,6 +204,7 @@ fn serve(role: &str, options: &Options) -> Result<(), String> {
             tick_duration: options.rational(flags::TICK_NUMERATOR, flags::TICK_DENOMINATOR)?,
             warmup_ticks: options.u64(flags::WARMUP_TICKS, 0)?,
             worker_threads: threads,
+            graph_variant: options.u64(flags::GRAPH_VARIANT, 0)?,
             // This process's own log. The supervisor reads what crosses the bus, not this.
             sensors: crate::media::SensorLog::new(),
             faults: AgentFaults {
@@ -212,6 +213,9 @@ fn serve(role: &str, options: &Options) -> Result<(), String> {
                 commit_delay_ms: options.u64(flags::COMMIT_DELAY_MS, 0)?,
                 fail_stage_restore: options.flag(flags::FAIL_STAGE_RESTORE)?,
                 fail_activate_restore: options.flag(flags::FAIL_ACTIVATE_RESTORE)?,
+                // A worker process is never asked to misbehave this way: the subset refusal
+                // is a caller-side check and its test runs the worker in-process.
+                acknowledge_extra_id: None,
             },
             client_id: client_id.clone(),
             service: service.clone(),

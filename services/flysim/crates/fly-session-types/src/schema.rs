@@ -438,6 +438,22 @@ pub const SCHEMAS: &[TypeSchema] = &[
             req("committedStep", "U64", "\"0\""),
             req("decisionContextDigest", "Digest", ""),
             req("telemetry", "AgentTelemetry", ""),
+            req("graph", "AgentGraph", "rates are in graph.rateRoles order"),
+        ],
+    },
+    TypeSchema {
+        name: "AgentGraph",
+        source: "workers-v1 2",
+        fields: &[
+            req("datasetDigest", "Digest", ""),
+            req(
+                "indexDigest",
+                "Digest",
+                "geometry mapping needs this, not neuronCount",
+            ),
+            req("neuronCount", "U64", ""),
+            req("rateRoles", "array<Id>", "<= 64, unique"),
+            req("supportedStimuli", "array<Id>", "<= 64, unique"),
         ],
     },
     TypeSchema {
@@ -924,12 +940,12 @@ pub const SCHEMAS: &[TypeSchema] = &[
             opt(
                 "selectedDecision",
                 "TypedValue|null",
-                "null exactly at boundary 0",
+                "null at boundary 0 and at an installed boundary; null or present for every agent together",
             ),
             opt(
                 "appliedControls",
                 "PortControl|null",
-                "null exactly at boundary 0; the agent's assigned port",
+                "null with selectedDecision; the agent's assigned port",
             ),
         ],
     },

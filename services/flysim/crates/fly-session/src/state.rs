@@ -599,6 +599,10 @@ pub struct AgentEntry {
     pub agent_id: Id,
     pub profile_digest: Digest,
     pub dataset_digest: Digest,
+    /// The index the agent attested to at `Agent.Initialize`. It is part of the agent's
+    /// compatibility identity, so a replacement that built another graph cannot install this
+    /// payload -- the graph identity does not cross the recovery.
+    pub index_digest: Digest,
     pub model_version: String,
     pub plasticity_version: String,
     pub seed: i32,
@@ -613,6 +617,7 @@ impl AgentEntry {
             "agentId": self.agent_id.as_str(),
             "profileDigest": self.profile_digest.as_str(),
             "datasetDigest": self.dataset_digest.as_str(),
+            "indexDigest": self.index_digest.as_str(),
             "modelVersion": self.model_version.as_str(),
             "plasticityVersion": self.plasticity_version.as_str(),
             "seed": self.seed,
@@ -646,6 +651,7 @@ impl AgentEntry {
             agent_id: parse_id(&text("agentId")?)?,
             profile_digest: text("profileDigest")?,
             dataset_digest: text("datasetDigest")?,
+            index_digest: text("indexDigest")?,
             model_version: text("modelVersion")?,
             plasticity_version: text("plasticityVersion")?,
             seed,

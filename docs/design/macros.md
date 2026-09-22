@@ -1217,7 +1217,52 @@ walk. Both were measured from the same rung-10 checkpoint, with
 Nothing here changes which button the fly presses. The decoder, the reward catalog, the adapter
 version and the compatibility string are untouched.
 
-### 12.18 A mart's counter is four screens, and one of them is the clerk talking (2026-09-22, row 55)
+### 12.18 A menu is up while its box is on screen, not while its cursor bytes say so (2026-09-22, row 50)
+
+The largest thing left inside a battle after 12.17: `MOVE n` reported `blocked` **890 times in
+1,431 macros** from the rung-9 forest checkpoint, `MOVE 4` **222 of 224**, and 82% of a fixed run's
+frames were battle time with one battle running 30,809 of them. Row 50 called it "the move list
+drawn and its cursor placeable but not accepting input". Half of that turned out to be wrong, and
+finding out which half is the whole fix.
+
+- **The cursor bytes outlive the list, so the list was not drawn at all.** `MoveSelectionMenu`
+  writes `wTopMenuItemY` 12 and `wTopMenuItemX` 5 and **nothing in the game clears them**. That is
+  the same fact 12.12 rested the YES/NO box on — "the cursor bytes survive the box closing" — and
+  the reason the *top-level* battle menu never had it is that `wTextBoxID` = `$0b` sits beside its
+  geometry and is written by somebody else. `SelectMenuItem` then decrements `wCurrentMenuItem` back
+  into a 0-based move slot on its way out, which lands inside the one-based range the accessor reads
+  as valid, so a turn spent on move 2, 3 or 4 leaves a *placeable* cursor behind it. Every frame of
+  the text, the animation, the damage and the enemy's reply read as the fly's own turn on an open
+  move list. The pad dealt `MOVE 1..4` and `BACK` on all of them, the roll landed on one, and the
+  cursor step pressed at a list nobody was reading until its budget ran out. That is section 12.2's
+  trap wearing 12.6's clothes: a macro whose precondition is satisfied where the fly stands.
+- **So a menu is up while its box is on screen.** The reading is the figure `MoveSelectionMenu`
+  draws — a box at (4, 12) fourteen wide, with a horizontal run over its top-left corner and the
+  `┘` junction over (10, 12) — read whole, exactly as `text_box`'s `waiting` and `yes_no_prompt`
+  are. `docs/design/macros-wram.md` section 10 has the accessor.
+- **It was surveyed by pressing, not by nominating a flag.** `examples/scene_probe.rs`,
+  `FLY_PROBE_CATCH=accept`: on every battle frame the emulator exports its state, one directional
+  pulse is issued, `wCurrentMenuItem` is read and the state goes straight back, so every frame has a
+  ground truth and the run is not perturbed by the measurement. By the cursor bytes alone a press
+  was honoured on **264 frames of 3,102**; by the cursor bytes and the box on **231 of 231**. Beside
+  it every byte of WRAM and HRAM was asked whether it separates the two classes, so a reading was
+  found rather than guessed — nothing separates once the box is in it, which is what "exact" means
+  here.
+- **A frame whose list is not on screen is between turns**, whose pad is the one `NEXT` that
+  advances text (12.10). No pad gains or loses a button anywhere else: the top-level menu, the party
+  list, the bag and the forced switch keep exactly the rows 13.1 gives them, and which move the fly
+  uses is still the fly's.
+- **The bag is the same trap and it is named rather than fixed.** `wListMenuID` = `ITEMLISTMENU`
+  outlives the bag as surely as the cursor bytes outlive the move list: over the frames the seam
+  calls an open battle bag, the same survey refused **449** presses against 36 honoured. The bag's
+  list is drawn in the top half of the screen and the survey has not yet found the figure that tells
+  it from the frame after it closes, so `ITEM` and `THROW BALL` still pay for it and that is
+  reported. A reading this crate cannot verify does not go in (`docs/design/ladder.md`).
+
+The decoder, the reward catalog, the adapter version, the roles and the compatibility string are
+untouched.
+
+### 12.19 A mart's counter is four screens, and one of them is the clerk talking (2026-09-22, row 55)
 
 Minutes after v0.4.7 went live the watchdog flagged the narrowest loop yet: map `0x38`, scene
 `shop`, `sequence: [BUY ANTIDOTE], period 1, repeats 747, distinctMacros 1` over ten brain
@@ -1340,11 +1385,11 @@ observe is not a precondition, it is a guess.
 | Menu (the bag, an elevator, the party list outside a battle) | CLOSE, CONFIRM, BACK | unchanged |
 | Unknown (the Pokédex, the trainer card, OPTION, a naming screen, a mid-warp frame) | NEXT, **BACK** | **BACK added** (row 9): B is what leaves the first three, and A leaves none of them |
 | Battle, own turn, main menu | MOVE 1..4, SWITCH, ITEM, THROW BALL, RUN (whose cursor indices are FIGHT 0, **ITEM 1, PKMN 2**, RUN 3 -- two columns, 12.11) | four move buttons for `ATTACK` (section 14); THROW BALL added, and gated on the species since 12.9; **RUN gated**, below. No `BACK`: the four entries are the answers to this menu. **`NEXT` removed by 12.10** — an A press here confirms FIGHT and reopens the list the move list's `BACK` just closed, and `MOVE 1` is the backstop instead, bound here whatever the battler reads as |
-| Battle, own turn, move list | MOVE 1..4, BACK -- or **MOVE 1 alone** | as above, plus **12.11**: `BACK` is dealt here only while `wBattleMon*` reads, because a list that binds no `MOVE n` has a pad whose one button closes the list `MOVE 1` underneath had just opened. With nothing readable the pad is `MOVE 1` and its script confirms where the cursor stands |
+| Battle, own turn, move list (**the box on screen**, 12.18) | MOVE 1..4, BACK -- or **MOVE 1 alone** | as above, plus **12.11**: `BACK` is dealt here only while `wBattleMon*` reads, because a list that binds no `MOVE n` has a pad whose one button closes the list `MOVE 1` underneath had just opened. With nothing readable the pad is `MOVE 1` and its script confirms where the cursor stands |
 | Battle, own turn, party list | SWITCH, BACK | unchanged |
 | Battle, own turn, the bag | ITEM, THROW BALL, **BACK** | the bag reports a *cursor* (`macros-wram.md` 7.1), and since **12.10** it is the own turn, because a cursor accepting input is one. Its pad is the list's own answers; `NEXT` and `CONFIRM` are both off it, being the same blind A press that *uses* whatever the cursor holds |
 | Battle, forced switch | SWITCH, NEXT | unchanged (row 8). The one arm that keeps `NEXT` with a cursor up, because it cannot be cancelled and has no `BACK` to undo it |
-| Battle, between turns | NEXT | `BACK` was added here for the bag and **taken back out by 12.9**: on a frame of battle text there is no list to leave, and a `BACK` that changes nothing is the trap of section 12.2. Since **12.10** the bag is not on this row at all, so `NEXT` here is only ever the A that advances text |
+| Battle, between turns | NEXT | since **12.18** this row is most of a battle, and correctly so: a frame whose move list is remembered rather than drawn lands here. `BACK` was added here for the bag and **taken back out by 12.9**: on a frame of battle text there is no list to leave, and a `BACK` that changes nothing is the trap of section 12.2. Since **12.10** the bag is not on this row at all, so `NEXT` here is only ever the A that advances text |
 | Shop | BUY POTION, BUY BALL, BUY ANTIDOTE, BUY REPEL, CONFIRM, LEAVE | two purchases to four; CONFIRM added |
 | PC | **CONFIRM**, LEAVE | **CONFIRM added**: a list the fly opened is one it can answer rather than only close. Depositing and withdrawing are still not in the vocabulary (row 17) |
 | Title | nothing | unchanged, by contract: the readout's boot variant applies |

@@ -16,13 +16,15 @@ use common::{at, count, fly_a, fly_b, mode_fixture, within};
 use fly_session::agent::AgentFaults;
 use fly_session::coordinator::{DispatchOrder, Injections};
 use fly_session::environment::EnvironmentFaults;
-use fly_session::harness::{ExecutionMode, HarnessConfig, Via};
+use fly_session::harness::{AgentSpec, ExecutionMode, HarnessConfig, Via};
 use fly_session::launcher::{ReapOutcome, ThreadBudget};
 use fly_session::ResolutionEnd;
 use fly_session::phase::Phase;
 use fly_session::types::*;
 
 all_modes!(
+    an_acknowledge_that_releases_nothing_is_not_a_failure,
+    bootstrap_survives_the_second_acknowledge_its_resolution_makes,
     a_slow_participant_is_resolved_rather_than_failed,
     a_resolution_says_which_of_its_two_bounds_ended_it,
     a_delayed_one_agent_result_holds_the_world,
@@ -85,6 +87,111 @@ async fn sequential_reversed_and_parallel_completion_agree() {
 }
 
 // -------------------------------------------------------------------------------------------
+// ipc-v1 section 5: an Acknowledge that releases nothing is success
+
+/// `ipc-v1` section 5: "Already released/unknown IDs are ignored."
+///
+/// A second `Worker.Acknowledge` of ids the worker has already released answers with an empty
+/// list. That is the contract working, not a worker misbehaving, and the coordinator must
+/// accept it and carry on. The session's own bootstrap releases every lifecycle reply, so
+/// asking again for the same ids is exactly that case -- driven directly here rather than by
+/// making something slow, because it is a rule about the reply and not about timing.
+///
+/// The rule has teeth because of section 6: any Acknowledge whose reply outruns the probe is
+/// resolved, and the resolution *is* a second Acknowledge of the same ids. A coordinator that
+/// demands the whole list back therefore fences a healthy session the first time a worker is
+/// slow to answer. It did, on this branch's parent; this test fails if that check returns.
+async fn an_acknowledge_that_releases_nothing_is_not_a_failure(mode: ExecutionMode) {
+    let mut f = mode_fixture(mode, two_agents(mode)).await;
+    // Bootstrap acknowledges every lifecycle reply, so afterwards the worker holds none.
+    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
+    let worker = f.harness.coordinator.agent_ref(&fly_a()).cloned().unwrap();
+
+    // The ids bootstrap already released. The worker ignores them and releases nothing.
+    let already: Vec<DomainRequestId> =
+        (1..=3).map(DomainRequestId::from_serial).collect();
+    let released = within(
+        "acknowledge",
+        f.harness.coordinator.acknowledge_replies(&worker, &already),
+    )
+    .await
+    .expect("a second Acknowledge of released ids is success, not a failed epoch");
+    assert!(
+        released.is_empty(),
+        "already released ids are ignored, so this call released nothing: {released:?}"
+    );
+
+    // The session is untouched by it: not fenced, still at its boundary, and still plays.
+    assert!(!f.harness.coordinator.is_fenced(), "an empty acknowledgment is not a fault");
+    assert_eq!(f.harness.coordinator.phase(), Phase::Ready(0));
+    let report = within("step", f.harness.coordinator.step())
+        .await
+        .expect("the session continues after an Acknowledge that released nothing");
+    assert_eq!(report.boundary, 1);
+    assert_eq!(f.harness.coordinator.stats().advances, 1);
+    f.shutdown().await;
+}
+
+/// The same rule, on the path `bootstrap` actually uses.
+///
+/// The test above calls `acknowledge_replies` directly, which guards the check where it lives
+/// now but not where it lived before: a length check reintroduced into `acknowledge_lifecycle`
+/// after that call would leave it green. This one drives bootstrap itself, with the
+/// `duplicate_lifecycle_acknowledge` injection doing exactly what the section 6 resolution
+/// does -- the same ids again, to a worker that has already released them -- so the second,
+/// empty answer has to be accepted by every check on bootstrap's path.
+async fn bootstrap_survives_the_second_acknowledge_its_resolution_makes(mode: ExecutionMode) {
+    let mut f = mode_fixture(mode, two_agents(mode)).await;
+    f.harness.coordinator.injections = Injections {
+        duplicate_lifecycle_acknowledge: true,
+        ..Injections::default()
+    };
+    within("bootstrap", f.harness.coordinator.bootstrap())
+        .await
+        .expect("bootstrap accepts the second, empty acknowledgment of its own lifecycle ids");
+    assert!(!f.harness.coordinator.is_fenced());
+    assert_eq!(f.harness.coordinator.phase(), Phase::Ready(0));
+    let report = within("step", f.harness.coordinator.step()).await.expect("and still plays");
+    assert_eq!(report.boundary, 1);
+    f.shutdown().await;
+}
+
+/// The other half of the rule: a short list is accepted, an id outside the request is not.
+///
+/// A worker reports what *it* released, so fewer ids than asked for is success -- but it is
+/// only entitled to report about the ids it was asked about. An id from outside the request is
+/// a worker talking about another caller's cache, and
+/// `AcknowledgeResult::validate_against` is what refuses it. Without this, dropping the length
+/// check left nothing checking the reply against the request at all.
+///
+/// Not generated per mode, deliberately. The check is the *caller's*, so the mode of the
+/// worker that misbehaves is irrelevant to it, and the alternative -- carrying the
+/// misbehaviour to a separate process over argv -- would put a flag in the shipped binary
+/// whose only purpose is to make a worker lie about its acknowledgments.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_acknowledged_id_outside_the_request_is_refused() {
+    let mode = ExecutionMode::InProcess;
+    let mut config = two_agents(mode);
+    // This worker adds an id nobody asked about to every acknowledgment.
+    config.agents[0].faults = AgentFaults {
+        acknowledge_extra_id: Some(id("req-9999")),
+        ..AgentFaults::default()
+    };
+    let mut f = mode_fixture(mode, config).await;
+    let failure = within("bootstrap", f.harness.coordinator.bootstrap())
+        .await
+        .expect_err("a worker may not acknowledge an id this session never asked about");
+    assert_eq!(failure.error.code, ErrorCode::IdentityMismatch);
+    assert!(
+        failure.error.message.contains("never asked about"),
+        "the refusal says what was wrong: {failure}"
+    );
+    assert_eq!(failure.detail, "acknowledge");
+    assert_eq!(failure.error.mutation, MutationCertainty::None, "refused before any mutation");
+    f.shutdown().await;
+}
+
+// -------------------------------------------------------------------------------------------
 // ipc-v1 section 6: an uncertain call is resolved, not failed
 
 /// A participant that is merely slow -- slower than the caller's probe, faster than the
@@ -114,17 +221,21 @@ async fn a_slow_participant_is_resolved_rather_than_failed(mode: ExecutionMode) 
     config.environment_faults =
         EnvironmentFaults { advance_delay_ms: 500, ..EnvironmentFaults::default() };
     let mut f = mode_fixture(mode, config).await;
+    // Bootstrap first, at ordinary deadlines: its lifecycle calls are not what this test is
+    // about, and squeezing them through the probe below only tests the machine's luck.
+    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     // A probe well inside both delays, and a resolution budget well outside them: the point is
-    // a call that expires and an operation that is nevertheless fine.
+    // a call that expires and an operation that is nevertheless fine. The guard is out of
+    // reach so the budget is the only bound in play, and the budget is far above what the
+    // delays need, so neither ends this resolution -- the answer does.
     f.harness.coordinator.deadlines = fly_session::Deadlines {
         probe: Duration::from_millis(120),
-        resolve: Duration::from_secs(20),
-        resolve_attempts: 4096,
+        resolve: Duration::from_secs(15),
+        resolve_attempts: u32::MAX,
         boot: Duration::from_secs(30),
         capture: Duration::from_secs(30),
         durable: Duration::from_secs(60),
     };
-    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     let reports = within("run", f.harness.coordinator.run(2))
         .await
         .expect("a slow participant is resolved, not failed");
@@ -176,28 +287,46 @@ async fn a_slow_participant_is_resolved_rather_than_failed(mode: ExecutionMode) 
     f.shutdown().await;
 }
 
+/// One agent, one port, and a participant that will not answer this side of the test's own
+/// timeout. The composition for the bound tests: one participant means one possible name in
+/// the failure, so which agent is blamed is not a race.
+fn one_silent_agent(mode: ExecutionMode) -> HarnessConfig {
+    HarnessConfig {
+        agents: vec![AgentSpec {
+            // Ten minutes. The suite's own `within` gives up at twenty seconds, so if the step
+            // returns at all, a bound ended it and not the participant. That is a claim about
+            // the code rather than about how fast this machine happens to be.
+            faults: AgentFaults { prepare_delay_ms: 600_000, ..AgentFaults::default() },
+            ..AgentSpec::new("fly-a", "p1", 7)
+        }],
+        mode,
+        ..HarnessConfig::default()
+    }
+}
+
 /// The resolution has two bounds, and which one ended it is never left to be guessed.
 ///
-/// `resolve` is the working limit at the default values -- the attempt guard is over sixteen
-/// seconds of pauses against an eight-second budget -- so an unresponsive participant runs the
-/// budget out. Setting the guard low instead ends the same resolution the other way, and the
-/// failure says so both in `last_resolution` and in its own message.
+/// Both halves are arranged so the bound under test is the only one that *can* fire: the
+/// other is set orders of magnitude out of reach, so no amount of scheduling delay flips them.
+/// The claim is the contract's -- a resolution ends by budget or by guard, records which, and
+/// names it in the failure -- and nothing here is timed.
+///
+/// The deadlines are installed after `bootstrap`, deliberately. Bootstrap makes lifecycle
+/// calls of its own, and squeezing them through a fifty-millisecond probe tests the harness's
+/// luck rather than the resolution.
 async fn a_resolution_says_which_of_its_two_bounds_ended_it(mode: ExecutionMode) {
-    // The budget is what ends it at ordinary settings: a generous attempt guard, a short
-    // budget, and a participant far slower than either.
-    let mut config = two_agents(mode);
-    config.agents[1].faults = AgentFaults { prepare_delay_ms: 30_000, ..AgentFaults::default() };
-    let mut f = mode_fixture(mode, config).await;
+    // Half one: the budget fires, because the guard cannot. `u32::MAX` attempts at the two
+    // millisecond pause is over ninety days; the budget is a fifth of a second.
+    let mut f = mode_fixture(mode, one_silent_agent(mode)).await;
+    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     f.harness.coordinator.deadlines = fly_session::Deadlines {
         probe: Duration::from_millis(50),
-        resolve: Duration::from_millis(300),
-        resolve_attempts: 8192,
+        resolve: Duration::from_millis(200),
+        resolve_attempts: u32::MAX,
         boot: Duration::from_secs(30),
         capture: Duration::from_secs(30),
         durable: Duration::from_secs(60),
     };
-    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
-    let started = Instant::now();
     let failure = within("step", f.harness.coordinator.step())
         .await
         .expect_err("a participant that never answers exhausts the resolution");
@@ -206,38 +335,42 @@ async fn a_resolution_says_which_of_its_two_bounds_ended_it(mode: ExecutionMode)
         failure.error.message.contains("resolution budget"),
         "the message names the bound that fired: {failure}"
     );
-    assert_eq!(failure.participant.as_deref(), Some(fly_b().as_str()));
+    // The budget ended it with attempts still in hand, which is what makes it the budget. A
+    // 200 ms budget at a 50 ms probe cannot spend more than a handful, and `u32::MAX` was
+    // never in reach; asserting against the guard's own size would be vacuous.
+    let spent = f.harness.coordinator.last_resolution_attempts;
+    assert!(spent >= 1, "the resolution made at least one attempt");
+    assert!(spent < 100, "and nowhere near its guard: {spent}");
+    assert_eq!(failure.participant.as_deref(), Some(fly_a().as_str()));
     assert_eq!(failure.error.mutation, MutationCertainty::Unknown);
-    assert!(
-        started.elapsed() < Duration::from_secs(20),
-        "the budget, not the 30-second participant, is what ended it"
-    );
     assert!(f.harness.coordinator.is_fenced());
     f.shutdown().await;
 
-    // The guard is what ends it when it is set below the budget: three attempts against a
-    // budget the participant could never reach anyway.
-    let mut config = two_agents(mode);
-    config.agents[1].faults = AgentFaults { prepare_delay_ms: 30_000, ..AgentFaults::default() };
-    let mut f = mode_fixture(mode, config).await;
+    // Half two: the guard fires, because the budget cannot. Three attempts against an hour.
+    let mut f = mode_fixture(mode, one_silent_agent(mode)).await;
+    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     f.harness.coordinator.deadlines = fly_session::Deadlines {
         probe: Duration::from_millis(50),
-        resolve: Duration::from_secs(600),
+        resolve: Duration::from_secs(3_600),
         resolve_attempts: 3,
         boot: Duration::from_secs(30),
         capture: Duration::from_secs(30),
         durable: Duration::from_secs(60),
     };
-    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     let failure = within("step", f.harness.coordinator.step())
         .await
         .expect_err("three attempts are not enough to resolve a silent participant");
     assert_eq!(f.harness.coordinator.last_resolution, Some(ResolutionEnd::AttemptsExhausted));
     assert!(
-        failure.error.message.contains("attempt guard") && failure.error.message.contains("3 attempts"),
+        failure.error.message.contains("attempt guard")
+            && failure.error.message.contains("3 attempts"),
         "the message names the bound that fired and its size: {failure}"
     );
-    assert_eq!(failure.participant.as_deref(), Some(fly_b().as_str()));
+    // Counted, not timed: the guard was spent exactly, and the hour never came near.
+    assert_eq!(f.harness.coordinator.last_resolution_attempts, 3);
+    assert_eq!(failure.participant.as_deref(), Some(fly_a().as_str()));
+    assert_eq!(failure.error.mutation, MutationCertainty::Unknown);
+    assert!(f.harness.coordinator.is_fenced(), "an exhausted guard fences the epoch too");
     f.shutdown().await;
 }
 
@@ -294,6 +427,35 @@ async fn a_delayed_one_agent_result_holds_the_world(mode: ExecutionMode) {
 // -------------------------------------------------------------------------------------------
 // Acceptance: worker or helper death has a bounded diagnosed outcome
 
+/// Waits until `worker` is provably inside the operation, then kills it.
+///
+/// Sleeping a fixed time before the kill asserts a race: under load the kill can land before
+/// the call is even dispatched, and then `MutationCertainty::None` is the *correct* answer
+/// because the participant never received anything. The certainty the death rows are about --
+/// `unknown`, because the participant died with work in its hands -- only holds if the work
+/// reached it, so the test waits for the worker's own status to say so rather than guessing
+/// from the clock.
+async fn kill_once_it_is_working(
+    launcher: &mut fly_session::Launcher,
+    worker: &Id,
+    inside: impl Fn(&StatusResult) -> bool,
+) -> ReapOutcome {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Ok(status) = launcher.health_check(worker).await
+            && inside(&status)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{worker} never reported itself inside the operation"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    launcher.kill(worker).await
+}
+
 /// One agent dies in the middle of its Prepare. The epoch fails with a typed cause naming
 /// that agent, within the caller's own budget, and nothing continues on the remainder.
 async fn a_worker_death_has_a_bounded_diagnosed_outcome(mode: ExecutionMode) {
@@ -301,22 +463,21 @@ async fn a_worker_death_has_a_bounded_diagnosed_outcome(mode: ExecutionMode) {
     config.agents[1].faults = AgentFaults { prepare_delay_ms: 5_000, ..AgentFaults::default() };
     let mut f = mode_fixture(mode, config).await;
     within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
-    let started = Instant::now();
 
+    let victim = fly_b();
     let (coordinator, launcher) = f.harness.parts();
     let (stepped, reaped) = tokio::join!(
         async { within("step", coordinator.step()).await },
-        async {
-            tokio::time::sleep(Duration::from_millis(80)).await;
-            launcher.kill(&fly_b()).await
-        }
+        // Killed once it has the Prepare in its hands, not after a fixed sleep: the row is
+        // about a participant that dies *with work*, so the work has to have reached it.
+        kill_once_it_is_working(launcher, &victim, |status| {
+            status.state == WorkerState::Preparing && status.active_request_id.is_some()
+        })
     );
     assert_eq!(reaped, ReapOutcome::Terminated);
+    // Boundedness is the suite's own `within` above: the participant is five seconds slow and
+    // `within` gives up at twenty, so returning at all is the claim.
     let failure = stepped.expect_err("a dead participant is a failed epoch, not a slow one");
-    assert!(
-        started.elapsed() < Duration::from_secs(20),
-        "the outcome must be bounded, not a hang"
-    );
     assert_eq!(
         failure.participant.as_deref(),
         Some(fly_b().as_str()),
@@ -350,19 +511,20 @@ async fn a_helper_death_has_a_bounded_diagnosed_outcome(mode: ExecutionMode) {
     let mut f = mode_fixture(mode, config).await;
     within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     let environment = f.harness.environment_id();
-    let started = Instant::now();
 
     let (coordinator, launcher) = f.harness.parts();
     let (stepped, reaped) = tokio::join!(
         async { within("step", coordinator.step()).await },
-        async {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            launcher.kill(&environment).await
-        }
+        // Killed once the world has recorded the batch, which the arena does before its
+        // injected delay. So the Advance provably reached it and the certainty is `unknown`
+        // rather than `none`; a fixed sleep could land before dispatch under load, and then
+        // `none` would be right and this row would be asserting a race.
+        kill_once_it_is_working(launcher, &environment, |status| {
+            status.last_batch_id.is_some()
+        })
     );
     assert_eq!(reaped, ReapOutcome::Terminated);
     let failure = stepped.expect_err("a dead world is a failed epoch");
-    assert!(started.elapsed() < Duration::from_secs(20), "bounded, not a hang");
     assert_eq!(
         failure.participant.as_deref(),
         Some(environment.as_str()),

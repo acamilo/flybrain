@@ -1552,21 +1552,7 @@ arm fought fifty thousand frames of battle *and* walked twenty thousand frames o
 
 Raw reports: `hunt-before-20260922T0459.md` and `hunt-after-20260922T0459.md` in the coordination
 state's `runs/` directory.
-| 55 | `BUY <item>` is dealt on a frame where no list is accepting input, and aimed at a stock index the counter's cursor cannot reach: it gives up on its own first frame, presses nothing, records nothing, and is dealt again next hold | the Pewter mart, ten brain minutes after v0.4.7: map `0x38`, scene `shop`, `loop.json` `sequence: [BUY ANTIDOTE], period 1, repeats 747, distinctMacros 1`, `BUY ANTIDOTE start` / `BUY ANTIDOTE blocked` every 0.8 s with **nothing else starting**; money 104, so the Antidote was the only purchase money allowed | `the_clerks_text_box_is_not_the_marts_buy_list`, `the_clerks_own_text_box_deals_no_purchase_and_reports_no_list`, `a_purchase_past_the_cursors_reach_is_not_on_the_pad`, `a_purchase_out_of_reach_by_the_time_it_starts_is_refused_without_a_press`, and the ROM run below | **fixed**, two facts, both surveyed with `FLY_PROBE_CATCH=shop`. `wListMenuID` says the **counter is open**, not which screen is up -- the mart prints its own text without clearing it, so every frame of a visit read "the priced buy list", including the clerk's "Here you are! Thank you!" box whose leftover cursor bytes are a two-option box's (`max` 1); the screen is now read from the figure the game draws and the clerk is `ShopScreen::Talking`, which reports no listing and deals no purchase. And the buy list **scrolls**: the cursor walks rows 0, 1, 2 and then the window moves under it, so only the first three of a counter's stock have an index this seam can aim at, and Pewter's ANTIDOTE is its fourth. `docs/design/macros.md` section 12.18, `docs/design/macros-wram.md` section 7.1 |
-
 ### Residuals, named rather than worked around
-
-- **`wListScrollOffset` is not a pinned address** (row 55), so a mart's fourth item and after have
-  no cursor index this seam can name and their `BUY` buttons are off the pad -- Pewter's ANTIDOTE,
-  BURN HEAL, AWAKENING and PARLYZ HEAL among them. Pinning it is the same survey `$cfc5` is waiting
-  on in `docs/design/macros-wram.md` section 9: `gen_symbols.py` refuses a hand-written address and
-  the checkout it reads is not on this box.
-- **A mart that has never drawn a buy list reads `Unknown`, not `Shop`** (measured beside row 55).
-  On a first visit `wListMenuID` is 0 and `wTextBoxID` on the counter menu is `MONEY_BOX` `$0d`
-  rather than `BUY_SELL_QUIT_MENU` `$15` -- the money box is the last template drawn -- so
-  `state::shop` answers `None` until the fly has opened the list once. Named rather than worked:
-  widening the test to `MONEY_BOX` would let the Game Corner's prize counter read as a mart, and
-  what that costs has not been surveyed.
 
 - **`NEXT` on a move list whose cursor the seam cannot place is now the largest source of it** --
   142 of the after arm's 248 `NEXT` starts, over 8,687 frames. That frame is *correctly* not the
@@ -1876,7 +1862,7 @@ same question, and that was the second half of the trap.
 | 41 | the nurse's conversation is a ring of forty-six A presses that ends where it began, and the dialog pad deals two names for the A press that walks it | standing at a Pokémon Center's counter with a party that is already full -- which is every visit after a heal, and the state a `GO HEAL` errand leaves the fly in | `talk_is_off_the_pad_at_a_nurse_the_party_has_no_use_for`, `the_nurses_prompt_offers_only_the_answer_that_changes_something`, `a_completed_heal_writes_the_nurse_into_the_talked_ledger`, `a_declined_heal_writes_the_nurse_into_the_talked_ledger`, `the_fly_leaves_the_pokemon_center_from_the_rung_ten_checkpoint` (ROM-gated) | **fixed**: `TALK` is off the pad at a nurse the party has no use for; her prompt deals only the answer that changes something; `NEXT` is off any readable YES/NO pad, because an A press there *is* `YES`; and a completed heal or a declined prompt retires her |
 | 48 | `TALK` is bound by a reach that goes over a counter and recorded by one that does not, so a counter person is never retired | any mart clerk or centre nurse, since the counter reach was added | `a_completed_heal_writes_the_nurse_into_the_talked_ledger` (the ledger entry is the assertion) | **fixed**: the ledger entry comes from `palette::facing_target`, which is `TALK`'s own precondition |
 | 49 | a YES/NO answer that brings the same prompt straight back | any readable two-option box the answer does not settle | `a_yes_no_box_that_reopens_unchanged_takes_that_answer_off_the_pad`, `a_prompt_that_does_not_come_back_excludes_nothing` | **fixed**: `TargetKey::Answer { at, yes }` in the blocked ledger, same ten-minute window as a walk's target, armed for one hold after the answer. The exclusion narrows a pad and never empties one |
-| 50 | `MOVE n` reports `blocked` with the move list drawn and its cursor placeable but not accepting input | every battle | -- | **unchanged from v0.4.3 and v0.4.4, named again**: 222 of 224 `MOVE 4` and 162 of 171 `MOVE 2` in the ROM run below. Row 30b's unplaceable cursor inverted; the honest fix is a WRAM reading of "this list is accepting input" rather than a pad change, and it is the next brief |
+| 50 | `MOVE n` reports `blocked` with the move list drawn and its cursor placeable but not accepting input | every battle | `a_move_list_is_the_box_on_screen_and_not_the_cursor_bytes_it_left_behind`, and the `MOVE n` blocked share in `the_battles_turns_advance_from_the_rung_nine_forest_checkpoint` (ROM) | **fixed** (2026-09-22, `docs/design/macros.md` 12.18), and the half of the row that was wrong is where the fix is: the list was **not** drawn. `MoveSelectionMenu`'s cursor bytes are never cleared and `SelectMenuItem` decrements `wCurrentMenuItem` back into the one-based range on its way out, so every frame of a turn's text and animation read as an open list with a placeable cursor. A menu is up while its **box** is on screen -- surveyed by pressing at every battle frame with a rollback pulse, honoured on 264 frames of 3,102 by the cursor bytes alone and on **231 of 231** by the bytes and the box |
 
 ### The ROM-gated run, from the live checkpoint
 
@@ -2072,6 +2058,7 @@ that covers more ground walks into more grass, and the hunt cannot tell a long f
 | ---: | --- | --- | --- | --- |
 | 54 | `GO FRONTIER`, `GO HEAL` and `GO ROUTE` cycle on five tiles: three walks that each end where they began | rung 10: brain minutes 1.0 to 8.5, `GO HEAL` **204** starts at a mean net of 0.0 tiles and a mean reach of 0.0, `GO ROUTE` 211 at a net of 0.2. Rung 11, the same cycle one town on: **14 distinct tiles in six brain minutes**, 17 of 17 windows flagged, `GO FRONTIER` 122 / `GO HEAL` 129 / `GO ROUTE` 126, **every one `done` at a mean net of 0.0**, printed as `GO ROUTE, GO FRONTIER, GO HEAL` x34 to x42 | `an_errand_does_not_settle_on_the_doormat_it_is_standing_on`, `an_errand_is_paid_by_a_building_this_run_has_already_been_inside`, `a_frame_mid_step_is_read_from_the_tile_the_screen_is_centred_on`, `a_decode_the_screen_disagrees_with_is_refused_mid_step_too`, `the_tile_a_step_is_landing_on_is_ground_the_run_has_covered`, `an_edge_the_table_cannot_name_stops_being_somewhere_new_once_it_is_stood_on`, and both ROM runs below | **fixed, and both readings were right.** Four facts, all measured: the coordinates change at the **end** of a step, so the grid was refused on every moving frame and every walk was planned over the ten-by-nine window; the tile a step is landing on was unrecorded for fifteen frames of every sixteen, so the fly's own next tile was a frontier it arrived at without moving; an errand's aim at a door the fly was standing on settled where it stood, and a completed errand walk writes the reached ledger, so the button came back every hold; and the errand ledger is session state, so a restore re-armed a town the run had already shopped and healed in. `docs/design/macros.md` section 12.17 |
 | 54b | an **edge** the geography table has no row for is "somewhere new" for ever | Route 3: the cartridge reports its connections as **north and west** (`wCurMapConnections`; `warps: []`), the table carries west and **east**, so the seven walkable tiles of its north edge answered "leads somewhere this run has not stood on" on every hold, with `GO OBJECTIVE` off the pad beside them because nothing on that map leads to the objective | `an_edge_the_table_cannot_name_stops_being_somewhere_new_once_it_is_stood_on` | **fixed, narrowly.** A warp's destination is a byte the cartridge publishes, so `None` there is the `LAST_MAP` case row 2 already handles; an edge's comes only from `geography::connected`, so `None` there means the table cannot name it and never will. The only record left is the adapter's boundary ledger, and an edge the run has already stood on is not somewhere new. **The table row itself is not guessed at**: which map is north of Route 3 is a survey nobody has run, and it is a residual below |
+| 55 | `BUY <item>` is dealt on a frame where no list is accepting input, and aimed at a stock index the counter's cursor cannot reach: it gives up on its own first frame, presses nothing, records nothing, and is dealt again next hold | the Pewter mart, ten brain minutes after v0.4.7: map `0x38`, scene `shop`, `loop.json` `sequence: [BUY ANTIDOTE], period 1, repeats 747, distinctMacros 1`, `BUY ANTIDOTE start` / `BUY ANTIDOTE blocked` every 0.8 s with **nothing else starting**; money 104, so the Antidote was the only purchase money allowed | `the_clerks_text_box_is_not_the_marts_buy_list`, `the_clerks_own_text_box_deals_no_purchase_and_reports_no_list`, `a_purchase_past_the_cursors_reach_is_not_on_the_pad`, `a_purchase_out_of_reach_by_the_time_it_starts_is_refused_without_a_press`, and the ROM run below | **fixed**, two facts, both surveyed with `FLY_PROBE_CATCH=shop`. `wListMenuID` says the **counter is open**, not which screen is up -- the mart prints its own text without clearing it, so every frame of a visit read "the priced buy list", including the clerk's "Here you are! Thank you!" box whose leftover cursor bytes are a two-option box's (`max` 1); the screen is now read from the figure the game draws and the clerk is `ShopScreen::Talking`, which reports no listing and deals no purchase. And the buy list **scrolls**: the cursor walks rows 0, 1, 2 and then the window moves under it, so only the first three of a counter's stock have an index this seam can aim at, and Pewter's ANTIDOTE is its fourth. `docs/design/macros.md` section 12.18, `docs/design/macros-wram.md` section 7.1 |
 
 ### Residuals, named rather than worked around
 
@@ -2095,6 +2082,17 @@ that covers more ground walks into more grass, and the hunt cannot tell a long f
   table has no row for it (row 54b). Naming it is a survey -- walk the fly off that edge with real
   presses and read `wCurMap` back, the method of `docs/design/macros-wram.md` -- and nothing here
   guesses at it. Until then that edge is walked once and then falls out of the first tier.
+- **`wListScrollOffset` is not a pinned address** (row 55), so a mart's fourth item and after have
+  no cursor index this seam can name and their `BUY` buttons are off the pad -- Pewter's ANTIDOTE,
+  BURN HEAL, AWAKENING and PARLYZ HEAL among them. Pinning it is the same survey `$cfc5` is waiting
+  on in `docs/design/macros-wram.md` section 9: `gen_symbols.py` refuses a hand-written address and
+  the checkout it reads is not on this box.
+- **A mart that has never drawn a buy list reads `Unknown`, not `Shop`** (measured beside row 55).
+  On a first visit `wListMenuID` is 0 and `wTextBoxID` on the counter menu is `MONEY_BOX` `$0d`
+  rather than `BUY_SELL_QUIT_MENU` `$15` -- the money box is the last template drawn -- so
+  `state::shop` answers `None` until the fly has opened the list once. Named rather than worked:
+  widening the test to `MONEY_BOX` would let the Game Corner's prize counter read as a mart, and
+  what that costs has not been surveyed.
 
 ## Row 54: the two arms, and the ROM runs (2026-09-22, v0.4.6)
 
@@ -2170,6 +2168,129 @@ skipped cleanly without `FLY_ROM` and the checkpoint):
 - `--print-compatibility`: **648 bytes, sha256 `0d9bfde7...707fa`** -- byte-identical to v0.4.1
   through v0.4.5. Decoder, reward catalog, adapter version and roles untouched.
 
+## Row 50: the move list was never drawn (2026-09-22, v0.4.7)
+
+`MOVE n` has reported `blocked` on most of its starts since v0.4.3 and every review since has named
+it and left it: "the move list drawn and its cursor placeable but not accepting input". Half of
+that is wrong, and finding out which half is the fix.
+
+### The survey
+
+`examples/scene_probe.rs`, `FLY_PROBE_CATCH=accept`, from the rung-9 forest checkpoint. The
+question "is this menu accepting input" is answered by **pressing at it**: every battle frame
+exports the emulator state, takes one directional pulse, reads `wCurrentMenuItem` and puts the
+state straight back, so every frame has a ground truth and the run is not perturbed by the
+measurement. `HandleMenuInput` moves the cursor on UP and DOWN before it looks at
+`wMenuWatchedKeys`, so a cursor that moves is a menu running its input loop. The pulse releases the
+buttons first: `JoypadLowSensitivity` acts on a key's edge, and the first pass of this survey
+counted 187 refusals that were its own held button.
+
+3,102 battle frames whose cursor bytes say "the move list":
+
+| the reading | press refused | press honoured |
+| --- | ---: | ---: |
+| the cursor bytes alone (the seam before this row) | 2,838 | 264 |
+| the cursor bytes **and** the box on screen | **0** | **231** |
+| the cursor bytes with no box drawn | 2,838 | 33 |
+
+So 91.5% of the frames the old reading called an open move list were frames no press reached. The
+33 are frames where the pulse's own thirty were long enough for the cartridge to open something by
+itself; the pulse is a measurement and not a claim about one frame.
+
+Beside the press, the probe asks **every byte of WRAM and HRAM** whether its values on accepting
+frames are disjoint from its values on refusing ones, so the reading is found rather than
+nominated. Once the box is in the reading nothing separates the two classes, because there is
+nothing left to separate. The top-level battle menu was already exact: 413 frames, 0 refused, and
+`wTextBoxID` is why.
+
+### The mechanism
+
+`MoveSelectionMenu` writes `wTopMenuItemY` 12 and `wTopMenuItemX` 5 and nothing in the game clears
+them -- row 41's fact about the YES/NO box, one menu over. `SelectMenuItem` then decrements
+`wCurrentMenuItem` back into a 0-based move slot on its way out, which lands inside the one-based
+range the accessor reads as valid, so a turn spent on move 2, 3 or 4 leaves a *placeable* cursor
+behind it. That is why `MOVE 4` was 222 of 224.
+
+### The trap hunt, twenty brain minutes on each checkpoint
+
+`main` at `e76b3d1` against this branch, same seed, same ground.
+
+**The rung-9 forest checkpoint.**
+
+| measure | before | after |
+| --- | ---: | ---: |
+| `MOVE n` starts / `blocked` | 109 / **29** (26.6%) | 83 / **0** |
+| macro starts that were `BACK` on the move list | **233** | 17 |
+| frames the seam called an open move list | **20,318** | 3,742 |
+| frames it called a move list with no cursor | 6,751 | 10 |
+| frames it called between-turns | 1,670 | **44,270** |
+| distinct (map, tile) | 296 | **430** |
+| windows flagged | **33 / 73** | 70 / 73 |
+| macros started / blocked | 620 / 31 | 1,160 / **1** |
+| frames in `battle` | 31,751 | 52,311 |
+| wall clock | 3,350 s | 3,038 s |
+
+**The rung-11 Route 3 checkpoint.**
+
+| measure | before | after |
+| --- | ---: | ---: |
+| `MOVE n` starts / `blocked` | 198 / **72** (36.4%) | 97 / **2** (2.1%) |
+| macro starts that were `BACK` on the move list | **361** | 22 |
+| frames the seam called an open move list | **34,637** | 4,141 |
+| frames it called a move list with no cursor | 16,162 | 5 |
+| frames it called between-turns | 5,372 | **47,660** |
+| distinct (map, tile) | 163 | **184** |
+| windows flagged | **68 / 73** | 73 / 73 |
+| macros started / blocked | 1,097 / 87 | 1,300 / **19** |
+| `GO ROUTE` completed | 5 | 21 |
+| wall clock | 2,392 s | 2,127 s |
+
+**More ground on both arms, and more flagged windows on both.** That is row 54's arm again and it
+is reported rather than smoothed: after the fix the fly spends 73% and 78% of the two runs inside
+battles it is actually fighting, and the hunt's rule -- fewer than four distinct tiles in two brain
+minutes -- flags a fly that is fighting exactly as hard as a fly that is stuck. The ethos check's
+"fewer flagged windows, more distinct tiles" holds on the tiles and **not** on the windows, on both
+arms. The merge is Fable's call.
+
+### ROM-gated, from the forest checkpoint
+
+`the_battles_turns_advance_from_the_rung_nine_forest_checkpoint`, with the two claims row 50 turns
+on added to it:
+
+| measure | before (`main` at `e76b3d1`) | after |
+| --- | ---: | ---: |
+| `MOVE n` starts / `blocked` | 940 / **838** | 51 / **0** |
+| battles entered / ended | 11 / **10** | 13 / **13** |
+| worst battle, in macros | 503 | 283 |
+| median battle, in macros | 48 | 43 |
+| where `blocked` was earned | seven of ten were `MOVE n` in a battle | no `MOVE n` at all |
+
+The blocked share is the assertion; the median is what it buys and the worst battle is a tail.
+
+### Residuals, named rather than worked around
+
+- **The battle bag is the same trap on `wListMenuID`.** `ITEMLISTMENU` outlives the bag exactly as
+  the cursor bytes outlive the move list: over the frames the seam calls an open battle bag the
+  same survey refused **449** presses against 36 honoured. Its list is drawn in the top half of the
+  screen and the survey has not found the figure that tells it from the frame after it closes, so
+  `ITEM` and `THROW BALL` still pay for it. It is the next trap.
+- **The party list, likewise**: `PartyMenuInit`'s geometry outlives its list.
+- **The hunt's tile rule still cannot tell a long battle from a stall**, which is section 15's own
+  measurement in `docs/design/macros.md` and now the third branch to run into it.
+
+### Gates
+
+- `cargo test --workspace` with `FLY_ROM` set: green except
+  `flysim::integration::the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_killed`,
+  the known debug-build boot failure on this box. On the first pass
+  `flybus::integration::unix_socket::session_over_one_router` also failed -- the slow-consumer
+  coalescing flake that `fix/flybus-coalescing-flake` is open on -- and passed on a re-run; three
+  other agents were building on the box at the time.
+- `cargo clippy --all-targets`: clean.
+- `infra/tests/lint.sh`: all checks passed, de-PII guard included.
+- `--print-compatibility`: **648 bytes, sha256 `0d9bfde7...707fa`** -- byte-identical to this
+  branch's base. Decoder, reward catalog, adapter version and roles untouched.
+
 ## Row 55: the two arms, and the ROM run (2026-09-22, v0.4.7)
 
 One checkpoint, the mart the stream was standing in. Same seed, same ground, `main` at `5512900`
@@ -2220,7 +2341,27 @@ the checkpoint):
 
 ### Gates
 
-- `cargo test --workspace` with `FLY_ROM` and `FLY_DATASET` set.
-- `cargo clippy --all-targets`.
-- `infra/tests/lint.sh`, de-PII guard included.
-- `flysim --print-compatibility`, byte-identical to this branch's base.
+- `cargo test --workspace` with `FLY_ROM` and `FLY_DATASET` set: **57 suites green**, one failure --
+  `flysim::integration::the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_killed`,
+  which asserts the adapter version is `pokered-unique8-v5` while the catch-reward slice moved it to
+  **v6**. The assertion is unchanged on this branch's base and on `main`, so it is that slice's to
+  settle and not a macro change: the adapter version is out of the loop review's scope.
+- `cargo clippy --all-targets`: **0 warnings**.
+- `infra/tests/lint.sh`: ALL CHECKS PASSED, de-PII guard included.
+- `flysim --print-compatibility`: **648 bytes, sha256 `4929f340...9ebd9`** -- byte-identical to this
+  branch's base. Decoder, reward catalog, adapter version and roles untouched.
+
+**Re-run after the merge with row 50**, from the same checkpoint: the same ROM test walks route
+`[56, 2, 14, 2, 14, ... 55, ... 54, ... 58, ...]` -- out of the mart, across Pewter City, on and off
+Route 3 repeatedly, through the museum, the gym and the centre -- with `BUY` **0** starts, `LEAVE`
+1, `CONFIRM` 1, **no `MOVE n` blocked at all** (row 50's own fix), the longest chain of one macro
+blocked on an unchanged frame **1** in any scene, and the wallet up from **104 to 329**. The two
+rows compose: row 55 gets the fly out of the counter and row 50 lets it win the fights it then
+walks into. The trap-hunt arms above were measured against this branch's base, before row 50
+landed, and are left as measured.
+
+**Merged with `main` after row 50 landed** (`v0.5.1`). Three conflicts, all of them two reviews
+appending in the same place: `docs/design/macros.md` (row 50 keeps 12.18, row 55 renumbered to
+**12.19**), this file (both rows, both residual pairs and both arm sections kept) and
+`examples/scene_probe.rs` (both survey modes kept, `accept` and `shop`). Every source file
+auto-merged.
