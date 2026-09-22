@@ -78,7 +78,9 @@ because they are now enforced:
   after a restore marks it, and a later chunk may mark it when it starts past where the previous
   chunk ended; a chunk that continues the previous one exactly is continuous by construction and
   its flag is refused. Without that reading the restore rule is advisory, because a stream could
-  set the flag on every chunk and satisfy it by accident.
+  set the flag on every chunk and satisfy it by accident. The requirement is one-directional: a
+  fresh epoch's first chunk **may** mark a discontinuity, because section 6's recovery and
+  section 7's episode reset both establish a fresh timeline and publish one.
 
 The environment provides **native game output**. Sensor transformations belong to the agent
 profile. Resizing for viewers, overlays, composition, audio mixing/resampling, encoding,

@@ -297,10 +297,14 @@ fn chunks_cannot_overlap_or_go_backwards_within_an_epoch() {
 #[test]
 fn the_first_chunk_after_a_restore_marks_discontinuity() {
     let descriptor = audio_descriptor(48_000, 2);
-    let mut fresh = AudioTimeline::fresh(&descriptor, 0);
-    fresh
+    // The requirement is one-directional. A fresh epoch's first chunk may mark a
+    // discontinuity -- a recovery or an episode reset establishes a fresh timeline and
+    // publishes one -- so both flags are accepted at an origin.
+    let mut reset = AudioTimeline::fresh(&descriptor, 0);
+    reset
         .accept(&audio_ref(&descriptor, 0, 800, true), &descriptor)
-        .expect_err("the episode's first chunk is not a discontinuity");
+        .expect("a reset episode's first chunk may mark the discontinuity it published");
+    let mut fresh = AudioTimeline::fresh(&descriptor, 0);
     fresh
         .accept(&audio_ref(&descriptor, 0, 800, false), &descriptor)
         .expect("the episode's first chunk continues nothing");
@@ -310,6 +314,7 @@ fn the_first_chunk_after_a_restore_marks_discontinuity() {
     restored
         .accept(&audio_ref(&descriptor, 800, 800, false), &descriptor)
         .expect_err("the first chunk after a restore marks discontinuity");
+    let mut restored = AudioTimeline::restored_at(&descriptor, 800);
     restored
         .accept(&audio_ref(&descriptor, 0, 800, true), &descriptor)
         .expect_err("the restored position is preserved, not reset");

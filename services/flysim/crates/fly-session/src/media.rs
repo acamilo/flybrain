@@ -216,11 +216,6 @@ impl ViewPipeline {
         self.renders.count()
     }
 
-    /// Whether `boundary` is still inside the declared pipeline delay, where the contract
-    /// allows `O[0]` to repeat.
-    pub fn is_bootstrap_repeat(&self, boundary: u64) -> bool {
-        boundary > 0 && boundary <= self.descriptor.observation_delay_steps
-    }
 }
 
 /// One audio stream's production: an exact sample budget and a deterministic waveform.
@@ -444,6 +439,35 @@ pub fn check_required_views(
     Ok(())
 }
 
+/// Every declared audio stream produces exactly one chunk per transition.
+///
+/// The contract states the shape and the ordering of chunks, not whether one has to exist, so
+/// this is MEDIA-01's choice and it is deliberate: a session that tolerates a silently missing
+/// chunk cannot tell "this world produced no audio for this interval" from "the chunk was
+/// lost", and the second is the case the retention rules care about. Boundary 0 has no
+/// preceding interval and so carries no chunk.
+pub fn check_required_audio(
+    descriptor: &EnvironmentDescriptor,
+    observation: &WorldObservation,
+) -> DomainResult<()> {
+    if observation.boundary == 0 {
+        return Ok(());
+    }
+    for stream in &descriptor.audio {
+        if !observation
+            .audio
+            .iter()
+            .any(|chunk| chunk.stream_id == stream.stream_id)
+        {
+            return Err(media_error(format!(
+                "declared audio stream {} produced no chunk for this transition",
+                stream.stream_id
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Every declared audio stream's chunk sequence, one timeline per stream and epoch.
 #[derive(Clone, Debug, Default)]
 pub struct AudioTimelines(BTreeMap<String, AudioTimeline>);
@@ -462,23 +486,28 @@ impl AudioTimelines {
 
     /// Timelines for a new epoch after a restore: each stream resumes at its preserved sample
     /// position, and each one's first chunk must mark a discontinuity.
+    ///
+    /// A declared stream with no recorded position is an error. Resuming it at sample zero
+    /// would restart the episode's audio clock silently, which is exactly the best-effort
+    /// policy the restore rules refuse: crash restore *preserves* the sample position.
     pub fn restored(
         descriptor: &EnvironmentDescriptor,
         positions: &BTreeMap<String, u64>,
-    ) -> AudioTimelines {
-        AudioTimelines(
-            descriptor
-                .audio
-                .iter()
-                .map(|stream| {
-                    let at = positions.get(&stream.stream_id).copied().unwrap_or_default();
-                    (
-                        stream.stream_id.clone(),
-                        AudioTimeline::restored_at(stream, at),
-                    )
-                })
-                .collect(),
-        )
+    ) -> DomainResult<AudioTimelines> {
+        let mut timelines = BTreeMap::new();
+        for stream in &descriptor.audio {
+            let at = positions.get(&stream.stream_id).copied().ok_or_else(|| {
+                DomainError::before(
+                    ErrorCode::IncompatibleState,
+                    format!(
+                        "audio stream {} has no restored sample position",
+                        stream.stream_id
+                    ),
+                )
+            })?;
+            timelines.insert(stream.stream_id.clone(), AudioTimeline::restored_at(stream, at));
+        }
+        Ok(AudioTimelines(timelines))
     }
 
     /// Accepts one observation's chunks. Unknown streams and out-of-sequence chunks fail.
@@ -681,16 +710,14 @@ pub fn snapshot_frame(message: &flybus::Message) -> Option<SpectatorFrame> {
     let media = payload.get("media")?;
     let views = media.get("views")?.as_array()?;
     let view = ViewRef::from_json(views.first()?).ok()?;
-    let audio = media
-        .get("audio")?
-        .as_array()?
-        .iter()
-        .filter_map(|v| AudioRef::from_json(v).ok())
-        .filter_map(|chunk| {
-            let artifact = message.artifact(&audio_attachment(&chunk.stream_id)).ok()?;
-            Some((chunk, artifact))
-        })
-        .collect();
+    // An unreadable chunk, or one whose handle is not attached, makes the whole snapshot
+    // unreadable rather than a snapshot that quietly has less audio in it than was published.
+    let mut audio = Vec::new();
+    for value in media.get("audio")?.as_array()? {
+        let chunk = AudioRef::from_json(value).ok()?;
+        let artifact = message.artifact(&audio_attachment(&chunk.stream_id)).ok()?;
+        audio.push((chunk, artifact));
+    }
     let artifact = message.artifact(&view_attachment(&view.view_id)).ok()?;
     let agents = payload
         .get("agents")

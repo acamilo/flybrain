@@ -389,8 +389,9 @@ pub struct AudioTimeline {
 }
 
 impl AudioTimeline {
-    /// A fresh episode: the first chunk starts at the configured audio origin and is not a
-    /// discontinuity, because nothing preceded it.
+    /// A fresh episode: the first chunk starts at the configured audio origin. Its
+    /// discontinuity flag is free, because a reset or a recovery establishes a fresh timeline
+    /// and does publish a discontinuity.
     pub fn fresh(descriptor: &AudioDescriptor, origin: u64) -> AudioTimeline {
         AudioTimeline {
             stream_id: descriptor.stream_id.clone(),
@@ -442,18 +443,15 @@ impl AudioTimeline {
                     self.stream_id, self.start_sample, chunk.first_sample
                 ));
             }
-            if chunk.discontinuity != self.restored {
-                return err(if self.restored {
-                    format!(
-                        "AudioTimeline {}: the first chunk after a restore marks discontinuity",
-                        self.stream_id
-                    )
-                } else {
-                    format!(
-                        "AudioTimeline {}: the first chunk at the episode's audio origin is not a discontinuity",
-                        self.stream_id
-                    )
-                });
+            // Only one direction is stated: the first chunk after a restore marks the
+            // discontinuity. A fresh epoch's first chunk may mark one too -- sections 6 and 7
+            // have recovery and episode reset publishing a discontinuity on a fresh timeline --
+            // so the flag is required after a restore and left free at an origin.
+            if self.restored && !chunk.discontinuity {
+                return err(format!(
+                    "AudioTimeline {}: the first chunk after a restore marks discontinuity",
+                    self.stream_id
+                ));
             }
         } else {
             if chunk.first_sample < self.next_sample {

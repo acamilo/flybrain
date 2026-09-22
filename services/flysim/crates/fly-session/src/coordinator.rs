@@ -1716,6 +1716,9 @@ impl Coordinator {
         }
         // Audio has no sensory role here, but its chunks still cannot overlap or go backwards
         // inside an epoch, and a stale one must not reach presentation as current.
+        if let Err(e) = media::check_required_audio(descriptor, &result.observation) {
+            return Err(self.fail_now(e, "step-result"));
+        }
         if let Err(e) = self.timelines.accept(descriptor, &result.observation) {
             return Err(self.fail_now(e, "step-result"));
         }

@@ -8,6 +8,7 @@
 
 mod common;
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use serde_json::Map;
@@ -19,8 +20,8 @@ use fly_session::environment::{
 };
 use fly_session::harness::{HarnessConfig, Via};
 use fly_session::media::{
-    AssetRegistry, AudioSource, SensedView, Spectator, SpectatorFrame, arena_frame,
-    audio_attachment, detach_frame, view_attachment,
+    AssetRegistry, AudioSource, AudioTimelines, SensedView, Spectator, SpectatorFrame,
+    arena_frame, audio_attachment, detach_frame, view_attachment,
 };
 use fly_session::phase::Phase;
 use fly_session::types::*;
@@ -39,6 +40,9 @@ both_transports!(
     required_agent_input_is_never_coalesced_while_spectator_snapshots_are,
     a_persistent_asset_and_a_transient_artifact_are_different_identities,
     a_restored_audio_source_resumes_and_marks_the_discontinuity,
+    a_missing_audio_chunk_fails_the_step,
+    restored_timelines_need_every_declared_streams_position,
+    a_cadence_that_does_not_divide_the_sample_rate_still_lands_on_whole_samples,
 );
 
 const STEPS: u64 = 3;
@@ -385,6 +389,128 @@ async fn one_audio_chunk_per_boundary_with_an_exact_sample_budget(via: Via) {
     f.shutdown().await;
 }
 
+/// A declared stream that produces no chunk for a transition is a step failure, not a silently
+/// shorter epoch.
+async fn a_missing_audio_chunk_fails_the_step(via: Via) {
+    let config = HarnessConfig {
+        environment_faults: EnvironmentFaults {
+            omit_audio_at_boundary: Some(2),
+            ..EnvironmentFaults::default()
+        },
+        ..HarnessConfig::default()
+    };
+    let mut f = fixture(via, config).await;
+    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
+    let failure = within("run", f.harness.coordinator.run(STEPS))
+        .await
+        .expect_err("a missing chunk fails the transition");
+    assert_eq!(failure.error.code, ErrorCode::BufferInvalid);
+    assert_eq!(f.harness.coordinator.stats().advances, 1);
+    // Boundary 0 has no preceding interval, so its empty audio list is not a missing chunk.
+    let mut clean = default_fixture(via).await;
+    within("bootstrap", clean.harness.coordinator.bootstrap()).await.unwrap();
+    assert!(clean.harness.coordinator.observation().unwrap().audio.is_empty());
+    clean.shutdown().await;
+    f.shutdown().await;
+}
+
+/// Restored timelines resume every declared stream at its recorded position. A stream with no
+/// recorded position is refused, not restarted at zero.
+async fn restored_timelines_need_every_declared_streams_position(via: Via) {
+    let mut f = default_fixture(via).await;
+    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
+    within("run", f.harness.coordinator.run(1)).await.unwrap();
+    let descriptor = f.harness.coordinator.descriptor().expect("a descriptor").clone();
+    let observation = f.harness.coordinator.observation().expect("an observation").clone();
+
+    // A fresh epoch accepts the transition's chunk and advances its position.
+    let mut fresh = AudioTimelines::fresh(&descriptor);
+    fresh
+        .accept(&descriptor, &observation)
+        .expect("the first chunk of a fresh epoch");
+    assert_eq!(fresh.accepted(AUDIO_STREAM_ID), 1);
+    let chunk = observation.audio.first().expect("a chunk").clone();
+    assert_eq!(
+        fresh.positions()[AUDIO_STREAM_ID],
+        chunk.first_sample + chunk.sample_frames
+    );
+
+    // A restore with nothing recorded for a declared stream is an error, not sample zero.
+    let missing = AudioTimelines::restored(&descriptor, &BTreeMap::new())
+        .expect_err("a declared stream needs its preserved position");
+    assert_eq!(missing.code, ErrorCode::IncompatibleState);
+
+    // With the position recorded, the restored epoch resumes there and its first chunk must
+    // mark the discontinuity.
+    let positions = f.harness.coordinator.audio_positions();
+    let mut resumed = observation.clone();
+    let resumed_chunk = resumed.audio.first_mut().expect("a chunk");
+    resumed_chunk.first_sample = positions[AUDIO_STREAM_ID];
+    resumed_chunk.discontinuity = false;
+    let mut restored = AudioTimelines::restored(&descriptor, &positions).expect("positions");
+    restored
+        .accept(&descriptor, &resumed)
+        .expect_err("the first chunk after a restore marks discontinuity");
+    resumed.audio.first_mut().expect("a chunk").discontinuity = true;
+    let mut restored = AudioTimelines::restored(&descriptor, &positions).expect("positions");
+    restored
+        .accept(&descriptor, &resumed)
+        .expect("the restored epoch resumes at the preserved position");
+    assert_eq!(restored.accepted(AUDIO_STREAM_ID), 1);
+    f.shutdown().await;
+}
+
+/// A world cadence that does not divide the sample rate still produces whole samples, with the
+/// remainder carried rather than rounded: seven steps of a 7 Hz world are exactly one second.
+async fn a_cadence_that_does_not_divide_the_sample_rate_still_lands_on_whole_samples(via: Via) {
+    let config = HarnessConfig {
+        step_hz: 7,
+        ..HarnessConfig::default()
+    };
+    let mut f = fixture(via, config).await;
+    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
+    let observer = f.harness.observer().await.unwrap();
+    let topic = f.harness.coordinator.topics().snapshots.clone();
+    let mut spectator = Spectator::attach(&observer, &topic, 2).await.unwrap();
+
+    // 48000 / 7 is 6857.14..., so no chunk can be the exact share of a second.
+    let mut frames = Vec::new();
+    for step in 1..=7 {
+        within("step", f.harness.coordinator.run(1)).await.unwrap();
+        let chunk = f
+            .harness
+            .coordinator
+            .observation()
+            .expect("an observation")
+            .audio
+            .first()
+            .expect("a chunk")
+            .clone();
+        assert_eq!(chunk.first_sample, frames.iter().sum::<u64>());
+        assert!(
+            chunk.sample_frames == 6_857 || chunk.sample_frames == 6_858,
+            "step {step} produced {} frames",
+            chunk.sample_frames
+        );
+        assert_eq!(chunk.samples.byte_length, chunk.sample_frames * CHANNELS * 4);
+        frames.push(chunk.sample_frames);
+    }
+    assert_eq!(
+        frames.iter().sum::<u64>(),
+        SAMPLE_RATE,
+        "seven steps of a 7 Hz world are exactly one second of samples: {frames:?}"
+    );
+    assert_eq!(f.harness.coordinator.audio_positions()[AUDIO_STREAM_ID], SAMPLE_RATE);
+
+    // The published chunk is readable and finite whatever the cadence.
+    let published = frame_at(&mut spectator, 7).await;
+    let (chunk, artifact) = published.audio.first().expect("the published chunk");
+    let bytes = artifact.read_all().await.expect("the published chunk");
+    assert_eq!(bytes.len() as u64, chunk.sample_frames * CHANNELS * 4);
+    require_finite_samples(&bytes).expect("native samples are finite f32");
+    f.shutdown().await;
+}
+
 /// The retention table: a required agent input is retained through encoding and Commit with no
 /// coalescing, while a spectator's snapshots are a latest subscription with finite credits.
 async fn required_agent_input_is_never_coalesced_while_spectator_snapshots_are(via: Via) {
@@ -504,10 +630,13 @@ async fn a_restored_audio_source_resumes_and_marks_the_discontinuity(via: Via) {
     let mut restored = AudioTimeline::restored_at(&descriptor, resumed_at);
     restored.accept(&first, &descriptor).expect("the restored epoch");
     restored.accept(&second, &descriptor).expect("and its next chunk");
-    let mut fresh = AudioTimeline::fresh(&descriptor, resumed_at);
+    // A fresh episode at the audio origin refuses it: a restore preserves the sample
+    // position, and the position is what distinguishes the two epochs. The flag is required
+    // after a restore and free at an origin, so it cannot carry that distinction by itself.
+    let mut fresh = AudioTimeline::fresh(&descriptor, 0);
     fresh
         .accept(&first, &descriptor)
-        .expect_err("a fresh episode's first chunk is not a discontinuity");
+        .expect_err("a fresh episode starts at its own origin, not a resumed position");
     f.shutdown().await;
 }
 
