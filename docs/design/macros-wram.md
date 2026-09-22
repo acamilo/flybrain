@@ -142,7 +142,7 @@ parked its cursor. All five bytes are contiguous: `wTopMenuItemY` `$cc24`, `wTop
 | menu | signature | cursor | verified |
 | --- | --- | --- | --- |
 | the top-level battle menu | `wTextBoxID` = `$0b`, `wTopMenuItemY` = 14, `wTopMenuItemX` = 9 with watched keys `PAD_RIGHT\|PAD_A` (left column) or 15 with `PAD_LEFT\|PAD_A` (right), `wMaxMenuItem` = 1 (`DisplayBattleMenu`, `engine/battle/core.asm:2081` and `:2114`) | reported 0 FIGHT, 1 PKMN, 2 ITEM, 3 RUN: the game keeps the index *within* the column and `.rightColumn` adds two on selection | ROM (a fresh menu is FIGHT; RIGHT is ITEM; DOWN from there is RUN), trace |
-| the move list | `wTopMenuItemY` = 12, `wTopMenuItemX` = 5 (`MoveSelectionMenu`'s regular menu, `:2492`) | the game's list is **one-based** — `wCurrentMenuItem` is `wPlayerMoveListIndex + 1` and `wMaxMenuItem` is the move count plus one — so the accessor reports the 0-based slot, and `None` for an index that names no move | trace |
+| the move list | `wTopMenuItemY` = 12, `wTopMenuItemX` = 5 (`MoveSelectionMenu`'s regular menu, `:2492`) **and the box it draws** — section 10, because nothing clears the cursor bytes and `SelectMenuItem` decrements `wCurrentMenuItem` back into range on its way out | the game's list is **one-based** — `wCurrentMenuItem` is `wPlayerMoveListIndex + 1` and `wMaxMenuItem` is the move count plus one — so the accessor reports the 0-based slot, and `None` for an index that names no move | trace, and the press survey of section 10 |
 | the party list | `wTopMenuItemY` = 1, `wTopMenuItemX` = 0, `wMaxMenuItem` = `wPartyCount - 1`, watched keys `PAD_A\|PAD_B` or `PAD_A` alone (`PartyMenuInit`, `home/pokemon.asm:201`) | 0-based party slot | trace |
 | **a forced switch** | the party list, in a battle, with `wPartyMenuTypeOrMessageID` = `BATTLE_PARTY_MENU` (`$02`) at `$d07d`. `ChooseNextMon` is the battle path that sets it (`engine/battle/core.asm:1088`, and `:1389` for the "use next mon?" branch); choosing PKMN from the menu sets `NORMAL_PARTY_MENU` (`$00`, `:2316`), which is why the two are distinguishable. `wForcePlayerToChooseMon` (`$d11f`) is the byte `PartyMenuInit` turns into "A only, no way out". | — | trace |
 
@@ -728,3 +728,72 @@ answers that, and the executor's per-step moved check covers the rest), a warp t
 step onto it, and a script that pushes the fly off a tile (a session ledger answers that). The
 water half of the tile-pair lists is deliberately absent: it is the list
 `CheckForJumpingAndTilePairCollisions` uses while surfing, and the palette cannot surf.
+
+## 10. A menu that is accepting input, against one that is only remembered (2026-09-22, row 50)
+
+`HandleMenuInput` is shared by every menu in the game (section 2) and so are the five bytes it
+parks a cursor in. Section 2's table reads those bytes to say *which* menu is up; it does not say
+whether anybody is reading them. The difference is the whole of row 50: `MOVE n` reported `blocked`
+**890 times in 1,431 macros** on the cartridge, every one of them on a frame the seam called an
+open move list with a placeable cursor.
+
+**Nothing in the game clears the cursor bytes.** `MoveSelectionMenu` writes `wTopMenuItemY` 12 and
+`wTopMenuItemX` 5 once, and the whole of the turn that follows — the text, the animation, the
+damage, the enemy's reply — reads them back unchanged. It is the same fact section 7's YES/NO box
+rests on ("the cursor bytes survive the box closing"), and the reason the battle's *top-level* menu
+never had this problem is that it carries `wTextBoxID` = `$0b` beside its geometry.
+
+`SelectMenuItem` makes it worse rather than better: on its way out of `HandleMenuInput` it does
+`ld a, [wCurrentMenuItem] / dec a / ld [wCurrentMenuItem], a`, turning the menu's one-based index
+back into a 0-based move slot. That lands straight back inside the range the accessor reads as a
+valid one-based slot, so a turn spent on move 2, 3 or 4 leaves a *placeable* cursor behind it.
+
+### The accessor
+
+| state | how | verified |
+| --- | --- | --- |
+| the move list is **accepting input** | the cursor at `wTopMenuItemY` 12 / `wTopMenuItemX` 5 **and** the figure `MoveSelectionMenu` draws: a `TextBoxBorder` at (4, 12) fourteen wide and four tall, with a horizontal run written over its top-left corner and the `┘` junction written over (10, 12) (`engine/battle/core.asm`, `.regularmenu`). Read whole — both verticals, both horizontal runs, all four corners — because a single frame tile id is an ordinary character. The mimic and relearn menus draw at row 7 and never reach a battle's own turn. | survey (below) |
+
+`Scene::Battle { own_turn }` follows it: a frame whose move list is not on screen reads
+`BattleMenu::None`, which is nobody's turn, which is the between-turns row and its one `NEXT`
+(`docs/design/macros.md` 12.10). Nothing else moves — the top-level menu, the party list and the
+bag keep the readings they had.
+
+### The survey
+
+`examples/scene_probe.rs`, `FLY_PROBE_CATCH=accept`, from the rung-9 forest checkpoint. The
+question "is this menu accepting input" is answered by **pressing at it**, not by nominating a
+flag: on every battle frame the emulator exports its state, one directional pulse is issued,
+`wCurrentMenuItem` is read, and the state goes straight back — `HandleMenuInput` moves the cursor
+on UP and DOWN before it even looks at `wMenuWatchedKeys`, so a cursor that moves is a menu running
+its input loop. The pulse *releases* the buttons first, because `JoypadLowSensitivity` acts on a
+key's edge and a direction the fly is already holding would read as refused for the measurement's
+reason rather than the cartridge's.
+
+| the reading | press refused | press honoured |
+| --- | ---: | ---: |
+| the cursor bytes alone (what the seam read before row 50) | 2,838 | 264 |
+| the cursor bytes **and** the box on screen | **0** | **231** |
+| the cursor bytes with no box drawn | 2,838 | 33 |
+
+So 91.5% of the frames the old reading called an open move list were frames no press reached, and
+the reading that survives is exact on the 231 it keeps. (The 33 are frames where the pulse's own
+thirty frames were long enough for the cartridge to open something by itself; the pulse is a
+measurement and not a claim about one frame.)
+
+Beside the press, the probe asks **every byte of WRAM and HRAM** whether its values on accepting
+frames are disjoint from its values on refusing ones, so a reading is found rather than guessed.
+Over the move list, once the box is in the reading, no byte separates the two classes at all —
+there is nothing left to separate. Over the whole class before the fix, the only separators were
+the HRAM joypad bytes, which is the measurement seeing its own held button.
+
+### What the same survey found and this section did not fix
+
+- **The top-level battle menu is already exact**: 413 frames, 0 refused. `wTextBoxID` is why.
+- **The bag is the same trap, unfixed and named.** `wListMenuID` = `ITEMLISTMENU` outlives the bag
+  exactly as the cursor bytes outlive the move list: 449 refused against 36 honoured over the
+  frames the seam calls an open battle bag. The bag list is drawn in the top half of the screen and
+  the survey has not yet found the figure that tells it from the frame after it closes, so it is
+  reported rather than guessed — `docs/design/ladder.md`'s rule. `ITEM` and `THROW BALL` are the
+  two macros it costs.
+- **The party list, likewise**: `PartyMenuInit`'s geometry outlives its list.

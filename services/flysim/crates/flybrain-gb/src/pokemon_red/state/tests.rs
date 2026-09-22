@@ -227,6 +227,95 @@ fn the_move_list_is_reported_zero_based() {
     assert_eq!(battle(&mut wram).unwrap().menu, BattleMenu::Moves { cursor: None, count: 3 });
 }
 
+/// Row 50: the move list is the box on screen, not the cursor bytes it left behind.
+///
+/// `MoveSelectionMenu` writes `wTopMenuItemY` 12 and `wTopMenuItemX` 5 and **nothing in the game
+/// clears them**, exactly as the two-option box's geometry outlives its box (`yes_no_prompt`).
+/// `SelectMenuItem` then decrements `wCurrentMenuItem` back to the 0-based slot on its way out,
+/// which lands straight back inside the one-based range this accessor reads -- so a frame of battle
+/// text read as an open move list with a placeable cursor, the pad dealt `MOVE 1..4` on it, and the
+/// cursor step pressed at a list nobody was reading until its budget ran out: `MOVE n` reported
+/// `blocked` 890 times in 1,431 macros on the cartridge.
+///
+/// Surveyed with one rollback pulse per battle frame (`examples/scene_probe.rs`,
+/// `FLY_PROBE_CATCH=accept`, 3,102 frames at the rung-9 forest checkpoint): by the cursor bytes
+/// alone a real directional press moved the cursor on 264 frames, and by the cursor bytes **and**
+/// the box on screen on 231 of 231.
+#[test]
+fn a_move_list_is_the_box_on_screen_and_not_the_cursor_bytes_it_left_behind() {
+    let battler = |wram: &mut Wram| {
+        wram.party_mon(0, 4, 7, 14, 22, 0, &[(10, 35)]);
+        wram.battle_mon(0, 4, 7, 14, 22, 0, &[(10, 35), (45, 40), (33, 30)])
+            .enemy_mon(19, 3, 5, 11)
+            .battle(1);
+    };
+
+    // The list drawn: the fly's own turn, on the slot the cursor is on.
+    let mut wram = Wram::overworld();
+    battler(&mut wram);
+    wram.move_menu(2, 3);
+    let fight = battle(&mut wram).unwrap();
+    assert_eq!(fight.menu, BattleMenu::Moves { cursor: Some(2), count: 3 });
+    assert!(fight.own_turn, "a move list with its box on screen is the fly's turn");
+
+    // The same bytes with the box gone -- every frame of the turn's text, animation and reply.
+    // Not a move list at all, so not the own turn, so the pad is the between-turns `NEXT`.
+    let mut wram = Wram::overworld();
+    battler(&mut wram);
+    wram.move_menu_stale(2, 3);
+    let fight = battle(&mut wram).unwrap();
+    assert_eq!(fight.menu, BattleMenu::None, "the cursor bytes alone are not a move list");
+    assert!(!fight.own_turn, "cursor bytes with no box are between turns");
+
+    // The exact shape row 50 was measured in: `SelectMenuItem` decrements on its way out, so the
+    // slot the fly chose reads back one lower and stays inside the one-based range for ever.
+    let mut wram = Wram::overworld();
+    battler(&mut wram);
+    wram.move_menu(3, 3).set(ram::wCurrentMenuItem, 3);
+    assert!(battle(&mut wram).unwrap().own_turn, "with the box drawn this is a real slot");
+    let mut wram = Wram::overworld();
+    battler(&mut wram);
+    wram.move_menu_stale(3, 3).set(ram::wCurrentMenuItem, 3);
+    assert!(!battle(&mut wram).unwrap().own_turn, "the same byte, no box, no turn");
+
+    // Half a figure is not a box. The junction tile at (10, 12) is the one `MoveSelectionMenu`
+    // writes over its own border, and a run of horizontals there is an ordinary text box.
+    let mut wram = Wram::overworld();
+    battler(&mut wram);
+    wram.move_menu(1, 3).screen_tile(poke::MOVE_LIST_JOIN, 12, poke::frame::HORIZONTAL);
+    assert_eq!(battle(&mut wram).unwrap().menu, BattleMenu::None, "the junction tile is read");
+
+    // And the pads the two frames are dealt, which is what row 50 costs: the four move buttons and
+    // `BACK` where a list is open (section 13.1), and the one `NEXT` that advances text where the
+    // turn is resolving (section 12.10).
+    use crate::pokemon_red::macros::palette::{MacroKind, scene_set};
+    let pad = |wram: &mut Wram| {
+        let scene = crate::pokemon_red::scene::detect(wram);
+        let mut poke = PokeState::new(wram);
+        scene_set(scene, &mut poke)
+    };
+
+    let mut wram = Wram::overworld();
+    battler(&mut wram);
+    wram.move_menu(1, 3);
+    assert_eq!(
+        pad(&mut wram),
+        vec![
+            MacroKind::Move1,
+            MacroKind::Move2,
+            MacroKind::Move3,
+            MacroKind::Move4,
+            MacroKind::Back
+        ],
+        "an open move list"
+    );
+
+    let mut wram = Wram::overworld();
+    battler(&mut wram);
+    wram.move_menu_stale(1, 3);
+    assert_eq!(pad(&mut wram), vec![MacroKind::Next], "the same bytes with no box on screen");
+}
+
 #[test]
 fn a_forced_switch_is_the_party_list_that_cannot_be_cancelled() {
     let mut wram = Wram::overworld();
