@@ -149,6 +149,15 @@ struct World {
     start_to_open: u8,
     /// What the next A presses open.
     opens: VecDeque<Opens>,
+    /// Frames the cartridge spends *drawing* a list an A press opened, before it accepts input.
+    ///
+    /// Zero everywhere but the one test this is for. On the cartridge it is not zero and it is not
+    /// bounded by the twenty frames a script's `settle` waits: measured 2026-09-22, `THROW BALL`
+    /// pressed ITEM, settled, and then read the battle *menu*'s cursor because the bag had not
+    /// drawn yet -- 63 starts, 63 `blocked` (section 12.11).
+    opens_draw_in: u32,
+    /// The list an A press opened and the frame it starts accepting input on.
+    pending: Option<(u32, Opens)>,
     /// A scene the world switches to at this frame, for the abort rule.
     switch: Option<(u32, Scene)>,
     /// A frame at which the cartridge heals the party, which is what a Pokémon Center does while
@@ -223,6 +232,8 @@ impl World {
             b_to_close: 1,
             start_to_open: 1,
             opens: VecDeque::new(),
+            opens_draw_in: 0,
+            pending: None,
             switch: None,
             heal_at: None,
             scripted: false,
@@ -342,6 +353,15 @@ impl World {
 
     fn frame(&mut self, mask: u8) {
         self.frames += 1;
+        if let Some((at, next)) = self.pending
+            && self.frames >= at
+        {
+            self.list = next.list;
+            self.cursor = next.cursor;
+            self.cursor_max = next.max;
+            self.grid = next.grid;
+            self.pending = None;
+        }
         if let Some(at) = self.scripted_at
             && self.frames >= at
         {
@@ -411,10 +431,14 @@ impl World {
         if mask == buttons::A
             && let Some(next) = self.opens.pop_front()
         {
-            self.list = next.list;
-            self.cursor = next.cursor;
-            self.cursor_max = next.max;
-            self.grid = next.grid;
+            if self.opens_draw_in > 0 {
+                self.pending = Some((self.frames + self.opens_draw_in, next));
+            } else {
+                self.list = next.list;
+                self.cursor = next.cursor;
+                self.cursor_max = next.max;
+                self.grid = next.grid;
+            }
         }
     }
 
@@ -1042,8 +1066,12 @@ fn a_move_button_confirms_its_own_slot_over_an_open_list() {
     assert_eq!(world.cursor, 2, "the third slot, by watching where the cursor went");
     assert_eq!(world.pulses.last(), Some(&buttons::A));
 
-    // And from the menu above, FIGHT first and then the slot.
+    // And from the menu above, FIGHT first and then the slot. The list has to actually open:
+    // since section 12.11 the step that walks it *waits* for the move list rather than reading
+    // whatever cursor is up, so a fixture where FIGHT opens nothing waits out `CURSOR_WAIT` --
+    // which is the right answer, and is what the cartridge was doing to `THROW BALL` in reverse.
     let mut world = World::battle();
+    world.opens.push_back(Opens { list: List::Moves(3), cursor: 0, max: 2, grid: false });
     assert_eq!(run(&mut world, MacroKind::Move2).unwrap(), MacroAbort::Done);
     assert!(
         world.pulses.contains(&buttons::A),
@@ -2142,6 +2170,10 @@ fn item_reaches_the_potion_by_reading_the_bags_cursor() {
     let mut world = World::battle();
     world.bag = vec![(item::POKE_BALL, 3), (item::POTION, 2)];
     world.opens.push_back(Opens { list: List::BattleBag, cursor: 0, max: 1, grid: false });
+    // And confirming the potion opens the party list, which is where the script says which
+    // Pokémon to heal. Section 12.11: that step waits for the *party* list, so the fixture has to
+    // open it -- the cartridge does.
+    world.opens.push_back(Opens { list: List::BattleParty, cursor: 0, max: 2, grid: false });
     assert_eq!(run(&mut world, MacroKind::Item).unwrap(), MacroAbort::Done);
     assert!(
         world.pulses.iter().filter(|mask| **mask == buttons::A).count() >= 2,
@@ -4344,6 +4376,52 @@ fn the_move_list_deals_back_only_where_the_moves_can_be_read() {
     // path (row 30a) and the only reading available here.
     assert_eq!(run(&mut world, MacroKind::Move1).unwrap(), MacroAbort::Done);
     assert_eq!(world.pulses.last(), Some(&buttons::A));
+}
+
+/// Section 12.11: a cursor step waits for the list it was built for.
+///
+/// **Measured on the cartridge, v0.4.3** (`infra/docs/macros-traps.md`): `THROW BALL` was **63
+/// starts and 63 `blocked`**, mean sixty-nine frames -- which is the cursor to ITEM, the A that
+/// confirms it, the twenty settle frames, and then a refusal on the very next frame. The bag had
+/// not drawn yet, so `listing` still answered for the battle *menu*: four entries, `max` 3. The
+/// ball's own bag index was above that, so the step read "off the end of the list" and gave up at
+/// once -- and where the index was inside it, the step pressed UP and LEFT at the battle menu
+/// instead, which is the blind pressing section 4 forbids.
+#[test]
+fn throw_ball_waits_for_the_bag_rather_than_reading_the_menu_it_came_from() {
+    let mut world = World::battle();
+    world.mons.truncate(1);
+    // Five items with the ball last, so its bag index is 4 -- above the battle menu's `max` of 3,
+    // which is the number the old step compared it against.
+    world.bag = vec![
+        (item::POTION, 1),
+        (item::ANTIDOTE, 1),
+        (item::REPEL, 1),
+        (item::POTION, 1),
+        (item::POKE_BALL, 5),
+    ];
+    assert_eq!(throw_slot(&mut world), Some(4));
+    // The bag takes longer to draw than the script's twenty settle frames, which is the cartridge's
+    // own timing and the whole of the trap.
+    world.opens_draw_in = 40;
+    world.opens.push_back(Opens { list: List::BattleBag, cursor: 0, max: 4, grid: false });
+    assert_eq!(run(&mut world, MacroKind::ThrowBall).unwrap(), MacroAbort::Done);
+    assert_eq!(world.cursor, 4, "the ball's own bag index, by reading the bag's cursor");
+    assert_eq!(world.pulses.last(), Some(&buttons::A));
+    // Nothing was pressed at the menu it came from while the bag was drawing: the presses are the
+    // one that chose ITEM and then the bag's own.
+    assert_eq!(
+        world.pulses.iter().filter(|mask| **mask == buttons::UP).count(),
+        0,
+        "no blind press at the list it had already answered: {:?}",
+        world.pulses
+    );
+
+    // And a list that never opens is `blocked` rather than pressed at blind.
+    let mut never = World::battle();
+    never.mons.truncate(1);
+    never.bag = vec![(item::POKE_BALL, 5)];
+    assert_eq!(run(&mut never, MacroKind::ThrowBall).unwrap(), MacroAbort::Blocked);
 }
 
 /// Row 37 of `infra/docs/macros-traps.md`: a tile the cartridge pushes the fly off is not a tile

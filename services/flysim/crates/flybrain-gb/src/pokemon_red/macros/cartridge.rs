@@ -272,12 +272,44 @@ pub enum TargetKey {
     Tile(Tile),
 }
 
-/// A cursor the current scene's macros navigate: where it is, and how far it can go.
+/// Which list the shared cursor belongs to right now.
+///
+/// Red keeps one cursor for every menu in the game (`wCurrentMenuItem`), so "where is the cursor"
+/// is only half a question: a script that opens the bag from the battle menu and then navigates to
+/// a bag index has to know that the index it is aiming at belongs to the *bag* and not to the four
+/// entries it was reading a moment ago. Measured on the cartridge 2026-09-22: `THROW BALL` was
+/// **63 starts and 63 `blocked`**, mean sixty-nine frames, because the bag takes longer than the
+/// twenty settle frames to draw -- so the step that should have walked the bag list read the
+/// battle menu's `max` of 3, found the ball's bag index above it, and gave up at once
+/// (`docs/design/macros.md` section 12.11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListKind {
+    /// FIGHT / PKMN / ITEM / RUN.
+    BattleMain,
+    /// The move list.
+    BattleMoves,
+    /// The party list, inside a battle.
+    BattleParty,
+    /// The bag, inside a battle.
+    BattleBag,
+    /// The start menu.
+    StartMenu,
+    /// A mart's counter, on whichever of its screens is up.
+    Shop,
+    /// A PC.
+    Pc,
+}
+
+/// A cursor the current scene's macros navigate: which list it is, where it is, and how far it can
+/// go.
 ///
 /// Derived from whichever of agent A's menus is up, so a script asks "where is the cursor" once
-/// and does not care whether it is in a battle, a mart or the start menu.
+/// and does not care whether it is in a battle, a mart or the start menu -- but it can ask *which*
+/// list answered, which is what a script that crosses from one list into another needs
+/// ([`ListKind`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Listing {
+    pub kind: ListKind,
     pub current: u8,
     pub max: u8,
 }

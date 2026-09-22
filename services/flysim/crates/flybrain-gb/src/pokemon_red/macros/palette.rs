@@ -10,8 +10,8 @@
 
 use super::cartridge::{
     CHEAPEST_PURCHASE, FACINGS, opposite,
-    ExitId, Listing, MacroState, Objective, PARTY_CAPACITY, PURCHASES, TalkTarget, TargetKey,
-    Tile, item, outdoors,
+    ExitId, ListKind, Listing, MacroState, Objective, PARTY_CAPACITY, PURCHASES, TalkTarget,
+    TargetKey, Tile, item, outdoors,
 };
 use crate::adapter::PlaceKind;
 
@@ -1735,28 +1735,42 @@ pub fn throw_slot(state: &mut dyn MacroState) -> Option<u8> {
 pub fn listing(state: &mut dyn MacroState) -> Option<Listing> {
     if let Some(battle) = state.battle() {
         return match battle.menu {
-            BattleMenu::Main { cursor } => Some(Listing { current: cursor, max: 3 }),
-            BattleMenu::Moves { cursor: Some(cursor), count } => {
-                Some(Listing { current: cursor, max: count.saturating_sub(1) })
+            BattleMenu::Main { cursor } => {
+                Some(Listing { kind: ListKind::BattleMain, current: cursor, max: 3 })
             }
+            BattleMenu::Moves { cursor: Some(cursor), count } => Some(Listing {
+                kind: ListKind::BattleMoves,
+                current: cursor,
+                max: count.saturating_sub(1),
+            }),
             BattleMenu::Moves { cursor: None, .. } | BattleMenu::None => None,
-            BattleMenu::Bag { cursor, count } => {
-                (count > 0).then(|| Listing { current: cursor, max: count.saturating_sub(1) })
-            }
+            BattleMenu::Bag { cursor, count } => (count > 0).then(|| Listing {
+                kind: ListKind::BattleBag,
+                current: cursor,
+                max: count.saturating_sub(1),
+            }),
             BattleMenu::Party { cursor } => {
                 let max = u8::try_from(state.party().mons.len().saturating_sub(1)).unwrap_or(0);
-                Some(Listing { current: cursor, max })
+                Some(Listing { kind: ListKind::BattleParty, current: cursor, max })
             }
         };
     }
     if let Some(menu) = state.start_menu() {
-        return Some(Listing { current: menu.cursor.current, max: menu.cursor.max });
+        return Some(Listing {
+            kind: ListKind::StartMenu,
+            current: menu.cursor.current,
+            max: menu.cursor.max,
+        });
     }
     if let Some(shop) = state.shop() {
-        return Some(Listing { current: shop.cursor.current, max: shop.cursor.max });
+        return Some(Listing {
+            kind: ListKind::Shop,
+            current: shop.cursor.current,
+            max: shop.cursor.max,
+        });
     }
     if let Some(pc) = state.pc() {
-        return Some(Listing { current: pc.cursor.current, max: pc.cursor.max });
+        return Some(Listing { kind: ListKind::Pc, current: pc.cursor.current, max: pc.cursor.max });
     }
     None
 }
