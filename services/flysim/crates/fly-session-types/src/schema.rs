@@ -438,6 +438,22 @@ pub const SCHEMAS: &[TypeSchema] = &[
             req("committedStep", "U64", "\"0\""),
             req("decisionContextDigest", "Digest", ""),
             req("telemetry", "AgentTelemetry", ""),
+            req("graph", "AgentGraph", "rates are in graph.rateRoles order"),
+        ],
+    },
+    TypeSchema {
+        name: "AgentGraph",
+        source: "workers-v1 2",
+        fields: &[
+            req("datasetDigest", "Digest", ""),
+            req(
+                "indexDigest",
+                "Digest",
+                "geometry mapping needs this, not neuronCount",
+            ),
+            req("neuronCount", "U64", ""),
+            req("rateRoles", "array<Id>", "<= 64, unique"),
+            req("supportedStimuli", "array<Id>", "<= 64, unique"),
         ],
     },
     TypeSchema {

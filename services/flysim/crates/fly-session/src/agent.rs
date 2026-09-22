@@ -206,6 +206,10 @@ pub struct AgentConfig {
     /// The thread allocation the launcher started this worker within. `workers-v1` requires
     /// `Agent.Initialize`'s `workerThreads` to lie inside it.
     pub worker_threads: usize,
+    /// Which graph this fly built. Two variants have the same `neuronCount` and different
+    /// `indexDigest`, which is the case `publishing-v1` section 3 says a consumer must not
+    /// mistake for the same mapping.
+    pub graph_variant: u64,
     /// Records every view this agent read, so a test can see which artifact reached it.
     ///
     /// It is this process's log: an agent with a process of its own writes to its own copy,
@@ -439,6 +443,9 @@ impl FakeAgentWorker {
             committed_step: 0,
             decision_context_digest: self.context_digest.clone().expect("just set"),
             telemetry: self.model.telemetry(),
+            // The worker attests to the graph it loaded. A descriptor built from this can
+            // disagree with the composition; one built from the composition never could.
+            graph: synthetic_graph(&self.config.agent_id, self.config.graph_variant),
         };
         Ok(HandlerReply::from(&result))
     }
@@ -490,6 +497,7 @@ impl FakeAgentWorker {
         }
         for stimulus in &params.pre_step_stimulations {
             stimulus.validate().map_err(DomainError::invalid)?;
+            check_supported(stimulus)?;
         }
         let available =
             FakeAgentWorker::available_actions(self.context.as_ref().expect("initialized"))?;
@@ -577,6 +585,7 @@ impl FakeAgentWorker {
         }
         for stimulus in &params.task_stimulations {
             stimulus.validate().map_err(DomainError::invalid)?;
+            check_supported(stimulus)?;
         }
         params.next_decision_context.validate().map_err(DomainError::invalid)?;
         FakeAgentWorker::available_actions(&params.next_decision_context)?;
@@ -697,13 +706,61 @@ pub fn agent_op_class(method: &str) -> Option<OpClass> {
 }
 
 /// A synthetic profile asset for one agent. The digest covers its effective identities.
+/// Refuses a stimulus kind this profile does not resolve, before the model is touched.
+///
+/// `supportedStimuli` in a published descriptor is exactly this list, so the declaration is
+/// what the worker enforces rather than a label printed beside it.
+fn check_supported(stimulus: &Stimulus) -> DomainResult<()> {
+    if SUPPORTED_STIMULI.contains(&stimulus.kind_id.as_str()) {
+        return Ok(());
+    }
+    Err(DomainError::before(
+        ErrorCode::Unsupported,
+        format!(
+            "stimulus kind {} is not one this profile resolves",
+            stimulus.kind_id
+        ),
+    ))
+}
+
+/// The rate roles this fake model reports, in the order it reports them.
+pub const RATE_ROLES: [&str; 2] = ["kc", "mbon"];
+
+/// The stimulus kinds this synthetic profile resolves. An undeclared kind is refused before
+/// the model is touched, so `supportedStimuli` in a descriptor is what the worker enforces
+/// rather than a label beside it.
+pub const SUPPORTED_STIMULI: [&str; 1] = ["arena.milestone"];
+
+/// This fly's graph identity. Every variant has the same neuron count and its own index, so
+/// "the same number of neurons" can never be mistaken for the same mapping.
+pub const NEURON_COUNT: u64 = 1024;
+
+pub fn synthetic_graph(agent_id: &Id, variant: u64) -> AgentGraph {
+    AgentGraph {
+        dataset_digest: digest_of_bytes(
+            format!("arena-dataset-v1\nvariant={variant}\n").as_bytes(),
+        ),
+        index_digest: digest_of_bytes(
+            format!(
+                "arena-index-v1\nagent={agent_id}\nvariant={variant}\nneurons={NEURON_COUNT}\n"
+            )
+            .as_bytes(),
+        ),
+        neuron_count: NEURON_COUNT,
+        rate_roles: RATE_ROLES.iter().map(|r| id(r)).collect(),
+        supported_stimuli: SUPPORTED_STIMULI.iter().map(|s| id(s)).collect(),
+    }
+}
+
 pub fn synthetic_profile(agent_id: &Id, tick_duration: &RationalNs, warmup_ticks: u64) -> AssetRef {
     let text = format!(
         "arena-direct-v1\nagent={agent_id}\ntick={}/{}\nwarmup={warmup_ticks}\n",
         tick_duration.numerator, tick_duration.denominator
     );
     AssetRef {
-        id: id("arena-direct-v1"),
+        // One installed asset per fly: a descriptor's `assets` are unique by id, and two
+        // profiles that differ in content are two assets, not one id with two digests.
+        id: parse_id(&format!("arena-direct-v1-{agent_id}")).expect("a prefix plus an agent id"),
         digest: digest_of_bytes(text.as_bytes()),
         byte_length: text.len() as u64,
         format: id("fly-profile-v1"),

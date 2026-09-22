@@ -15,8 +15,9 @@ use crate::workers::{
     AgentTelemetry, AssetRef, EnvironmentDescriptor, MAX_AGENTS, MAX_RATE_ROLES, PortControl,
 };
 
-/// Declared stimulus kinds per agent. Not a stated bound; recorded in the schema set.
-pub const MAX_SUPPORTED_STIMULI: usize = 64;
+/// Declared stimulus kinds per agent, re-exported from its defining module.
+pub use crate::workers::MAX_SUPPORTED_STIMULI;
+
 /// Installed assets in one descriptor. Not a stated bound; recorded in the schema set.
 pub const MAX_ASSETS: usize = 64;
 /// Scoped event ids in one snapshot. Not a stated bound; recorded in the schema set.

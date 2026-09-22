@@ -35,6 +35,8 @@ import { readSchemaRef, readTypedValue, readNullableTypedValue } from './common'
 export const MAX_AGENTS = 4;
 export const MAX_PORTS = 4;
 export const MAX_RATE_ROLES = 64;
+/** Declared stimulus kinds per agent. Not a stated bound; recorded in the schema set. */
+export const MAX_SUPPORTED_STIMULI = 64;
 export const MAX_STIMULI = 64;
 export const MAX_REWARDS = 64;
 export const MAX_BUTTONS = 32;
@@ -257,6 +259,14 @@ export interface AgentInitializeParams {
   workerThreads: number;
 }
 
+export interface AgentGraph {
+  datasetDigest: Digest;
+  indexDigest: Digest;
+  neuronCount: U64;
+  rateRoles: Id[];
+  supportedStimuli: Id[];
+}
+
 export interface AgentInitializeResult {
   agentId: Id;
   profileDigest: Digest;
@@ -265,6 +275,7 @@ export interface AgentInitializeResult {
   committedStep: U64;
   decisionContextDigest: Digest;
   telemetry: AgentTelemetry;
+  graph: AgentGraph;
 }
 
 export interface PrepareParams {
@@ -313,6 +324,21 @@ export function readAgentInitializeParams(value: unknown): AgentInitializeParams
   return params;
 }
 
+export function readAgentGraph(value: unknown): AgentGraph {
+  const reader = new Reader(value, 'AgentGraph');
+  const graph: AgentGraph = {
+    datasetDigest: reader.digest('datasetDigest'),
+    indexDigest: reader.digest('indexDigest'),
+    neuronCount: reader.u64('neuronCount'),
+    rateRoles: reader.idList('rateRoles', 0, MAX_RATE_ROLES),
+    supportedStimuli: reader.idList('supportedStimuli', 0, MAX_SUPPORTED_STIMULI),
+  };
+  reader.finish();
+  requireUnique(graph.rateRoles, 'AgentGraph.rateRoles');
+  requireUnique(graph.supportedStimuli, 'AgentGraph.supportedStimuli');
+  return graph;
+}
+
 export function readAgentInitializeResult(value: unknown): AgentInitializeResult {
   const reader = new Reader(value, 'AgentInitializeResult');
   const result: AgentInitializeResult = {
@@ -323,12 +349,15 @@ export function readAgentInitializeResult(value: unknown): AgentInitializeResult
     committedStep: reader.u64('committedStep'),
     decisionContextDigest: reader.digest('decisionContextDigest'),
     telemetry: readAgentTelemetry(reader.value('telemetry')),
+    graph: readAgentGraph(reader.value('graph')),
   };
   reader.finish();
   requirePositiveRational(result.tickDuration, 'AgentInitializeResult.tickDuration');
   if (u64(result.committedStep) !== 0n) {
     fail('AgentInitializeResult: committedStep must be "0"');
   }
+  // The rates a worker reports and the role order it declares are one statement.
+  validateTelemetryRoles(result.telemetry, result.graph.rateRoles);
   return result;
 }
 

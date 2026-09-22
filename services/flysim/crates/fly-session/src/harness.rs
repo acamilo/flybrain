@@ -46,6 +46,10 @@ pub struct AgentSpec {
     /// The threads this agent asks the launcher for. `Agent.Initialize` carries exactly what
     /// the launcher allocated, which `workers-v1` requires it to lie within.
     pub worker_threads: usize,
+    /// Which graph this fly builds. A replacement worker started on another variant has the
+    /// same neuron count and another `indexDigest`, which is the composition change a
+    /// descriptor revision exists to make visible.
+    pub graph_variant: u64,
 }
 
 impl AgentSpec {
@@ -57,6 +61,7 @@ impl AgentSpec {
             seed,
             faults: AgentFaults::default(),
             worker_threads: 1,
+            graph_variant: 0,
         }
     }
 }
@@ -143,6 +148,14 @@ fn agent_client(agent_id: &Id) -> String {
     format!("worker-{agent_id}")
 }
 
+/// What a presentation consumer may do: subscribe, and ask the read-only repair service.
+fn consumer_grants() -> Grants {
+    grants(|g| {
+        g.subscribe = vec![Pattern::prefix("session."), Pattern::prefix("app.")];
+        g.call = vec![Pattern::prefix("session.")];
+    })
+}
+
 fn grants(f: impl FnOnce(&mut Grants)) -> Grants {
     let mut g = Grants::default();
     f(&mut g);
@@ -172,6 +185,8 @@ pub struct SessionHarness {
     /// The supervisor. It owns every participant's lifetime and thread allocation.
     pub launcher: Launcher,
     observers: Mutex<Vec<Client>>,
+    /// Which configured observer identity the next consumer takes.
+    next_observer: std::sync::atomic::AtomicUsize,
 }
 
 impl SessionHarness {
@@ -196,6 +211,10 @@ impl SessionHarness {
                     g.call = vec![Pattern::prefix("agent."), Pattern::prefix("env.")];
                     g.publish = vec![Pattern::prefix("session.")];
                     g.manage_topics = vec![Pattern::prefix("session.")];
+                    // The read-only repair service of publishing-v1 section 2. It is the
+                    // session's own address and answers two queries; naming it is not
+                    // authority over anything, and no method on it mutates.
+                    g.register = vec![Pattern::prefix("session.")];
                 }),
             )
             .client(
@@ -209,7 +228,34 @@ impl SessionHarness {
                 &format!("{ENV_CLIENT}-r2"),
                 grants(|g| g.register = vec![Pattern::exact(ENV_SERVICE)]),
             )
-            .client("observer", grants(|g| g.subscribe = vec![Pattern::prefix("session.")]));
+            // A presentation consumer subscribes and may call the repair service. It can
+            // publish nothing, register nothing and reach no worker: "viewers/browser clients
+            // never obtain worker control" (publishing-v1 section 7). A bus client id is one
+            // connection, so a composition with several consumers configures several of them;
+            // they are the same grants, because a second viewer is not a more privileged one.
+            .client("observer", consumer_grants())
+            .client("observer-2", consumer_grants())
+            .client("observer-3", consumer_grants())
+            .client("observer-4", consumer_grants())
+            // The application's own publisher. Its addresses are its own, and it has no
+            // reach into the session's.
+            .client(
+                "application",
+                grants(|g| {
+                    g.publish = vec![Pattern::prefix("app.")];
+                    g.manage_topics = vec![Pattern::prefix("app.")];
+                    g.subscribe = vec![Pattern::prefix("session.")];
+                }),
+            )
+            // The publication boundary, when a composition places it on a client of its own
+            // rather than on the coordinator's.
+            .client(
+                "publisher",
+                grants(|g| {
+                    g.publish = vec![Pattern::prefix("session.")];
+                    g.manage_topics = vec![Pattern::prefix("session.")];
+                }),
+            );
         for spec in &config.agents {
             let service = agent_service(&spec.agent_id);
             policy = policy.client(
@@ -276,6 +322,7 @@ impl SessionHarness {
                     tick_duration,
                     warmup_ticks: config.warmup_ticks,
                     worker_threads: spec.worker_threads,
+                    graph_variant: spec.graph_variant,
                     sensors: sensors[&spec.agent_id].clone(),
                     faults: spec.faults.clone(),
                     client_id: agent_client(&spec.agent_id),
@@ -326,6 +373,7 @@ impl SessionHarness {
             sensors,
             launcher,
             observers: Mutex::new(Vec::new()),
+            next_observer: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -355,10 +403,46 @@ impl SessionHarness {
     }
 
     /// An extra subscriber, for a test that watches the published boundaries.
+    ///
+    /// Each call takes the next configured observer identity: one bus client id is one
+    /// connection, so two consumers are two configured participants and not one identity
+    /// used twice.
     pub async fn observer(&self) -> Result<Client, flybus::BusError> {
-        let client = self.launcher.connect("observer").await?;
+        let index = self
+            .next_observer
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let id = match index {
+            0 => "observer".to_owned(),
+            n => format!("observer-{}", n + 1),
+        };
+        let client = self.launcher.connect(&id).await?;
         self.observers.lock().expect("not poisoned").push(client.clone());
         Ok(client)
+    }
+
+    /// A client for the application that owns its own state and cues.
+    pub async fn application(&self) -> Result<Client, flybus::BusError> {
+        let client = self.launcher.connect("application").await?;
+        self.observers.lock().expect("not poisoned").push(client.clone());
+        Ok(client)
+    }
+
+    /// A client for a publication boundary of its own.
+    pub async fn publisher(&self) -> Result<Client, flybus::BusError> {
+        let client = self.launcher.connect("publisher").await?;
+        self.observers.lock().expect("not poisoned").push(client.clone());
+        Ok(client)
+    }
+
+    /// A fake multi-agent presentation consumer attached to this session's topics.
+    pub async fn consumer(&self) -> Result<crate::publish::PresentationConsumer, flybus::BusError> {
+        let client = self.observer().await?;
+        crate::publish::PresentationConsumer::attach(
+            client,
+            &self.config.session_id,
+            self.coordinator.topics(),
+        )
+        .await
     }
 
     /// Replaces one agent's worker with a fresh incarnation, as a restore would.
@@ -366,6 +450,18 @@ impl SessionHarness {
     /// The coordinator still pins the old registration, so its next call to that agent fails
     /// rather than silently reaching another brain.
     pub async fn restart_agent(&mut self, agent_id: &Id) -> Result<Restarted, flybus::BusError> {
+        self.restart_agent_on_graph(agent_id, None).await
+    }
+
+    /// Replaces one agent's worker, optionally with a fly that built another graph.
+    ///
+    /// `Some(variant)` is the composition change a descriptor revision exists for: the same
+    /// neuron count, another `indexDigest`.
+    pub async fn restart_agent_on_graph(
+        &mut self,
+        agent_id: &Id,
+        graph_variant: Option<u64>,
+    ) -> Result<Restarted, flybus::BusError> {
         let spec = self
             .config
             .agents
@@ -386,6 +482,7 @@ impl SessionHarness {
                 tick_duration,
                 warmup_ticks: self.config.warmup_ticks,
                 worker_threads: spec.worker_threads,
+                graph_variant: graph_variant.unwrap_or(spec.graph_variant),
                 // The same log: a replacement worker in this process keeps writing where its
                 // predecessor wrote, so a restore's sensory input is visible beside it.
                 sensors: self.sensors.get(agent_id).cloned().unwrap_or_default(),

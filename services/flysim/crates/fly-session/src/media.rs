@@ -345,6 +345,18 @@ impl AudioSource {
     }
 }
 
+/// Allocates, writes and seals one immutable artifact of an arbitrary content type.
+///
+/// Used where a test needs a second object with the same bytes, so that "the handle is not
+/// the artifact the payload names" can be produced without corrupting the bytes.
+pub async fn seal_copy(
+    client: &flybus::Client,
+    content_type: String,
+    bytes: &[u8],
+) -> DomainResult<flybus::Artifact> {
+    seal(client, &content_type, bytes).await
+}
+
 /// Allocates, writes and seals one immutable artifact.
 async fn seal(
     client: &flybus::Client,

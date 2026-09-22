@@ -470,11 +470,24 @@
             "changed": "2",
             "signal": 0.5
           }
+        },
+        "graph": {
+          "datasetDigest": "6c0af1f0784ef63a393ee77d614e8246c625051360f3f1a48838374c5d355b52",
+          "indexDigest": "52a7a9b441f686ebea398e3d65dbaa87b4fde4f8b2231fff951700548f6a4e42",
+          "neuronCount": "139255",
+          "rateRoles": [
+            "kenyon",
+            "mbon"
+          ],
+          "supportedStimuli": [
+            "sugar",
+            "shock"
+          ]
         }
       },
       "note": "",
-      "canonical": "{\"agentId\":\"fly-a\",\"committedStep\":\"0\",\"decisionContextDigest\":\"ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"telemetry\":{\"brainTicks\":\"2500\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}]},\"tickDuration\":{\"denominator\":\"1\",\"numerator\":\"1000000\"},\"warmupTicks\":\"2500\"}",
-      "digest": "a220160c75d758720fe43145089939201ee35c86bb100fae0c4efdd3c4eafaa6"
+      "canonical": "{\"agentId\":\"fly-a\",\"committedStep\":\"0\",\"decisionContextDigest\":\"ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4\",\"graph\":{\"datasetDigest\":\"6c0af1f0784ef63a393ee77d614e8246c625051360f3f1a48838374c5d355b52\",\"indexDigest\":\"52a7a9b441f686ebea398e3d65dbaa87b4fde4f8b2231fff951700548f6a4e42\",\"neuronCount\":\"139255\",\"rateRoles\":[\"kenyon\",\"mbon\"],\"supportedStimuli\":[\"sugar\",\"shock\"]},\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"telemetry\":{\"brainTicks\":\"2500\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}]},\"tickDuration\":{\"denominator\":\"1\",\"numerator\":\"1000000\"},\"warmupTicks\":\"2500\"}",
+      "digest": "707803be4867dc2f0f3d4bccedfaa7b97b1e52b9af78d21ae6957caba1a7e3f8"
     },
     {
       "name": "prepare params",

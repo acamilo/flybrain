@@ -1,9 +1,9 @@
 {
   "description": "contractDigest is the SHA-256 of the canonical schema set in schema-set.json.",
-  "contractDigest": "d8f29a49b5df05ad8f75f7f5790a3f8cde9c5ad23a685137474c649c3c9da36d",
+  "contractDigest": "fa1f9671c098e0e5fe2d2ad9642d10eae39c6e751760eb1db7b51d5575898509",
   "schemaSetVersion": 1,
-  "schemaSetBytes": 26814,
-  "types": 53,
+  "schemaSetBytes": 27407,
+  "types": 54,
   "enums": 11,
   "limits": 26
 }

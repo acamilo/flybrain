@@ -117,6 +117,21 @@ If it violates configured resource policy, disconnect/restart that observer inst
 live data or silently skipping simulation input. Global store exhaustion is an explicit fault
 or pause condition; the router cannot guess that a particular live object is disposable.
 
+**Amendment, 2026-09-22 (PUBLISH-01).** "Disconnect/restart that observer" names an action
+no participant can take under [Flybus v1](bus-v1.md). Section 5 there makes publish admission
+all or nothing -- "for a bounded subscriber overflow, reject the **whole** publish; no partial
+fan-out or retained-latest update" -- and the router exposes no per-subscriber eviction, so a
+session meeting a full bounded queue cannot drop that one subscriber and deliver to the rest.
+The realisable reading, which the session now implements, is three-part: observation topics
+are published `latest`, and a latest subscriber can never refuse a publication (it loses its
+own queued value and is told how many by `replaced`); a bounded subscriber's refusal, which
+`bus-v1` section 6 explicitly permits, is a named and counted publication outcome that takes
+no world step, stalls nothing and fences no epoch, and the exact value stays recoverable
+through the [publishing-v1](publishing-v1.md) section 2 query path; and disconnecting the
+offender is an operator action against the topic the ledger names, not something the session
+performs. A per-subscriber drop would need a router operation Flybus v1 does not have, and
+inventing one here would be a transport change written into the wrong document.
+
 No coordinator tracks per-reader socket acknowledgments or calls a producer's reclaim method.
 The SDK and bus perform that bookkeeping. File-backed immutable mappings are safe after
 unlink; physical pages disappear when all OS mappings close. Pooled reuse is deferred until

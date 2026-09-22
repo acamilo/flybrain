@@ -42,6 +42,16 @@ Example addresses (chosen by composition, not recognized by router code):
 | `app.pokemon.cues` | Pub/sub: application narrative/presentation events under declared delivery policy |
 | `app.pokemon` | RPC: application queries/admission, e.g. restore UI state or request a supported effect |
 
+**Amendment, 2026-09-22 (PUBLISH-01).** The repair path above needs exact methods, and
+"exact methods require session API schemas" left the row unbuildable. The session registers
+one **read-only** service, `session.<id>.query`, with exactly two methods, both ordinary
+[session RPCs](ipc-v1.md) answering from what the session already published:
+`Session.GetDescriptor` takes an optional `{revision: U64}` and returns that `SessionDescriptor`
+or, with no revision, the newest; `Session.GetSnapshot` takes no parameters and returns the
+latest `CommittedSnapshot`. A revision the session never published is `IDENTITY_MISMATCH`, not
+an empty answer. Nothing on this service mutates, selects a participant or reaches a worker, so
+it is not the controller API section 7 rules out; adding a third method that did would be.
+
 Descriptor revisions and scope link observations to schemas. Cross-topic ordering is not
 guaranteed; a subscriber receiving an unknown descriptor revision must fetch it through the
 application/session query contract or buffer a bounded number of snapshots, not infer shape.

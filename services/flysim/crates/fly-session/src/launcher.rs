@@ -231,6 +231,9 @@ pub struct AgentLaunch {
     /// gets a fresh log in that process, which the supervisor cannot read.
     pub sensors: crate::media::SensorLog,
     pub faults: AgentFaults,
+    /// Which graph this fly builds. Crosses a process boundary as argv, like every other
+    /// thing a worker is started with.
+    pub graph_variant: u64,
     /// The configured client id. A replacement worker connects under its own.
     pub client_id: String,
     pub service: String,
@@ -1231,6 +1234,7 @@ pub(crate) mod flags {
     pub const PREPARE_DELAY_MS: &str = "prepare-delay-ms";
     pub const COMMIT_DELAY_MS: &str = "commit-delay-ms";
     pub const FAIL_COMMIT_AT_STEP: &str = "fail-commit-at-step";
+    pub const GRAPH_VARIANT: &str = "graph-variant";
 
     pub const WORKER: &str = "worker";
     pub const PORTS: &str = "ports";
@@ -1271,6 +1275,7 @@ pub(crate) mod flags {
         PREPARE_DELAY_MS,
         COMMIT_DELAY_MS,
         FAIL_COMMIT_AT_STEP,
+        GRAPH_VARIANT,
     ];
     /// What only the environment is given, media options included.
     pub const ENVIRONMENT_ONLY: &[&str] = &[
@@ -1327,6 +1332,7 @@ impl Started {
                     arg(flags::WARMUP_TICKS, spec.warmup_ticks),
                     arg(flags::PREPARE_DELAY_MS, spec.faults.prepare_delay_ms),
                     arg(flags::COMMIT_DELAY_MS, spec.faults.commit_delay_ms),
+                    arg(flags::GRAPH_VARIANT, spec.graph_variant),
                 ];
                 if let Some(step) = spec.faults.fail_commit_at_step {
                     args.push(arg(flags::FAIL_COMMIT_AT_STEP, step));
@@ -1377,6 +1383,7 @@ pub(crate) fn agent_config(spec: &AgentLaunch, worker_threads: usize) -> AgentCo
         tick_duration: spec.tick_duration,
         warmup_ticks: spec.warmup_ticks,
         worker_threads,
+        graph_variant: spec.graph_variant,
         sensors: spec.sensors.clone(),
         faults: spec.faults.clone(),
     }
@@ -1486,6 +1493,7 @@ mod flag_tests {
             tick_duration: RationalNs::new(1, 1_000).expect("a tick"),
             warmup_ticks: 10,
             worker_threads: 1,
+            graph_variant: 3,
             sensors: crate::media::SensorLog::new(),
             faults: AgentFaults {
                 fail_commit_at_step: Some(2),

@@ -19,6 +19,8 @@ pub const MAX_AGENTS: usize = 4;
 pub const MAX_PORTS: usize = 4;
 /// 64 rate roles per agent.
 pub const MAX_RATE_ROLES: usize = 64;
+/// Declared stimulus kinds per agent. Not a stated bound; recorded in the schema set.
+pub const MAX_SUPPORTED_STIMULI: usize = 64;
 /// Arrays of stimuli or rewards are bounded to 64 per operation (workers-v1 section 1).
 pub const MAX_STIMULI: usize = 64;
 /// Arrays of stimuli or rewards are bounded to 64 per operation.
@@ -706,6 +708,92 @@ pub struct AgentInitializeResult {
     pub committed_step: u64,
     pub decision_context_digest: String,
     pub telemetry: AgentTelemetry,
+    /// The graph identity this agent actually loaded, which is what a descriptor publishes.
+    ///
+    /// `publishing-v1` section 3 requires `datasetDigest`, `indexDigest`, `neuronCount`,
+    /// `rateRoles` and `supportedStimuli` in every `AgentDescriptor`, and before the
+    /// 2026-09-22 amendment to `workers-v1` section 2 no worker method carried them: a
+    /// coordinator could only have restated its own configuration. The worker attests
+    /// instead, so a fly that built another index is a visible mismatch rather than a
+    /// descriptor that agrees with itself.
+    pub graph: AgentGraph,
+}
+
+/// What one agent's loaded graph is, as the agent reports it.
+///
+/// `neuronCount` does not identify a mapping: "geometry/spike mapping requires indexDigest,
+/// not merely the same number of neurons" (publishing-v1 section 3), so both travel and a
+/// consumer compares the digest.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentGraph {
+    pub dataset_digest: String,
+    pub index_digest: String,
+    pub neuron_count: u64,
+    /// The profile-defined rate-role order. `AgentTelemetry.rates` is in exactly this order.
+    pub rate_roles: Vec<String>,
+    pub supported_stimuli: Vec<String>,
+}
+
+impl AgentGraph {
+    pub fn from_json(value: &Value) -> Result<AgentGraph> {
+        let mut f = Fields::new(value, "AgentGraph")?;
+        let dataset_digest = f.string("datasetDigest")?.to_owned();
+        let index_digest = f.string("indexDigest")?.to_owned();
+        let neuron_count = f.u64_string("neuronCount")?;
+        let rate_roles = id_list(&mut f, "rateRoles", 0, MAX_RATE_ROLES)?;
+        let supported_stimuli = id_list(&mut f, "supportedStimuli", 0, MAX_SUPPORTED_STIMULI)?;
+        f.finish()?;
+        let g = AgentGraph {
+            dataset_digest,
+            index_digest,
+            neuron_count,
+            rate_roles,
+            supported_stimuli,
+        };
+        g.validate()?;
+        Ok(g)
+    }
+
+    pub fn to_json(&self) -> Value {
+        obj(vec![
+            ("datasetDigest", self.dataset_digest.clone().into()),
+            ("indexDigest", self.index_digest.clone().into()),
+            ("neuronCount", u64_json(self.neuron_count)),
+            (
+                "rateRoles",
+                Value::Array(self.rate_roles.iter().map(|r| r.clone().into()).collect()),
+            ),
+            (
+                "supportedStimuli",
+                Value::Array(
+                    self.supported_stimuli
+                        .iter()
+                        .map(|s| s.clone().into())
+                        .collect(),
+                ),
+            ),
+        ])
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if !is_digest(&self.dataset_digest) || !is_digest(&self.index_digest) {
+            return err("AgentGraph: datasetDigest and indexDigest must be 64 lowercase hex digits");
+        }
+        if self.rate_roles.len() > MAX_RATE_ROLES {
+            return err("AgentGraph: at most 64 rate roles");
+        }
+        if self.supported_stimuli.len() > MAX_SUPPORTED_STIMULI {
+            return err("AgentGraph: at most 64 supported stimuli");
+        }
+        require_unique(
+            self.rate_roles.iter().map(String::as_str),
+            "AgentGraph.rateRoles",
+        )?;
+        require_unique(
+            self.supported_stimuli.iter().map(String::as_str),
+            "AgentGraph.supportedStimuli",
+        )
+    }
 }
 
 impl DomainType for AgentInitializeResult {
@@ -720,6 +808,7 @@ impl DomainType for AgentInitializeResult {
         let committed_step = f.u64_string("committedStep")?;
         let decision_context_digest = f.string("decisionContextDigest")?.to_owned();
         let telemetry = AgentTelemetry::from_json(f.value("telemetry")?)?;
+        let graph = AgentGraph::from_json(f.value("graph")?)?;
         f.finish()?;
         let r = AgentInitializeResult {
             agent_id,
@@ -729,6 +818,7 @@ impl DomainType for AgentInitializeResult {
             committed_step,
             decision_context_digest,
             telemetry,
+            graph,
         };
         r.validate()?;
         Ok(r)
@@ -746,6 +836,7 @@ impl DomainType for AgentInitializeResult {
                 self.decision_context_digest.clone().into(),
             ),
             ("telemetry", self.telemetry.to_json()),
+            ("graph", self.graph.to_json()),
         ])
     }
 
@@ -762,7 +853,10 @@ impl DomainType for AgentInitializeResult {
         if self.committed_step != 0 {
             return err("AgentInitializeResult: committedStep must be \"0\"");
         }
-        self.telemetry.validate()
+        self.graph.validate()?;
+        // The rates a worker reports and the role order it declares are one statement, so a
+        // descriptor built from the second can never mislabel the first.
+        self.telemetry.validate_against_roles(&self.graph.rate_roles)
     }
 }
 

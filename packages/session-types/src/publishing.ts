@@ -16,6 +16,7 @@ import {
   type EnvironmentDescriptor,
   MAX_AGENTS,
   MAX_RATE_ROLES,
+  MAX_SUPPORTED_STIMULI,
   type PortControl,
   findPort,
   readAgentTelemetry,
@@ -26,8 +27,9 @@ import {
   validateTelemetryRoles,
 } from './workers';
 
+export { MAX_SUPPORTED_STIMULI } from './workers';
+
 /** Not stated by a document; this crate's choices, published in the schema set. */
-export const MAX_SUPPORTED_STIMULI = 64;
 export const MAX_ASSETS = 64;
 export const MAX_SNAPSHOT_EVENTS = 64;
 
