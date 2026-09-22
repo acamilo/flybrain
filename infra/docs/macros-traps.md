@@ -2341,7 +2341,7 @@ the checkpoint):
 
 ### Gates
 
-- `cargo test --workspace` with `FLY_ROM` and `FLY_DATASET` set: **57 suites green**, one failure --
+- `cargo test --workspace` with `FLY_ROM` and `FLY_DATASET` set: **58 suites green**, one failure --
   `flysim::integration::the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_killed`,
   which asserts the adapter version is `pokered-unique8-v5` while the catch-reward slice moved it to
   **v6**. The assertion is unchanged on this branch's base and on `main`, so it is that slice's to
