@@ -59,6 +59,9 @@ const VIRIDIAN_MART: u32 = 0x2a;
 /// Route 2's southern forest gate and the forest north of it, which is rung 9's own road.
 const VIRIDIAN_FOREST_SOUTH_GATE: u32 = 0x32;
 const VIRIDIAN_FOREST: u32 = 0x33;
+/// The forest's *northern* gate, which is the first hop from the forest toward Pewter
+/// (`macros::geography`, and rung 10's own road).
+const VIRIDIAN_FOREST_NORTH_GATE: u32 = 0x2f;
 
 /// `constants/event_constants.asm`, by bit index: the parcel picked up at the mart, and the parcel
 /// delivered to Oak. The save that stalled has the first and not the second.
@@ -170,6 +173,18 @@ struct Run {
     /// and the party list it fell into dealt one button.
     move_button_on_battle_pad: bool,
     battle_pad: Option<usize>,
+    /// Whether `BACK` was ever on the pad in a battle with **no list open** (section 12.9).
+    ///
+    /// The rung-9 trap: between turns there is nothing to back out of, so the press completes
+    /// where the fly stands and the turn does not move. `false` is the assertion.
+    back_without_a_list: bool,
+    /// Whether `THROW BALL` ever started at a species the party already held (section 12.9).
+    threw_at_a_held_species: bool,
+    /// Maps on whose *overworld* pad `GO OBJECTIVE` was ever bound.
+    ///
+    /// The objective is the road out: on rung 9 in the forest it has to be there, or the only way
+    /// north is whatever `GO FRONTIER` stumbles into.
+    objective_on_pad: std::collections::BTreeSet<u32>,
 }
 
 impl Run {
@@ -240,6 +255,9 @@ impl Run {
             pads: std::collections::BTreeMap::new(),
             move_button_on_battle_pad: false,
             battle_pad: None,
+            back_without_a_list: false,
+            threw_at_a_held_species: false,
+            objective_on_pad: std::collections::BTreeSet::new(),
         }
     }
 
@@ -313,6 +331,9 @@ impl Run {
             pads: std::collections::BTreeMap::new(),
             move_button_on_battle_pad: false,
             battle_pad: None,
+            back_without_a_list: false,
+            threw_at_a_held_species: false,
+            objective_on_pad: std::collections::BTreeSet::new(),
         }
     }
 
@@ -338,6 +359,51 @@ impl Run {
         let mut state =
             flybrain_gb::pokemon_red::state::PokeState::with_ledger(&mut self.gb, &ledger);
         state.battle().is_some_and(|battle| battle.own_turn && !battle.forced_switch)
+    }
+
+    /// Whether a battle list is open and accepting input: the move list, the party list or the bag.
+    ///
+    /// Section 12.9's question, through the same seam the macros read: `BACK` is a button where
+    /// there is a list to leave and nowhere else.
+    fn battle_list_open(&mut self) -> bool {
+        use flybrain_gb::pokemon_red::macros::state::{BattleMenu, GameState};
+        let ledger = AdapterLedger(&self.adapter);
+        let mut state =
+            flybrain_gb::pokemon_red::state::PokeState::with_ledger(&mut self.gb, &ledger);
+        state.battle().is_some_and(|battle| {
+            matches!(
+                battle.menu,
+                BattleMenu::Moves { cursor: Some(_), .. }
+                    | BattleMenu::Party { .. }
+                    | BattleMenu::Bag { .. }
+            )
+        })
+    }
+
+    /// Whether the Pokémon on the other side is a species the party already holds.
+    ///
+    /// The internal species index on both sides, which is the one numbering they share
+    /// (`docs/design/macros-wram.md`).
+    fn enemy_species_in_party(&mut self) -> bool {
+        use flybrain_gb::pokemon_red::macros::state::GameState;
+        let ledger = AdapterLedger(&self.adapter);
+        let mut state =
+            flybrain_gb::pokemon_red::state::PokeState::with_ledger(&mut self.gb, &ledger);
+        let Some(species) =
+            state.battle().and_then(|battle| battle.enemy).map(|enemy| enemy.species)
+        else {
+            return false;
+        };
+        species != 0 && state.party().mons.iter().any(|mon| mon.species == species)
+    }
+
+    /// The rung the macros are walking toward, as the objective reads it.
+    fn objective_map(&mut self) -> Option<u8> {
+        use flybrain_gb::pokemon_red::macros::MacroState;
+        let ledger = AdapterLedger(&self.adapter);
+        let mut state =
+            flybrain_gb::pokemon_red::state::PokeState::with_ledger(&mut self.gb, &ledger);
+        state.objective().map(|objective| objective.map)
     }
 
     /// `wIsInBattle`: 0 out of battle, 1 wild, 2 a trainer.
@@ -415,6 +481,12 @@ impl Run {
             let dealt = bound.len();
             self.battle_pad = Some(self.battle_pad.map_or(dealt, |seen| seen.min(dealt)));
         }
+        // Section 12.9, on the cartridge: `BACK` belongs to a list. A battle frame with no list
+        // accepting input and `BACK` on the pad is the rung-9 trap itself.
+        if self.in_battle() != 0 && !self.battle_list_open() {
+            self.back_without_a_list |=
+                bound.iter().any(|channel| channel.as_str() == "macro_back");
+        }
         // A facing window opens when `TALK`'s channel joins the pad and closes when it leaves.
         let talk_bound = bound.iter().any(|channel| channel.ends_with("talk"));
         if talk_bound && !self.talk_on_pad {
@@ -435,6 +507,10 @@ impl Run {
             (decision.mask, started)
         };
         for name in started {
+            // Section 12.9's other half: a ball is never thrown at a species the party holds.
+            if name == "THROW BALL" && self.enemy_species_in_party() {
+                self.threw_at_a_held_species = true;
+            }
             *self.started.entry(name).or_insert(0) += 1;
         }
         self.gb.set_buttons(mask as u8);
@@ -454,7 +530,11 @@ impl Run {
         // dealing one button. Only the overworld: a warp in flight reads `unknown` and a text box
         // is a pad of its own.
         if map != u32::MAX && self.layer.scene_name() == "overworld" {
-            let dealt = self.layer.bound_channels().len();
+            let dealt = self.layer.bound_channels();
+            if dealt.iter().any(|channel| channel.as_str() == "macro_go_objective") {
+                self.objective_on_pad.insert(map);
+            }
+            let dealt = dealt.len();
             let seen = self.pads.entry(map).or_insert(dealt);
             *seen = (*seen).min(dealt);
         }
@@ -649,6 +729,133 @@ fn macros_mode_completes_its_walks_from_the_stalled_checkpoint() {
         counts.started,
         run.route,
         run.started
+    );
+}
+
+/// The rung-9 forest checkpoint, or `None` to skip.
+///
+/// Its own variable rather than `FLY_TRAP_CHECKPOINT`, because the two checkpoint tests above
+/// assert the map their checkpoint is on: one envelope cannot be both.
+fn forest_checkpoint() -> Option<flysim::store::Checkpoint> {
+    let path = std::env::var_os("FLY_FOREST_CHECKPOINT")?;
+    Some(
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope"),
+    )
+}
+
+/// From the rung-9 forest checkpoint: the turns advance, and `BACK` is never a battle's whole pad.
+///
+/// **What was live** (2026-09-22, `infra/docs/macros-traps.md`): rank 9, VIRIDIAN FOREST, 69 hours
+/// on the rung, the ratchet's three attempts spent, and since the restart the macro starts were
+/// `BACK` 135, `THROW BALL` 28, `MOVE 2` 10, `RUN` 5 — the event log repeating `RUN blocked, BACK
+/// start, BACK done`. `BACK` on a battle frame with no list open completes in a handful of frames
+/// without changing anything, so the roll landed on it most holds and the turn did not move; and
+/// `THROW BALL` spent balls on the species already in the party, each catch opening a nickname
+/// screen the pad cannot leave.
+///
+/// The claim is about the *turn*, not about the fight: that a battle from this state ends, that the
+/// fly's own presses are what ends it, and that neither of the two traps is on the pad any more.
+/// Which move it picks and whether it wins are the fly's.
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_FOREST_CHECKPOINT=.local/checkpoints/release-forest-rung9.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture
+/// ```
+#[test]
+fn the_battles_turns_advance_from_the_rung_nine_forest_checkpoint() {
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = forest_checkpoint() else {
+        eprintln!("skipped: no FLY_FOREST_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    let from = run.map();
+    assert!(
+        from == VIRIDIAN_FOREST || from == ROUTE_2 || from == VIRIDIAN_FOREST_SOUTH_GATE,
+        "the checkpoint is the one the stream stalled on, got map {from:#04x}"
+    );
+    // Rung 9 is stood on, so the objective is rung 10 — Pewter City — and the road there is north
+    // through the forest (`macros::geography`, asserted as hops in that module's own tests).
+    assert_eq!(
+        run.objective_map(),
+        Some(0x02),
+        "the objective is Pewter City, whatever errand is in front of it"
+    );
+
+    // Every battle this run passes through, and how it left.
+    let (mut battles, mut ended, mut in_battle) = (0u32, 0u32, run.in_battle() != 0);
+    let mut own_turns = 0u32;
+    for _ in 0..240_000 {
+        run.frame();
+        let now = run.in_battle() != 0;
+        match (in_battle, now) {
+            (false, true) => battles += 1,
+            (true, false) => ended += 1,
+            _ => {}
+        }
+        in_battle = now;
+        if now && run.own_turn() {
+            own_turns += 1;
+        }
+        if run.route.contains(&VIRIDIAN_FOREST_NORTH_GATE) {
+            break;
+        }
+    }
+
+    let counts = run.layer.counts();
+    eprintln!(
+        "from map {from:#04x} in {:.1} brain minutes: route {:?}, battles {battles} ({ended}          ended), own-turn frames {own_turns}, macros {counts:?}, by name {:?}, objective on the          pad on {:?}",
+        run.ms / 60_000.0,
+        run.route,
+        run.started,
+        run.objective_on_pad
+    );
+
+    // The two traps, as assertions on the cartridge.
+    assert!(!run.back_without_a_list, "`BACK` was on a battle pad with no list open");
+    assert!(!run.threw_at_a_held_species, "a ball was thrown at a species the party holds");
+
+    // The turn moves: the fly's own battle presses happen, and a battle this run entered or
+    // resumed finishes.
+    assert!(own_turns > 0, "the fly never got a turn");
+    let battle_presses: u32 = run
+        .started
+        .iter()
+        .filter(|(name, _)| name.starts_with("MOVE ") || **name == "THROW BALL")
+        .map(|(_, n)| *n)
+        .sum();
+    assert!(battle_presses > 0, "no move and no ball: {:?}", run.started);
+    assert!(ended > 0, "no battle ever ended: {battles} entered");
+    // `BACK` is still pressed, and that is the contract rather than a residual: over the move list
+    // and over a one-Pokemon party list it is one of the two answers a list has, and where it
+    // leads is a menu with the move buttons on it (row 34). Its share is *reported* -- under this
+    // harness's game-blind rotation it is a fact about the rotation and not about the macros,
+    // because every bound channel wins about equally often.
+    let backs = run.started.get("BACK").copied().unwrap_or(0);
+    eprintln!(
+        "`BACK` was {backs} of {} macro starts, none of them with no list open",
+        counts.started
+    );
+
+    // North is the road, and the gate is the first hop. Asserted when the run reaches it and
+    // reported when it does not: which way the fly walks is its own, and the objective being on
+    // the pad is what this harness can hold it to.
+    if run.route.contains(&VIRIDIAN_FOREST_NORTH_GATE) {
+        eprintln!("the fly left the forest north through the gate at 0x2f");
+    } else {
+        eprintln!(
+            "the forest's north gate was not reached in this run; route {:?}",
+            run.route
+        );
+    }
+    assert!(
+        run.objective_on_pad.contains(&VIRIDIAN_FOREST)
+            || run.objective_on_pad.contains(&ROUTE_2)
+            || run.objective_on_pad.contains(&VIRIDIAN_FOREST_NORTH_GATE),
+        "GO OBJECTIVE was on no overworld pad on the road north: {:?}",
+        run.objective_on_pad
     );
 }
 
