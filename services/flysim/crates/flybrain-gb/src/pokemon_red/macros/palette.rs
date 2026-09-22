@@ -518,9 +518,21 @@ pub fn scene_set(scene: Scene, state: &mut dyn MacroState) -> Vec<MacroKind> {
             }
         },
         // 2026-09-16 hotfix (live deadlock on Route 1): battle text between turns waits for a
-        // press exactly like a dialog. Section 13.1 adds `BACK`, because the bag list a battle's
-        // ITEM entry opens is none of `BattleMenu`'s three and reads here.
-        Scene::Battle { .. } => vec![Next, Back],
+        // press exactly like a dialog. Section 13.1 added `BACK` here for the bag a battle's ITEM
+        // entry opens, which is none of `BattleMenu`'s three and reads as nobody's turn -- and
+        // section 12.9 narrows it back to that list.
+        //
+        // **`BACK` is a button only where there is a list to leave.** Live on rung 9, 69 hours in
+        // Viridian Forest: `BACK` was 135 of 183 macro starts since the restart, `RUN blocked,
+        // BACK start, BACK done` over and over. Between turns there is nothing open to back out
+        // of, so the B press changes nothing the `NEXT` beside it does not, the macro completes on
+        // the tile it started on in a handful of frames, and the roll lands on it most holds while
+        // the turn does not move. That is section 12.2's trap exactly: a macro that completes
+        // without moving because its precondition is already satisfied where the fly stands.
+        Scene::Battle { .. } => match battle_menu(state) {
+            BattleMenu::Bag { .. } => vec![Next, Back],
+            _ => vec![Next],
+        },
         // Section 13: the shop's buttons are the four purchases, plus the two answers any list has.
         Scene::Shop => vec![BuyPotion, BuyBall, BuyAntidote, BuyRepel, Confirm, Leave],
         // Section 13.1: `CONFIRM` as well as `LEAVE`, so a PC the fly opened is a list it can
@@ -1598,6 +1610,29 @@ pub fn throw_slot(state: &mut dyn MacroState) -> Option<u8> {
         return None;
     }
     if state.party().mons.len() >= PARTY_CAPACITY {
+        return None;
+    }
+    // **Not a species this run already has** (section 12.9). Live on rung 9, 69 hours in Viridian
+    // Forest: `THROW BALL` was 28 of 183 macro starts, spending balls on the Caterpie and Weedle
+    // already in the party -- and a catch opens the nickname screen, which reads `Unknown` and
+    // needs the START the pad has no button for (row 14 of `infra/docs/macros-traps.md`), so the
+    // throw costs a ball and then a stall.
+    //
+    // The *party* is the caught set here, and it is the honest one: it is the cartridge's own
+    // lifetime record, it survives a restart the session ledgers do not, and it is in the same
+    // numbering the enemy is read in -- the internal species index
+    // (`docs/design/macros-wram.md`). `wPokedexOwned` is not usable for this: that bitset is by
+    // Pokédex *number*, the table that converts an internal index to one is in a ROM bank this
+    // crate cannot read, and `docs/design/ladder.md`'s rule is that an unverified number does not
+    // go in. It costs nothing measurable: the button is already off the pad while the party is
+    // full, nothing in the macro vocabulary deposits into a box (row 17), so every species this
+    // run has caught is in the party this reads.
+    //
+    // An enemy species the seam could not place leaves the button where it was -- a precondition
+    // this crate cannot observe is not a precondition, it is a guess (section 13.1).
+    if let Some(species) = battle.enemy.map(|enemy| enemy.species).filter(|species| *species != 0)
+        && state.party().mons.iter().any(|mon| mon.species == species)
+    {
         return None;
     }
     let index = state
