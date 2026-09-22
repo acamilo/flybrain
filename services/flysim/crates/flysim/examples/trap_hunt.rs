@@ -551,6 +551,9 @@ fn run(
             next_trace = ms + trace_every_ms;
             let scene = macros.as_ref().map_or("", MacroLayer::scene_name);
             use flybrain_gb::pokemon_red::macros::cartridge::{MacroState, Tile};
+            // Read before the state borrows the emulator: this is the same call the state makes,
+            // and the only one that can say *which* refusal a frame is.
+            let refusal = flybrain_gb::pokemon_red::state::map_grid(&mut emulator).err();
             let mut state = flybrain_gb::pokemon_red::state::PokeState::new(&mut emulator);
             let state: &mut dyn MacroState = &mut state;
             let player = state.player();
@@ -558,7 +561,7 @@ fn run(
                 let ahead = Tile::new(player.x, player.y).step(player.facing)?;
                 flybrain_gb::pokemon_red::macros::path::target_at(state, ahead)
             });
-            let ground = grid_line(state, player);
+            let ground = grid_line(state, player, refusal);
             let why = flybrain_gb::pokemon_red::scene::why_unknown(&mut emulator);
             println!(
                 "trace {:7.2} min  scene={scene:<9} player={player:?} ahead={ahead:?}\n    {why}\n    {ground}",
@@ -634,10 +637,11 @@ fn run(
     trace.ended_why = flybrain_gb::pokemon_red::scene::why_unknown(&mut emulator);
     trace.ended_grid = {
         use flybrain_gb::pokemon_red::macros::cartridge::MacroState;
+        let refusal = flybrain_gb::pokemon_red::state::map_grid(&mut emulator).err();
         let mut state = flybrain_gb::pokemon_red::state::PokeState::new(&mut emulator);
         let state: &mut dyn MacroState = &mut state;
         let player = state.player();
-        grid_line(state, player)
+        grid_line(state, player, refusal)
     };
     trace.ended_ms = agent.network.ms;
     trace.wall_seconds = began_wall.elapsed().as_secs_f64();
@@ -749,10 +753,13 @@ fn walk_report(trace: &Trace) {
 fn grid_line(
     state: &mut dyn flybrain_gb::pokemon_red::macros::cartridge::MacroState,
     player: Option<flybrain_gb::pokemon_red::macros::state::Player>,
+    refusal: Option<flybrain_gb::pokemon_red::state::GridRefusal>,
 ) -> String {
     let Some(player) = player else { return "grid: no player".to_string() };
     let Some(grid) = state.map_grid() else {
-        return "grid: none".to_string();
+        // Which of section 15's refusals this frame is, rather than a bare "none": a walk that is
+        // on the window reading should say why it is.
+        return format!("grid: none ({})", refusal.map_or("unknown", |refusal| refusal.label()));
     };
     let unstood = grid
         .walkable_tiles()
