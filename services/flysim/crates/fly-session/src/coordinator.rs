@@ -54,6 +54,10 @@ pub struct Injections {
     pub altered_advance_controls: bool,
     /// Read and release the Advance result's frame, then replay the same operation.
     pub consume_advance_artifact_then_retry: bool,
+    /// Acknowledge the lifecycle replies twice, which is what the `ipc-v1` section 6
+    /// resolution does to any Acknowledge whose first reply outran the probe. The second one
+    /// legitimately releases nothing, and bootstrap must accept it.
+    pub duplicate_lifecycle_acknowledge: bool,
 }
 
 /// What an injection produced, for a test to assert on.
@@ -895,6 +899,21 @@ impl Coordinator {
                 .push(request_id);
         }
         for (worker, ids) in by_worker.into_values() {
+            if self.injections.duplicate_lifecycle_acknowledge {
+                // Release them first, out of sight, so the call this method then makes and
+                // checks is already the *second* one -- which is the shape the section 6
+                // resolution produces when an Acknowledge's first reply outruns the probe,
+                // and the shape the original defect fenced a healthy session on. Adding a
+                // second call after the checked one would not reproduce it: the first reply
+                // is always complete, so a length check on it would pass.
+                let first = self.acknowledge_replies(&worker, &ids).await?;
+                if first.len() != ids.len() {
+                    return Err(self.fail_now(
+                        DomainError::invalid("the first Acknowledge did not release everything"),
+                        "acknowledge",
+                    ));
+                }
+            }
             self.acknowledge_replies(&worker, &ids).await?;
         }
         self.audit.push("acknowledge.lifecycle".to_owned());
@@ -915,6 +934,12 @@ impl Coordinator {
     /// epoch, which is what
     /// `an_acknowledge_that_releases_nothing_is_not_a_failure` guards against.
     ///
+    /// A short list is accepted; a list about something else is not. The worker reports what
+    /// *it* released, so fewer ids than asked for is success -- but it is still only entitled
+    /// to report about the ids it was asked about, and an id outside the request is a worker
+    /// talking about another caller's cache. That half is exact-demanded, and
+    /// `AcknowledgeResult::validate_against` is what says so.
+    ///
     /// Returns the ids the worker actually released.
     pub async fn acknowledge_replies(
         &mut self,
@@ -927,6 +952,15 @@ impl Coordinator {
             .await?;
         let result: AcknowledgeResult =
             reply.parse().map_err(|e| self.fail_now(e, "acknowledge"))?;
+        if let Err(e) = result.validate_against(&params) {
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::IdentityMismatch,
+                    format!("a worker acknowledged an id this session never asked about: {e}"),
+                ),
+                "acknowledge",
+            ));
+        }
         Ok(result.acknowledged)
     }
 
@@ -1221,7 +1255,10 @@ impl Coordinator {
         let attempts = self.deadlines.resolve_attempts;
         let started = Instant::now();
         self.resolutions += 1;
+        // Both, together: a resolution that ends before its first attempt would otherwise
+        // report the previous one's count.
         self.last_resolution = None;
+        self.last_resolution_attempts = 0;
         self.audit.push(format!("resolve:{}:{method}", worker.worker_id));
         // The budget is the working limit and the attempt count is a guard; whichever runs
         // out is recorded, so "it gave up" is never an unexplained number.

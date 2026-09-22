@@ -24,6 +24,7 @@ use fly_session::types::*;
 
 all_modes!(
     an_acknowledge_that_releases_nothing_is_not_a_failure,
+    bootstrap_survives_the_second_acknowledge_its_resolution_makes,
     a_slow_participant_is_resolved_rather_than_failed,
     a_resolution_says_which_of_its_two_bounds_ended_it,
     a_delayed_one_agent_result_holds_the_world,
@@ -128,6 +129,65 @@ async fn an_acknowledge_that_releases_nothing_is_not_a_failure(mode: ExecutionMo
         .expect("the session continues after an Acknowledge that released nothing");
     assert_eq!(report.boundary, 1);
     assert_eq!(f.harness.coordinator.stats().advances, 1);
+    f.shutdown().await;
+}
+
+/// The same rule, on the path `bootstrap` actually uses.
+///
+/// The test above calls `acknowledge_replies` directly, which guards the check where it lives
+/// now but not where it lived before: a length check reintroduced into `acknowledge_lifecycle`
+/// after that call would leave it green. This one drives bootstrap itself, with the
+/// `duplicate_lifecycle_acknowledge` injection doing exactly what the section 6 resolution
+/// does -- the same ids again, to a worker that has already released them -- so the second,
+/// empty answer has to be accepted by every check on bootstrap's path.
+async fn bootstrap_survives_the_second_acknowledge_its_resolution_makes(mode: ExecutionMode) {
+    let mut f = mode_fixture(mode, two_agents(mode)).await;
+    f.harness.coordinator.injections = Injections {
+        duplicate_lifecycle_acknowledge: true,
+        ..Injections::default()
+    };
+    within("bootstrap", f.harness.coordinator.bootstrap())
+        .await
+        .expect("bootstrap accepts the second, empty acknowledgment of its own lifecycle ids");
+    assert!(!f.harness.coordinator.is_fenced());
+    assert_eq!(f.harness.coordinator.phase(), Phase::Ready(0));
+    let report = within("step", f.harness.coordinator.step()).await.expect("and still plays");
+    assert_eq!(report.boundary, 1);
+    f.shutdown().await;
+}
+
+/// The other half of the rule: a short list is accepted, an id outside the request is not.
+///
+/// A worker reports what *it* released, so fewer ids than asked for is success -- but it is
+/// only entitled to report about the ids it was asked about. An id from outside the request is
+/// a worker talking about another caller's cache, and
+/// `AcknowledgeResult::validate_against` is what refuses it. Without this, dropping the length
+/// check left nothing checking the reply against the request at all.
+///
+/// Not generated per mode, deliberately. The check is the *caller's*, so the mode of the
+/// worker that misbehaves is irrelevant to it, and the alternative -- carrying the
+/// misbehaviour to a separate process over argv -- would put a flag in the shipped binary
+/// whose only purpose is to make a worker lie about its acknowledgments.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_acknowledged_id_outside_the_request_is_refused() {
+    let mode = ExecutionMode::InProcess;
+    let mut config = two_agents(mode);
+    // This worker adds an id nobody asked about to every acknowledgment.
+    config.agents[0].faults = AgentFaults {
+        acknowledge_extra_id: Some(id("req-9999")),
+        ..AgentFaults::default()
+    };
+    let mut f = mode_fixture(mode, config).await;
+    let failure = within("bootstrap", f.harness.coordinator.bootstrap())
+        .await
+        .expect_err("a worker may not acknowledge an id this session never asked about");
+    assert_eq!(failure.error.code, ErrorCode::IdentityMismatch);
+    assert!(
+        failure.error.message.contains("never asked about"),
+        "the refusal says what was wrong: {failure}"
+    );
+    assert_eq!(failure.detail, "acknowledge");
+    assert_eq!(failure.error.mutation, MutationCertainty::None, "refused before any mutation");
     f.shutdown().await;
 }
 
@@ -275,10 +335,12 @@ async fn a_resolution_says_which_of_its_two_bounds_ended_it(mode: ExecutionMode)
         failure.error.message.contains("resolution budget"),
         "the message names the bound that fired: {failure}"
     );
-    assert!(
-        f.harness.coordinator.last_resolution_attempts < u32::MAX,
-        "the budget ended it with attempts still in hand, which is what makes it the budget"
-    );
+    // The budget ended it with attempts still in hand, which is what makes it the budget. A
+    // 200 ms budget at a 50 ms probe cannot spend more than a handful, and `u32::MAX` was
+    // never in reach; asserting against the guard's own size would be vacuous.
+    let spent = f.harness.coordinator.last_resolution_attempts;
+    assert!(spent >= 1, "the resolution made at least one attempt");
+    assert!(spent < 100, "and nowhere near its guard: {spent}");
     assert_eq!(failure.participant.as_deref(), Some(fly_a().as_str()));
     assert_eq!(failure.error.mutation, MutationCertainty::Unknown);
     assert!(f.harness.coordinator.is_fenced());
@@ -308,6 +370,7 @@ async fn a_resolution_says_which_of_its_two_bounds_ended_it(mode: ExecutionMode)
     assert_eq!(f.harness.coordinator.last_resolution_attempts, 3);
     assert_eq!(failure.participant.as_deref(), Some(fly_a().as_str()));
     assert_eq!(failure.error.mutation, MutationCertainty::Unknown);
+    assert!(f.harness.coordinator.is_fenced(), "an exhausted guard fences the epoch too");
     f.shutdown().await;
 }
 
@@ -400,7 +463,6 @@ async fn a_worker_death_has_a_bounded_diagnosed_outcome(mode: ExecutionMode) {
     config.agents[1].faults = AgentFaults { prepare_delay_ms: 5_000, ..AgentFaults::default() };
     let mut f = mode_fixture(mode, config).await;
     within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
-    let started = Instant::now();
 
     let victim = fly_b();
     let (coordinator, launcher) = f.harness.parts();
@@ -413,10 +475,9 @@ async fn a_worker_death_has_a_bounded_diagnosed_outcome(mode: ExecutionMode) {
         })
     );
     assert_eq!(reaped, ReapOutcome::Terminated);
-    let failure = stepped.expect_err("a dead participant is a failed epoch, not a slow one");
     // Boundedness is the suite's own `within` above: the participant is five seconds slow and
     // `within` gives up at twenty, so returning at all is the claim.
-    let _ = started;
+    let failure = stepped.expect_err("a dead participant is a failed epoch, not a slow one");
     assert_eq!(
         failure.participant.as_deref(),
         Some(fly_b().as_str()),
@@ -450,7 +511,6 @@ async fn a_helper_death_has_a_bounded_diagnosed_outcome(mode: ExecutionMode) {
     let mut f = mode_fixture(mode, config).await;
     within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
     let environment = f.harness.environment_id();
-    let started = Instant::now();
 
     let (coordinator, launcher) = f.harness.parts();
     let (stepped, reaped) = tokio::join!(
@@ -465,7 +525,6 @@ async fn a_helper_death_has_a_bounded_diagnosed_outcome(mode: ExecutionMode) {
     );
     assert_eq!(reaped, ReapOutcome::Terminated);
     let failure = stepped.expect_err("a dead world is a failed epoch");
-    let _ = started;
     assert_eq!(
         failure.participant.as_deref(),
         Some(environment.as_str()),

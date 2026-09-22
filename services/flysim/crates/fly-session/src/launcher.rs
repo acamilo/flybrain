@@ -1511,6 +1511,9 @@ mod flag_tests {
                 commit_delay_ms: 2,
                 fail_stage_restore: true,
                 fail_activate_restore: true,
+                // Argv carries the injected faults a worker process can have; this one is
+                // in-process only, because the check it drives is the caller's.
+                acknowledge_extra_id: None,
             },
             client_id: "worker-fly-a".to_owned(),
             service: "agent.fly-a".to_owned(),

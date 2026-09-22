@@ -212,6 +212,9 @@ fn serve(role: &str, options: &Options) -> Result<(), String> {
                 commit_delay_ms: options.u64(flags::COMMIT_DELAY_MS, 0)?,
                 fail_stage_restore: options.flag(flags::FAIL_STAGE_RESTORE)?,
                 fail_activate_restore: options.flag(flags::FAIL_ACTIVATE_RESTORE)?,
+                // A worker process is never asked to misbehave this way: the subset refusal
+                // is a caller-side check and its test runs the worker in-process.
+                acknowledge_extra_id: None,
             },
             client_id: client_id.clone(),
             service: service.clone(),
