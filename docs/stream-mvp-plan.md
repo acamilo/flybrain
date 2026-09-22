@@ -627,3 +627,9 @@ then purge; then the stale-doc pass.
   input-accepting cursor, MOVE 1 is the main menu backstop, the bag is the fly's turn. ROM test
   fails on v0.4.2 and passes here. Trap hunt: 1 -> 260 tiles, windows under four tiles 73 -> 2.
   Ships with map-aware walks. Ethos check held.
+- 2026-09-22 (v0.4.3, loop review, auto): the watchdog flagged NEXT/BACK repeating 373 times in
+  ten brain minutes after v0.4.2. NEXT on the main battle menu confirmed FIGHT and opened the move
+  list, whose BACK closed it: a pair that undoes itself. NEXT is now off every pad with an
+  input-accepting cursor, MOVE 1 is the main menu backstop, the bag is the fly's turn. ROM test
+  fails on v0.4.2 and passes here. Trap hunt: 1 -> 260 tiles, windows under four tiles 73 -> 2.
+  Ships with map-aware walks. Ethos check held.
