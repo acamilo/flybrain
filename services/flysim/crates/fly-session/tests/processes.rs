@@ -18,11 +18,13 @@ use fly_session::coordinator::{DispatchOrder, Injections};
 use fly_session::environment::EnvironmentFaults;
 use fly_session::harness::{ExecutionMode, HarnessConfig, Via};
 use fly_session::launcher::{ReapOutcome, ThreadBudget};
+use fly_session::ResolutionEnd;
 use fly_session::phase::Phase;
 use fly_session::types::*;
 
 all_modes!(
     a_slow_participant_is_resolved_rather_than_failed,
+    a_resolution_says_which_of_its_two_bounds_ended_it,
     a_delayed_one_agent_result_holds_the_world,
     a_worker_death_has_a_bounded_diagnosed_outcome,
     a_helper_death_has_a_bounded_diagnosed_outcome,
@@ -137,6 +139,11 @@ async fn a_slow_participant_is_resolved_rather_than_failed(mode: ExecutionMode) 
         f.harness.coordinator.in_progress_replies > 0,
         "the resolution must have met the original still running"
     );
+    assert_eq!(
+        f.harness.coordinator.last_resolution,
+        Some(ResolutionEnd::Answered),
+        "the resolution ended by being answered, not by running out of anything"
+    );
 
     // No second operation anywhere: one advance per transition, one batch id per transition,
     // and the same behaviour as the run that never timed out.
@@ -164,6 +171,67 @@ async fn a_slow_participant_is_resolved_rather_than_failed(mode: ExecutionMode) 
             assert!(agent.ticks_advanced == 16 || agent.ticks_advanced == 17);
         }
     }
+    f.shutdown().await;
+}
+
+/// The resolution has two bounds, and which one ended it is never left to be guessed.
+///
+/// `resolve` is the working limit at the default values -- the attempt guard is over sixteen
+/// seconds of pauses against an eight-second budget -- so an unresponsive participant runs the
+/// budget out. Setting the guard low instead ends the same resolution the other way, and the
+/// failure says so both in `last_resolution` and in its own message.
+async fn a_resolution_says_which_of_its_two_bounds_ended_it(mode: ExecutionMode) {
+    // The budget is what ends it at ordinary settings: a generous attempt guard, a short
+    // budget, and a participant far slower than either.
+    let mut config = two_agents(mode);
+    config.agents[1].faults = AgentFaults { prepare_delay_ms: 30_000, ..AgentFaults::default() };
+    let mut f = mode_fixture(mode, config).await;
+    f.harness.coordinator.deadlines = fly_session::Deadlines {
+        probe: Duration::from_millis(50),
+        resolve: Duration::from_millis(300),
+        resolve_attempts: 8192,
+        boot: Duration::from_secs(30),
+    };
+    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
+    let started = Instant::now();
+    let failure = within("step", f.harness.coordinator.step())
+        .await
+        .expect_err("a participant that never answers exhausts the resolution");
+    assert_eq!(f.harness.coordinator.last_resolution, Some(ResolutionEnd::BudgetExpired));
+    assert!(
+        failure.error.message.contains("resolution budget"),
+        "the message names the bound that fired: {failure}"
+    );
+    assert_eq!(failure.participant.as_deref(), Some(fly_b().as_str()));
+    assert_eq!(failure.error.mutation, MutationCertainty::Unknown);
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "the budget, not the 30-second participant, is what ended it"
+    );
+    assert!(f.harness.coordinator.is_fenced());
+    f.shutdown().await;
+
+    // The guard is what ends it when it is set below the budget: three attempts against a
+    // budget the participant could never reach anyway.
+    let mut config = two_agents(mode);
+    config.agents[1].faults = AgentFaults { prepare_delay_ms: 30_000, ..AgentFaults::default() };
+    let mut f = mode_fixture(mode, config).await;
+    f.harness.coordinator.deadlines = fly_session::Deadlines {
+        probe: Duration::from_millis(50),
+        resolve: Duration::from_secs(600),
+        resolve_attempts: 3,
+        boot: Duration::from_secs(30),
+    };
+    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
+    let failure = within("step", f.harness.coordinator.step())
+        .await
+        .expect_err("three attempts are not enough to resolve a silent participant");
+    assert_eq!(f.harness.coordinator.last_resolution, Some(ResolutionEnd::AttemptsExhausted));
+    assert!(
+        failure.error.message.contains("attempt guard") && failure.error.message.contains("3 attempts"),
+        "the message names the bound that fired and its size: {failure}"
+    );
+    assert_eq!(failure.participant.as_deref(), Some(fly_b().as_str()));
     f.shutdown().await;
 }
 

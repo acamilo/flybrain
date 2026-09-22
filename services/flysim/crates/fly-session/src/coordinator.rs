@@ -118,20 +118,44 @@ type Outcome<T> = Result<T, SessionFailure>;
 /// answer, or the incarnation is gone, or the retained result expired, is the epoch failed.
 ///
 /// The prototype values follow section 6: probe at two seconds without a reply, give up at
-/// ten seconds without progress, with a separate budget for a long boot. They are
-/// failure-detection values, not a gameplay latency goal. The attempt count is explicit
-/// because section 6 forbids filling this gap with an implicit best-effort policy.
+/// ten seconds without progress -- two to notice plus eight to resolve -- with a separate
+/// budget for a long boot. They are failure-detection values, not a gameplay latency goal.
+///
+/// **Which bound ends a resolution.** `resolve` is the one that does, at these values.
+/// Between attempts the procedure sleeps [`RESOLVE_PAUSE`], so the fastest the attempt count
+/// can be spent is `resolve_attempts * RESOLVE_PAUSE`; the default 8192 attempts is over
+/// sixteen seconds of pauses alone, twice the eight-second budget, and an attempt whose call
+/// expires costs a whole `probe` on top. `resolve_attempts` is therefore a second, coarser
+/// stop for a pathological loop that costs nothing per turn, not the working limit. Both are
+/// explicit because section 6 forbids filling this gap with an implicit best-effort policy,
+/// and [`ResolutionEnd`] says which of them fired.
 #[derive(Clone, Copy, Debug)]
 pub struct Deadlines {
     /// Without a terminal reply for this long, the call is uncertain.
     pub probe: Duration,
-    /// The resolution's own budget, measured from its first attempt.
+    /// The resolution's own budget, measured from its first attempt. The working limit.
     pub resolve: Duration,
-    /// How many times the resolution may re-ask. Bounded, and never a retry of the operation:
-    /// every attempt carries the original request id and body.
+    /// How many times the resolution may re-ask, as a guard rather than the working limit.
+    /// Never a retry of the operation: every attempt carries the original request id and body.
     pub resolve_attempts: u32,
     /// A separate, larger budget for `Worker.Hello` and the `Initialize` methods.
     pub boot: Duration,
+}
+
+/// How long the resolution waits between attempts.
+pub const RESOLVE_PAUSE: Duration = Duration::from_millis(2);
+
+/// What ended a resolution, so a caller can tell an exhausted budget from an exhausted
+/// attempt count rather than reading one number out of a message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolutionEnd {
+    /// A matching terminal result arrived.
+    Answered,
+    /// The `resolve` budget ran out. At the default values this is the one that fires.
+    BudgetExpired,
+    /// The `resolve_attempts` guard ran out first, which needs a pause short enough or an
+    /// attempt count low enough for it to be reached before the budget.
+    AttemptsExhausted,
 }
 
 impl Default for Deadlines {
@@ -139,7 +163,8 @@ impl Default for Deadlines {
         Deadlines {
             probe: Duration::from_secs(2),
             resolve: Duration::from_secs(8),
-            resolve_attempts: 512,
+            // Over sixteen seconds of pauses: the budget above is what terminates.
+            resolve_attempts: 8192,
             boot: Duration::from_secs(30),
         }
     }
@@ -253,6 +278,8 @@ pub struct Coordinator {
     pub in_progress_replies: u64,
     /// How many uncertain calls ran the `ipc-v1` section 6 resolution.
     pub resolutions: u64,
+    /// How the last resolution ended, so a test or a supervisor can tell which bound fired.
+    pub last_resolution: Option<ResolutionEnd>,
     /// The caller-side failure-detection budgets of `ipc-v1` section 6.
     pub deadlines: Deadlines,
     /// Per-method and critical-path latency samples. Local synthetic timings, never a
@@ -312,6 +339,7 @@ impl Coordinator {
             injection_log: Vec::new(),
             in_progress_replies: 0,
             resolutions: 0,
+            last_resolution: None,
             deadlines: Deadlines::default(),
             metrics: Metrics::default(),
             blame: None,
@@ -886,12 +914,18 @@ async fn call_owned(
 ///
 /// Deliberately `unknown`: `ipc-v1` section 6 forbids reading a caller-side timeout as proof
 /// that nothing was mutated.
-fn unresolved(method: &str, worker: &WorkerRef, budget: Duration) -> DomainError {
+fn unresolved(method: &str, worker: &WorkerRef, end: ResolutionEnd, bound: &str) -> DomainError {
+    let why = match end {
+        ResolutionEnd::BudgetExpired => "its resolution budget",
+        ResolutionEnd::AttemptsExhausted => "its resolution attempt guard",
+        ResolutionEnd::Answered => "its resolution",
+    };
     DomainError::new(
         ErrorCode::BackendFailure,
         format!(
-            "{method}: {} never resolved within {:?}; the operation's outcome is unknown",
-            worker.worker_id, budget
+            "{method}: {} never resolved; {why} of {bound} ran out and the operation's \
+outcome is unknown",
+            worker.worker_id
         ),
         MutationCertainty::Unknown,
     )
@@ -1065,9 +1099,14 @@ impl Coordinator {
         let attempts = self.deadlines.resolve_attempts;
         let started = Instant::now();
         self.resolutions += 1;
+        self.last_resolution = None;
         self.audit.push(format!("resolve:{}:{method}", worker.worker_id));
+        // The budget is the working limit and the attempt count is a guard; whichever runs
+        // out is recorded, so "it gave up" is never an unexplained number.
+        let mut end = ResolutionEnd::AttemptsExhausted;
         for _ in 0..attempts {
             if started.elapsed() >= budget {
+                end = ResolutionEnd::BudgetExpired;
                 break;
             }
             let outcome = call_owned(
@@ -1087,7 +1126,7 @@ impl Coordinator {
                 // Still no answer. The original may simply be slow; asking again is the
                 // procedure, and the request id it carries is unchanged.
                 CallOutcome::Expired => {
-                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                    tokio::time::sleep(RESOLVE_PAUSE).await;
                     continue;
                 }
                 // Step 4: routes or ownership lost, or the incarnation is gone.
@@ -1097,17 +1136,24 @@ impl Coordinator {
             match reply.result() {
                 Ok(_) => {
                     self.blame(None);
+                    self.last_resolution = Some(ResolutionEnd::Answered);
                     return Ok(reply);
                 }
                 Err(e) if e.code == ErrorCode::InProgress => {
                     self.in_progress_replies += 1;
-                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                    tokio::time::sleep(RESOLVE_PAUSE).await;
                 }
                 // A terminal refusal, including RESULT_EXPIRED: definite, so the epoch fails.
                 Err(e) => return Err(self.fail_now(e, method)),
             }
         }
-        Err(self.fail_now(unresolved(method, worker, budget), method))
+        self.last_resolution = Some(end);
+        let bound = match end {
+            ResolutionEnd::AttemptsExhausted => format!("{attempts} attempts"),
+            _ => format!("{budget:?}"),
+        };
+        let error = unresolved(method, worker, end, &bound);
+        Err(self.fail_now(error, method))
     }
 
     /// Sends the same domain request again on a fresh bus call and reports what came back,
@@ -1198,7 +1244,12 @@ impl Coordinator {
         match outcome {
             CallOutcome::Answered(reply) => reply.result().cloned(),
             CallOutcome::Refused(e) => Err(e),
-            CallOutcome::Expired => Err(unresolved(method, worker, self.deadlines.probe)),
+            CallOutcome::Expired => Err(unresolved(
+                method,
+                worker,
+                ResolutionEnd::BudgetExpired,
+                &format!("{:?}", self.deadlines.probe),
+            )),
         }
     }
 

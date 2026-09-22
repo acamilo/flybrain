@@ -42,7 +42,7 @@ pub mod types;
 pub use fly_session_types;
 
 pub use coordinator::{
-    Coordinator, Deadlines, DispatchOrder, Injections, SessionFailure, StepReport,
+    Coordinator, Deadlines, DispatchOrder, Injections, ResolutionEnd, SessionFailure, StepReport,
 };
 pub use launcher::{ExecutionMode, Launcher, ReapOutcome, ThreadBudget, Via};
 pub use phase::{Phase, PhaseMachine};

@@ -2853,6 +2853,71 @@
       "reason": "v1 selects major 1"
     },
     {
+      "name": "hello result without its launcher allocation",
+      "type": "HelloResult",
+      "value": {
+        "selectedMajor": 1,
+        "selectedMinor": 0,
+        "workerId": "fly-a",
+        "incarnationId": "inc-1",
+        "role": "agent",
+        "buildDigest": "44575cf5b28512d75644bf54a517dcef304ff809fd511747621b4d64f19aac66",
+        "contractDigest": "cc8321d6375c494d043fdd0260f21bc0ec51dacc9f6abb7f909cdcd3041b78bf",
+        "capabilities": [
+          "agent-step-v1"
+        ],
+        "limits": {
+          "maxAgents": 4,
+          "maxPorts": 4
+        }
+      },
+      "reason": "limits.workerThreads is required by the 2026-09-22 workers-v1 amendment"
+    },
+    {
+      "name": "hello result promising more threads than a launcher may allocate",
+      "type": "HelloResult",
+      "value": {
+        "selectedMajor": 1,
+        "selectedMinor": 0,
+        "workerId": "fly-a",
+        "incarnationId": "inc-1",
+        "role": "agent",
+        "buildDigest": "44575cf5b28512d75644bf54a517dcef304ff809fd511747621b4d64f19aac66",
+        "contractDigest": "cc8321d6375c494d043fdd0260f21bc0ec51dacc9f6abb7f909cdcd3041b78bf",
+        "capabilities": [
+          "agent-step-v1"
+        ],
+        "limits": {
+          "maxAgents": 4,
+          "maxPorts": 4,
+          "workerThreads": 4097
+        }
+      },
+      "reason": "limits.workerThreads is at most maxWorkerThreads"
+    },
+    {
+      "name": "hello result reporting no threads at all",
+      "type": "HelloResult",
+      "value": {
+        "selectedMajor": 1,
+        "selectedMinor": 0,
+        "workerId": "fly-a",
+        "incarnationId": "inc-1",
+        "role": "agent",
+        "buildDigest": "44575cf5b28512d75644bf54a517dcef304ff809fd511747621b4d64f19aac66",
+        "contractDigest": "cc8321d6375c494d043fdd0260f21bc0ec51dacc9f6abb7f909cdcd3041b78bf",
+        "capabilities": [
+          "agent-step-v1"
+        ],
+        "limits": {
+          "maxAgents": 4,
+          "maxPorts": 4,
+          "workerThreads": 0
+        }
+      },
+      "reason": "limits.workerThreads is at least one"
+    },
+    {
       "name": "hello params with no supported majors",
       "type": "HelloParams",
       "value": {

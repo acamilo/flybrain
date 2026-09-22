@@ -115,15 +115,23 @@ fly-session measure     --steps 300 --agents 1,2,4
   participant it is attributed to, and failing fences the session: the committed boundary
   stops moving, the artifact handles are dropped, and no further transition or publication is
   allowed. Lifting the fence is a coherent group restore, which is STATE-01's.
-- **The `ipc-v1` section 6 procedure, on the path that reaches it.** A call that goes without
-  a terminal reply for the probe budget is *uncertain*, not failed. The coordinator then
-  queries the same operation -- a fresh bus call carrying the original domain request id and
-  body, pinned to the same incarnation, with its retained attachments -- for a bounded number
-  of attempts within a bounded budget, absorbing `IN_PROGRESS` while the original is still
-  running. Only when that ends without a definite answer, or the incarnation is gone, or the
-  retained result expired, is the epoch failed. A merely slow participant therefore finishes
-  its step, and `step-v1` section 7's "query/retransmit same request to same incarnation;
-  never new batch" is the same code path for a slow Advance.
+- **The `ipc-v1` section 6 procedure, on the path that reaches it.** A call that goes two
+  seconds without a terminal reply is *uncertain*, not failed. The coordinator then queries
+  the same operation -- a fresh bus call carrying the original domain request id and body,
+  pinned to the same incarnation, with its retained attachments -- absorbing `IN_PROGRESS`
+  while the original is still running. Only when that ends without a definite answer, or the
+  incarnation is gone, or the retained result expired, is the epoch failed. A merely slow
+  participant therefore finishes its step, and `step-v1` section 7's "query/retransmit same
+  request to same incarnation; never new batch" is the same code path for a slow Advance.
+
+  The procedure has two explicit bounds, and they do not mean the same thing. **`resolve`, 8
+  seconds, is the working limit**: two to notice plus eight to resolve is section 6's ten
+  seconds without progress. **`resolve_attempts`, 8192, is a guard**, not the limit -- the
+  procedure pauses 2 ms between attempts, so the guard is over sixteen seconds of pauses
+  alone, twice the budget, and an attempt whose call expires costs a whole probe on top. At
+  these values the budget is always what fires. Which one did is recorded in
+  `Coordinator::last_resolution` and named in the failure's own message, so an exhausted
+  resolution never has to be explained by arithmetic.
 - **A bounded diagnosed outcome.** Those budgets are the coordinator's own, on its own clock,
   so a participant that dies or stops answering produces a typed failure naming it rather than
   a hang. An expired deadline is `unknown`, never `none`: a caller-side timeout is not
