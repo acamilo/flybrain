@@ -1222,3 +1222,34 @@ fn a_refusal_that_cannot_be_read_is_not_reported() {
     read.set(ram::wEnemyMonStatMods + 1, 1);
     assert!(PokeState::new(&mut read).move_without_effect(TAIL_WHIP.0));
 }
+
+#[test]
+fn a_trainers_challenge_is_the_cartridges_until_its_battle_is_over() {
+    use crate::pokemon_red::macros::state::GameState;
+    // Row 61. A trainer who saw the fly: its "!" bubble (before `wJoyIgnore` is set) and the five
+    // frames after its text (before `wCurOpponent` is) have every bit `controllable` reads clear.
+    // The macros read them as the cartridge's; the shared readings the reward adapter uses do not
+    // move.
+    let mut wram = Wram::overworld();
+    assert_eq!(PokeState::new(&mut wram).scene(), Scene::Overworld);
+    assert!(!PokeState::new(&mut wram).scripted());
+
+    wram.set(ram::wStatusFlags7, poke::TRAINER_BATTLE_STATUS7);
+    assert!(trainer_engaged(&mut wram));
+    assert_eq!(PokeState::new(&mut wram).scene(), Scene::Unknown, "inside the challenge");
+    assert!(PokeState::new(&mut wram).scripted(), "and the fly is not its own master");
+    assert!(controllable(&mut wram), "the adapter's gate is unchanged");
+    assert_eq!(crate::pokemon_red::scene::detect(&mut wram), Scene::Overworld, "and the shared scene");
+
+    // The challenge's own text is still a conversation to advance.
+    wram.dialogue_box();
+    assert_eq!(PokeState::new(&mut wram).scene(), Scene::Dialog);
+
+    // `.battleOccurred` clears the bit; the other bits of the byte are not a challenge:
+    // `BIT_NO_MAP_MUSIC` after a rival, `BIT_USE_CUR_MAP_SCRIPT` from a trainer talked to.
+    let mut after = Wram::overworld();
+    after.set(ram::wStatusFlags7, (1 << 1) | (1 << 4) | (1 << 7));
+    assert!(!trainer_engaged(&mut after));
+    assert_eq!(PokeState::new(&mut after).scene(), Scene::Overworld);
+    assert!(!PokeState::new(&mut after).scripted());
+}

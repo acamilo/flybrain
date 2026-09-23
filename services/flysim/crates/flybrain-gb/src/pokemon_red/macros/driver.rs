@@ -617,6 +617,28 @@ mod tests {
     }
 
     #[test]
+    fn the_frames_between_a_trainers_text_and_its_battle_deal_no_pad_and_record_no_ground() {
+        // Row 61, Viridian Forest. A trainer who saw the fly: its "!" bubble and the five frames
+        // after its challenge text read as an ordinary overworld -- no box, no script bit,
+        // `wJoyIgnore` and `wCurOpponent` zero. The pad was dealt there and the push-back the
+        // fly's walk had earned when the trainer took the joypad was written there, walling the
+        // one free tile of the corridor to the north gate for the session.
+        let mut wram = Wram::overworld();
+        wram.set(crate::pokemon_red::symbols::ram::wStatusFlags7, 1 << 3);
+        let mut palette = PokemonPalette::new(7);
+        let engaged = palette.observe(&mut wram, &NoLedger);
+        assert_eq!(engaged.scene, SceneId::Unknown, "the cartridge's, inside the challenge");
+        assert!(engaged.bindings.is_empty(), "nothing to press: {:?}", engaged.bindings);
+        assert_eq!(palette.stood(), 0, "and no ground recorded from it");
+
+        // `.battleOccurred` clears the bit and the overworld is the fly's again.
+        wram.set(crate::pokemon_red::symbols::ram::wStatusFlags7, 0);
+        let own = palette.observe(&mut wram, &NoLedger);
+        assert_eq!(own.scene, SceneId::Overworld);
+        assert_eq!(palette.stood(), 1);
+    }
+
+    #[test]
     fn a_teleport_pad_is_not_a_tear() {
         // Saffron Gym and two Silph Co. floors warp to themselves. Standing on a pad whose
         // destination is the map the fly is on is an ordinary frame there, and an empty pad on it

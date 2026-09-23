@@ -1608,6 +1608,48 @@ split map has the pieces its ground has, and a frame that was the cartridge's is
 fly's. The decoder, the reward catalog, the adapter version, the roles and the compatibility
 string are untouched.
 
+### 12.25 A trainer's challenge is the cartridge's until its battle is over (2026-09-23, row 61)
+
+Live on v0.5.5, rung 9, for twenty minutes: `GO OBJECTIVE` into Viridian Forest's south gate (map
+50, `$32`), `GO OUT` straight back onto Route 2, `GO WARP` back from the forest, `GO OBJECTIVE
+blocked` in the forest, no reward. Reproduced with the route survey from the live checkpoint
+(uniform choice per hold, xorshift seed 7), which walks the same ring for twenty brain minutes.
+
+- **The ring's cause was a wall, not the gate.** The forest's only road to its north gate is a
+  two-wide corridor at x = 1-2; a Bug Catcher stands on (2, 18) facing west. A walk up the
+  corridor steps onto (1, 18), the trainer takes the joypad, and row 58's held push-back waits for
+  the joypad to come back. `DisplayEnemyTrainerTextAndStartBattle` clears `wJoyIgnore` before the
+  challenge text and `StartTrainerBattle` writes `wCurOpponent` only after that text's close-down:
+  **five frames** with no box, no script bit and `wCurOpponent` zero, which the seam read as the
+  fly's overworld. The push was written there; (1, 18) went into the pushed ledger, which has no
+  window, and from then on every walk to the north gate had no road. `GO OBJECTIVE` walked to the
+  nearest reachable tile, a dead end at (6, 1), and was blocked; `GO WARP`'s last tier took the
+  south gate, whose `GO OUT` is Route 2, whose `GO OBJECTIVE` is the gate.
+- **The fact is `wStatusFlags7` bit 3, `BIT_TRAINER_BATTLE`**: set by `CheckFightingMapTrainers`
+  on the "!", cleared at `.battleOccurred` after every battle (before the blackout check). It
+  covers more than the five frames: the "!" bubble runs about sixty frames before `wJoyIgnore` is
+  set, and they read as the fly's overworld too -- about sixty-six free-looking frames per
+  engagement, measured. An overworld frame with the bit set is `Unknown` in the macros' own
+  scene, with no text box, so the pad is empty, no ground is recorded and no held entry is
+  decided on it. A trainer talked to by the fly never sets it; its `wCurOpponent` is written
+  inside the text.
+- **On main the five frames are already row 59's** (12.24: a held push-back is written only after
+  thirty frames of overworld), and that alone keeps (1, 18) clear. This row is the cartridge-fact
+  layer under it: the pad is empty through the bubble as well, no ground is recorded, and it does
+  not depend on the gap staying under thirty frames.
+- **The macros' reading only.** `controllable` and `scene::detect` are shared with the reward
+  adapter and do not change; `PokeState`'s `scene` and `scripted` read the bit beside them. In
+  macros mode the feed's `game.scene` is the palette's, so it reads `unknown` on those frames,
+  which is what the contract says of a frame the cartridge is driving.
+- **The gates were modelled right.** Both forest gates are on the graph and `next_hop` answers
+  the forest from the south gate and Route 2 from the north one. The south gate's `GO OUT` is the
+  "a room has to be leavable" tier, a way back that is the fly's choice: with the corridor open,
+  the survey seed that walked into the gate twelve times still earned the badge, on both arms.
+
+Nothing is ranked or pressed for the fly: frames that were never the fly's deal nothing. The
+decoder, the reward catalog, the adapter version, the roles and the compatibility string are
+untouched.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")

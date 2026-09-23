@@ -1389,6 +1389,10 @@ fn route_survey(
     let save_rank: Option<u32> =
         std::env::var("FLY_PROBE_SAVE_RANK").ok().and_then(|value| value.parse().ok());
     let mut saved = false;
+    // `FLY_PROBE_CATCH_FRAME=41600` reads the first frame at or after that one on which the fly
+    // has the buttons and no macro is running (row 61: the frame a walk in the forest refused).
+    let catch_frame: Option<usize> =
+        std::env::var("FLY_PROBE_CATCH_FRAME").ok().and_then(|value| value.parse().ok());
 
     // `FLY_PROBE_HOLD=right:96,up:32` holds raw directions first and prints where the fly is
     // every eight frames: what the cartridge does with a press, before any macro is asked.
@@ -1543,6 +1547,14 @@ fn route_survey(
             caught_at = Some(frame);
             break;
         }
+        if catch_frame.is_some_and(|at| frame >= at)
+            && !running
+            && matches!(observed.scene, flybrain_gb::SceneId::Overworld)
+            && !observed.bindings.is_empty()
+        {
+            caught_at = Some(frame);
+            break;
+        }
         if let (Some(want), Some(player)) = (catch_map, player) {
             if player.map == want && last_map != Some(want) {
                 entries += 1;
@@ -1581,6 +1593,8 @@ fn route_survey(
         frame as f64 * MS_PER_FRAME / 60_000.0,
         if single_refusals >= catch_after {
             "one button, refused twenty holds running".to_string()
+        } else if catch_frame.is_some_and(|at| frame >= at) {
+            format!("the first free frame at or after {catch_frame:?}")
         } else {
             format!("arrival {entries} on map {catch_map:?}")
         }
@@ -1634,7 +1648,9 @@ fn route_survey(
         // A room small enough to print whole is printed whole, with its people on it (row 58:
         // the gym's leader is twelve rows from the door).
         let size = state.map_size().expect("a loaded map");
-        let whole = size.width <= 24 && size.height <= 24;
+        // `FLY_PROBE_WHOLE=1` prints a bigger map whole too (row 61: the forest is 34 by 48).
+        let whole = (size.width <= 24 && size.height <= 24)
+            || std::env::var("FLY_PROBE_WHOLE").is_ok_and(|value| value == "1");
         let people: Vec<(Tile, TalkTarget)> = path::person_targets(state)
             .into_iter()
             .chain(path::offscreen_person_targets(state))
