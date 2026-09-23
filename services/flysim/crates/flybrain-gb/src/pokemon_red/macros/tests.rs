@@ -4160,18 +4160,19 @@ fn go_shop_and_go_heal_are_on_the_pad_while_their_errand_stands() {
 
 #[test]
 fn an_edge_the_table_cannot_name_stops_being_somewhere_new_once_it_is_stood_on() {
-    // The rung-11 reading of row 54 (`infra/docs/macros-traps.md`). The cartridge reports Route
-    // 3's connections as north and west; `geography`'s row carries west and east, so the north
-    // edge's destination is unnameable -- and an unnameable destination counted as *unvisited*,
-    // which made those tiles first-tier for `GO ROUTE` on every hold for ever, with
-    // `GO OBJECTIVE` off the pad beside them because nothing on this map leads to the objective.
+    // The rung-11 reading of row 54 (`infra/docs/macros-traps.md`). The cartridge reported Route
+    // 3's connections as north and west while `geography`'s row carried west and east, so the
+    // north edge's destination was unnameable -- and an unnameable destination counted as
+    // *unvisited*, which made those tiles first-tier for `GO ROUTE` on every hold for ever. Row 59
+    // corrected the row itself; the rule still holds for the one header line the table leaves
+    // out on purpose, Route 22's north edge (`geography::CONNECTIONS`).
     let mut world = World::room();
-    world.map = maps::ROUTE_3;
+    world.map = maps::ROUTE_22;
     world.size = MapSize { width: 8, height: 8 };
     world.player = Tile::new(4, 4);
-    world.connections = Connections { north: true, south: false, east: false, west: true };
-    // West is Pewter City, which the table does name and the run has stood on.
-    world.seen_maps.insert(maps::PEWTER_CITY);
+    world.connections = Connections { north: true, south: false, east: true, west: false };
+    // East is Viridian City, which the table does name and the run has stood on.
+    world.seen_maps.insert(maps::VIRIDIAN_CITY);
 
     let north: Vec<ExitId> = ways(&mut world, Way::Route).iter().map(|exit| exit.id).collect();
     assert!(

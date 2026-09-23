@@ -44,10 +44,12 @@ const EAST: usize = 3;
 /// `wCurMapConnections`' four bits are loaded from. Kanto's overworld is one grid, so the table is
 /// symmetric by construction and [`neighbours`] does not rely on that — it reads both directions.
 ///
-/// Two rows are worth a note. `ROUTE_3` and `ROUTE_4` are connected along the east-west axis even
-/// though Mt. Moon stands between them, so the walkable path is the cave and not the edge; that
-/// costs nothing, because an edge whose tiles are not walkable produces no exit at all
-/// ([`super::path::exits`] filters on the walkable predicate) and the cave is in [`LINKS`].
+/// Every row is the header's own, checked line by line against the disassembly at the pinned
+/// commit (row 59). Four pairs had the right neighbour in the wrong column, and a wrong column is
+/// a wrong map on the other side of an edge: `ROUTE_3` / `ROUTE_4` (Route 4 is north of Route 3,
+/// not east, and Route 3's top edge is the road to Mt. Moon's Pokécenter), `ROUTE_14` /
+/// `ROUTE_15` and `ROUTE_24` / `ROUTE_25` (west and east, not south and north). One header line
+/// is left out on purpose: `ROUTE_22`'s `connection north, Route23`, below.
 const CONNECTIONS: &[(u8, [u8; 4])] = &[
     (maps::PALLET_TOWN, [maps::ROUTE_1, maps::ROUTE_21, NONE, NONE]),
     (maps::VIRIDIAN_CITY, [maps::ROUTE_2, maps::ROUTE_1, maps::ROUTE_22, NONE]),
@@ -62,8 +64,8 @@ const CONNECTIONS: &[(u8, [u8; 4])] = &[
     (maps::SAFFRON_CITY, [maps::ROUTE_5, maps::ROUTE_6, maps::ROUTE_7, maps::ROUTE_8]),
     (maps::ROUTE_1, [maps::VIRIDIAN_CITY, maps::PALLET_TOWN, NONE, NONE]),
     (maps::ROUTE_2, [maps::PEWTER_CITY, maps::VIRIDIAN_CITY, NONE, NONE]),
-    (maps::ROUTE_3, [NONE, NONE, maps::PEWTER_CITY, maps::ROUTE_4]),
-    (maps::ROUTE_4, [NONE, NONE, maps::ROUTE_3, maps::CERULEAN_CITY]),
+    (maps::ROUTE_3, [maps::ROUTE_4, NONE, maps::PEWTER_CITY, NONE]),
+    (maps::ROUTE_4, [NONE, maps::ROUTE_3, NONE, maps::CERULEAN_CITY]),
     (maps::ROUTE_5, [maps::CERULEAN_CITY, maps::SAFFRON_CITY, NONE, NONE]),
     (maps::ROUTE_6, [maps::SAFFRON_CITY, maps::VERMILION_CITY, NONE, NONE]),
     (maps::ROUTE_7, [NONE, NONE, maps::CELADON_CITY, maps::SAFFRON_CITY]),
@@ -73,28 +75,30 @@ const CONNECTIONS: &[(u8, [u8; 4])] = &[
     (maps::ROUTE_11, [NONE, NONE, maps::VERMILION_CITY, maps::ROUTE_12]),
     (maps::ROUTE_12, [maps::LAVENDER_TOWN, maps::ROUTE_13, maps::ROUTE_11, NONE]),
     (maps::ROUTE_13, [maps::ROUTE_12, NONE, maps::ROUTE_14, NONE]),
-    (maps::ROUTE_14, [NONE, maps::ROUTE_15, NONE, maps::ROUTE_13]),
-    (maps::ROUTE_15, [maps::ROUTE_14, NONE, maps::FUCHSIA_CITY, NONE]),
+    (maps::ROUTE_14, [NONE, NONE, maps::ROUTE_15, maps::ROUTE_13]),
+    (maps::ROUTE_15, [NONE, NONE, maps::FUCHSIA_CITY, maps::ROUTE_14]),
     (maps::ROUTE_16, [NONE, maps::ROUTE_17, NONE, maps::CELADON_CITY]),
     (maps::ROUTE_17, [maps::ROUTE_16, maps::ROUTE_18, NONE, NONE]),
     (maps::ROUTE_18, [maps::ROUTE_17, NONE, NONE, maps::FUCHSIA_CITY]),
     (maps::ROUTE_19, [maps::FUCHSIA_CITY, NONE, maps::ROUTE_20, NONE]),
     (maps::ROUTE_20, [NONE, NONE, maps::CINNABAR_ISLAND, maps::ROUTE_19]),
     (maps::ROUTE_21, [maps::PALLET_TOWN, maps::CINNABAR_ISLAND, NONE, NONE]),
-    // Route 22 ends at the League gate, which is a building rather than an edge, and this
-    // table has no id for it: Indigo Plateau is on the graph but not reachable from the south.
+    // Route 22's header says `connection north, Route23`, and no tile of that strip is walkable on
+    // either side: the road north is the League gate, a building the graph has no row for. An
+    // edge in the table is a road `next_hop` will route along, so this one stays out, and Indigo
+    // Plateau is on the graph but not reachable from the south.
     (maps::ROUTE_22, [NONE, NONE, NONE, maps::VIRIDIAN_CITY]),
     (maps::ROUTE_23, [maps::INDIGO_PLATEAU, NONE, NONE, NONE]),
-    (maps::ROUTE_24, [maps::ROUTE_25, maps::CERULEAN_CITY, NONE, NONE]),
-    (maps::ROUTE_25, [NONE, maps::ROUTE_24, NONE, NONE]),
+    (maps::ROUTE_24, [NONE, maps::CERULEAN_CITY, NONE, maps::ROUTE_25]),
+    (maps::ROUTE_25, [NONE, NONE, maps::ROUTE_24, NONE]),
 ];
 
 /// Doors and floor changes, as undirected pairs of maps.
 ///
 /// Only the ones a rung place needs a route through, because that is all [`next_hop`] is for: an
 /// unlisted building is simply not on the graph, which makes it a place `GO OBJECTIVE` cannot aim
-/// at from another map and changes nothing else. A cave with two mouths appears twice, which is
-/// what makes Mt. Moon a way from Route 3 to Route 4.
+/// at from another map and changes nothing else. Every pair is two warp tables that name each
+/// other (a `LAST_MAP` door resolved to the one outdoor map whose warps lead in).
 const LINKS: &[(u8, u8)] = &[
     (maps::REDS_HOUSE_1F, maps::PALLET_TOWN),
     (maps::REDS_HOUSE_2F, maps::REDS_HOUSE_1F),
@@ -122,10 +126,14 @@ const LINKS: &[(u8, u8)] = &[
     (maps::PEWTER_MUSEUM_2F, maps::PEWTER_MUSEUM_1F),
     (maps::PEWTER_MART, maps::PEWTER_CITY),
     (maps::PEWTER_POKECENTER, maps::PEWTER_CITY),
-    (maps::MT_MOON_1F, maps::ROUTE_3),
+    // Mt. Moon has two mouths, and both are on Route 4 (`data/maps/objects/Route4.asm`): (18, 5)
+    // into the first floor, and (24, 5) into B1F, whose (27, 3) is the way back out on the far
+    // side of the mountain. Route 3 has no warps at all. Which chamber of B1F and B2F each ladder
+    // opens onto is [`SPLIT`]'s business.
     (maps::MT_MOON_1F, maps::ROUTE_4),
     (maps::MT_MOON_1F, maps::MT_MOON_B1F),
     (maps::MT_MOON_B1F, maps::MT_MOON_B2F),
+    (maps::MT_MOON_B1F, maps::ROUTE_4),
     (maps::CERULEAN_GYM, maps::CERULEAN_CITY),
     (maps::CERULEAN_MART, maps::CERULEAN_CITY),
     (maps::CERULEAN_POKECENTER, maps::CERULEAN_CITY),
@@ -493,6 +501,34 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_rows_the_disassembly_corrected_say_what_its_headers_say() {
+        // Row 59, `data/maps/headers/*.asm` at the pinned commit. Route 4 is north of Route 3:
+        // Route 3's top edge is the road to Mt. Moon's Pokécenter, and Route 3 has no east exit.
+        assert_eq!(connected(maps::ROUTE_3, Edge::North), Some(maps::ROUTE_4));
+        assert_eq!(connected(maps::ROUTE_3, Edge::East), None);
+        assert_eq!(connected(maps::ROUTE_4, Edge::South), Some(maps::ROUTE_3));
+        assert_eq!(connected(maps::ROUTE_4, Edge::West), None);
+        assert_eq!(connected(maps::ROUTE_4, Edge::East), Some(maps::CERULEAN_CITY));
+        // Nugget Bridge's far end is Route 24's east edge, not its north one.
+        assert_eq!(connected(maps::ROUTE_24, Edge::East), Some(maps::ROUTE_25));
+        assert_eq!(connected(maps::ROUTE_24, Edge::North), None);
+        assert_eq!(connected(maps::ROUTE_25, Edge::West), Some(maps::ROUTE_24));
+        assert_eq!(connected(maps::ROUTE_25, Edge::South), None);
+        assert_eq!(connected(maps::ROUTE_14, Edge::West), Some(maps::ROUTE_15));
+        assert_eq!(connected(maps::ROUTE_15, Edge::East), Some(maps::ROUTE_14));
+        // Mt. Moon's two mouths are both on Route 4, and Route 3 has no warps: a cave door that
+        // is not there is a road the fly walks up and down for ever (row 59's Pewter ring).
+        assert!(!neighbours(maps::ROUTE_3).contains(&maps::MT_MOON_1F));
+        assert_eq!(outdoor_of(maps::MT_MOON_1F), Some(maps::ROUTE_4));
+        assert_eq!(outdoor_of(maps::MT_MOON_B1F), Some(maps::ROUTE_4));
+        assert_eq!(
+            neighbours(maps::ROUTE_3),
+            vec![maps::PEWTER_CITY, maps::ROUTE_4],
+            "Route 3 is a road between two maps and nothing else"
+        );
     }
 
     #[test]
