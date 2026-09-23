@@ -386,6 +386,10 @@ pub fn hidden_key(index: u8) -> String {
 /// restored or seeded state from paying for anything it already holds.
 pub fn pickups(memory: &mut dyn MemoryReader, before: &ItemFlags, now: &ItemFlags) -> Vec<Pickup> {
     let mut out = Vec::new();
+    if now == before {
+        // The overwhelmingly common frame: nothing was taken, and nothing more need be read.
+        return out;
+    }
     let sprites = memory.read8(ram::wNumSprites).min(poke::SPRITE_SLOTS - 1);
     for entry in 0..TOGGLE_LIST_ENTRIES {
         let slot = memory.read8(ram::wToggleableObjectList + entry * 2);
