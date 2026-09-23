@@ -70,7 +70,7 @@ test('exploration ticks collapse into one counted row inside the dedupe window',
   assert.equal(queue.items().length, 1, 'three ticks, one row');
   const row = queue.items()[0];
   assert.equal(row?.count, 3);
-  assert.equal(row?.label, '3 new places');
+  assert.equal(row?.label, '3 new finds');
   assert.ok(Math.abs((row?.amount ?? 0) - 0.14) < 1e-9, 'values sum');
 });
 
