@@ -459,6 +459,16 @@ impl Config {
         if self.control.sugar_per_minute == 0 {
             bail!("control.sugar_per_minute must be at least 1");
         }
+        // The router's socket and store, and the edge's way to them. A relative path would
+        // resolve against whichever working directory each process happens to have, so the two
+        // could silently disagree; an empty one is a typo. Checked in either mode, so a bad
+        // value is found before the day a box is switched to the bus.
+        if self.feed.bus_dir.as_os_str().is_empty() || !self.feed.bus_dir.is_absolute() {
+            bail!(
+                "feed.bus_dir (FLY_BUS_DIR) must be an absolute path, got {:?}",
+                self.feed.bus_dir
+            );
+        }
         if self.feed.bind == self.control.bind {
             bail!("feed.bind and control.bind must differ (7400 and 7401)");
         }
@@ -759,6 +769,21 @@ mod tests {
         let error = Config::default().apply_env(&env(&[("FLY_FEED_VIA", "buss")])).unwrap_err();
         assert!(error.to_string().contains("FLY_FEED_VIA"), "{error}");
         assert_eq!(toml::from_str::<Config>("[feed]\nvia = \"bus\"\n").unwrap().feed.via, FeedVia::Bus);
+    }
+
+    #[test]
+    fn the_bus_dir_must_be_absolute_and_not_empty() {
+        Config::default().validate().unwrap();
+        for bad in ["", "run/fly/bus", "./bus"] {
+            let mut config = Config::default();
+            config.feed.bus_dir = PathBuf::from(bad);
+            let error = config.validate().unwrap_err();
+            assert!(error.to_string().contains("FLY_BUS_DIR"), "{bad:?}: {error}");
+        }
+        // Through the environment too.
+        let mut config = Config::default();
+        config.apply_env(&env(&[("FLY_BUS_DIR", "relative/bus")])).unwrap();
+        assert!(config.validate().is_err());
     }
 
     #[test]

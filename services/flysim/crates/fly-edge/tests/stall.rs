@@ -7,8 +7,8 @@
 //! consumer:
 //!
 //! - the edge is up but three of its WebSocket clients never read, so their sockets fill;
-//! - the edge's place on the bus is held by a subscriber that takes deliveries and never
-//!   releases them (the "slow edge");
+//! - the edge's place on the bus is held by a client that opens every subscription it may
+//!   (4) and never releases a delivery on any of them (the "slow edge", at its worst);
 //! - nobody is subscribed at all (the "absent edge").
 //!
 //! The gated tests assert the claim, and only the claim: the pacer reports no lag, no watch send
@@ -228,20 +228,43 @@ async fn hoarding_subscriber() -> Outcome {
     )
     .await
     .unwrap();
-    let mut subscription = client
-        .subscribe(
-            feedbus::TOPIC,
-            SubscriptionConfig::latest().in_flight(2).replay(true),
+    // Every subscription the seat may open, each keeping every delivery at the in-flight cap:
+    // the worst case the store has to hold (`feedbus::limits`, flybus.md "Feed sizing").
+    let seats = feedbus::limits().max_subscriptions_per_client;
+    let mut hoards = Vec::new();
+    for _ in 0..seats {
+        let mut subscription = client
+            .subscribe(
+                feedbus::TOPIC,
+                SubscriptionConfig::latest().in_flight(2).replay(true),
+            )
+            .await
+            .unwrap();
+        hoards.push(tokio::spawn(async move {
+            let mut kept = Vec::new();
+            while let Some(message) = subscription.next().await {
+                kept.push(message);
+            }
+            kept.len()
+        }));
+    }
+    assert!(
+        client
+            .subscribe(feedbus::TOPIC, SubscriptionConfig::latest())
+            .await
+            .is_err(),
+        "a subscription past max_subscriptions_per_client was admitted"
+    );
+    // And the seat is the only one: a second connection as the edge is refused.
+    assert!(
+        Client::connect_unix(
+            feedbus::socket_path(paths.bus_dir.path()),
+            ClientConfig::new(feedbus::EDGE, feedbus::store_root(paths.bus_dir.path())),
         )
         .await
-        .unwrap();
-    let hoard = tokio::spawn(async move {
-        let mut kept = Vec::new();
-        while let Some(message) = subscription.next().await {
-            kept.push(message);
-        }
-        kept.len()
-    });
+        .is_err(),
+        "a second client was admitted on edge.sock"
+    );
 
     let snapshots = paths.snapshots.clone();
     let report = tokio::task::spawn_blocking(move || run_loop(snapshots, template, SECONDS))
@@ -254,14 +277,17 @@ async fn hoarding_subscriber() -> Outcome {
         "hoarding subscriber: store {} bytes, retained {} bytes",
         stats.store_bytes, stats.retained_bytes
     );
-    // Held: two in flight, one queued, one retained, and whatever is mid-seal. Bounded, not
-    // growing with the number published.
+    // Held: per subscription two in flight and one queued, plus one retained and whatever is
+    // mid-seal: 4 * 3 + 1 + 2 = 15 snapshots at most. Bounded, not growing with the number
+    // published.
     assert!(
-        stats.store_bytes <= 8 * 122_367,
+        stats.store_bytes <= 15 * 122_367,
         "store holds {} bytes",
         stats.store_bytes
     );
-    hoard.abort();
+    for hoard in hoards {
+        hoard.abort();
+    }
     Outcome {
         report,
         publisher: Arc::clone(&paths.publisher_metrics),

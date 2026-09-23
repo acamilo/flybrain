@@ -73,6 +73,8 @@ pub struct EdgeMetrics {
     pub bus_lost: AtomicU64,
     /// Publications that could not be turned back into a snapshot.
     pub decode_failures: AtomicU64,
+    /// Sessions that reached the bus but could not bind the feed port.
+    pub bind_failures: AtomicU64,
 }
 
 impl EdgeMetrics {
@@ -128,6 +130,13 @@ impl EdgeMetrics {
             "Feed bus publications that did not decode to a snapshot.",
             self.decode_failures.load(Ordering::Relaxed),
         );
+        metric(
+            &mut out,
+            "fly_edge_bind_failures_total",
+            "counter",
+            "Times the bus was reachable but the feed port could not be bound.",
+            self.bind_failures.load(Ordering::Relaxed),
+        );
         out
     }
 }
@@ -149,22 +158,52 @@ pub async fn run(config: EdgeConfig, metrics: Arc<EdgeMetrics>) -> Result<()> {
             }
         });
     }
-    let mut quiet = false;
+    // One line per outage of each kind, not one per retry.
+    let mut last: Option<&'static str> = None;
     loop {
-        match session(&config, &metrics).await {
-            Ok(()) => {
+        let end = session(&config, &metrics).await;
+        match &end {
+            SessionEnd::BusLost => {
                 tracing::warn!("the feed bus went away; clients dropped, reconnecting");
-                quiet = false;
             }
-            Err(error) => {
-                // One line per outage, not one per retry.
-                if !quiet {
-                    tracing::info!(error = format!("{error:#}"), "waiting for the feed bus");
-                    quiet = true;
-                }
+            SessionEnd::Unreachable(error) if last != Some(end.kind()) => {
+                tracing::info!(error = format!("{error:#}"), "waiting for the feed bus");
             }
+            SessionEnd::BindFailed(error) if last != Some(end.kind()) => {
+                // The bus is fine; the port is not ours. Most likely flysim is still in direct
+                // mode and holds it (FLY_FEED_VIA is not bus), or another process does.
+                tracing::warn!(
+                    error = format!("{error:#}"),
+                    "the bus is up but the feed port cannot be bound; retrying"
+                );
+            }
+            _ => {}
         }
+        last = match end {
+            SessionEnd::BusLost => None,
+            other => Some(other.kind()),
+        };
         tokio::time::sleep(config.retry).await;
+    }
+}
+
+/// Why a [`session`] ended.
+enum SessionEnd {
+    /// No router answered, or it closed before the first snapshot. Nothing was served.
+    Unreachable(anyhow::Error),
+    /// Subscribed and holding a snapshot, but the feed port could not be bound.
+    BindFailed(anyhow::Error),
+    /// A session that served has ended because the bus went away.
+    BusLost,
+}
+
+impl SessionEnd {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Unreachable(_) => "unreachable",
+            Self::BindFailed(_) => "bind",
+            Self::BusLost => "lost",
+        }
     }
 }
 
@@ -186,9 +225,31 @@ async fn healthz(State(metrics): State<Arc<EdgeMetrics>>) -> impl IntoResponse {
     }
 }
 
-/// One subscription's lifetime. `Err` before serving began (nothing to reach yet); `Ok` once a
-/// session that did serve has ended because the bus went away.
-async fn session(config: &EdgeConfig, metrics: &EdgeMetrics) -> Result<()> {
+/// One subscription's lifetime.
+async fn session(config: &EdgeConfig, metrics: &EdgeMetrics) -> SessionEnd {
+    let (subscription, client, first) = match subscribe(config, metrics).await {
+        Ok(subscribed) => subscribed,
+        Err(error) => return SessionEnd::Unreachable(error),
+    };
+    let listener = match tokio::net::TcpListener::bind(config.feed_bind).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            metrics.bind_failures.fetch_add(1, Ordering::Relaxed);
+            return SessionEnd::BindFailed(
+                anyhow::Error::new(error)
+                    .context(format!("binding the feed listener on {}", config.feed_bind)),
+            );
+        }
+    };
+    serve(config, metrics, client, subscription, first, listener).await;
+    SessionEnd::BusLost
+}
+
+/// Connect, subscribe and wait for the first snapshot that decodes.
+async fn subscribe(
+    config: &EdgeConfig,
+    metrics: &EdgeMetrics,
+) -> Result<(flybus::Subscription, Client, flysim::snapshot::Snapshot)> {
     let client = Client::connect_unix(
         feedbus::socket_path(&config.bus_dir),
         ClientConfig::new(feedbus::EDGE, feedbus::store_root(&config.bus_dir)),
@@ -217,12 +278,20 @@ async fn session(config: &EdgeConfig, metrics: &EdgeMetrics) -> Result<()> {
             }
         }
     };
+    Ok((subscription, client, first))
+}
+
+/// Serve `listener` from `subscription` until the bus goes away.
+async fn serve(
+    config: &EdgeConfig,
+    metrics: &EdgeMetrics,
+    client: Client,
+    mut subscription: flybus::Subscription,
+    first: flysim::snapshot::Snapshot,
+    listener: tokio::net::TcpListener,
+) {
     let (snapshots, receiver) = watch::channel(Arc::new(first));
     metrics.snapshots.fetch_add(1, Ordering::Relaxed);
-
-    let listener = tokio::net::TcpListener::bind(config.feed_bind)
-        .await
-        .with_context(|| format!("binding the feed listener on {}", config.feed_bind))?;
     tracing::info!(feed = %config.feed_bind, bus = %config.bus_dir.display(), "serving the feed from the bus");
     metrics.connected.store(1, Ordering::Relaxed);
 
@@ -272,5 +341,4 @@ async fn session(config: &EdgeConfig, metrics: &EdgeMetrics) -> Result<()> {
     {
         tracing::warn!("the feed listener took more than 5 s to stop");
     }
-    Ok(())
 }

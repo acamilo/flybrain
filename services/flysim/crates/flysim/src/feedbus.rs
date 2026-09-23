@@ -66,10 +66,15 @@ pub fn store_root(bus_dir: &Path) -> PathBuf {
 /// frame, a 17,407-byte spike bitset (139,255 neurons) and about 12,800 bytes of audio (1,600
 /// stereo f32 frames at 48 kHz per 30 Hz snapshot). A `latest` subscriber pins at most its one
 /// queued slot plus its in-flight credits, the topic pins one retained value, and the publisher
-/// holds one snapshot of staging plus the sealed copy while it seals. With [`Limits::max_clients`]
-/// at 8 and in-flight credits capped at 2, the worst case is 7 subscribers that never consume:
-/// `7 * 3 + 1 + 2 = 24` snapshots, about 3 MB. The store cap is ten times that so a burst of
-/// catch-up audio after a stall still fits, and it is RAM (tmpfs), so it is kept small on purpose.
+/// holds one snapshot of staging plus the sealed copy while it seals.
+///
+/// Only one client can subscribe at all: the publisher is in process, and the one socket is
+/// launcher-bound to [`EDGE`], which the router admits once at a time. So the worst case is
+/// that client holding every subscription it may open ([`Limits::max_subscriptions_per_client`],
+/// 4), each never consuming with in-flight credits at the cap of 2: `4 * 3 + 1 + 2 = 15`
+/// snapshots, about 1.8 MB. `max_clients` bounds connections, pending handshakes included, not
+/// subscribers. The store cap is well over ten times that so a burst of catch-up audio after a
+/// stall still fits, and it is RAM (tmpfs), so it is kept small on purpose.
 pub fn limits() -> Limits {
     Limits {
         max_clients: 8,
@@ -336,8 +341,10 @@ mod tests {
         // A full snapshot on the live fly (see `limits`).
         let snapshot_bytes = crate::snapshot::FRAME_BYTES + 139_255usize.div_ceil(8) + 12_800;
         assert_eq!(snapshot_bytes, 122_367);
-        let subscribers = limits.max_clients as u64 - 1;
-        let pinned = subscribers * (1 + limits.max_latest_in_flight) + 1 + 2;
+        // One subscribing client (the socket's), every subscription it may open, none consuming.
+        let subscriptions = limits.max_subscriptions_per_client as u64;
+        let pinned = subscriptions * (1 + limits.max_latest_in_flight) + 1 + 2;
+        assert_eq!(pinned, 15);
         assert!(
             pinned * snapshot_bytes as u64 * 10 <= limits.max_store_bytes,
             "{pinned}"

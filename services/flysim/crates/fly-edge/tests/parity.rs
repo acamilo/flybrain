@@ -240,3 +240,62 @@ async fn the_edge_drops_its_clients_and_unbinds_when_the_bus_goes_away_then_come
     );
     drop(snapshots);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_edge_whose_port_is_taken_keeps_retrying_and_serves_once_it_is_free() {
+    let snapshot = snapshot_of(&fixture_messages("center")[7]).unwrap();
+    // Someone else (flysim still in direct mode, say) holds the feed port before the edge starts.
+    let squatter = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = squatter.local_addr().unwrap();
+    let bus_dir = tempfile::tempdir().unwrap();
+    let (snapshots, receiver) = tokio::sync::watch::channel(std::sync::Arc::new(snapshot.clone()));
+    let bus = flysim::feedbus::start_router(bus_dir.path()).await.unwrap();
+    tokio::spawn(flysim::feedbus::run_publisher(
+        bus.router.clone(),
+        receiver,
+        std::sync::Arc::new(flysim::metrics::Metrics::default()),
+    ));
+    let metrics = std::sync::Arc::new(fly_edge::EdgeMetrics::default());
+    tokio::spawn(fly_edge::run(
+        fly_edge::EdgeConfig {
+            bus_dir: bus_dir.path().to_path_buf(),
+            feed_bind: port,
+            idle_period: NO_IDLE,
+            metrics_bind: None,
+            retry: Duration::from_millis(50),
+        },
+        std::sync::Arc::clone(&metrics),
+    ));
+    // It reaches the bus, fails to bind, and says so rather than claiming to wait for the bus.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while metrics
+        .bind_failures
+        .load(std::sync::atomic::Ordering::Relaxed)
+        < 3
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the edge never reached the bus"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        metrics.connected.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        metrics.bus_lost.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+
+    drop(squatter);
+    let mut edge = connect(port, &[]).await;
+    let message = next_binary(&mut edge, Duration::from_secs(20)).await;
+    assert_eq!(seq_of(&message), snapshot.header.seq);
+    assert_eq!(
+        metrics.connected.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    drop(snapshots);
+    drop(bus);
+}
