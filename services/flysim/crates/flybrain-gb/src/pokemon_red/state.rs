@@ -232,6 +232,54 @@ pub mod poke {
     /// this fixed point.
     pub const PLAYER_SCREEN_X: i32 = 8;
     pub const PLAYER_SCREEN_Y: i32 = 9;
+
+    /// The cartridge's move table and the battle engine's answers to it (row 60,
+    /// `docs/design/macros.md` 12.23).
+    pub mod moves {
+        /// `data/moves/moves.asm`: `Moves` opens `SECTION "Battle Engine 7"`, which
+        /// `layout.link` places first in ROM bank `$0E`, so the table starts at `$0E:$4000`.
+        /// Six bytes a row (`MOVE_LENGTH`): animation (the move id itself), effect, power,
+        /// type, accuracy, PP, rows in move-id order from `POUND` (1).
+        pub const TABLE_BANK: u8 = 0x0e;
+        pub const TABLE_ADDRESS: u16 = 0x4000;
+        pub const ROW_BYTES: u16 = 6;
+        /// `constants/move_constants.asm`: `NUM_ATTACKS`, `STRUGGLE` (`$a5`) the last.
+        pub const LAST_MOVE: u8 = 0xa5;
+
+        /// `constants/move_effect_constants.asm`: the stat-stage effects, each run in stage
+        /// order ATTACK, DEFENSE, SPEED, SPECIAL, ACCURACY, EVASION.
+        pub const ATTACK_UP1: u8 = 0x0a;
+        pub const EVASION_UP1: u8 = 0x0f;
+        pub const ATTACK_DOWN1: u8 = 0x12;
+        pub const EVASION_DOWN1: u8 = 0x17;
+        pub const SLEEP: u8 = 0x20;
+        pub const ATTACK_UP2: u8 = 0x32;
+        pub const EVASION_UP2: u8 = 0x37;
+        pub const ATTACK_DOWN2: u8 = 0x3a;
+        pub const EVASION_DOWN2: u8 = 0x3f;
+        pub const POISON: u8 = 0x42;
+        pub const PARALYZE: u8 = 0x43;
+
+        /// `constants/battle_constants.asm`: a stage byte is 1 (-6) to `MAX_STAT_LEVEL` 13 (+6),
+        /// 7 normal; `MAX_STAT_VALUE` 999. The first four stages have a stat behind them
+        /// (`wBattleMonAttack` onwards, big-endian words); accuracy and evasion do not.
+        pub const MIN_STAGE: u8 = 1;
+        pub const MAX_STAGE: u8 = 13;
+        pub const STATS_WITH_VALUES: u8 = 4;
+        pub const MIN_STAT: u16 = 1;
+        pub const MAX_STAT: u16 = 999;
+
+        /// `wEnemyBattleStatus2` bits: `PROTECTED_BY_MIST` 1, `HAS_SUBSTITUTE_UP` 4,
+        /// `NEEDS_TO_RECHARGE` 5.
+        pub const MIST: u8 = 1 << 1;
+        pub const SUBSTITUTE: u8 = 1 << 4;
+        pub const RECHARGE: u8 = 1 << 5;
+
+        /// `constants/type_constants.asm`.
+        pub const TYPE_POISON: u8 = 0x03;
+        pub const TYPE_GROUND: u8 = 0x04;
+        pub const TYPE_ELECTRIC: u8 = 0x17;
+    }
 }
 
 fn read(memory: &mut dyn MemoryReader, address: u16) -> u8 {
@@ -622,6 +670,114 @@ fn enemy_mon(memory: &mut dyn MemoryReader) -> Option<EnemyMon> {
         level: read(memory, ram::wEnemyMonLevel),
         hp: word_be(memory, ram::wEnemyMonHP),
         max_hp: word_be(memory, ram::wEnemyMonMaxHP),
+    })
+}
+
+/// One row of the cartridge's move table (`data/moves/moves.asm`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MoveData {
+    pub id: u8,
+    pub effect: u8,
+    pub power: u8,
+    pub kind: u8,
+    pub accuracy: u8,
+    pub pp: u8,
+}
+
+/// Move `id`'s row of the move table, read from the cartridge image.
+///
+/// `None` when the seam has no cartridge behind it, when `id` is not a move, or when the row does
+/// not open with its own id -- every row of `Moves` does (`move`'s first byte is the animation,
+/// "interchangeable with move id"), so a table that is not where the disassembly puts it answers
+/// nothing rather than a neighbour's effect.
+pub fn move_data(memory: &mut dyn MemoryReader, id: u8) -> Option<MoveData> {
+    use poke::moves::{LAST_MOVE, ROW_BYTES, TABLE_ADDRESS, TABLE_BANK};
+    if id == 0 || id > LAST_MOVE {
+        return None;
+    }
+    let base = TABLE_ADDRESS + u16::from(id - 1) * ROW_BYTES;
+    let mut row = [0u8; 6];
+    for (offset, byte) in row.iter_mut().enumerate() {
+        *byte = memory.read_rom(TABLE_BANK, base + offset as u16)?;
+    }
+    if row[0] != id {
+        return None;
+    }
+    Some(MoveData {
+        id,
+        effect: row[1],
+        power: row[2],
+        kind: row[3],
+        accuracy: row[4],
+        pp: row[5],
+    })
+}
+
+/// Whether the battle engine will answer the fly's move `id` with nothing at all, on this frame.
+///
+/// Row 60 (`docs/design/macros.md` 12.23): Squirtle's TAIL WHIP against a Pidgey whose DEFENSE
+/// was already at -6 printed "Nothing happened!" 183 times on Route 1. These are the refusals the
+/// effect routines in `engine/battle/effects.asm` make on bytes that are already in WRAM when the
+/// move is chosen, for a move that deals no damage (a move with power always does something):
+///
+/// - a stat-raising effect (`StatModifierUpEffect`): the user's stage is already +6, or the stat
+///   itself is already 999;
+/// - a stat-lowering effect (`StatModifierDownEffect`, `MoveHitTest`): the target has a
+///   substitute or Mist, its stage is already -6, or the stat itself is already 1;
+/// - `SleepEffect`: the target already has a status and is not recharging;
+/// - `PoisonEffect`: a substitute, a status, or a Poison type;
+/// - `ParalyzeEffect`: a status, or an Electric move against a Ground type.
+///
+/// `Some(false)` for every other move, which the cartridge may still miss -- a miss is a roll,
+/// and this answers only what is already decided. `None` outside a battle this module
+/// understands, when the move table cannot be read, or when a stage byte is out of its range:
+/// a refusal this module cannot read is not one it reports.
+pub fn move_without_effect(memory: &mut dyn MemoryReader, id: u8) -> Option<bool> {
+    use poke::moves::*;
+    in_battle(memory)?;
+    let data = move_data(memory, id)?;
+    if data.power != 0 {
+        return Some(false);
+    }
+    let stage = |memory: &mut dyn MemoryReader, base: u16, stat: u8| -> Option<u8> {
+        Some(read(memory, base + u16::from(stat))).filter(|stage| (MIN_STAGE..=MAX_STAGE).contains(stage))
+    };
+    let value = |memory: &mut dyn MemoryReader, base: u16, stat: u8| -> Option<u16> {
+        (stat < STATS_WITH_VALUES).then(|| word_be(memory, base + 2 * u16::from(stat)))
+    };
+    let effect = data.effect;
+    let raised = match effect {
+        ATTACK_UP1..=EVASION_UP1 => Some(effect - ATTACK_UP1),
+        ATTACK_UP2..=EVASION_UP2 => Some(effect - ATTACK_UP2),
+        _ => None,
+    };
+    if let Some(stat) = raised {
+        let at = stage(memory, ram::wPlayerMonStatMods, stat)?;
+        return Some(at >= MAX_STAGE || value(memory, ram::wBattleMonAttack, stat) == Some(MAX_STAT));
+    }
+    let target = read(memory, ram::wEnemyBattleStatus2);
+    let lowered = match effect {
+        ATTACK_DOWN1..=EVASION_DOWN1 => Some(effect - ATTACK_DOWN1),
+        ATTACK_DOWN2..=EVASION_DOWN2 => Some(effect - ATTACK_DOWN2),
+        _ => None,
+    };
+    if let Some(stat) = lowered {
+        let at = stage(memory, ram::wEnemyMonStatMods, stat)?;
+        return Some(
+            target & (SUBSTITUTE | MIST) != 0
+                || at <= MIN_STAGE
+                || value(memory, ram::wEnemyMonAttack, stat) == Some(MIN_STAT),
+        );
+    }
+    let status = read(memory, ram::wEnemyMonStatus);
+    let types = [read(memory, ram::wEnemyMonType1), read(memory, ram::wEnemyMonType1 + 1)];
+    Some(match effect {
+        SLEEP => status != 0 && target & RECHARGE == 0,
+        POISON => target & SUBSTITUTE != 0 || status != 0 || types.contains(&TYPE_POISON),
+        PARALYZE => {
+            status != 0 || (data.kind == TYPE_ELECTRIC && types.contains(&TYPE_GROUND))
+        }
+        _ => false,
     })
 }
 
@@ -1780,6 +1936,10 @@ impl MacroState for PokeState<'_> {
 
     fn yes_no_prompt(&mut self) -> bool {
         yes_no_prompt(self.memory)
+    }
+
+    fn move_without_effect(&mut self, id: u8) -> bool {
+        move_without_effect(self.memory, id).unwrap_or(false)
     }
 
     /// The whole loaded map's walkability, from the cache when it is for this map

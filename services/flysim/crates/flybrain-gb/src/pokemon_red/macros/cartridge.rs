@@ -377,6 +377,17 @@ pub trait MacroState: GameState {
         false
     }
 
+    /// Whether the battle engine will answer the fly's move `id` with nothing on this frame: a
+    /// stat stage already at its limit, a status move against a target it cannot affect.
+    ///
+    /// Row 60 (`docs/design/macros.md` 12.23), read from the cartridge's own move table and the
+    /// bytes its effect routines test ([`crate::pokemon_red::state::move_without_effect`]). The
+    /// default is `false`: a state that cannot read the table has proved nothing, so the `MOVE n`
+    /// buttons stay where they were.
+    fn move_without_effect(&mut self, _id: u8) -> bool {
+        false
+    }
+
     /// Whether a `GO FRONTIER` on this map has already proved its frontier unreachable.
     ///
     /// [`FrontierLedger`] is the evidence and the measurement. The default is `false`: a state
