@@ -23,6 +23,8 @@ file other than its own fixtures. The bus owns the wire
 | `schema` | The canonical schema set and `contract_digest()` |
 | `seed` | `seed-derivation-v1` |
 | `checkpoint` | The `FLYSESS1` envelope layout |
+| `extensions` | The 2026-09-23 extension methods: `Environment.SaveSlot`/`RestoreSlot` (`gameboy-slots-v1`) and `Agent.Rollback` (`legacy-ratchet-rollback-v1`) |
+| `gameboy` | The legacy Game Boy composition ([`legacy-gameboy-v1`](../../../../docs/design/session-framework/legacy-gameboy-v1.md)): registered payload schemas, the legacy profile, the composition declaration. Not part of `contractDigest` |
 | `fixtures` | Loading `fixtures/`, shared with `packages/session-types` |
 
 `Id`, `U64` and `Digest` are the bus encodings: `scalar` calls into `flybus::wire` instead of
@@ -80,10 +82,11 @@ once and holds both languages to it.
 | `schema-set.json`, `contract-digest.json` | The canonical schema set and its digest |
 | `seed-vectors.json` | `seed-derivation-v1` test vectors |
 | `checkpoint-envelope.json` | One `FLYSESS1` envelope, its layout and the corruptions a reader refuses |
+| `gameboy-legacy.json` | The legacy Game Boy extension set and digest, every registered `SchemaRef`, the legacy profile and its `AssetRef`, the frame clock, an example composition and its digest |
 
 The derived files (`schema-set.json`, `contract-digest.json`, the `canonical`/`digest` fields
-of `valid.json`, the digests in `operations.json`, `seed-vectors.json` and
-`checkpoint-envelope.json`) come from
+of `valid.json`, the digests in `operations.json`, `seed-vectors.json`,
+`checkpoint-envelope.json` and `gameboy-legacy.json`) come from
 `cargo run -p fly-session-types --example update_fixtures`;
 `tests/schema_set.rs` fails if the checked-in files are stale.
 
@@ -96,8 +99,8 @@ cargo clippy -p fly-session-types --all-targets
 
 ## Bounds this crate chose
 
-Every bound in the schema set names its source. Six are marked `crate` because no document
+Every bound in the schema set names its source. Seven are marked `crate` because no document
 states them: `maxAudioStreams` (8), `maxCapabilities` (32), `maxSupportedMajors` (8),
-`maxSupportedStimuli` (64), `maxAssets` (64) and `maxSnapshotEvents` (64). They exist so an
+`maxSupportedStimuli` (64), `maxAssets` (64), `maxSnapshotEvents` (64) and `maxSlots` (4). They exist so an
 unbounded array cannot fill an envelope, and they are in the digest, so widening one is a
 contract change rather than a quiet edit.

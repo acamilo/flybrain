@@ -111,6 +111,12 @@ export interface AgentTelemetry {
   populationRateHz: number;
   rates: { roleId: Id; hz: number }[];
   learning: { enabled: boolean; updates: U64; changed: U64; signal: number };
+  /**
+   * Milliseconds of stimulation pulse still running after the operation, or null for an agent
+   * that reports none. Amendment 2026-09-23 (RT-01a): sugar admission reads it from the last
+   * commit (workers-v1 section 5).
+   */
+  stimulusRemainingMs: number | null;
 }
 
 export function readAssetRef(value: unknown): AssetRef {
@@ -211,6 +217,10 @@ export function readAgentTelemetry(value: unknown): AgentTelemetry {
   const reader = new Reader(value, 'AgentTelemetry');
   const brainTicks = reader.u64('brainTicks');
   const populationRateHz = reader.finiteIn('populationRateHz', 0, Number.MAX_VALUE);
+  const stimulusRemainingMs =
+    reader.value('stimulusRemainingMs') === null
+      ? null
+      : reader.finiteIn('stimulusRemainingMs', 0, Number.MAX_VALUE);
   const rates = reader.list(('rates'), 0, MAX_RATE_ROLES, (item) => {
     const rate = new Reader(item, 'AgentTelemetry.rates');
     const entry = { roleId: rate.id('roleId'), hz: rate.finiteIn('hz', 0, Number.MAX_VALUE) };
@@ -233,7 +243,7 @@ export function readAgentTelemetry(value: unknown): AgentTelemetry {
   if (u64(learning.changed) > u64(learning.updates)) {
     fail('AgentTelemetry: learning.changed cannot exceed learning.updates');
   }
-  return { brainTicks, populationRateHz, rates, learning };
+  return { brainTicks, populationRateHz, rates, learning, stimulusRemainingMs };
 }
 
 /** Rates are in profile-defined order (workers-v1 section 1). */
@@ -848,8 +858,15 @@ export interface TaskEvent {
   payload: TypedValue;
 }
 
+/**
+ * `rollback` is the amendment of 2026-09-23 (RT-01a): only a composition that declares a
+ * rollback policy may act on it.
+ */
+export const EPISODE_REQUEST_KINDS = ['terminal', 'rollback'] as const;
+export type EpisodeRequestKind = (typeof EPISODE_REQUEST_KINDS)[number];
+
 export interface EpisodeRequest {
-  kind: 'terminal';
+  kind: EpisodeRequestKind;
   reason: Id;
   outcome: TypedValue;
 }
@@ -990,7 +1007,7 @@ export function readTaskEvent(value: unknown): TaskEvent {
 export function readEpisodeRequest(value: unknown): EpisodeRequest {
   const reader = new Reader(value, 'EpisodeRequest');
   const request: EpisodeRequest = {
-    kind: reader.constant('kind', 'terminal'),
+    kind: reader.enumeration('kind', EPISODE_REQUEST_KINDS),
     reason: reader.id('reason'),
     outcome: readTypedValue(reader.value('outcome')),
   };

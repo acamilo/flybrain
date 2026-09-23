@@ -1,6 +1,11 @@
 //! One place that knows how to read every type named by a fixture.
 
 use flybus::wire::WireError;
+use fly_session_types::extensions::*;
+use fly_session_types::gameboy::{
+    ChannelsDecision, LegacyComposition, LegacyProfile, MemoryInspection, ReadoutContext,
+    RollbackRequest,
+};
 use fly_session_types::media::*;
 use fly_session_types::publishing::*;
 use fly_session_types::rpc::*;
@@ -73,6 +78,18 @@ pub fn round_trip(type_name: &str, value: &Value) -> std::result::Result<Value, 
     arm!(TraceBehaviour);
     arm!(TraceOperational);
     arm!(TransitionTrace);
+    arm!(SaveSlotParams);
+    arm!(SaveSlotResult);
+    arm!(RestoreSlotParams);
+    arm!(RestoreSlotResult);
+    arm!(AgentRollbackParams);
+    arm!(AgentRollbackResult);
+    arm!(ReadoutContext);
+    arm!(ChannelsDecision);
+    arm!(MemoryInspection);
+    arm!(RollbackRequest);
+    arm!(LegacyProfile);
+    arm!(LegacyComposition);
     Err(WireError(format!(
         "no fixture reader for type {type_name:?}"
     )))
@@ -130,4 +147,16 @@ pub const READABLE_TYPES: &[&str] = &[
     "TraceBehaviour",
     "TraceOperational",
     "TransitionTrace",
+    "SaveSlotParams",
+    "SaveSlotResult",
+    "RestoreSlotParams",
+    "RestoreSlotResult",
+    "AgentRollbackParams",
+    "AgentRollbackResult",
+    "GameboyReadoutContext",
+    "GameboyChannelsDecision",
+    "GameboyMemoryInspection",
+    "LegacyRatchetRollbackRequest",
+    "LegacyGameboyProfile",
+    "LegacyGameboyComposition",
 ];

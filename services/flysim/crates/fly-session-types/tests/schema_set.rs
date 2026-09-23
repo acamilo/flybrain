@@ -118,13 +118,33 @@ fn the_schema_set_names_every_type_the_crate_reads() {
         .iter()
         .map(|t| t["name"].as_str().expect("name"))
         .collect();
+    // The legacy Game Boy types are registered payload schemas and declarations, digested by
+    // their own extension set rather than by contractDigest (legacy-gameboy-v1 section 13).
+    let extension = fly_session_types::gameboy::extension_set();
+    let declared_in_extension = |declared: &str| {
+        extension["payloadSchemas"]
+            .as_array()
+            .expect("payloadSchemas")
+            .iter()
+            .any(|p| p["declaration"]["id"] == Value::String(declared.to_owned()))
+            || extension["declarations"]
+                .as_array()
+                .expect("declarations")
+                .iter()
+                .any(|d| d["name"] == Value::String(declared.to_owned()))
+    };
     let missing: Vec<&&str> = common::READABLE_TYPES
         .iter()
         .filter(|expected| !names.contains(*expected))
+        .filter(|expected| {
+            !fly_session_types::gameboy::EXTENSION_TYPES
+                .iter()
+                .any(|(name, declared)| name == *expected && declared_in_extension(declared))
+        })
         .collect();
     assert!(
         missing.is_empty(),
-        "every readable type must be in the schema set; missing {missing:?}"
+        "every readable type must be in the schema set or the legacy extension set; missing {missing:?}"
     );
     let mut sorted = names.clone();
     sorted.sort_unstable();
@@ -173,6 +193,7 @@ fn published_limits_match_the_constants_and_name_their_source() {
             "maxAssets",
             "maxAudioStreams",
             "maxCapabilities",
+            "maxSlots",
             "maxSnapshotEvents",
             "maxSupportedMajors",
             "maxSupportedStimuli",

@@ -13,12 +13,16 @@
 //! - the documented canonical schema set and `contractDigest` ([`schema`]);
 //! - the trace format of [step-v1] section 8, with behaviour separated from operational
 //!   metadata and a comparator over behaviour alone ([`trace`]);
+//! - the 2026-09-23 extension methods ([`extensions`]) and the legacy Game Boy composition
+//!   ([`gameboy`]), whose registered schemas are digested apart from `contractDigest`;
 //! - `seed-derivation-v1` ([`seed`]) and the `FLYSESS1` checkpoint envelope layout
 //!   ([`checkpoint`]), the two specifications CONTRACT-01 has to settle before the real-agent
 //!   and store slices.
 //!
-//! What it is not: a transport, a worker, a coordinator or a store. It holds no Game Boy FFI,
-//! no Melee parser and no console-specific state, and it never reaches the network.
+//! What it is not: a transport, a worker, a coordinator or a store. It holds no Game Boy FFI
+//! and no Melee parser, its generic types hold no console-specific state (the [`gameboy`]
+//! declarations travel only inside `TypedValue`s and composition documents), and it never
+//! reaches the network.
 //!
 //! Every type implements [`scalar::DomainType`]: `from_json` reads and validates, `to_json`
 //! writes the canonical shape, and `validate` re-checks the rules that span fields. Reading
@@ -33,7 +37,9 @@
 
 pub mod canonical;
 pub mod checkpoint;
+pub mod extensions;
 pub mod fixtures;
+pub mod gameboy;
 pub mod media;
 pub mod publishing;
 pub mod rpc;

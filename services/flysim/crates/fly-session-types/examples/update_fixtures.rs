@@ -6,7 +6,9 @@
 
 use std::collections::BTreeMap;
 
-use fly_session_types::scalar::{DomainType, Scope};
+use fly_session_types::gameboy::{self, LegacyComposition};
+use fly_session_types::scalar::{DomainType, RationalNs, Scope};
+use fly_session_types::workers::AssetRef;
 use fly_session_types::{canonical, checkpoint, fixtures, schema, seed};
 use serde_json::{Map, Value, json};
 
@@ -28,7 +30,98 @@ pub fn derived() -> Vec<(String, String)> {
         ("operations.json".to_owned(), operations()),
         ("seed-vectors.json".to_owned(), seed_vectors()),
         ("checkpoint-envelope.json".to_owned(), checkpoint_envelope()),
+        ("gameboy-legacy.json".to_owned(), gameboy_legacy()),
     ]
+}
+
+/// An example legacy composition. The ROM and decoder digests are placeholders -- the real
+/// ones are computed by the composition that runs, and no ROM identity belongs in a fixture --
+/// and the macro channels are a short excerpt of the Pokemon Red set. The compatibility
+/// string is today's, byte for byte, because its segments must agree with the declaration.
+pub fn example_composition() -> LegacyComposition {
+    let pokered = "0cd19d3b877b7dc66d12c7050bed9a7f38154d4b";
+    LegacyComposition {
+        composition_id: "pokered-live".to_owned(),
+        profile: gameboy::profile_asset_ref(),
+        executor: gameboy::ExecutorDeclaration {
+            rom: AssetRef {
+                id: "pokered-rom".to_owned(),
+                digest: canonical::sha256_hex(b"placeholder: the cartridge digest is the operator's"),
+                byte_length: 1_048_576,
+                format: "gb-rom".to_owned(),
+            },
+            adapter: "pokered-unique8-v6".to_owned(),
+            symbol_provenance: pokered.to_owned(),
+            mode: "macros".to_owned(),
+            macro_channels: ["macro_go_objective", "macro_talk", "macro_next", "macro_move_1"]
+                .iter()
+                .map(|c| (*c).to_owned())
+                .collect(),
+        },
+        decoder_config_digest: canonical::sha256_hex(b"placeholder: the effective DecoderConfig"),
+        environment: gameboy::EnvironmentDeclaration {
+            slots: vec!["best".to_owned()],
+            audio_sample_rate: 48_000,
+        },
+        flysim_compatibility: format!(
+            "{}/pokered-unique8-v6/{}/{}/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:{pokered}/statefmt:199616-x86_64-unknown-linux-gnu",
+            gameboy::KERNEL_VERSION,
+            gameboy::FAFB_V783_FINGERPRINT,
+            gameboy::PLASTICITY_VERSION,
+        ),
+    }
+}
+
+/// The legacy Game Boy extension set, the profile document and its AssetRef, the clock
+/// vector and an example composition with its digest.
+fn gameboy_legacy() -> String {
+    let profile = gameboy::legacy_profile().to_json();
+    let schema_refs: Map<String, Value> = gameboy::PAYLOAD_SCHEMAS
+        .iter()
+        .map(|p| (p.id.to_owned(), p.schema_ref().to_json()))
+        .collect();
+    // The first frames from a zero remainder: the rational accumulator of step-v1 section 5,
+    // which the legacy f64 accumulator equals exactly (legacy-gameboy-v1 section 3).
+    let step = gameboy::step_duration();
+    let tick = gameboy::tick_duration();
+    let mut accumulator = RationalNs::ZERO;
+    let mut frames = Vec::new();
+    for _ in 0..12 {
+        accumulator = accumulator.checked_add(&step).expect("no overflow");
+        let (ticks, remainder) = accumulator.divide_floor(&tick).expect("positive tick");
+        accumulator = remainder;
+        frames.push(json!({"ticks": ticks.to_string(), "remainder": remainder.to_json()}));
+    }
+    let composition = example_composition();
+    write(&json!({
+        "description": "The legacy Game Boy composition (legacy-gameboy-v1): registered payload schemas with their SchemaRef digests, the one legacy profile document and its AssetRef, the frame clock, and an example composition declaration with its digest.",
+        "extensionSetDigest": gameboy::extension_set_digest(),
+        "extensionSet": gameboy::extension_set(),
+        "schemaRefs": schema_refs,
+        "profile": {
+            "document": profile,
+            "canonical": canonical::canonicalize(&profile).expect("canonicalizable"),
+            "assetRef": gameboy::profile_asset_ref().to_json(),
+        },
+        "clock": {
+            "stepDuration": step.to_json(),
+            "tickDuration": tick.to_json(),
+            "legacyMsPerFrame": "1000 / (4194304 / 70224) == 548625/32768 exactly",
+            "frames": frames,
+        },
+        "composition": {
+            "example": composition.to_json(),
+            "digest": composition.digest().expect("digest"),
+            "recipeLines": [
+                "fly-session/composition-v1",
+                "session=<sessionId>",
+                "epoch=<epoch>",
+                "contract=<contractDigest>",
+                "agent=<agentId> port=<portId> profile=<profileDigest>  (one line per agent)",
+                "declaration=<this digest>  (added by the 2026-09-23 amendment)",
+            ],
+        },
+    }))
 }
 
 fn write(value: &Value) -> String {

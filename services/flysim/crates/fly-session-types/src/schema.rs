@@ -57,7 +57,7 @@ pub struct LimitSchema {
     pub source: &'static str,
 }
 
-const fn req(name: &'static str, kind: &'static str, constraint: &'static str) -> FieldSchema {
+pub(crate) const fn req(name: &'static str, kind: &'static str, constraint: &'static str) -> FieldSchema {
     FieldSchema {
         name,
         kind,
@@ -66,7 +66,7 @@ const fn req(name: &'static str, kind: &'static str, constraint: &'static str) -
     }
 }
 
-const fn opt(name: &'static str, kind: &'static str, constraint: &'static str) -> FieldSchema {
+pub(crate) const fn opt(name: &'static str, kind: &'static str, constraint: &'static str) -> FieldSchema {
     FieldSchema {
         name,
         kind,
@@ -129,7 +129,7 @@ pub const ENUMS: &[EnumSchema] = &[
     EnumSchema {
         name: "EpisodeRequestKind",
         source: "workers-v1 4",
-        members: &["terminal"],
+        members: crate::workers::EpisodeRequestKind::ALL,
     },
 ];
 
@@ -257,6 +257,11 @@ pub const LIMITS: &[LimitSchema] = &[
     LimitSchema {
         name: "maxAssets",
         value: crate::publishing::MAX_ASSETS as u64,
+        source: "crate",
+    },
+    LimitSchema {
+        name: "maxSlots",
+        value: crate::extensions::MAX_SLOTS as u64,
         source: "crate",
     },
     LimitSchema {
@@ -412,6 +417,11 @@ pub const SCHEMAS: &[TypeSchema] = &[
                 "learning",
                 "{enabled:bool,updates:U64,changed:U64,signal:number}",
                 "changed <= updates; signal finite",
+            ),
+            opt(
+                "stimulusRemainingMs",
+                "number|null",
+                "finite and nonnegative; the pulse still running after the operation; null when the agent reports none",
             ),
         ],
     },
@@ -744,7 +754,11 @@ pub const SCHEMAS: &[TypeSchema] = &[
         name: "EpisodeRequest",
         source: "workers-v1 4",
         fields: &[
-            req("kind", "EpisodeRequestKind", ""),
+            req(
+                "kind",
+                "EpisodeRequestKind",
+                "rollback only under a composition that declares a rollback policy",
+            ),
             req("reason", "Id", ""),
             req("outcome", "TypedValue", ""),
         ],
@@ -947,6 +961,76 @@ pub const SCHEMAS: &[TypeSchema] = &[
                 "PortControl|null",
                 "null with selectedDecision; the agent's assigned port",
             ),
+        ],
+    },
+    TypeSchema {
+        name: "SaveSlotParams",
+        source: "workers-v1 7",
+        fields: &[req(
+            "slotId",
+            "Id",
+            "one of the composition's declared slots; capability gameboy-slots-v1",
+        )],
+    },
+    TypeSchema {
+        name: "SaveSlotResult",
+        source: "workers-v1 7",
+        fields: &[
+            req("slotId", "Id", "echoes the request"),
+            req("boundary", "U64", "the scoped committed step"),
+            req("stateDigest", "Digest", "SHA-256 of the saved state bytes"),
+            req("byteLength", "U64", "positive"),
+        ],
+    },
+    TypeSchema {
+        name: "RestoreSlotParams",
+        source: "workers-v1 7",
+        fields: &[
+            req("slotId", "Id", "a slot saved in priorEpoch or carried by its restore"),
+            req(
+                "priorEpoch",
+                "Id",
+                "the epoch the environment is Ready in; differs from scope.epoch",
+            ),
+            req("policy", "Id", "\"legacy-ratchet-rollback-v1\""),
+        ],
+    },
+    TypeSchema {
+        name: "RestoreSlotResult",
+        source: "workers-v1 7",
+        fields: &[
+            req("slotId", "Id", "echoes the request"),
+            req("committedStep", "U64", "the scoped step; no transition ran"),
+            req(
+                "observation",
+                "WorldObservation",
+                "boundary == committedStep; no audio chunk; worldTime and engineFrame continue",
+            ),
+        ],
+    },
+    TypeSchema {
+        name: "AgentRollbackParams",
+        source: "workers-v1 7",
+        fields: &[
+            req("agentId", "Id", ""),
+            req(
+                "priorEpoch",
+                "Id",
+                "the epoch the agent is Ready in; differs from scope.epoch",
+            ),
+            req("policy", "Id", "\"legacy-ratchet-rollback-v1\"; capability of the same name"),
+            req("input", "SensoryInput", "boundary == scope.step; installed without a tick"),
+            req("decisionContext", "TypedValue", "the context for the next Prepare"),
+        ],
+    },
+    TypeSchema {
+        name: "AgentRollbackResult",
+        source: "workers-v1 7",
+        fields: &[
+            req("agentId", "Id", ""),
+            req("committedStep", "U64", "the scoped step; a rollback runs no tick"),
+            req("decisionContextDigest", "Digest", ""),
+            req("telemetry", "AgentTelemetry", ""),
         ],
     },
     TypeSchema {

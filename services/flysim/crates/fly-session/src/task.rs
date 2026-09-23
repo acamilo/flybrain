@@ -406,8 +406,10 @@ impl Task for CounterTask {
             Terminal::Counter(target) => new >= target,
             Terminal::AfterTransitions(n) => self.transitions >= n,
         };
-        // The contract's `EpisodeRequest` is terminal by construction: `kind` is a constant.
+        // The synthetic task only ever asks for the end of the episode; `rollback` belongs to a
+        // composition that declares a rollback policy (workers-v1 section 4, 2026-09-23).
         let episode = terminal.then(|| EpisodeRequest {
+            kind: EpisodeRequestKind::Terminal,
             reason: id("counter-target"),
             outcome: TypedValue::new(episode_schema(), json!({"counter": new, "transitions": self.transitions}))
                     .expect("a synthetic typed value fits the contract"),
