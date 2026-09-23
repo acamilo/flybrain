@@ -54,7 +54,7 @@ bytes. The current values are in `fixtures/gameboy-legacy.json`: digest `41e5d1a
 | `datasetFingerprint` | Today's value, byte for byte the compatibility string's segment 2 | This is the "embeds today's schema-1 fingerprint" of the decision. `flysim`'s `legacy_profile_identity` test recomputes it from `data/fafb-v783` |
 | `kernelVersion`, `plasticityVersion` | `lif-1ms-f64-v2`, `fly-kc-mbon-rstdp-v2` | Pinned defaults (CLAUDE.md). The same test compares them with the built network |
 | `tickDuration` | `1000000/1` ns | One model tick |
-| `warmupMs` | `2500` | Fresh-start warm-up with learning disabled, `DEFAULT_WARMUP_MS` |
+| `warmupMs` | `2500` | Fresh-start warm-up with learning disabled, `DEFAULT_WARMUP_MS`. A service configured with another warm-up (`loop.warmup_ms`, `FLYSIM_LOOP_WARMUP_MS`) is **another profile** and needs its own id; the legacy composition refuses to start this profile with any other value. It matters only on a fresh start, because a restore never warms up, but it is identity all the same |
 | `view` | `lcd`, 160 x 144 | The retina's native frame |
 | `supportedStimuli` | `["reward-pulse"]` | Sugar and task reward events both drive `stimulate(durationMs)` |
 | `readoutContextSchema`, `decisionSchema` | The registered references of sections 5 and 6 | |
@@ -97,7 +97,16 @@ The legacy `Sim::step_frame` order maps onto the transaction phases one to one:
 | `stimulate` per event, `reinforce(sum)` | Phase D: `Agent.Commit` installs the input, then the stimulations in event order, then one reinforcement |
 | `MacroLayer::observe`, `location()` | Phase C: this produces the next context's `bound` and `location` |
 | Ratchet observe, capture, recover | Phase C decides. `Environment.SaveSlot` and the rollback run at `Ready(k+1)` (section 11) |
-| Milestone archive | A durable save at `Ready(k+1)`, exported as FLYSIM01 (section 16) |
+| Milestone archive | A durable save at `Ready(k+1)`, exported as FLYSIM01, **after** that boundary's slot save (section 16) |
+
+**Amended 2026-09-23, review round 1.** One order differs from the legacy loop and is declared.
+Legacy `track_rank` archives the milestone *before* the ratchet captures, in the same frame, so a
+legacy archive holds the pre-capture ratchet (`best` = the previous rung) with the previous
+snapshot. Here the ratchet ledger commits `best = r` in Phase C, and the slot is only filled by
+`Environment.SaveSlot` at `Ready(k+1)`. A capture ordered before that save would pair `best = r`
+with the previous slot's contents -- or an empty slot on the first climb -- on every rank climb.
+Section 16 therefore orders the save first, and a ported archive holds the **post-capture**
+ratchet and slot. Both are internally consistent; they are not the same bytes.
 
 The input installed at Commit and ticked at the next Prepare is the frame the legacy loop
 hands `set_visual_frame` before it samples rewards. Rewards are sampled from the frame just
@@ -202,7 +211,8 @@ interface GameboyMemoryInspection {
   replaces the slot. A restore imports the state, releases the buttons and returns the
   archived framebuffer as a fresh view artifact, with a memory image read after the import.
   It runs no frame. Every slot is part of the environment's `State.Capture` payload, as
-  FLYSIM01's `ratchet_game` and `ratchet_frame` are today.
+  FLYSIM01's `ratchet_game` and `ratchet_frame` are today. A slot save due at a boundary
+  completes before any `State.Capture` or FLYSIM01 export at that boundary (section 16).
 
 ## 10. Executor `pokered-macros-v1`
 
@@ -249,7 +259,21 @@ before the next Prepare, without pausing**:
    tick**, no reinforcement, no stimulation and no calibration.
 5. With every reply in hand, the session is `Ready(e', k+1)`. Any failure fails the epoch and the
    group restores from the last durable checkpoint. No participant resets alone.
-6. A durable save follows, as the legacy loop checkpoints after a recovery.
+6. A durable save follows, as the legacy loop checkpoints after a recovery. Any capture at this
+   boundary -- before or after the rollback -- is taken after step 1's slot save.
+
+**Worker status and lost replies (amended 2026-09-23, review round 1).** While it executes
+`Environment.SaveSlot` a worker's `Worker.Status` reports `capturing`; while it executes
+`Environment.RestoreSlot` or `Agent.Rollback` it reports `restoring`, with `currentScope` still
+the prior `(e, k+1)`. After the reply it reports `ready` at `(e', k+1)`. These are mutations
+under the [session RPC](ipc-v1.md) section 5 operation key `(session, e', k+1, method, worker)`
+(`SaveSlot`: `(session, e, k+1, …)`), so a lost reply goes through ipc-v1 section 6 first: stop
+dispatch, query `Worker.Status` or retransmit the same request id and body to the same
+incarnation, and resolve only the matching cached result. Only an unresolvable outcome -- a
+changed incarnation, lost routes or ownership, `RESULT_EXPIRED` -- fails the epoch, and then the
+group restores from the last durable checkpoint. No participant is ever left in `e'` while
+another continues in `e`: the coordinator issues no Prepare until every rollback reply is
+resolved.
 
 The following continue through the rollback: brain clock, membrane, RNG, learned gains, rates and
 reward history, the ratchet ledger (its attempt and lifetime budgets were spent in Phase C), and
@@ -266,7 +290,7 @@ interface LegacyGameboyComposition {
   profile: AssetRef;                       // the section 2 document
   executor: { id: "pokered-macros-v1"; rom: AssetRef; adapter: Id; symbolProvenance: string;
               mode: "raw" | "macros"; macroChannels: ChannelName[] };  // [] iff raw
-  decoderConfigDigest: Digest;             // SHA-256 of the canonical effective DecoderConfig
+  decoderConfigDigest: Digest;             // SHA-256 of the gameboy-decoder-config-v1 form
   environment: { extensions: ["gameboy-slots-v1"]; slots: Id[]; stepDuration: RationalNs;
                  inspectionSchema: SchemaRef; controllerSchema: SchemaRef; setupFrames: 1;
                  audio: { sampleRate: number; channels: 2 } };
@@ -277,8 +301,18 @@ interface LegacyGameboyComposition {
 }
 ```
 
-- `decoderConfigDigest` is taken over the canonical JSON of the effective `DecoderConfig` in the
-  TypeScript oracle's shape (the Game Boy preset with its macro group). A change to a decoder
+- `decoderConfigDigest` is the SHA-256 of the canonical JSON of the form
+  `gameboy-decoder-config-v1` of the effective decoder configuration (amended 2026-09-23,
+  review round 1): `{form, exclusive, macros, pulses, clearLockoutMs}`, each group
+  `{channels: [{channel, role}], decisionMs, holdMs, hysteresis, fatigueGain, fatigueDecay,
+  blockedFatigue, blockedMs}` or `null`, each pulse `{channel, role, holdMs, cooldownMs,
+  threshold, boot: {cooldownMs, threshold} | null, throttleGroup: string | null}`. Channels are
+  an array because their order breaks argmax ties and canonical JSON sorts object keys. The
+  shared vectors are `fixtures/gameboy-decoder-config.json` (raw mode and the 31-channel
+  Pokémon Red group): `flysim`'s `legacy_profile_identity` test computes them from
+  `gameboy_decoder_config_with_macros` (and rewrites them under `FLY_UPDATE_FIXTURES=1`), and
+  `@flybrain/session-types` reproduces them from the oracle's `gameboyDecoderConfig`. The
+  example composition carries the real macros-mode digest. A change to a decoder
   timing, a threshold or the macro channel set therefore changes the composition digest.
   None of those changes touches the legacy compatibility string, which never covered them.
 - The declaration's digest is the SHA-256 of its canonical JSON. The coordinator's
@@ -299,6 +333,8 @@ interface LegacyGameboyComposition {
 | `fly-session-types/src/gameboy.rs`, `packages/session-types/src/gameboy.ts` | The five registered payload schemas, the profile, the composition declaration and their readers and cross-checks |
 | `fly-session-types/src/extensions.rs`, `packages/session-types/src/extensions.ts` | `SaveSlot*`, `RestoreSlot*` and `AgentRollback*` payloads, which are in the session schema set |
 | `fixtures/gameboy-legacy.json` (derived) | The extension set and its digest, every `SchemaRef`, the profile document with its canonical bytes and `AssetRef`, the frame clock, and an example composition with its digest and the digest recipe |
+| `fixtures/gameboy-decoder-config.json` | The `decoderConfigDigest` vectors (raw and Pokémon Red macros), written and checked by `flysim`'s `legacy_profile_identity` test, reproduced by the TypeScript oracle |
+| `TraceBehaviour.boundaryActions`, `TraceOperational.captures` | The section 16 order rule, refused by `TransitionTrace` validation in both languages |
 | `fixtures/valid.json`, `invalid.json` | Accepted and refused cases for every new type, held to both languages |
 | `flysim/tests/legacy_profile_identity.rs` | Recomputes the fingerprint, versions, frame size, warm-up, clock and button order from the committed dataset and the service defaults |
 
@@ -324,8 +360,16 @@ counter, remainder, buttons and event watermark. The rest starts cleared, as it 
 process:
 
 - the executor's ledgers (blocked, reached, talked, errand) are empty, with no macro running;
-- the agent's readout transient is cleared: no held channel, and no last location (the first
-  observed location starts the blocked window);
+- the agent's readout transient starts exactly as a fresh legacy process has it (amended
+  2026-09-23, review round 1): no held channel, no last location, and the blocked window
+  starting at brain time **0 ms**, not at the restored clock. The decoder state itself
+  (`DecoderState`: holds, winners, fatigue) *is* restored. The consequence AGENT-01 must
+  reproduce: on the first decode after a restore, `now - 0 >= blockedMs`, so the restored
+  direction winner, if any, is passed as `blocked` and its fatigue is raised to
+  `blockedFatigue`. Only after that decode does the window restart, because the held channel
+  changed from none to the winner, and again when the first location is observed. A rollback
+  (section 11) differs: it clears the holds and winners and restarts the window at the
+  current brain time;
 - the adapter's transient observations are cleared, as they are on a rollback.
 
 Resume tests compare against the legacy restore outcome, not against an uninterrupted trace
@@ -336,19 +380,43 @@ the rung.
 ## 15. Sugar admission
 
 The coordinator owns admission, with the legacy rules: the per-minute limiter, and "no overlap
-with an active pulse". The pulse is read from `AgentTelemetry.stimulusRemainingMs` of the **last completed
-commit** (an `Agent.Rollback` reply counts as one). The value can therefore be one commit old, and the operator accepted this lag. In one direction a
-pulse that ended inside the in-flight transition reads as still running, and the request is refused and retried.
-In the other direction a reward pulse added by the in-flight transition is not yet visible, so a sugar can be
-admitted over it, where the legacy loop would have refused. Each case is bounded to one frame. After a restore, and before the first commit, the pulse is unknown and admission
-refuses with a retry. The duration is clamped to `[1, sugar_max_ms]`. An admitted sugar is a
-`reward-pulse` `Stimulus` in the next Prepare's `preStepStimulations`, which is the position of the legacy
-drain at the top of a frame. Legacy admission *is* application. Here, the epoch can fail between the two, so each
-admission record carries its interaction id. If the Prepare that applies it never commits, the
-admission is reported aborted and the edge refunds it. The bridge's fulfil path and refund path both get tests
-in the slice that wires them ([workers-v1](workers-v1.md) section 5 amendment).
+with an active pulse". The pulse is read from `AgentTelemetry.stimulusRemainingMs` of the **last
+completed commit** (an `Agent.Rollback` reply counts as one). The value can therefore be one
+commit old, and the operator accepted this lag. The consequences, each bounded to one frame:
+
+- a pulse that ended inside the in-flight transition still reads as running, so the request is
+  refused and retried;
+- a reward pulse added by the in-flight transition is not yet visible, so a sugar can be
+  admitted over it where the legacy loop would have refused;
+- after a restore, and until the first commit of the new epoch, the pulse is unknown and every
+  request is refused with a retry, where the legacy loop admits against the restored pulse at
+  once (amended 2026-09-23, review round 1).
+
+The duration is clamped to `[1, sugar_max_ms]`. An admitted sugar is a `reward-pulse`
+`Stimulus` in the next Prepare's `preStepStimulations`, which is the position of the legacy
+drain at the top of a frame. Legacy admission *is* application. Here, the epoch can fail
+between the two, so each admission record carries its interaction id. If the Prepare that
+applies it never commits, the admission is reported aborted and the edge refunds it. The
+bridge's fulfil path and refund path both get tests in the slice that wires them
+([workers-v1](workers-v1.md) section 5 amendment).
 
 ## 16. Checkpoint format of record
+
+**Order at a boundary (amended 2026-09-23, review round 1).** A slot save due at `Ready(k)`
+completes -- its `Environment.SaveSlot` reply in hand -- before any `State.Capture` or FLYSIM01
+export at `Ready(k)`, whether that export is periodic, a milestone archive or the post-rollback
+save. So a checkpoint whose ratchet ledger names `best = r` always carries the slot saved for
+rung `r`. This is a **declared difference** from the legacy loop, which archives a milestone
+before capturing the ratchet snapshot. A legacy milestone archive holds `best = r-1` and the
+rung `r-1` snapshot; a ported one holds `best = r` and the rung `r` snapshot. After
+`fly-reset-to-milestone` onto a ported archive, a stall rollback therefore returns to the
+milestone boundary itself rather than to the previous rung's save, and the attempt counter
+starts at the new rung. The operator's confirmation of this difference is requested with the
+CUT-01 shadow run. The rule is machine-checked in the step trace: `TraceBehaviour.boundaryActions`
+records the saves and the rollback in order, `TraceOperational.captures` records each capture
+with the number of boundary actions before it, and a `TransitionTrace` in which a capture
+precedes a slot save is refused ([step-v1](step-v1.md) section 8 amendment; fixtures in
+`valid.json` and `invalid.json`).
 
 FLYSIM01 stays the format of record until RETIRE-01. Every durable save of this composition
 (periodic, milestone archive, after a rollback) **exports a FLYSIM01 envelope** that the

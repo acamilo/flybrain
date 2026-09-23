@@ -126,7 +126,9 @@ this transition. No task output directly writes controllers or neural state.
 boundary this transition reaches, after Phase D, never inside it: a slot save
 (`Environment.SaveSlot`, composition capability `gameboy-slots-v1`) and a rollback
 (`episodeRequest.kind = "rollback"`). Both are recorded with the transition's result and
-applied by the coordinator in the order *save, then rollback* (section 6 amendment). The
+applied by the coordinator in the order *save, then rollback* (section 6 amendment). A slot
+save due at a boundary completes before any `State.Capture` or FLYSIM01 export at that boundary
+(amended 2026-09-23, review round 1; [legacy-gameboy-v1](legacy-gameboy-v1.md) section 16). The
 retained old inspection is what makes "evaluate once against old/new inspection" possible when
 the inspection is artifact-backed: the coordinator keeps `O[k]`'s image until this evaluation
 finishes.
@@ -256,7 +258,12 @@ every Commit of the transition that reached `k` has succeeded:
    running action and observes `O'[k]`, which yields the next decision contexts.
 4. `Agent.Rollback(scope e',k; priorEpoch e)` on every agent concurrently: holds and
    eligibility cleared, `O'[k]`'s view installed, no tick.
-5. With every reply in hand: `Ready(e', k)`, then the usual durable save.
+5. With every reply in hand: `Ready(e', k)`, then the usual durable save. Every capture at
+   this boundary, before or after the rollback, follows step 1.
+
+A worker reports `capturing` during `SaveSlot` and `restoring` during `RestoreSlot` or
+`Agent.Rollback`. A lost reply is resolved by [session RPC](ipc-v1.md) section 6 against the
+same operation key before anything fails the epoch (legacy-gameboy-v1 section 11).
 
 Exactly what is retained, cleared and installed is named by the policy, as this section already
 requires; nothing is reset by a worker on its own initiative, and a failure at any step fails
@@ -298,6 +305,19 @@ The synthetic integration test must record, for every transition:
 - Complete batch ID/control digest and acknowledged world boundary.
 - Observation producing boundaries and task event/outcome IDs in order.
 - All Commit acknowledgments and published committed boundary.
+
+**Amendment, 2026-09-23 (RT-01a, review round 1).** For a composition with boundary actions the
+record also carries, for the boundary the transition reached:
+
+- in behaviour, `boundaryActions`: every `Environment.SaveSlot` (slot id and saved state
+  digest) and a rollback (slot id), in the order applied -- saves first, each slot once, at most
+  one rollback, last. FND-01's harness compares it like any other behaviour field;
+- in operational metadata, `captures`: every checkpoint capture or FLYSIM01 export at that
+  boundary, in the order taken, each with the number of boundary actions already applied.
+  Captures are operational because their schedule is wall-clock policy.
+
+A trace whose capture precedes one of the boundary's slot saves, or counts more actions than
+were applied, is refused. The synthetic composition records both lists empty.
 
 Evaluate agents sequentially, concurrently, and in reversed dispatch/completion order. All
 committed state/action/reward results must match, excluding wall time, request IDs and other
