@@ -889,6 +889,26 @@ LPCAT
             printf '{"id":999999,"wallMs":1758'
         } > "$out"
     }
+    # lp_outcomes FILE OUTCOME — like lp_events, but each name on stdin is one
+    # decision that ended OUTCOME: `refused` writes the refusal alone (nothing
+    # started, which is what a refused press is), anything else a start and
+    # that outcome. Row 57's shape is `GO ROUTE refused` every 800 brain ms.
+    lp_outcomes() {
+        local out="$1" outcome="$2" id=0 ms=0 nm
+        {
+            while IFS= read -r nm; do
+                if [ "$outcome" != "refused" ]; then
+                    id=$(( id + 1 ))
+                    printf '{"id":%d,"wallMs":%d,"brainMs":%d,"kind":"macro","label":"%s start","value":3}\n' \
+                        "$id" "$(( 1758000000000 + id ))" "$ms" "$nm"
+                fi
+                id=$(( id + 1 ))
+                printf '{"id":%d,"wallMs":%d,"brainMs":%d,"kind":"macro","label":"%s %s","value":3}\n' \
+                    "$id" "$(( 1758000000000 + id ))" "$ms" "$nm" "$outcome"
+                ms=$(( ms + 800 ))
+            done
+        } > "$out"
+    }
     # lp_status FILE PLACES — the /status.json fields check 10 reads. `places`
     # is `game.uniqueLocations`; there is no `places` field in the contract.
     lp_status() {
@@ -1001,10 +1021,54 @@ LPCAT
         fail "check 10: expected the flag to clear on places growth, got flagged=${lp_flagged} then suspected=$(lp_metric fly_loop_suspected) places_delta=$(lp_metric fly_places_delta), journal: $(cat "$lp_fixture/journal.log")"
     fi
 
+    # (5) Row 57: a pad of one button that refuses every hold. One start in the
+    # window and one name, so the sequence and dominance rules over starts
+    # alone never fired; the outcomes say it is a stall.
+    lp_reset
+    { lp_cycle 700 "GO ROUTE" | lp_outcomes "$lp_fixture/refused.jsonl" refused
+      echo "GO ROUTE" | lp_outcomes "$lp_fixture/blocked.jsonl" blocked
+      cat "$lp_fixture/refused.jsonl" "$lp_fixture/blocked.jsonl"; } > "$lp_fixture/events.jsonl"
+    lp_status "$lp_fixture/status.json" 1846
+    lp_pass
+    lp_first="$(lp_metric fly_loop_suspected)"
+    lp_pass
+    if [ "$lp_first" = "0" ] \
+       && [ "$(lp_metric fly_loop_suspected)" = "1" ] \
+       && [ "$(lp_metric fly_loop_refused)" = "700" ] \
+       && [ "$(lp_metric fly_loop_blocked)" = "1" ] \
+       && [ "$(lp_metric fly_loop_done)" = "0" ] \
+       && grep -q 'loop suspected (stalled): \[GO ROUTE\]' "$lp_fixture/journal.log"; then
+        pass "check 10: a pad whose one button is refused every hold flags as stalled (700 refused, 1 blocked, 0 done)"
+    else
+        fail "check 10: the row-57 refusal log gave first=${lp_first} suspected=$(lp_metric fly_loop_suspected) refused=$(lp_metric fly_loop_refused) blocked=$(lp_metric fly_loop_blocked) done=$(lp_metric fly_loop_done), journal: $(cat "$lp_fixture/journal.log")"
+    fi
+    if lp_report="$(jq -e -r '[.reason, (.window.macroStarts|tostring), (.window.decisions|tostring), (.window.outcomes.refused|tostring), (.window.outcomes.done|tostring), .action] | join(" ")' "$lp_fixture/run/loop.json" 2>/dev/null)" \
+       && [ "$lp_report" = "stalled 1 701 700 0 none" ]; then
+        pass "check 10: loop.json carries the decisions and every outcome, not only the starts"
+    else
+        fail "check 10: loop.json read back as '${lp_report:-UNREADABLE}' — expected 'stalled 1 701 700 0 none'"
+    fi
+
+    # (6) Zero progress: a handful of decisions, every one blocked, too few for
+    # the stall rule's floor. One probe of it is not enough; two in a row are.
+    lp_reset
+    lp_cycle 3 "GO OBJECTIVE" "GO FRONTIER" | lp_outcomes "$lp_fixture/events.jsonl" blocked
+    lp_status "$lp_fixture/status.json" 1846
+    lp_pass
+    lp_pass
+    lp_first="$(lp_metric fly_loop_suspected)"
+    lp_pass
+    if [ "$lp_first" = "0" ] && [ "$(lp_metric fly_loop_suspected)" = "1" ] \
+       && grep -q 'loop suspected (zero-progress)' "$lp_fixture/journal.log"; then
+        pass "check 10: decisions that complete nothing over two probes with no new ground flag as zero-progress"
+    else
+        fail "check 10: the zero-progress case gave first=${lp_first} then suspected=$(lp_metric fly_loop_suspected), journal: $(cat "$lp_fixture/journal.log")"
+    fi
+
     # The ethos, asserted rather than reviewed: over every case above, check 10
     # restarted nothing. It reports; a human or a review agent decides.
     if [ ! -s "$lp_fixture/systemctl.log" ]; then
-        pass "check 10: never acts — no unit was restarted across any of the four cases"
+        pass "check 10: never acts — no unit was restarted across any of the six cases"
     else
         fail "check 10 ACTED, which it must never do: $(cat "$lp_fixture/systemctl.log")"
     fi
