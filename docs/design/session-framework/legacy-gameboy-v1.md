@@ -125,7 +125,8 @@ interface GameboyReadoutContext {
 ```
 
 `ChannelName` is `^[a-z][a-z0-9_]{0,63}$`. Decoder channel and rate-role names carry `_`, so
-they are not `Id`s. The context is what the task hands the decoder with each Prepare (the
+they are not `Id`s (corrected 2026-09-23, AGENT-01: they are; see the section 13 amendment).
+The context is what the task hands the decoder with each Prepare (the
 `initialDecisionContext`, then every `nextDecisionContext`). `bound` is an ordered subset of the
 composition's `macroChannels`.
 
@@ -350,6 +351,73 @@ stale files.
 **Open for AGENT-01:** the legacy rate roles (`command_0`, `macro_go_item`, and so on) are not
 valid `Id`s, while `AgentGraph.rateRoles` and `AgentTelemetry.rates[].roleId` are `Id`s. The
 mapping belongs to the agent adapter. This contract does not choose it.
+
+**Amendment, 2026-09-23 (AGENT-01): the rate-role mapping `legacy-rate-role-id-v1`.** The
+premise above is wrong. The session `Id` grammar is `^[a-z0-9][a-z0-9._-]{0,63}$`
+([session RPC](ipc-v1.md) section 1, `flybus::wire::is_id`, `isId` in `@flybrain/session-types`),
+and it admits `_`. Every role `data/fafb-v783` declares, including the 31 `macro_*` populations
+merged after the fingerprint, and every role the kernel tracks, is already an `Id`; so is every
+`ChannelName`, whose grammar is a subset. The mapping is therefore the identity:
+
+- a legacy rate-role name `n` is published as `roleId = n` when `n` is an `Id`, and a `roleId`
+  names the rate role of the same spelling. The mapping is reversible by construction;
+- a name that is not an `Id` has no `roleId`. The agent refuses to initialize over a dataset
+  that tracks one (`INCOMPATIBLE_STATE`), rather than invent an encoding no consumer could read
+  back. No shipped dataset has one;
+- the published list keeps the kernel's tracked-role order and its bounds: at most 64
+  (`MAX_RATE_ROLES`, the kernel's role bitmask) and unique. On `fafb-v783` it is 45 roles.
+
+`gameboy::rate_role_id`, `rate_role_name` and `rate_role_ids` in `fly-session-types`, and
+`rateRoleId`, `rateRoleName` and `rateRoleIds` in `@flybrain/session-types`, implement it.
+`fixtures/gameboy-rate-roles.json` holds both languages to the same accepted and refused names and
+records the FAFB tracked list, which `fly-session`'s gated FAFB test recomputes from the
+committed dataset. The mapping changes no schema, digest or fixture digest.
+
+**Amendment, 2026-09-23 (AGENT-01): what the legacy agent reports and captures.** These are
+agent-adapter choices that the sections above leave open. `LegacyAgentWorker`
+(`fly-session/src/legacy_agent.rs`) implements them:
+
+- *Seed.* The kernel version `lif-1ms-f64-v2` hashes the LIF seed. Every seed except the legacy
+  default `22222` gives a different kernel version, so the profile pins the seed.
+  `Agent.Initialize` refuses any other seed (`INCOMPATIBLE_STATE`) before it builds a model. The
+  coordinator of this composition passes `22222`. It does not use a seed derived under
+  [seed-derivation-v1](seed-derivation-v1.md).
+- *Learning telemetry.* `AgentTelemetry.learning` requires `changed <= updates`. The legacy
+  counters mean something else, so they map as follows. `updates` is the number of reinforcement
+  calls the agent has applied: one per commit while the rule is enabled, zero sums included.
+  `changed` is the legacy `plasticity.updates`: the reinforcements that moved at least one gain.
+  `signal` is `plasticity.signal`. The legacy per-synapse count (`LearningStats.changed`, the
+  gains away from 1.0) is not carried. It can still be read from a captured state.
+  `stimulusRemainingMs` is the network's `reward_remaining` after the operation.
+- *Spikes.* Each `Agent.Commit` reply carries the attachment `telemetry.spikes`, with content type
+  `application/x-fly-spike-bitset`. It uses the legacy feed's layout: bit *i* is neuron *i*,
+  `ceil(neurons/8)` bytes. It covers the transition's ticks: a neuron is set when its last spike
+  is at or after the brain time before that transition's Prepare ticked. The mapping of bit
+  *i* is the graph's `indexDigest`.
+- *Graph.* `datasetDigest` is the SHA-256 of the schema-1 fingerprint string. `indexDigest` is the
+  SHA-256 of `fly-session/legacy-agent-index-v1`, the fingerprint, the neuron count and every
+  `macro_*` population's members. The macro populations are the profile's declared
+  `macro-roles-outside-fingerprint` exception. Two datasets that relabel them differently
+  therefore get the same fingerprint and different index digests.
+- *Initialize.* The readout transient starts as it does in a fresh legacy process: no held
+  channel, no last location, and a blocked window from 0 ms. `initialDecisionContext.location`
+  is **not** taken as the last location. The legacy loop reads a location only at the end of a
+  frame, so the window first restarts on it at the first commit, as it does in the legacy loop.
+- *Capture.* The `State.Capture` payload is a `flybrain-core` checkpoint envelope with magic
+  `FLYAGT01`. Its manifest and chunks are exactly `agent_to_chunks`, with the frame remainder
+  taken from the session accumulator, as `Sim::checkpoint` does. It adds one `session` member: the
+  accumulator, the context, the profile, the seed, the reinforcement count, the macro channels
+  and the decoder configuration digest. It does not carry the readout transient (section 14). It
+  is not FLYSIM01. Writing a FLYSIM01 export from it and from the environment's state is still
+  STATE-01/ENV-01 work (section 16).
+- *Restore.* `State.StageRestore` builds a replacement network over the same dataset, imports
+  the state and refuses any mismatch between the state's clock and the accumulator.
+  `ActivateRestore` then installs the state and resets the readout transient, as a fresh legacy
+  process does. The visual drive is the restored `visualDrive` chunk. Legacy `try_restore`
+  instead re-projects the saved framebuffer, and the two are the same values (the parity
+  harness compares the full state after a restore).
+- *Decision.* `macro` is the first channel in the context's `bound` order that the decode holds.
+  This is the channel the legacy macro layer's `asked` would start.
 
 ## 14. Restore `legacy-transient-reset`
 

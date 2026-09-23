@@ -176,6 +176,17 @@ window and last location as private readout state; report `stimulusRemainingMs`;
 legacy rate-role names (`command_0`, `macro_*`, which are not `Id`s) to `AgentGraph.rateRoles`,
 which that contract leaves open.
 
+**2026-09-23 (AGENT-01 built, `feat/agent-legacy-worker`).** `LegacyAgentWorker`
+(`fly-session/src/legacy_agent.rs`) serves the legacy profile under the launcher in all three
+execution modes (`legacy-agent` subcommand). Its parity harness (`legacy_parity.rs`) drives
+`NeuralAgent` directly in `Sim::step_frame` order from recorded inputs. On the committed toy
+connectome, the worker's records match that reference exactly in every mode, including a
+rollback and a restore, and are pinned as goldens. A gated FAFB run
+(`FLY_AGENT01_FAFB=1`) shows the same on `gameboy-legacy-fafb-v783-v1`. The rate-role mapping
+turned out to be the identity: the legacy names are already `Id`s. It is recorded in
+[legacy-gameboy-v1](legacy-gameboy-v1.md) section 13, with the other agent-adapter choices. The
+harness's `ReferenceSource` is the seam for FND-01's `FLY_TRACE`.
+
 **Implement:** adapter over existing LIF, plasticity, retina and fixed readout primitives;
 reference-first composition/goldens; independently seeded agent state and shared immutable data.
 Avoid using the old whole-frame `tick` wrapper if it changes the specified phase ordering.
