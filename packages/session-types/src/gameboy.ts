@@ -14,8 +14,8 @@ import { digestOf, fail } from './canonical';
 import { readRational, readSchemaRef } from './common';
 import { Reader, readArtifactRef, requireUnique, u64 } from './reader';
 import type { ArtifactRef, Digest, Id, RationalNs, SchemaRef, TypedValue } from './scalar';
-import { isDigest } from './scalar';
-import { type AssetRef, readAssetRef } from './workers';
+import { isDigest, isId } from './scalar';
+import { type AssetRef, MAX_RATE_ROLES, readAssetRef } from './workers';
 import { MAX_SLOTS, ROLLBACK_POLICY, SLOTS_CAPABILITY } from './extensions';
 
 export const PROFILE_ID = 'gameboy-legacy-fafb-v783-v1';
@@ -93,7 +93,10 @@ export const PAYLOAD_SCHEMAS: readonly SchemaRef[] = [
 /** The legacy profile document's AssetRef digest: SHA-256 of its canonical JSON. */
 export const PROFILE_DIGEST = '41e5d1ac62ab23f1b2d7252d52faac08b269c85e6b4c9ed7a370c74032c60878';
 
-/** `ChannelName`: a decoder channel or rate-role name. Not an Id: legacy names carry '_'. */
+/**
+ * `ChannelName`: a decoder channel or rate-role name, `^[a-z][a-z0-9_]{0,63}$`. A subset of the
+ * `Id` grammar (which admits '_'); see `rateRoleId` below (amendment 2026-09-23).
+ */
 export function isChannelName(value: unknown): value is string {
   return typeof value === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(value);
 }
@@ -557,4 +560,41 @@ export function decoderConfigForm(config: DecoderConfigLike): unknown {
 /** `LegacyGameboyComposition.decoderConfigDigest`: SHA-256 of the canonical form. */
 export function decoderConfigDigest(config: DecoderConfigLike): Digest {
   return digestOf(decoderConfigForm(config));
+}
+
+// Rate roles: legacy-rate-role-id-v1 (amendment 2026-09-23, AGENT-01) ----------------------
+
+/**
+ * The mapping from a legacy rate-role name to `AgentGraph.rateRoles` / `rates[].roleId`.
+ *
+ * The contract left it open on the premise that `command_0`, `macro_go_item` and the rest are
+ * not `Id`s; they are, because the `Id` grammar `^[a-z0-9][a-z0-9._-]{0,63}$` admits '_'. So the
+ * mapping is the identity on the `Id` grammar and a name outside it has no roleId: the agent
+ * refuses such a dataset. `fly-session-types/src/gameboy.rs` is the twin and
+ * `fixtures/gameboy-rate-roles.json` holds both to it.
+ */
+export const RATE_ROLE_MAPPING = 'legacy-rate-role-id-v1';
+
+/** The roleId of a legacy rate-role name: the name itself, when it is an Id. */
+export function rateRoleId(name: string): Id {
+  if (!isId(name)) {
+    fail(`${RATE_ROLE_MAPPING}: rate role ${JSON.stringify(name)} is not an Id and has no roleId`);
+  }
+  return name;
+}
+
+/** The legacy rate-role name a roleId stands for: the inverse of `rateRoleId`. */
+export function rateRoleName(roleId: string): string {
+  if (!isId(roleId)) fail(`${RATE_ROLE_MAPPING}: ${JSON.stringify(roleId)} is not a roleId`);
+  return roleId;
+}
+
+/** Maps a tracked-role list in order, holding it to `AgentGraph.rateRoles`' bounds. */
+export function rateRoleIds(names: readonly string[]): Id[] {
+  const ids = names.map(rateRoleId);
+  if (ids.length > MAX_RATE_ROLES) {
+    fail(`${RATE_ROLE_MAPPING}: ${ids.length} tracked rate roles; AgentGraph.rateRoles holds at most ${MAX_RATE_ROLES}`);
+  }
+  requireUnique(ids, 'rateRoles');
+  return ids;
 }

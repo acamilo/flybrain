@@ -174,3 +174,24 @@ test('the decoderConfigDigest vectors are what the TypeScript oracle preset comp
   assert.equal(example.decoderConfigDigest, cases[1]!.digest);
   assert.deepEqual(example.executor.macroChannels, cases[1]!.macroChannels);
 });
+
+test('legacy-rate-role-id-v1 is the identity on the Id grammar and refuses the rest', () => {
+  const file = fixtures.load('gameboy-rate-roles.json') as Record<string, any>;
+  assert.equal(file.mapping, gameboy.RATE_ROLE_MAPPING);
+  assert.ok(file.accepted.length > 0);
+  for (const { name, roleId } of file.accepted as { name: string; roleId: string }[]) {
+    assert.equal(gameboy.rateRoleId(name), roleId, name);
+    assert.equal(gameboy.rateRoleName(roleId), name, `${roleId} maps back`);
+  }
+  for (const { name } of file.refused as { name: string }[]) {
+    assert.throws(() => gameboy.rateRoleId(name), `${JSON.stringify(name)} has no roleId`);
+    assert.throws(() => gameboy.rateRoleName(name));
+  }
+  const tracked = file.fafbTrackedRoles as string[];
+  assert.deepEqual(gameboy.rateRoleIds(tracked), tracked);
+  for (const role of tracked.filter((r) => r.startsWith('macro_'))) {
+    assert.ok(gameboy.isChannelName(role));
+  }
+  assert.throws(() => gameboy.rateRoleIds(Array.from({ length: 65 }, (_, i) => `role_${i}`)));
+  assert.throws(() => gameboy.rateRoleIds(['command_0', 'command_0']));
+});
