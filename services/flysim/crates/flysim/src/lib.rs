@@ -8,7 +8,8 @@
 //!
 //! ```text
 //!                      +-- watch<Snapshot> --> feed  :7400/feed   (axum + ws)
-//!  sim thread ---------+
+//!  sim thread ---------+                   \-> feedbus -> flybus -> fly-edge :7400/feed
+//!                      |                        (FLY_FEED_VIA=bus instead of the line above)
 //!   agent              +-- Shared ------------> api   :7401        (axum)
 //!   emulator           |                          /status /stimulate /reward /checkpoint
 //!   adapter            |                          /pause /resume /events /healthz /metrics
@@ -25,6 +26,7 @@ pub mod chat;
 pub mod config;
 pub mod eventlog;
 pub mod feed;
+pub mod feedbus;
 pub mod macros;
 pub mod metrics;
 pub mod pacing;
@@ -41,7 +43,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tokio::sync::{mpsc, watch};
 
-use crate::config::Config;
+use crate::config::{Config, FeedVia};
 use crate::eventlog::{EventRing, now_wall_ms};
 use crate::simloop::{COMMAND_QUEUE, Command, Shared, Sim, booting_snapshot};
 use crate::snapshot::Snapshot;
@@ -58,6 +60,15 @@ impl AppState {
     /// The newest published snapshot.
     pub fn snapshot(&self) -> Arc<Snapshot> {
         Arc::clone(&self.snapshots.borrow())
+    }
+
+    /// What the feed server needs, when flysim serves the feed itself.
+    pub fn feed(&self) -> feed::FeedState {
+        feed::FeedState {
+            snapshots: self.snapshots.clone(),
+            metrics: Arc::clone(&self.shared.metrics),
+            idle_period: self.shared.config.publish_periods().1,
+        }
     }
 }
 
@@ -86,10 +97,17 @@ pub fn run(config: Config) -> Result<()> {
     let feed_addr = config.feed.bind;
     let control_addr = config.control.bind;
     let metrics_addr = config.control.metrics_bind;
+    let via = config.feed.via;
     let listeners = runtime.block_on(async {
-        let feed = tokio::net::TcpListener::bind(feed_addr)
-            .await
-            .with_context(|| format!("binding the feed listener on {feed_addr}"))?;
+        // In bus mode the feed port belongs to `fly-edge`; binding it here would take it away.
+        let feed = match via {
+            FeedVia::Direct => Some(
+                tokio::net::TcpListener::bind(feed_addr)
+                    .await
+                    .with_context(|| format!("binding the feed listener on {feed_addr}"))?,
+            ),
+            FeedVia::Bus => None,
+        };
         let control = tokio::net::TcpListener::bind(control_addr)
             .await
             .with_context(|| format!("binding the control listener on {control_addr}"))?;
@@ -104,16 +122,42 @@ pub fn run(config: Config) -> Result<()> {
         Ok::<_, anyhow::Error>((feed, control, metrics))
     })?;
     let (feed_listener, control_listener, metrics_listener) = listeners;
-    tracing::info!(feed = %feed_addr, control = %control_addr, metrics = ?metrics_addr, "listening");
+    tracing::info!(
+        feed = %feed_addr,
+        feed_via = via.as_str(),
+        control = %control_addr,
+        metrics = ?metrics_addr,
+        "listening"
+    );
 
-    {
-        let state = state.clone();
+    if let Some(feed_listener) = feed_listener {
+        let state = state.feed();
         runtime.spawn(async move {
             if let Err(error) = axum::serve(feed_listener, feed::router(state)).await {
                 tracing::error!(%error, "the feed listener stopped");
             }
         });
     }
+    // The bus gets a runtime of its own, so neither its router nor the artifact copies can take
+    // a worker from the control API; and it is fed from the watch slot, never from the sim thread.
+    let bus_runtime = match via {
+        FeedVia::Direct => None,
+        FeedVia::Bus => {
+            let bus_runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_name("flysim-bus")
+                .enable_all()
+                .build()
+                .context("building the bus runtime")?;
+            let bus = bus_runtime.block_on(feedbus::start_router(&config.feed.bus_dir))?;
+            bus_runtime.spawn(feedbus::run_publisher(
+                bus.router.clone(),
+                state.snapshots.clone(),
+                Arc::clone(&state.shared.metrics),
+            ));
+            Some((bus_runtime, bus))
+        }
+    };
     {
         let state = state.clone();
         runtime.spawn(async move {
@@ -139,6 +183,13 @@ pub fn run(config: Config) -> Result<()> {
     let result = sim.run(&notifier);
     notifier.notify("STOPPING=1\n");
     drop(sim);
+    if let Some((bus_runtime, bus)) = bus_runtime {
+        // The publisher ends by itself once the watch sender is gone; stopping the runtime under
+        // it, rather than the router first, keeps a last in-flight publish from being logged as
+        // a refusal. The edge sees the socket close either way.
+        drop(bus);
+        bus_runtime.shutdown_timeout(std::time::Duration::from_secs(1));
+    }
     runtime.shutdown_timeout(std::time::Duration::from_secs(2));
     result
 }

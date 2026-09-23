@@ -1,0 +1,36 @@
+[package]
+name = "fly-edge"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "The feed WebSocket (:7400) served from flysim's feed bus (FLY_FEED_VIA=bus)."
+
+[lib]
+name = "fly_edge"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fly-edge"
+path = "src/main.rs"
+
+[dependencies]
+# The feed server and the bus encoding are flysim's own modules (`feed`, `feedbus`,
+# `snapshot`), so the edge writes the WebSocket bytes with the code flysim uses in direct mode.
+flysim = { path = "../flysim" }
+flybus = { path = "../flybus" }
+
+anyhow = "1.0"
+axum = { version = "0.8", features = ["ws"] }
+clap = { version = "4.5", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "signal", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+flate2 = { workspace = true }
+futures-util = "0.3"
+serde_json = { workspace = true }
+tempfile = "3"
+tokio-tungstenite = "0.29"

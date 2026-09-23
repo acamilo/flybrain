@@ -32,6 +32,9 @@ log_info() {
 
 : "${FLY_CONTROL_URL:=http://127.0.0.1:7401}"
 : "${FLY_METRICS_URL:=http://127.0.0.1:9101}"
+# flyedge's loopback /metrics (units/flyedge.service), read by check 2 when
+# fly.env says FLY_FEED_VIA=bus.
+: "${FLY_EDGE_METRICS_URL:=http://127.0.0.1:9102}"
 : "${FLY_STATE_HOT:=/run/fly/state}"
 : "${FLY_MEDIA_DIR:=/srv/fly/media}"
 : "${MEDIAMTX_API:=http://127.0.0.1:9997}"
@@ -335,10 +338,32 @@ check_flysim() {
 # read-only metrics listener (infra.md section 5; not superseded by the
 # feed/control contracts). Flat frames counter across two passes, or zero
 # clients, means the page is dead/frozen even though Chromium is alive.
+#
+# The two counters belong to whoever serves the feed: flysim itself, or with
+# FLY_FEED_VIA=bus in fly.env, flyedge (docs/design/flybus.md, "Feed over the
+# bus"), which exports them under the same names. FLY_FEED_METRICS_URL in the
+# watchdog's own environment overrides both.
 # ============================================================================
+feed_metrics_url() {
+    if [ -n "${FLY_FEED_METRICS_URL:-}" ]; then
+        echo "$FLY_FEED_METRICS_URL"
+        return
+    fi
+    local via=""
+    if [ -f "$FLY_ENV_FILE" ]; then
+        # Lowercased: flysim reads the value case-insensitively, so `Bus` is bus mode.
+        via="$(awk -F= '/^FLY_FEED_VIA=/ { print $2; exit }' "$FLY_ENV_FILE" 2>/dev/null | tr -d ' \r"' | tr '[:upper:]' '[:lower:]' || true)"
+    fi
+    if [ "$via" = "bus" ]; then
+        echo "$FLY_EDGE_METRICS_URL"
+    else
+        echo "$FLY_METRICS_URL"
+    fi
+}
+
 check_flystage() {
     local metrics frames clients ok=1
-    metrics="$(curl -fsS "${FLY_METRICS_URL}/metrics" 2>/dev/null || true)"
+    metrics="$(curl -fsS "$(feed_metrics_url)/metrics" 2>/dev/null || true)"
     if [ -z "$metrics" ]; then
         ok=0
     else

@@ -14,8 +14,9 @@ Where this crate narrows or extends the draft, the difference is listed under
 sections 2 to 11 is audited against this code, with the test that proves it, in
 `docs/design/session-framework/bus-conformance.md`.
 
-Nothing in the crate is specific to a game, a brain or a stream. It is a workspace member and
-no other crate depends on it yet.
+Nothing in the crate is specific to a game, a brain or a stream. It is a workspace member;
+`flysim` embeds a router for the feed (`FLY_FEED_VIA=bus`, `flysim::feedbus`) and `fly-edge`
+subscribes to it (`docs/design/flybus.md`, "Feed over the bus").
 
 ## Layout
 

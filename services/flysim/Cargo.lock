@@ -417,6 +417,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "fly-edge"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "flate2",
+ "flybus",
+ "flysim",
+ "futures-util",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fly-session"
 version = "0.1.1"
 dependencies = [
@@ -484,6 +503,7 @@ dependencies = [
  "fly-session-types",
  "flybrain-core",
  "flybrain-gb",
+ "flybus",
  "futures-util",
  "jsonschema",
  "serde",

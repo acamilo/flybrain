@@ -154,6 +154,20 @@ require_release_tag() {
 # (An earlier, eight-cpu version of this same live hotfix — CPUSET=
 # 1,3,5,7,9,11,13,15, ENCODER_CORES=2 (the default) — gave flysim=1,3,5,7,
 # page=9,11, flycast=13,15; infra/tests/lint.sh checks both shapes.)
+# feed_via_normalize VALUE — print FLY_FEED_VIA lowercased (empty means "direct"), or
+# return 1 for anything but direct|bus. flysim itself reads the value case-insensitively
+# and refuses anything else at boot, which on a container is a restart loop; 05-deploy.sh
+# refuses it at deploy instead and writes the lowercased word, so watchdog check 2 and
+# flysim can never read the same line two ways (docs/design/flybus.md).
+feed_via_normalize() {
+    local via
+    via="$(printf '%s' "${1:-direct}" | tr '[:upper:]' '[:lower:]')"
+    case "$via" in
+        direct|bus) printf '%s\n' "$via" ;;
+        *) return 1 ;;
+    esac
+}
+
 cpuset_partition() {
     local cpuset="$1" rayon_threads="$2" encoder_cores="${3:-2}"
     local sim_cpus remainder remainder_count page_count page_cpus encoder_cpus

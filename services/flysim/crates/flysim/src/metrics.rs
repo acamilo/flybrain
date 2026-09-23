@@ -43,6 +43,10 @@ pub struct Metrics {
     pub lag_ms: AtomicU64,
     /// 1 when the restore fell back past the newest candidate.
     pub restore_fallback: AtomicU64,
+    /// Snapshots published on the feed bus (`FLY_FEED_VIA=bus`); 0 in direct mode.
+    pub bus_published: AtomicU64,
+    /// Snapshots the feed bus refused or could not take; each one is skipped, never retried.
+    pub bus_publish_failures: AtomicU64,
 }
 
 impl Metrics {
@@ -81,7 +85,7 @@ impl Metrics {
 }
 
 /// One metric line plus its help and type headers.
-fn metric(out: &mut String, name: &str, kind: &str, help: &str, value: impl std::fmt::Display) {
+pub fn metric(out: &mut String, name: &str, kind: &str, help: &str, value: impl std::fmt::Display) {
     use std::fmt::Write as _;
     let _ = writeln!(out, "# HELP {name} {help}");
     let _ = writeln!(out, "# TYPE {name} {kind}");
@@ -113,6 +117,20 @@ pub fn render(metrics: &Metrics, snapshot: &Snapshot, now_wall_ms: u64) -> Strin
         "counter",
         "Snapshots superseded before a slow client could be sent them.",
         Metrics::get(&metrics.feed_dropped),
+    );
+    metric(
+        &mut out,
+        "fly_bus_published_total",
+        "counter",
+        "Snapshots published on the feed bus (FLY_FEED_VIA=bus).",
+        Metrics::get(&metrics.bus_published),
+    );
+    metric(
+        &mut out,
+        "fly_bus_publish_failures_total",
+        "counter",
+        "Snapshots the feed bus did not take; skipped, like any superseded snapshot.",
+        Metrics::get(&metrics.bus_publish_failures),
     );
     metric(
         &mut out,

@@ -413,6 +413,10 @@ log "05-deploy: non-secret env files"
 # never drift apart (see cpuset_partition's own header comment). They are
 # assigned in section 0b, which needs them earlier than this for the
 # deploy-time cpu pinning; nothing between here and there changes them.
+# Who serves the feed (docs/design/flybus.md): refused here rather than at flysim's boot.
+FLY_FEED_VIA_EFFECTIVE="$(feed_via_normalize "${FLY_FEED_VIA:-}")" \
+    || die "05-deploy: FLY_FEED_VIA must be 'direct' or 'bus', got '${FLY_FEED_VIA}'"
+
 tmp_fly_env="$(mktemp)"
 tmp_flypush_env="$(mktemp)"
 trap 'rm -f "$tmp_fly_env" "$tmp_flypush_env"' EXIT
@@ -499,6 +503,16 @@ trap 'rm -f "$tmp_fly_env" "$tmp_flypush_env"' EXIT
     # "palette"/"plan" as "macros" with a warning, and refuses an unrecognised
     # value outright.
     echo "FLY_MACRO_MODE=${FLY_MACRO_MODE:-raw}"
+    # Who serves the feed WebSocket (docs/design/flybus.md, "Feed over the
+    # bus"). "direct" is the default and is flysim binding :7400 itself, as
+    # every release before this knob. "bus" makes flysim publish on its
+    # embedded feed bus and leave :7400 to flyedge.service, which this script
+    # never enables: see that unit's header for the switch. Written
+    # unconditionally, like FLY_MACRO_MODE, so one grep says which a box runs.
+    # Watchdog check 2 reads this line to know whose /metrics carries the
+    # feed counters (flysim's :9101, or flyedge's loopback :9102).
+    # Validated and lowercased above (feed_via_normalize).
+    echo "FLY_FEED_VIA=${FLY_FEED_VIA_EFFECTIVE}"
     # How long a macro leaves a target alone after a walk to it aborted
     # (macros.md section 12.1, the Viridian stall). Only written when it is set,
     # because the default lives in the crate and a box that has not tuned it
@@ -633,9 +647,11 @@ if [ -n "${CPUSET:-}" ]; then
             "leaves cpuset.cpus.effective empty and the unit unstartable."
     else
         read -r sim_cpus page_cpus encoder_cpus <<< "$(cpuset_partition "$CPUSET" "$RAYON_THREADS_EFFECTIVE" "$ENCODER_CORES_EFFECTIVE")"
-        log "05-deploy: cpuset partition — flysim=$sim_cpus, xvfb/flystage/flystage-web/pulse/mediamtx=$page_cpus, flycast=$encoder_cpus"
+        log "05-deploy: cpuset partition — flysim=$sim_cpus, xvfb/flystage/flystage-web/pulse/mediamtx/flyedge=$page_cpus, flycast=$encoder_cpus"
         tmp_dropin="$(mktemp)"
-        for u in flysim xvfb flystage flystage-web flycast pulse mediamtx; do
+        # flyedge is off by default, but its drop-in is written with the rest so that the day
+        # it is enabled it serves the page from the page's CPUs, never from flysim's.
+        for u in flysim xvfb flystage flystage-web flycast pulse mediamtx flyedge; do
             case "$u" in
                 flysim)  cpus="$sim_cpus" ;;
                 flycast) cpus="$encoder_cpus" ;;
