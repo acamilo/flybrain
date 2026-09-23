@@ -585,3 +585,139 @@ mod refusals {
         rig.stop().await;
     }
 }
+
+/// The real dataset, an explicit job: `FLY_AGENT01_FAFB=1` with `data/fafb-v783` checked out.
+/// Release mode is the sensible way to run it.
+mod fafb {
+    use super::*;
+    use fly_session::legacy_parity::{RewardEvent, ScriptStep, fafb_dir, frame_pool};
+    use fly_session_types::gameboy::{Location, ReadoutContext};
+
+    fn enabled() -> Option<std::path::PathBuf> {
+        if std::env::var_os("FLY_AGENT01_FAFB").is_none() {
+            eprintln!("skipping: FLY_AGENT01_FAFB is not set");
+            return None;
+        }
+        let dir = fafb_dir();
+        if dir.is_none() {
+            eprintln!("skipping: data/fafb-v783 is not present in this checkout");
+        }
+        dir
+    }
+
+    fn pokered_channels() -> Vec<String> {
+        let file = fly_session_types::fixtures::load("gameboy-decoder-config.json").expect("vectors");
+        file["cases"][1]["macroChannels"]
+            .as_array()
+            .expect("the Pokemon Red macro group")
+            .iter()
+            .map(|c| c.as_str().expect("a channel").to_owned())
+            .collect()
+    }
+
+    /// The live macros-mode composition's shape on the real connectome, with recorded inputs.
+    fn script(frames: usize) -> LegacyScript {
+        let channels = pokered_channels();
+        let bound = |k: usize| -> Vec<String> {
+            let take: &[usize] = match k {
+                0..20 => &[],
+                20..50 => &[0, 1, 9],
+                _ => &[1, 4, 5, 6],
+            };
+            take.iter().map(|i| channels[*i].clone()).collect()
+        };
+        let mut steps = Vec::new();
+        for k in 1..=frames {
+            steps.push(ScriptStep::Frame {
+                sugar: if k == 12 { vec![400.0] } else { vec![] },
+                frame: k % 6,
+                rewards: if k % 11 == 0 {
+                    vec![RewardEvent { value: 0.5, stimulation_ms: 120.0 }]
+                } else {
+                    vec![]
+                },
+                next_context: ReadoutContext {
+                    boot: k < 10,
+                    bound: bound(k),
+                    location: (k > 5).then_some(Location { area: 12, x: 3 + (k / 40) as u32, y: 7 }),
+                },
+            });
+            if k == 60 {
+                steps.push(ScriptStep::Rollback {
+                    frame: 2,
+                    context: ReadoutContext { boot: false, bound: bound(k), location: None },
+                });
+            }
+            if k == 75 {
+                steps.push(ScriptStep::Restore);
+            }
+        }
+        let last = steps.len() - 1;
+        LegacyScript {
+            name: "fafb-macros".to_owned(),
+            macro_channels: channels,
+            frames: Arc::new(frame_pool(6, 783)),
+            initial_frame: 0,
+            initial_context: ReadoutContext { boot: true, bound: vec![], location: None },
+            steps,
+            checkpoints: [30, last].into_iter().collect(),
+        }
+    }
+
+    /// The tracked rate roles on the committed dataset are the fixture's list, and each is
+    /// published as itself (`legacy-rate-role-id-v1`).
+    #[test]
+    fn the_fafb_rate_roles_are_the_fixture_list() {
+        let Some(dir) = enabled() else { return };
+        let dataset = Arc::new(load_brain_dataset_from_dir(&dir).expect("the dataset loads"));
+        let config = flybrain_core::agent::AgentConfig::with_decoder(
+            flybrain_core::decoder::gameboy::gameboy_decoder_config(),
+        );
+        let agent = flybrain_core::agent::NeuralAgent::new(dataset, config).expect("the agent");
+        let tracked: Vec<String> = agent.network.rates.keys().cloned().collect();
+        let file = fly_session_types::fixtures::load("gameboy-rate-roles.json").expect("fixture");
+        let want: Vec<String> = file["fafbTrackedRoles"]
+            .as_array()
+            .expect("list")
+            .iter()
+            .map(|v| v.as_str().expect("a name").to_owned())
+            .collect();
+        assert_eq!(tracked, want);
+    }
+
+    /// Recorded inputs through the worker (in-process and as a process) against `NeuralAgent`
+    /// driven directly, on `gameboy-legacy-fafb-v783-v1` itself.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_fafb_scenario_matches_the_direct_reference() {
+        let Some(dir) = enabled() else { return };
+        let script = script(90);
+        let started = std::time::Instant::now();
+        let dataset = Arc::new(load_brain_dataset_from_dir(&dir).expect("the dataset loads"));
+        let want = DirectSource { dataset }.records(&script).expect("the reference runs");
+        eprintln!("reference: {} records in {:?}", want.len(), started.elapsed());
+        let summary = legacy_parity::golden_json(&script, &want);
+        eprintln!("reference digest {}", summary["digest"]);
+        for mode in [ExecutionMode::InProcess, ExecutionMode::Process] {
+            let started = std::time::Instant::now();
+            let root = tempfile::tempdir().expect("tmp");
+            let agent = RigAgent {
+                agent_id: id("fly-a"),
+                port_id: id("p1"),
+                dataset_dir: dir.clone(),
+                profile: LegacyProfileKind::Production,
+                macro_channels: script.macro_channels.clone(),
+                worker_threads: 1,
+            };
+            let mut rig = LegacyRig::start(root.path(), mode, &[agent]).await.expect("the rig");
+            let got = legacy_parity::run_on_worker(&mut rig, &id("fly-a"), &script)
+                .await
+                .unwrap_or_else(|e| panic!("{}: {e}", mode.label()));
+            rig.stop().await;
+            legacy_parity::compare(&want, &got).unwrap_or_else(|e| panic!("{}: {e}", mode.label()));
+            eprintln!("{}: {} records identical in {:?}", mode.label(), got.len(), started.elapsed());
+        }
+        for row in summary["rows"].as_array().expect("rows").iter().step_by(10) {
+            eprintln!("  {}", row.as_str().expect("a row"));
+        }
+    }
+}
