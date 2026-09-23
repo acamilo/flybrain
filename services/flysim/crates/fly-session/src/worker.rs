@@ -606,6 +606,13 @@ async fn execute<E: WorkerEndpoint>(
 fn classify_default(method: &str) -> Option<OpClass> {
     match method {
         "Agent.Prepare" | "Agent.Commit" | "Environment.Advance" => Some(OpClass::StepMutation),
+        // The extension methods of `workers-v1` section 7 are mutations under the step operation
+        // key (`legacy-gameboy-v1` section 11): `SaveSlot` at `(e, k)`, `RestoreSlot` and
+        // `Agent.Rollback` at the new epoch `(e', k)`. A lost reply replays from the same cache
+        // rather than rolling back twice.
+        "Agent.Rollback" | "Environment.SaveSlot" | "Environment.RestoreSlot" => {
+            Some(OpClass::StepMutation)
+        }
         // `ipc-v1` section 5 retains lifecycle *and capture* replies until
         // `Worker.Acknowledge`. The restore methods join them: their replies carry a
         // once-only token and, for an environment, the restored observation's artifact, and a

@@ -439,7 +439,9 @@ dependencies = [
 name = "fly-session"
 version = "0.1.1"
 dependencies = [
+ "flate2",
  "fly-session-types",
+ "flybrain-core",
  "flybus",
  "serde_json",
  "tempfile",
