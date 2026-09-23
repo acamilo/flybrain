@@ -151,6 +151,15 @@ window every 15 brain seconds, so a loop is caught wherever it starts) in which 
 
 A window with no macro in it is not flagged: silence waits, and that is the doctrine working.
 
+**2026-09-23, FND-01.** The hunt now runs `flysim::frame::LegacyFrame`, the frame the service
+runs, restored the way the service restores (no held channel, no location, the blocked window at
+brain time 0). Before that it ticked the brain through `NeuralAgent::tick`, one frame behind the
+stream: each frame and its rewards reached the brain after the next ticks, the ratchet was
+observed without the objective signal, and a rollback did not re-observe the scene. Hunts from
+before and after the change are not comparable number for number; compare two arms built from
+the same side of it. `FLY_TRACE=<path>` writes the run in the service's own per-frame trace
+format (`flysim::trace`), so a hunt can be diffed against the service from the same checkpoint.
+
 ```sh
 FLY_ROM=".../Pokemon Red (U) [S][BF].gb" FLY_MACRO_BRAIN=data/fafb-v783 \
   FLY_TRAP_CHECKPOINT=.local/checkpoints/release-viridian-loop.checkpoint \
