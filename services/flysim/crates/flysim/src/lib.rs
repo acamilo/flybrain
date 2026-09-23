@@ -37,6 +37,7 @@ pub mod sdnotify;
 pub mod simloop;
 pub mod snapshot;
 pub mod store;
+pub mod trace;
 
 use std::sync::Arc;
 

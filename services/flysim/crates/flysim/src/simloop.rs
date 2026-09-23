@@ -56,6 +56,7 @@ use crate::snapshot::{
     RewardCounts, RewardKind, Snapshot, f32_bytes, finite, spike_bitset,
 };
 use crate::store::{self, RuntimeState, Store};
+use crate::trace::FrameTrace;
 
 /// Commands the control API queues for the sim thread.
 #[derive(Debug)]
@@ -397,6 +398,8 @@ pub struct Sim {
     restored: bool,
     /// Per-phase timing, off unless `FLY_PROFILE_SECONDS` is set (`crate::profile`).
     profiler: Profiler,
+    /// The per-frame trace, off unless `FLY_TRACE` names a file (`crate::trace`).
+    trace: Option<FrameTrace>,
 }
 
 /// The checkpoint compatibility string, from the pieces that make it up.
@@ -603,6 +606,8 @@ impl Sim {
             semantic_rewards,
             restored: false,
             profiler: Profiler::from_env(now),
+            trace: FrameTrace::from_env()
+                .with_context(|| format!("creating the {} file", crate::trace::ENV))?,
             agent,
             emulator,
             adapter,
@@ -929,11 +934,17 @@ impl Sim {
 
     /// One frame, in the prototype's order.
     fn step_frame(&mut self) -> Result<()> {
+        if let Some(trace) = self.trace.as_mut() {
+            trace.begin(self.frame_counter, self.agent.network.ms);
+        }
         // 2. Step the brain: 16 or 17 integer ticks, the remainder carried and checkpointed.
         self.remainder += self.agent.ms_per_frame;
         let steps = self.remainder.floor();
         self.remainder -= steps;
         self.agent.network.step(steps as u64);
+        if let Some(trace) = self.trace.as_mut() {
+            trace.ticked(steps as u64, self.remainder, &self.agent.network);
+        }
         self.profiler.lap(Phase::Step);
         if self.profiler.enabled() {
             self.profiler.absorb_brain(self.agent.network.timings());
@@ -969,6 +980,9 @@ impl Sim {
             blocked.as_deref(),
             bound.as_deref(),
         );
+        if let Some(trace) = self.trace.as_mut() {
+            trace.decided(&active);
+        }
         // A new winner starts its own window: it has not had a hold to move in yet.
         let held = self.agent.decoder.current().map(str::to_string);
         if held != self.held_channel {
@@ -1001,6 +1015,9 @@ impl Sim {
             }
             None => Vec::new(),
         };
+        if let Some(trace) = self.trace.as_mut() {
+            trace.executed(self.buttons, &started_or_finished);
+        }
         self.emit_macro_events(&started_or_finished);
         self.emulator.set_buttons(self.buttons as u8);
         self.profiler.lap(Phase::Decode);
@@ -1017,6 +1034,9 @@ impl Sim {
         self.agent
             .network
             .set_visual_frame(&self.frame_buffer, width, height);
+        if let Some(trace) = self.trace.as_mut() {
+            trace.advanced(&self.frame_buffer, &self.emulator);
+        }
         let raw = self.emulator.take_audio_u8();
         self.dc_blocker.process_into(&raw, &mut self.pending_audio);
         self.profiler.lap(Phase::Retina);
@@ -1074,6 +1094,9 @@ impl Sim {
 
         // 10. Ratchet: observe, and recover if it says so.
         let progress = self.adapter.progress();
+        if let Some(trace) = self.trace.as_mut() {
+            trace.evaluated(&events, &abandoned, progress.rank);
+        }
         self.track_rank(&progress, ms);
         let safe = self.adapter.safe_for_snapshot();
         let capture_due = safe && u64::from(progress.rank) > self.ratchet.state.best;
@@ -1095,6 +1118,7 @@ impl Sim {
         // (`docs/design/macros.md` section 12.15); in raw mode there is no layer and no
         // objective, and the answer is false.
         let nearer = self.macros.as_ref().is_some_and(MacroLayer::nearer_the_objective);
+        let trace = &mut self.trace;
         let recover = self.ratchet.observe_with_progress(
             safe,
             u64::from(progress.rank),
@@ -1102,7 +1126,14 @@ impl Sim {
             ms as u64,
             self.adapter.game_over(),
             nearer,
-            || captured.expect("the ratchet only captures when a snapshot was prepared"),
+            || {
+                let snapshot =
+                    captured.expect("the ratchet only captures when a snapshot was prepared");
+                if let Some(trace) = trace.as_mut() {
+                    trace.slot_saved(&snapshot.game);
+                }
+                snapshot
+            },
         );
         if recover {
             // Two triggers, two stories on the ticker: a game over ended the run, a stall did not.
@@ -1197,6 +1228,9 @@ impl Sim {
             }
             None => Vec::new(),
         };
+        if let Some(trace) = self.trace.as_mut() {
+            trace.rolled_back(&abandoned);
+        }
         self.emit_macro_events(&abandoned);
         self.pending_recovery = true;
         if let Err(error) = self.checkpoint(true, None) {
@@ -1292,6 +1326,9 @@ impl Sim {
             .clamp(1.0, self.shared.config.control.sugar_max_ms)
             .min(self.shared.config.control.sugar_max_ms);
         self.agent.network.stimulate(duration);
+        if let Some(trace) = self.trace.as_mut() {
+            trace.sugar(duration);
+        }
 
         let day = utc_day(now_ms);
         if day != self.sugar_day {
@@ -1313,6 +1350,9 @@ impl Sim {
     fn reward(&mut self, value: f64, by: &str, source: &str) -> u64 {
         let ms = self.agent.network.ms;
         self.agent.network.plasticity.reinforce(value, ms);
+        if let Some(trace) = self.trace.as_mut() {
+            trace.reward_pulse(value);
+        }
         tracing::info!(by, source, value, "reward pulse applied");
         self.emit(
             NewEvent::new(FeedEventKind::Reward, format!("{by} sent a reward pulse ({value})"))
@@ -1389,6 +1429,9 @@ impl Sim {
         self.emit(NewEvent::new(FeedEventKind::System, "Shutting down"));
         if let Err(error) = self.checkpoint_blocking(true, None) {
             tracing::error!(%error, "the final checkpoint failed");
+        }
+        if let Some(trace) = self.trace.as_mut() {
+            trace.finish();
         }
         if let Err(error) = self.log.flush() {
             tracing::error!(%error, "the final event log flush failed");
@@ -1499,6 +1542,9 @@ impl Sim {
             durable && self.best_archived_rank.is_none_or(|best| *rank > best)
         });
         let (generation, agent, runtime) = self.snapshot_state()?;
+        if let Some(trace) = self.trace.as_mut() {
+            trace.capture(generation, self.frame_counter);
+        }
         if let Some(rank) = archive_rank {
             self.best_archived_rank = Some(rank);
         }
