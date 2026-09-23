@@ -9,7 +9,7 @@
 //! - the `FLY_*` names the systemd units already set (`FLY_GAME`, `FLY_ROM`, `FLY_DATASET`,
 //!   `FLY_STATE`, `FLY_STATE_HOT`, `FLY_FEED_BIND`, `FLY_CONTROL_BIND`, `FLY_METRICS_ADDR`,
 //!   `FLY_ROM_SHA256`, `FLY_ROM_PLATFORMER_SHA256`, `FLY_CHAT_ENABLED`, `FLY_CHAT_DENY_LIST`,
-//!   `FLY_MACRO_MODE`, `RAYON_NUM_THREADS`);
+//!   `FLY_MACRO_MODE`, `FLY_FEED_VIA`, `FLY_BUS_DIR`, `RAYON_NUM_THREADS`);
 //! - `FLYSIM_<SECTION>_<KEY>` for everything, e.g. `FLYSIM_LOOP_SPEED=0`.
 //!
 //! Nothing here is secret (`docs/control-api.md`: "No secrets live in this service or its
@@ -104,6 +104,35 @@ pub struct Feed {
     pub bind: SocketAddr,
     /// Audio attachment sample rate. The page wants Web Audio's native 48 kHz.
     pub audio_hz: u32,
+    /// Who serves `:7400/feed` (`docs/design/flybus.md`, "Feed over the bus").
+    pub via: FeedVia,
+    /// The bus runtime directory in `bus` mode: the router's socket and its artifact store.
+    /// Belongs on tmpfs; a store here holds a few snapshots, never history.
+    pub bus_dir: PathBuf,
+}
+
+/// Where the feed WebSocket is served from.
+///
+/// `direct` is the default and is the behaviour that predates the bus, byte for byte: flysim
+/// binds `feed.bind` itself. `bus` starts an embedded flybus router, publishes every snapshot
+/// on it, and leaves `feed.bind` to the `fly-edge` process. The control API stays in flysim
+/// either way. Nothing about the fly changes with this knob: it is outside the simulation loop
+/// and outside the compatibility string.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FeedVia {
+    #[default]
+    Direct,
+    Bus,
+}
+
+impl FeedVia {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Bus => "bus",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -197,6 +226,8 @@ impl Default for Feed {
         Self {
             bind: "127.0.0.1:7400".parse().expect("literal address"),
             audio_hz: 48_000,
+            via: FeedVia::Direct,
+            bus_dir: PathBuf::from("/run/fly/bus"),
         }
     }
 }
@@ -254,6 +285,12 @@ impl Config {
         }
         if let Some(value) = get("FLY_FEED_BIND") {
             self.feed.bind = parse_addr("FLY_FEED_BIND", value)?;
+        }
+        if let Some(value) = get("FLY_FEED_VIA") {
+            self.feed.via = parse_feed_via("FLY_FEED_VIA", value)?;
+        }
+        if let Some(value) = get("FLY_BUS_DIR") {
+            self.feed.bus_dir = PathBuf::from(value);
         }
         if let Some(value) = get("FLY_CONTROL_BIND") {
             self.control.bind = parse_addr("FLY_CONTROL_BIND", value)?;
@@ -329,6 +366,12 @@ impl Config {
         }
         if let Some(value) = get("FLYSIM_FEED_AUDIO_HZ") {
             self.feed.audio_hz = parse("FLYSIM_FEED_AUDIO_HZ", value)?;
+        }
+        if let Some(value) = get("FLYSIM_FEED_VIA") {
+            self.feed.via = parse_feed_via("FLYSIM_FEED_VIA", value)?;
+        }
+        if let Some(value) = get("FLYSIM_FEED_BUS_DIR") {
+            self.feed.bus_dir = PathBuf::from(value);
         }
         if let Some(value) = get("FLYSIM_CONTROL_BIND") {
             self.control.bind = parse_addr("FLYSIM_CONTROL_BIND", value)?;
@@ -461,6 +504,14 @@ impl Config {
             std::time::Duration::from_secs_f64(1.0 / self.loop_.snapshot_hz),
             std::time::Duration::from_secs_f64(1.0 / self.loop_.idle_snapshot_hz),
         )
+    }
+}
+
+fn parse_feed_via(name: &str, value: &str) -> Result<FeedVia> {
+    match value.to_ascii_lowercase().as_str() {
+        "direct" => Ok(FeedVia::Direct),
+        "bus" => Ok(FeedVia::Bus),
+        _ => bail!("{name}: {value:?} is not a feed path; expected \"direct\" or \"bus\""),
     }
 }
 
@@ -685,6 +736,29 @@ mod tests {
         let mut config = Config::default();
         config.apply_env(&env(&[("FLY_GAME", ""), ("FLY_ROM", "")])).unwrap();
         assert_eq!(config, Config::default());
+    }
+
+    #[test]
+    fn the_feed_path_is_direct_unless_the_environment_says_bus() {
+        let config = Config::default();
+        assert_eq!(config.feed.via, FeedVia::Direct);
+        assert_eq!(config.feed.bus_dir, PathBuf::from("/run/fly/bus"));
+
+        let mut config = Config::default();
+        config
+            .apply_env(&env(&[("FLY_FEED_VIA", "bus"), ("FLY_BUS_DIR", "/tmp/fly-bus")]))
+            .unwrap();
+        assert_eq!(config.feed.via, FeedVia::Bus);
+        assert_eq!(config.feed.bus_dir, PathBuf::from("/tmp/fly-bus"));
+
+        let mut config = Config::default();
+        config.apply_env(&env(&[("FLYSIM_FEED_VIA", "DIRECT")])).unwrap();
+        assert_eq!(config.feed.via, FeedVia::Direct);
+
+        // A typo is a refusal, not a silent fallback to one of the two.
+        let error = Config::default().apply_env(&env(&[("FLY_FEED_VIA", "buss")])).unwrap_err();
+        assert!(error.to_string().contains("FLY_FEED_VIA"), "{error}");
+        assert_eq!(toml::from_str::<Config>("[feed]\nvia = \"bus\"\n").unwrap().feed.via, FeedVia::Bus);
     }
 
     #[test]

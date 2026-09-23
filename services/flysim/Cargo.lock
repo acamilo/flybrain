@@ -484,6 +484,7 @@ dependencies = [
  "fly-session-types",
  "flybrain-core",
  "flybrain-gb",
+ "flybus",
  "futures-util",
  "jsonschema",
  "serde",

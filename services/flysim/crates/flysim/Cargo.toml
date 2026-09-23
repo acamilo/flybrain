@@ -30,6 +30,7 @@ cuda = ["flybrain-core/cuda"]
 [dependencies]
 flybrain-core = { path = "../flybrain-core" }
 flybrain-gb = { path = "../flybrain-gb" }
+flybus = { path = "../flybus" }
 
 anyhow = "1.0"
 axum = { version = "0.8", features = ["ws"] }
