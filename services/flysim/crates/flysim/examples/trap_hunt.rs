@@ -247,6 +247,12 @@ struct Trace {
     /// The pad's composition, measured rather than read off the table: "which sub-state offers
     /// `BACK`" is a question about the build under test and not about the document.
     battle_pads: BTreeMap<&'static str, BTreeSet<String>>,
+    /// Row 60: every battle as `(frames, macro starts, won)`, the one running, payouts by kind,
+    /// and `MOVE n` starts against how many chose a move the cartridge answers with nothing.
+    battles: Vec<(u64, u64, bool)>,
+    battle_now: Option<(u64, u64, bool)>,
+    payouts_by_kind: BTreeMap<&'static str, (u64, f64)>,
+    move_starts: (u64, u64),
     wall_seconds: f64,
 }
 
@@ -423,6 +429,10 @@ fn run(
         battle_frames: BTreeMap::new(),
         battle_starts: BTreeMap::new(),
         battle_pads: BTreeMap::new(),
+        battles: Vec::new(),
+        battle_now: None,
+        payouts_by_kind: BTreeMap::new(),
+        move_starts: (0, 0),
         wall_seconds: 0.0,
         seeded: seeded_note,
         refusals: BTreeMap::new(),
@@ -507,6 +517,23 @@ fn run(
                         if let Some(sub) = battle_sub {
                             *trace.battle_starts.entry((event.name, sub)).or_insert(0) += 1;
                         }
+                        if let Some(battle) = trace.battle_now.as_mut() {
+                            battle.1 += 1;
+                        }
+                        if let Some(slot) = event.name.strip_prefix("MOVE ") {
+                            trace.move_starts.0 += 1;
+                            let id = flybrain_gb::pokemon_red::state::battle(&mut emulator)
+                                .and_then(|battle| battle.own)
+                                .zip(slot.parse::<usize>().ok())
+                                .and_then(|(own, slot)| own.moves.get(slot - 1).copied().flatten())
+                                .map(|entry| entry.id);
+                            if id.is_some_and(|id| {
+                                flybrain_gb::pokemon_red::state::move_without_effect(&mut emulator, id)
+                                    == Some(true)
+                            }) {
+                                trace.move_starts.1 += 1;
+                            }
+                        }
                         running = Some(Running {
                             name: event.name,
                             from: location,
@@ -588,6 +615,29 @@ fn run(
         frame.copy_from_slice(emulator.framebuffer());
 
         payouts = adapter.sample(&mut emulator, ms);
+        for payout in &payouts {
+            let entry = trace.payouts_by_kind.entry(payout.kind).or_insert((0, 0.0));
+            *entry = (entry.0 + 1, entry.1 + payout.value);
+        }
+        {
+            use flybrain_gb::MemoryReader;
+            let fighting =
+                emulator.read8(flybrain_gb::pokemon_red::symbols::ram::wIsInBattle) != 0;
+            let won = payouts.iter().any(|payout| matches!(payout.kind, "battle" | "trainer"));
+            match (fighting, trace.battle_now.as_mut()) {
+                (true, Some(battle)) => {
+                    battle.0 += 1;
+                    battle.2 |= won;
+                }
+                (true, None) => trace.battle_now = Some((1, 0, won)),
+                (false, Some(_)) => {
+                    let mut battle = trace.battle_now.take().expect("a battle");
+                    battle.2 |= won;
+                    trace.battles.push(battle);
+                }
+                (false, None) => {}
+            }
+        }
         if let Some(layer) = macros.as_mut() {
             let ledger = AdapterLedger(&adapter);
             let _ = layer.observe(&mut emulator, &ledger, agent.network.ms);
@@ -987,6 +1037,7 @@ fn main() {
             println!("| {name} | {sub} | {n} |");
         }
     }
+    battle_report(&trace);
     println!("\n| scene | frames | longest run | run began (brain min) |");
     println!("| --- | ---: | ---: | ---: |");
     for (scene, frames) in &trace.scenes {
@@ -1015,5 +1066,45 @@ fn main() {
          reported by every window it fills.",
         WINDOW_STEP_MS / 1000.0,
         WINDOW_MS / 1000.0
+    );
+}
+
+/// Row 60's numbers: payouts by kind, every battle's length and whether it paid a win, and the
+/// `MOVE n` starts that chose a move the cartridge answers with nothing.
+fn battle_report(trace: &Trace) {
+    println!("\n| payout kind | n | total |");
+    println!("| --- | ---: | ---: |");
+    for (kind, (n, total)) in &trace.payouts_by_kind {
+        println!("| {kind} | {n} | {total:.2} |");
+    }
+    let mut lengths: Vec<u64> = trace.battles.iter().map(|battle| battle.0).collect();
+    lengths.sort_unstable();
+    let at = |q: f64| -> u64 {
+        if lengths.is_empty() {
+            return 0;
+        }
+        lengths[((lengths.len() - 1) as f64 * q).round() as usize]
+    };
+    println!("\n| battles | n |");
+    println!("| --- | ---: |");
+    println!("| ended | {} |", trace.battles.len());
+    println!("| won (a battle or trainer payout) | {} |", trace.battles.iter().filter(|b| b.2).count());
+    println!(
+        "| still running at the end | {} |",
+        trace.battle_now.map_or("no".to_string(), |b| format!("{} frames, {} macros", b.0, b.1))
+    );
+    println!(
+        "| frames, median / p90 / max | {} / {} / {} |",
+        at(0.5),
+        at(0.9),
+        lengths.last().copied().unwrap_or(0)
+    );
+    println!(
+        "| macros per battle, max | {} |",
+        trace.battles.iter().map(|b| b.1).max().unwrap_or(0)
+    );
+    println!(
+        "| `MOVE n` starts / on a move without effect | {} / {} |",
+        trace.move_starts.0, trace.move_starts.1
     );
 }

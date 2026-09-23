@@ -73,6 +73,22 @@ WANTED = {
     'wToggleableObjectList': "this map's toggleable sprites and their global indices",
     # One bit per hidden item, set by FoundHiddenItemText once GiveItem succeeded.
     'wObtainedHiddenItemsFlags': 'hidden items already found',
+    # Row 60 (`docs/design/macros.md` 12.23): a move the cartridge will answer
+    # with "Nothing happened!" is not dealt. StatModifierUpEffect and
+    # StatModifierDownEffect (engine/battle/effects.asm) refuse on the stage byte
+    # (1 is -6, 7 normal, 13 is +6) and on the modified stat itself (1 or 999);
+    # SleepEffect, PoisonEffect and ParalyzeEffect on the target's status byte and
+    # type. Each is the battle_struct field or stage array those routines read.
+    'wPlayerMonStatMods': "the active Pokemon's six stat stages, 7 is normal",
+    'wEnemyMonStatMods': "the enemy's six stat stages, 7 is normal",
+    'wEnemyMonStatus': "the enemy's status condition byte",
+    'wEnemyMonType1': "the enemy's first type (wEnemyMonType2 follows it)",
+    'wEnemyMonAttack': "the enemy's modified Attack, Defense, Speed, Special",
+    'wBattleMonAttack': "the active Pokemon's modified Attack, Defense, Speed, Special",
+    # Mist and a substitute turn a stat-lowering move away, a substitute a
+    # poisoning one, and a target that must recharge is put to sleep whatever
+    # its status (MoveHitTest, CheckTargetSubstitute, SleepEffect).
+    'wEnemyBattleStatus2': "the enemy's Mist, substitute and recharge bits",
 }
 
 
@@ -141,10 +157,14 @@ def constants(root: Path) -> dict[str, int]:
         (root / 'constants').glob('*.inc')
     )
     for path in sources:
+        text = path.read_text()
         for name, value in re.findall(
-            r'^\s*(?:DEF|def)\s+(\w+)\s+(?:EQU|equ)\s+([^;\n]+)', path.read_text(), re.M
+            r'^\s*(?:DEF|def)\s+(\w+)\s+(?:EQU|equ)\s+([^;\n]+)', text, re.M
         ):
             pending.setdefault(name, value.strip())
+        # A name counted by `const` or `rb` is an expression over the running
+        # counter at its own line, so it overrides the raw `EQU const_value - 1`.
+        pending.update(enumerated(text))
     out: dict[str, int] = dict(counted)
     while pending:
         progressed = False
@@ -163,6 +183,91 @@ def constants(root: Path) -> dict[str, int]:
                 f'{name}: the decomp declares {out[name]} and defines {value} of them'
             )
         out[name] = value
+    return out
+
+
+def enumerated(text: str) -> dict[str, str]:
+    """The names one constants file defines by counting, as expressions.
+
+    rgbasm keeps two running counters the decomp enumerates with: `const_value`
+    (`const_def`, `const`, `const_skip`, `const_next` in macros/const.asm) and
+    `_RS` (`rsreset`, `rsset`, `DEF NAME rb/rw n`, `rb_skip`). This follows both
+    in file order and writes each name down as the *expression* the counter held
+    at its line, never as a number: [`constants`]' passes evaluate it with the
+    rest, so a count over a constant this tool cannot resolve stays unresolved
+    rather than becoming a guess. A counter form it does not know (a
+    `shift_const`, a non-literal step) kills that counter until the next reset.
+    """
+    out: dict[str, str] = {}
+    value: str | None = None
+    step = '1'
+    rs: str | None = None
+    for raw in text.splitlines():
+        line = raw.split(';')[0].strip()
+        if not line:
+            continue
+        match = re.fullmatch(r'const_def(?:\s+([^,]+?))?(?:\s*,\s*(.+))?', line)
+        if match:
+            value = f'({match.group(1) or "0"})'
+            step = f'({match.group(2) or "1"})'
+            continue
+        match = re.fullmatch(r'(?:const|const_export)\s+(\w+)', line)
+        if match:
+            if value is not None:
+                out[match.group(1)] = value
+                value = f'({value} + {step})'
+            continue
+        match = re.fullmatch(r'const_skip(?:\s+(.+))?', line)
+        if match:
+            if value is not None:
+                value = f'({value} + {step} * ({match.group(1) or "1"}))'
+            continue
+        match = re.fullmatch(r'const_next\s+(.+)', line)
+        if match:
+            value = f'({match.group(1)})'
+            continue
+        if line.startswith(('shift_const', 'dw_const')):
+            value = None
+            continue
+        if line == 'rsreset':
+            rs = '(0)'
+            continue
+        match = re.fullmatch(r'rsset\s+(.+)', line)
+        if match:
+            rs = f'({match.group(1)})' if '_RS' not in match.group(1) else None
+            continue
+        match = re.fullmatch(r'(rb|rw)_skip(?:\s+(.+))?', line)
+        if match:
+            if rs is not None:
+                unit = 1 if match.group(1) == 'rb' else 2
+                rs = f'({rs} + {unit} * ({match.group(2) or "1"}))'
+            continue
+        match = re.fullmatch(r'(?:DEF|def)\s+(\w+)\s+(rb|rw)(?:\s+(.+))?', line)
+        if match:
+            if rs is not None:
+                out[match.group(1)] = rs
+                unit = 1 if match.group(2) == 'rb' else 2
+                rs = f'({rs} + {unit} * ({match.group(3) or "1"}))'
+            continue
+        match = re.fullmatch(r'(?:DEF|def)\s+(\w+)\s+(?:EQU|equ)\s+(.+)', line)
+        if match is None:
+            # Anything else may be a macro that moves a counter this does not
+            # follow (`add_tm` advances `const_value`), so both stop here.
+            if not line.startswith(('ASSERT', 'assert', 'EXPORT', 'export')):
+                value = None
+                rs = None
+            continue
+        if re.search(r'\b(?:_RS|const_value)\b', match.group(2)):
+            expression = match.group(2)
+            if '_RS' in expression:
+                if rs is None:
+                    continue
+                expression = re.sub(r'\b_RS\b', rs, expression)
+            if 'const_value' in expression:
+                if value is None:
+                    continue
+                expression = re.sub(r'\bconst_value\b', value, expression)
+            out[match.group(1)] = expression
     return out
 
 
@@ -213,16 +318,27 @@ def size_of(expression: str, known: dict[str, int]) -> int:
     return value * scale
 
 
-def macro_sizes(root: Path, known: dict[str, int]) -> dict[str, int]:
-    """Sizes of the RAM struct macros, counted from their own declarations."""
+def macro_sizes(
+    root: Path, known: dict[str, int], fields: dict[str, list[tuple[str, int]]] | None = None
+) -> dict[str, int]:
+    """Sizes of the RAM struct macros, counted from their own declarations.
+
+    With `fields`, also each macro's `\\1Name::` field labels and their offsets,
+    for a macro whose whole body was sized: `battle_struct wEnemyMon` declares
+    `wEnemyMonStatus` at the offset its own lines put it.
+    """
     out: dict[str, int] = {}
     for path in sorted((root / 'macros').glob('*.asm')):
         text = path.read_text()
         for match in re.finditer(r'^MACRO\??\s+(\w+)\n(.*?)^ENDM', text, re.M | re.S):
             name, body = match.group(1), match.group(2)
             total = 0
+            offsets: list[tuple[str, int]] = []
             for line in body.splitlines():
                 line = line.split(';')[0].strip()
+                field = re.match(r'^\\1(\w+)::', line)
+                if field is not None and total is not None:
+                    offsets.append((field.group(1), total))
                 # A struct macro labels each field with its argument
                 # (`\\1YCoord:: db`), so the label is stripped and the
                 # declaration after it is what reserves the bytes.
@@ -246,6 +362,8 @@ def macro_sizes(root: Path, known: dict[str, int]) -> dict[str, int]:
                     break
             if total is not None:
                 out[name] = total
+                if fields is not None:
+                    fields[name] = offsets
     return out
 
 
@@ -253,7 +371,8 @@ def walk(
     root: Path, table: dict[str, int], known: dict[str, int], verbose: bool = False
 ) -> tuple[dict[str, int], list[str], int]:
     """Resolve every symbol of wram.asm the anchored cursor can reach exactly."""
-    macros = macro_sizes(root, known)
+    fields: dict[str, list[tuple[str, int]]] = {}
+    macros = macro_sizes(root, known, fields)
     lines = (root / 'ram/wram.asm').read_text().splitlines()
     cursor: int | None = None
     resolved: dict[str, int] = {}
@@ -370,6 +489,21 @@ def walk(
                 continue
         if line.endswith('::') or re.fullmatch(r'\.\w+', line):
             continue
+        # A struct macro's own field labels, at the offsets its body puts them:
+        # held back like any other label until the next pinned address agrees.
+        invocation = re.fullmatch(r'(\w+)\s+(w\w+)', line)
+        if invocation is not None and cursor is not None:
+            for field, offset in fields.get(invocation.group(1), []):
+                name = invocation.group(2) + field
+                if name not in table:
+                    pending_run[name] = cursor + offset
+                elif table[name] != cursor + offset:
+                    problems.append(
+                        f'{name}: wram.asm gives ${cursor + offset:04x}, '
+                        f'symbols.rs pins ${table[name]:04x}'
+                    )
+                else:
+                    checked += 1
         try:
             if cursor is not None:
                 cursor += declaration_size(line, known, macros)

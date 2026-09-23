@@ -111,6 +111,8 @@ struct World {
     money: u32,
     bag: Vec<(u8, u8)>,
     stock: Vec<u8>,
+    /// Move ids the battle engine would answer with "Nothing happened!" on this frame (row 60).
+    no_effect: BTreeSet<u8>,
     /// Tiles the game lets the player talk *over*: a mart's or a centre's counter.
     counters: BTreeSet<Tile>,
     /// Errands this run has discharged (`docs/design/macros.md` section 13).
@@ -242,6 +244,7 @@ impl World {
             pushes: BTreeSet::new(),
             exhausted: BTreeSet::new(),
             stock: Vec::new(),
+            no_effect: BTreeSet::new(),
             visited: BTreeSet::new(),
             stood: BTreeSet::new(),
             seen_maps: BTreeSet::new(),
@@ -694,6 +697,10 @@ impl MacroState for World {
     /// `pokemon_red::state::yes_no_prompt` gates on `wFontLoaded` before it looks at the tiles.
     fn yes_no_prompt(&mut self) -> bool {
         self.prompt && self.scene == Scene::Dialog
+    }
+
+    fn move_without_effect(&mut self, id: u8) -> bool {
+        self.no_effect.contains(&id)
     }
 
     fn shop_stock(&mut self) -> Vec<u8> {
@@ -3937,6 +3944,95 @@ fn a_turn_with_nothing_to_attack_switch_or_flee_with_still_has_a_button() {
     // And what it backs out to is a turn the fly can end.
     world.list = List::BattleMain;
     assert!(pad_of(&mut world).contains(&"MOVE 1"));
+}
+
+/// `constants/move_constants.asm`: the two moves a level-5 Squirtle knows.
+const TACKLE: u8 = 0x21;
+const TAIL_WHIP: u8 = 0x27;
+
+#[test]
+fn a_move_the_cartridge_answers_with_nothing_is_off_the_pad_beside_one_it_does_not() {
+    // Row 60, live on Route 1: Squirtle L5 with TACKLE and TAIL WHIP, a Pidgey whose DEFENSE is
+    // already at -6, and `MOVE 2` chosen 183 times to "Nothing happened!". Over the menu and over
+    // the open list, TAIL WHIP leaves the pad and TACKLE stays.
+    let mut world = World::battle();
+    world.mons = vec![mon(0, 8, 20, &[(TACKLE, 35), (TAIL_WHIP, 30)])];
+    world.active = Some(0);
+    world.list = List::BattleMain;
+    assert!(on_the_pad(&mut world, MacroKind::Move2), "before the stage is at its limit");
+
+    world.no_effect.insert(TAIL_WHIP);
+    for list in [List::BattleMain, List::Moves(2)] {
+        world.list = list;
+        world.grid = list == List::BattleMain;
+        let pad = pad_of(&mut world);
+        assert!(!pad.contains(&"MOVE 2"), "{list:?} deals {pad:?}");
+        assert!(pad.contains(&"MOVE 1"), "{list:?} deals {pad:?}");
+    }
+    // Nothing presses for the fly: the button is gone, and nothing is chosen in its place.
+    world.list = List::BattleMain;
+    world.grid = true;
+    assert!(!move_slot_bound(&mut world, MacroKind::Move2));
+
+    // Slot one is read the same way: FIGHT's backstop over the menu is not a way to deal a move
+    // that does nothing beside one that does.
+    let mut swapped = World::battle();
+    swapped.mons = vec![mon(0, 8, 20, &[(TAIL_WHIP, 30), (TACKLE, 35)])];
+    swapped.active = Some(0);
+    swapped.list = List::BattleMain;
+    swapped.no_effect.insert(TAIL_WHIP);
+    assert_eq!(
+        pad_of(&mut swapped).iter().filter(|name| name.starts_with("MOVE")).collect::<Vec<_>>(),
+        [&"MOVE 2"]
+    );
+}
+
+#[test]
+fn with_no_move_that_does_anything_the_moves_stay_as_pp_deals_them() {
+    // PP's own rule (section 12.8, row 30a): with nothing usable, what ends the turn stays on the
+    // pad. Taking every move away over an open list would leave `BACK` alone, which closes what
+    // `MOVE 1` on the menu underneath opened -- 12.11's pair.
+    let mut world = World::battle();
+    world.mons = vec![mon(0, 8, 20, &[(TACKLE, 0), (TAIL_WHIP, 30)])];
+    world.active = Some(0);
+    world.no_effect.insert(TAIL_WHIP);
+    world.list = List::Moves(2);
+    world.grid = false;
+    world.cursor_max = 1;
+    let pad = pad_of(&mut world);
+    assert!(pad.contains(&"MOVE 2"), "the one move with PP still ends the turn: {pad:?}");
+    assert_ne!(pad, ["BACK"]);
+
+    world.list = List::BattleMain;
+    world.grid = true;
+    let pad = pad_of(&mut world);
+    assert!(pad.contains(&"MOVE 1") && pad.contains(&"MOVE 2"), "{pad:?}");
+
+    // And both moves without effect: nothing changes from what PP alone deals.
+    let mut both = World::battle();
+    both.mons = vec![mon(0, 8, 20, &[(TACKLE, 35), (TAIL_WHIP, 30)])];
+    both.active = Some(0);
+    both.list = List::BattleMain;
+    let before = pad_of(&mut both);
+    both.no_effect.extend([TACKLE, TAIL_WHIP]);
+    assert_eq!(pad_of(&mut both), before);
+}
+
+#[test]
+fn a_spent_move_and_a_move_without_effect_leave_the_one_that_works() {
+    // The two readings together: slot one spent, slot two refused, slot three usable. Only
+    // `MOVE 3` is a move; `MOVE 1` over the menu is FIGHT's backstop only while slot one is the
+    // thing that can end the turn, and it is spent -- row 34's behaviour, unchanged.
+    let mut world = World::battle();
+    world.mons = vec![mon(0, 8, 20, &[(TACKLE, 0), (TAIL_WHIP, 30), (0x2d, 40)])];
+    world.active = Some(0);
+    world.no_effect.insert(TAIL_WHIP);
+    world.list = List::Moves(3);
+    world.grid = false;
+    world.cursor_max = 2;
+    let moves: Vec<&str> =
+        pad_of(&mut world).into_iter().filter(|name| name.starts_with("MOVE")).collect();
+    assert_eq!(moves, ["MOVE 3"]);
 }
 
 /// The bound buttons of the macros-mode pad for the scene the world is in, unbound slots dropped.

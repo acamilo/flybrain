@@ -1893,7 +1893,8 @@ pub const fn move_index(kind: MacroKind) -> Option<u8> {
     }
 }
 
-/// Whether `kind`'s move slot holds a move with PP: the four buttons' precondition (section 14).
+/// Whether `kind`'s move slot holds a move with PP that the battle engine will not answer with
+/// nothing: the four buttons' precondition (section 14, row 60).
 ///
 /// Three things it is *not*, each of them a bug this palette has had:
 ///
@@ -1921,23 +1922,41 @@ pub fn move_slot_bound(state: &mut dyn MacroState, kind: MacroKind) -> bool {
     // all, so the button is bound there whatever the seam can make of the battler. That is the
     // backstop `NEXT` used to be on this row (section 12.10): the own turn's main menu always has
     // a button that ends the turn, and it is never one that merely reopens a list.
-    if index == 0 && matches!(battle.menu, BattleMenu::Main { .. }) {
-        return true;
-    }
+    let main = matches!(battle.menu, BattleMenu::Main { .. });
     // And the same backstop over an **open move list** whose battler the seam cannot read
     // (section 12.11). That frame used to deal `BACK` alone -- the only button on it closed the
     // list `MOVE 1` on the menu underneath had just opened, which is 12.10's pair with `MOVE 1` in
     // `NEXT`'s place. `MOVE 1`'s script over an open list confirms wherever the cursor stands, so
     // it reads no move either, and confirming a move is what ends a turn.
     let Some(own) = battle.own else {
-        return index == 0 && matches!(battle.menu, BattleMenu::Moves { cursor: Some(_), .. });
+        return index == 0
+            && (main || matches!(battle.menu, BattleMenu::Moves { cursor: Some(_), .. }));
     };
     let holds = |slot: usize| -> Option<&Move> {
         own.moves.get(slot).and_then(|entry| entry.as_ref()).filter(|entry| entry.id != 0)
     };
-    let Some(entry) = holds(usize::from(index)) else { return false };
+    // **A move the cartridge will answer with nothing is not dealt beside one it will not**
+    // (row 60, section 12.23). Live on Route 1: Squirtle's TAIL WHIP against a Pidgey whose
+    // DEFENSE was already at -6 was `MOVE 2` 183 times, "Nothing happened!" every time, and no
+    // battle ended by the fly's hand. What the move does is the move table's and the effect
+    // routine's answer ([`MacroState::move_without_effect`]), read the same way for every move,
+    // and it is PP's rule over again: a spent move is not offered beside a usable one, and when
+    // nothing is usable what was dealt stays dealt -- taking the last moves away would leave a list
+    // whose only button is `BACK`, which is 12.11's pair.
+    let mut useful = [false; 4];
+    for (slot, flag) in useful.iter_mut().enumerate() {
+        if let Some(entry) = holds(slot).copied() {
+            *flag = entry.pp > 0 && !state.move_without_effect(entry.id);
+        }
+    }
+    let any_useful = useful.iter().any(|flag| *flag);
+    let entry = holds(usize::from(index)).copied();
+    if index == 0 && main {
+        return !any_useful || useful[0] || entry.is_none_or(|entry| entry.pp == 0);
+    }
+    let Some(entry) = entry else { return false };
     if entry.pp > 0 {
-        return true;
+        return useful[usize::from(index)] || !any_useful;
     }
     // Out of PP. Only `MOVE 1` stays, and only when nothing else has any either -- otherwise the
     // fly would be offered a spent move beside a usable one.

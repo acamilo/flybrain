@@ -1067,3 +1067,158 @@ fn a_sprite_the_cartridge_hides_off_the_screen_is_still_on_the_map() {
     let off: Vec<u8> = offscreen_npcs(&mut wram).iter().map(|npc| npc.slot).collect();
     assert_eq!(off, vec![1], "only the leader is still off the screen from (4, 8)");
 }
+
+/// Row 60's cartridge rows, as `data/moves/moves.asm` has them: `(id, effect, power, type)`.
+const TACKLE: (u8, u8, u8, u8) = (0x21, 0x00, 35, 0x00);
+const TAIL_WHIP: (u8, u8, u8, u8) = (0x27, 0x13, 0, 0x00);
+const GROWL: (u8, u8, u8, u8) = (0x2d, 0x12, 0, 0x00);
+const SCREECH: (u8, u8, u8, u8) = (0x67, 0x3b, 0, 0x00);
+const WITHDRAW: (u8, u8, u8, u8) = (0x6e, 0x0b, 0, 0x15);
+const SAND_ATTACK: (u8, u8, u8, u8) = (0x1c, 0x16, 0, 0x00);
+const SLEEP_POWDER: (u8, u8, u8, u8) = (0x4f, 0x20, 0, 0x16);
+const POISONPOWDER: (u8, u8, u8, u8) = (0x4d, 0x42, 0, 0x03);
+const THUNDER_WAVE: (u8, u8, u8, u8) = (0x56, 0x43, 0, 0x17);
+/// `AURORA_BEAM`: a damaging move with a stat side effect, which always does something.
+const AURORA_BEAM: (u8, u8, u8, u8) = (0x3e, 0x44, 65, 0x19);
+
+fn stage_battle() -> Wram {
+    let mut wram = Wram::new();
+    wram.battle_mon(0, 0xb1, 5, 8, 20, 0, &[(0x21, 35), (0x27, 30)])
+        .enemy_mon(0x24, 2, 13, 13)
+        .battle(1)
+        .normal_stages()
+        .move_table(&[
+            TACKLE,
+            TAIL_WHIP,
+            GROWL,
+            SCREECH,
+            WITHDRAW,
+            SAND_ATTACK,
+            SLEEP_POWDER,
+            POISONPOWDER,
+            THUNDER_WAVE,
+            AURORA_BEAM,
+        ]);
+    wram
+}
+
+#[test]
+fn the_move_table_is_read_by_id_and_checked_against_its_own_first_byte() {
+    let mut wram = stage_battle();
+    let tail_whip = move_data(&mut wram, TAIL_WHIP.0).expect("a row");
+    assert_eq!((tail_whip.effect, tail_whip.power), (0x13, 0));
+    assert_eq!(move_data(&mut wram, 0), None, "no move zero");
+    assert_eq!(move_data(&mut wram, 0xa6), None, "past STRUGGLE");
+    assert_eq!(move_data(&mut wram, 0x22), None, "a row the cartridge image does not answer");
+    // A table that is not where the disassembly says: a row that does not open with its own id
+    // is somebody else's row, and it is not read as this one.
+    let mut shifted = Wram::new();
+    shifted.move_table(&[(0x28, 0x13, 0, 0)]);
+    let base = poke::moves::TABLE_ADDRESS + 0x26 * poke::moves::ROW_BYTES;
+    for offset in 0..6 {
+        let byte = shifted.read_rom(poke::moves::TABLE_BANK, base + 6 + offset).unwrap();
+        shifted.rom_byte(poke::moves::TABLE_BANK, base + offset, byte);
+    }
+    assert_eq!(move_data(&mut shifted, 0x27), None);
+    assert!(move_data(&mut shifted, 0x28).is_some());
+}
+
+#[test]
+fn tail_whip_does_nothing_at_minus_six_and_something_before() {
+    // Row 60: the Pidgey's DEFENSE stage walked down from 7 to 1 by TAIL WHIP after TAIL WHIP.
+    let mut wram = stage_battle();
+    for stage in 2..=7 {
+        wram.set(ram::wEnemyMonStatMods + 1, stage);
+        assert_eq!(move_without_effect(&mut wram, TAIL_WHIP.0), Some(false), "stage {stage}");
+    }
+    wram.set(ram::wEnemyMonStatMods + 1, 1);
+    assert_eq!(move_without_effect(&mut wram, TAIL_WHIP.0), Some(true));
+    // The -2 variant reads the same stage.
+    assert_eq!(move_without_effect(&mut wram, SCREECH.0), Some(true));
+    // TACKLE deals damage whatever the stages say.
+    assert_eq!(move_without_effect(&mut wram, TACKLE.0), Some(false));
+    // And a damaging move with a stat side effect is never "nothing".
+    wram.set(ram::wEnemyMonStatMods + 3, 1);
+    assert_eq!(move_without_effect(&mut wram, AURORA_BEAM.0), Some(false));
+    // GROWL reads ATTACK's stage, not DEFENSE's.
+    assert_eq!(move_without_effect(&mut wram, GROWL.0), Some(false));
+    wram.set(ram::wEnemyMonStatMods, 1);
+    assert_eq!(move_without_effect(&mut wram, GROWL.0), Some(true));
+    // SAND-ATTACK reads ACCURACY's, which has no stat value behind it.
+    assert_eq!(move_without_effect(&mut wram, SAND_ATTACK.0), Some(false));
+    wram.set(ram::wEnemyMonStatMods + 4, 1);
+    assert_eq!(move_without_effect(&mut wram, SAND_ATTACK.0), Some(true));
+}
+
+#[test]
+fn a_stat_already_at_one_or_nine_hundred_ninety_nine_refuses_before_the_stage_does() {
+    // `StatModifierDownEffect` restores the stage and prints "Nothing happened!" when the stat
+    // itself is already 1 -- a level-2 Pidgey's DEFENSE gets there before -6.
+    let mut wram = stage_battle();
+    wram.set(ram::wEnemyMonStatMods + 1, 4).set_word_be(ram::wEnemyMonAttack + 2, 1);
+    assert_eq!(move_without_effect(&mut wram, TAIL_WHIP.0), Some(true));
+    wram.set_word_be(ram::wEnemyMonAttack + 2, 2);
+    assert_eq!(move_without_effect(&mut wram, TAIL_WHIP.0), Some(false));
+    // Raising: +6, or a stat of 999.
+    wram.set(ram::wPlayerMonStatMods + 1, 12);
+    assert_eq!(move_without_effect(&mut wram, WITHDRAW.0), Some(false));
+    wram.set(ram::wPlayerMonStatMods + 1, 13);
+    assert_eq!(move_without_effect(&mut wram, WITHDRAW.0), Some(true));
+    wram.set(ram::wPlayerMonStatMods + 1, 9).set_word_be(ram::wBattleMonAttack + 2, 999);
+    assert_eq!(move_without_effect(&mut wram, WITHDRAW.0), Some(true));
+}
+
+#[test]
+fn mist_and_a_substitute_turn_a_stat_lowering_move_away() {
+    let mut wram = stage_battle();
+    wram.set(ram::wEnemyBattleStatus2, poke::moves::MIST);
+    assert_eq!(move_without_effect(&mut wram, TAIL_WHIP.0), Some(true));
+    wram.set(ram::wEnemyBattleStatus2, poke::moves::SUBSTITUTE);
+    assert_eq!(move_without_effect(&mut wram, TAIL_WHIP.0), Some(true));
+    assert_eq!(move_without_effect(&mut wram, POISONPOWDER.0), Some(true));
+    // A raise is the user's own business.
+    assert_eq!(move_without_effect(&mut wram, WITHDRAW.0), Some(false));
+}
+
+#[test]
+fn a_status_move_against_a_target_it_cannot_affect_does_nothing() {
+    let mut wram = stage_battle();
+    for id in [SLEEP_POWDER.0, POISONPOWDER.0, THUNDER_WAVE.0] {
+        assert_eq!(move_without_effect(&mut wram, id), Some(false), "healthy target, {id:#04x}");
+    }
+    // Any status: already asleep, poisoned, paralysed.
+    wram.set(ram::wEnemyMonStatus, 1 << 6);
+    for id in [SLEEP_POWDER.0, POISONPOWDER.0, THUNDER_WAVE.0] {
+        assert_eq!(move_without_effect(&mut wram, id), Some(true), "statused target, {id:#04x}");
+    }
+    // A target that must recharge is put to sleep whatever its status (`SleepEffect`).
+    wram.set(ram::wEnemyBattleStatus2, poke::moves::RECHARGE);
+    assert_eq!(move_without_effect(&mut wram, SLEEP_POWDER.0), Some(false));
+    // Types: a Poison type is not poisoned; a Ground type is not paralysed by an Electric move.
+    let mut typed = stage_battle();
+    typed.set(ram::wEnemyMonType1 + 1, poke::moves::TYPE_POISON);
+    assert_eq!(move_without_effect(&mut typed, POISONPOWDER.0), Some(true));
+    typed.set(ram::wEnemyMonType1 + 1, 0).set(ram::wEnemyMonType1, poke::moves::TYPE_GROUND);
+    assert_eq!(move_without_effect(&mut typed, THUNDER_WAVE.0), Some(true));
+    assert_eq!(move_without_effect(&mut typed, POISONPOWDER.0), Some(false));
+}
+
+#[test]
+fn a_refusal_that_cannot_be_read_is_not_reported() {
+    // Out of battle, no cartridge behind the seam, or a stage byte out of its 1..=13 range.
+    let mut wram = stage_battle();
+    wram.set(ram::wIsInBattle, 0);
+    assert_eq!(move_without_effect(&mut wram, TAIL_WHIP.0), None);
+    let mut bare = Wram::new();
+    bare.battle(1).normal_stages().set(ram::wEnemyMonStatMods + 1, 1);
+    assert_eq!(move_without_effect(&mut bare, TAIL_WHIP.0), None, "no move table");
+    let mut wram = stage_battle();
+    wram.set(ram::wEnemyMonStatMods + 1, 0);
+    assert_eq!(move_without_effect(&mut wram, TAIL_WHIP.0), None);
+    // And the seam's own answer is "leave the button where it was".
+    let mut unread = Wram::new();
+    assert!(!PokeState::new(&mut unread).move_without_effect(TAIL_WHIP.0));
+    let mut read = stage_battle();
+    read.set(ram::wEnemyMonStatMods + 1, 1);
+    assert!(PokeState::new(&mut read).move_without_effect(TAIL_WHIP.0));
+}

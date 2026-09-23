@@ -416,6 +416,38 @@ impl Wram {
     pub const BLOCKSET_BANK: u8 = 0x11;
     pub const BLOCKSET_BASE: u16 = 0x4000;
 
+    /// Rows of the cartridge's move table, where `data/moves/moves.asm` puts it: `$0E:$4000`,
+    /// six bytes a row in move-id order, each opening with its own id. `(id, effect, power,
+    /// type)`; accuracy 100 and PP 35 stand in for the two bytes nothing here reads.
+    pub fn move_table(&mut self, rows: &[(u8, u8, u8, u8)]) -> &mut Self {
+        use super::state::poke::moves::{ROW_BYTES, TABLE_ADDRESS, TABLE_BANK};
+        for (id, effect, power, kind) in rows {
+            let base = TABLE_ADDRESS + u16::from(id - 1) * ROW_BYTES;
+            for (offset, byte) in [*id, *effect, *power, *kind, 0xff, 35].into_iter().enumerate() {
+                self.rom.insert((TABLE_BANK, base + offset as u16), byte);
+            }
+        }
+        self
+    }
+
+    /// One byte of a fake cartridge bank.
+    pub fn rom_byte(&mut self, bank: u8, address: u16, byte: u8) -> &mut Self {
+        self.rom.insert((bank, address), byte);
+        self
+    }
+
+    /// Every stage of both battlers at normal (7), as `InitBattleVariables`-era code leaves them.
+    pub fn normal_stages(&mut self) -> &mut Self {
+        for stat in 0..6 {
+            self.set(ram::wPlayerMonStatMods + stat, 7).set(ram::wEnemyMonStatMods + stat, 7);
+        }
+        for stat in 0..4 {
+            self.set_word_be(ram::wBattleMonAttack + 2 * stat, 12)
+                .set_word_be(ram::wEnemyMonAttack + 2 * stat, 9);
+        }
+        self
+    }
+
     /// Which tileset the loaded map uses, for the tile-pair collision lists.
     pub fn tileset(&mut self, id: u8) -> &mut Self {
         self.set(ram::wCurMapTileset, id)

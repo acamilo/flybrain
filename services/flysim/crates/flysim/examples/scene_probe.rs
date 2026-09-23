@@ -1434,6 +1434,9 @@ fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64)
         let pad = format!("{:?} {names:?}", observed.scene);
         if pad != last_pad {
             println!("f{frame:<6} {:?} pad {pad}", player.map(|p| (p.map, p.x, p.y)));
+            if let Some(line) = battle_line(gb) {
+                println!("        {line}");
+            }
             last_pad = pad;
         }
         let mut mask = 0u8;
@@ -2063,4 +2066,37 @@ fn main() {
             "\nNever stuck in one non-overworld scene for {stuck_after} frames in {budget}."
         ),
     }
+}
+
+/// Row 60: the battle bytes a `MOVE n` button's effect rests on, in one line -- the fly's moves
+/// with PP and whether the cartridge would answer each with nothing, both sides' stat stages
+/// (7 is normal, 1 is -6), the enemy's stats, status and HP.
+fn battle_line(gb: &mut Emulator) -> Option<String> {
+    let battle = state::battle(gb)?;
+    let own = battle.own?;
+    let moves: Vec<String> = own
+        .moves
+        .iter()
+        .flatten()
+        .map(|entry| {
+            let nothing = state::move_without_effect(gb, entry.id);
+            let row = state::move_data(gb, entry.id).map(|data| (data.effect, data.power));
+            format!("{:#04x} pp{} row{row:?} nothing={nothing:?}", entry.id, entry.pp)
+        })
+        .collect();
+    let stages = |gb: &mut Emulator, base: u16| -> Vec<u8> { (0..6).map(|i| gb.read8(base + i)).collect() };
+    let own_stages = stages(gb, ram::wPlayerMonStatMods);
+    let enemy_stages = stages(gb, ram::wEnemyMonStatMods);
+    let enemy_stats: Vec<u16> = (0..4)
+        .map(|i| u16::from(gb.read8(ram::wEnemyMonAttack + 2 * i)) * 256 + u16::from(gb.read8(ram::wEnemyMonAttack + 2 * i + 1)))
+        .collect();
+    Some(format!(
+        "menu={:?} own hp {}/{} moves [{}] stages {own_stages:?} | enemy {:?} stages {enemy_stages:?} stats {enemy_stats:?} status {:#04x}",
+        battle.menu,
+        own.hp,
+        own.max_hp,
+        moves.join(", "),
+        battle.enemy.map(|enemy| (enemy.species, enemy.level, enemy.hp, enemy.max_hp)),
+        gb.read8(ram::wEnemyMonStatus),
+    ))
 }

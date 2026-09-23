@@ -953,3 +953,45 @@ where that layout puts them, so the byte is `wBattleType - 1` = `$d059`, asserte
 neighbours in `scene/tests.rs`. Measured on the cartridge in the Pewter Gym: `$00` in the
 overworld, `$cd` (`OPP_JR_TRAINER_M`) from the last box of the trainer's challenge through the
 219-frame transition and the battle. `controllable` reads it as zero.
+
+## 13. What a move will do: the move table and the bytes its effect reads (2026-09-23, `docs/design/macros.md` 12.23)
+
+Row 60. Seven addresses, resolved by `tools/resolve_wram.py` and emitted into `symbols.rs`; the
+tool now follows the decomp's `const` and `_RS` counters and a struct macro's field labels, which
+is what reaches the `battle_struct` fields, and it re-derives 77 of 81 pinned addresses with no
+disagreement.
+
+| symbol | address | what reads it |
+| --- | --- | --- |
+| `wPlayerMonStatMods` | `$cd1a` | six stages, ATTACK DEFENSE SPEED SPECIAL ACCURACY EVASION; 1 is -6, 7 normal, 13 is +6 |
+| `wEnemyMonStatMods` | `$cd2e` | the same for the enemy |
+| `wEnemyMonStatus` | `$cfe9` | the enemy's status byte (`battle_struct` +4) |
+| `wEnemyMonType1` | `$cfea` | and `Type2` after it |
+| `wEnemyMonAttack` | `$cff6` | the enemy's modified ATTACK DEFENSE SPEED SPECIAL, big-endian words |
+| `wBattleMonAttack` | `$d025` | the same for the fly's Pokémon |
+| `wEnemyBattleStatus2` | `$d068` | bit 1 Mist, 4 substitute, 5 must recharge |
+
+**The move table is ROM.** `Moves` opens `SECTION "Battle Engine 7"`, which `layout.link` places
+first in bank `$0E`, so it is `$0E:$4000`, six bytes a row in move-id order from `POUND`:
+animation (the move id itself), effect, power, type, accuracy, PP. `state::move_data` reads a row
+through `MemoryReader::read_rom`, the cartridge image, and refuses a row whose first byte is not the
+id asked for. Measured from the row-60 checkpoint: TACKLE (`$21`) effect `$00` power 35, TAIL
+WHIP (`$27`) effect `$13` (`DEFENSE_DOWN1_EFFECT`) power 0.
+
+**`state::move_without_effect`** answers only refusals decided before the roll, for a move with no
+power, from `engine/battle/effects.asm` and `MoveHitTest`:
+
+- `*_UP1` / `*_UP2`: the user's stage is 13, or (ATTACK..SPECIAL) the stat is 999;
+- `*_DOWN1` / `*_DOWN2`: the target has Mist or a substitute, its stage is 1, or (ATTACK..SPECIAL)
+  the stat is 1 -- `StatModifierDownEffect` restores the stage and prints "Nothing happened!"
+  then, so a low-level target reaches it before -6;
+- `SLEEP_EFFECT`: any status, unless the target must recharge;
+- `POISON_EFFECT`: a substitute, any status, or a Poison type;
+- `PARALYZE_EFFECT`: any status, or an Electric move against a Ground type.
+
+`None` outside a battle, without a cartridge, or with a stage byte outside 1..13.
+
+**Not covered** (the reading would be the same kind, and nothing early in the game reaches it):
+Confuse Ray and Supersonic on a confused target, Leech Seed on a seeded or Grass target, Focus
+Energy, Mist, Reflect and Light Screen already up, Disable on a disabled target, and a damaging
+move the type chart makes "doesn't affect" (the chart is another ROM table).

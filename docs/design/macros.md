@@ -1505,6 +1505,40 @@ has a person to walk to where it had none, `GO OUT` is withheld by 12.5's own ru
 frames that were never the fly's deal nothing. The decoder, the reward catalog, the adapter
 version, the roles and the compatibility string are untouched.
 
+### 12.23 A move the cartridge answers with nothing is not dealt beside one it does not (2026-09-23, row 60)
+
+Live on v0.5.5, early game after the reset to milestone 1: Route 1, Squirtle L5 (TACKLE, TAIL
+WHIP) against a wild Pidgey, "Nothing happened!" on the screen. Since the reset `MOVE 2` 183
+times and `MOVE 1` once; the last reward 25 brain minutes before the checkpoint, one wild win in
+the whole run. Check 10 flagged `unrewarded` (1,600 decisions, no reward event, no new ground on
+two probes), which is right, and it is unchanged.
+
+- **The pad was at fault, not only the choice.** `MOVE n`'s precondition was "the slot holds a
+  move with PP", so TAIL WHIP stayed on the pad after it had walked the Pidgey's DEFENSE to the
+  point the cartridge refuses it. `StatModifierDownEffect` answers "Nothing happened!" when the
+  stage is already -6 **or the stat itself is already 1**, restoring the stage. The checkpoint is
+  the frame Squirtle fainted to a Pidgey L3 at DEFENSE -6 (stat 2); in the next battle the stat
+  reached 1 at -5. From there the pad dealt `MOVE 1, MOVE 2, RUN` and the fly pressed `MOVE 2`
+  until Squirtle fainted, woke at home and walked back: every battle lost, one wild win in the
+  run. The readout's favourite being `MOVE 2` is the fly's; a button that can do nothing at all
+  being on the pad is a macro that knows nothing about its own effect, section 12.2's trap.
+- **What a move does is the cartridge's, read the same way for every move.** `state::move_data`
+  reads the move's row of `Moves` from the cartridge image (`$0E:$4000`, each row checked against
+  its own id) and `state::move_without_effect` answers the refusals the effect routines make on
+  bytes already in WRAM: a stat stage at its limit or a stat at 1 or 999, Mist or a substitute in
+  front of a stat-lowering move, a sleep, poison or paralysis move against a target that already has
+  a status, is Poison type, or is Ground type to an Electric move. No move is named; a miss is a
+  roll and is not answered. `macros-wram.md` section 13 has the bytes.
+- **It is PP's rule.** A move the cartridge answers with nothing is not dealt beside one it does
+  not, exactly as a spent move is not (12.6, 12.8), and `MOVE 1` over the menu stops being FIGHT's
+  backstop only in that case. When no move would do anything the moves stay as PP deals them:
+  taking the last ones away would leave an open list whose only button is `BACK`, 12.11's pair,
+  and a turn that ends on "Nothing happened!" still ends. RUN, ITEM and SWITCH are untouched.
+
+Nothing is ranked, weighted or pressed for the fly: a button leaves the pad while it cannot change
+anything and comes back when it can (a new battle resets the stages). The decoder, the reward
+catalog, the adapter version, the roles and the compatibility string are untouched.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")
