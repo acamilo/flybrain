@@ -149,6 +149,12 @@ const ANSWER_REOPEN_FRAMES: u32 = 24;
 /// animation is about three.
 const HEAL_WAIT_FRAMES: u32 = 360;
 
+/// Frames running the overworld has to be the fly's before a push-back is written as a refusal
+/// ([`MacroMachine::observe_push`], row 59). A trainer's challenge text closes onto five frames of
+/// overworld before the battle is decided; six times that is still half a second, and a refusal
+/// the cartridge really made loses nothing by being written half a second late.
+pub const PUSH_SETTLE_FRAMES: u32 = 30;
+
 /// How a macro ended, i.e. the `outcome` field of the `macro` feed event (section 5: "outcome =
 /// done/blocked/timeout/refused").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -662,6 +668,9 @@ pub struct MacroMachine {
     /// the overworld is a refusal and is written as one; a battle is a battle, and nothing about
     /// the target or the ground is learned from it.
     pending_push: Vec<PendingPush>,
+    /// How many frames running the overworld has been the fly's while [`Self::pending_push`]
+    /// waits: the push-back is decided at [`PUSH_SETTLE_FRAMES`] (row 59).
+    pending_push_calm: u32,
     /// A finished `TALK`'s target, waiting to be taken into the session's talked ledger.
     ///
     /// The machine records rather than keeps: the ledger is the driver's
@@ -696,6 +705,7 @@ impl MacroMachine {
             pending_talk: None,
             pending_answer: None,
             pending_push: Vec::new(),
+            pending_push_calm: 0,
             talked: None,
             rng: if seed == 0 { 1 } else { seed },
         }
@@ -979,6 +989,7 @@ impl MacroMachine {
         self.pending_answer = None;
         // Nor the cartridge refusing a step: the frames it happened in are being thrown away too.
         self.pending_push.clear();
+        self.pending_push_calm = 0;
     }
 
     /// Whether the fly is standing somewhere other than where the running macro began.
@@ -1036,17 +1047,32 @@ impl MacroMachine {
 
     /// One frame after the cartridge took the joypad from a macro: decide what it was (row 58).
     ///
-    /// Back in the overworld with the buttons the fly's again: a refusal, written exactly as
-    /// section 12.4 and row 37 always wrote it. A battle: a trainer's challenge, and it teaches the
-    /// ledgers nothing. Anything else -- the text, the walk, the frames between -- is still the
-    /// cartridge's, and the decision waits.
+    /// Back in the overworld with the buttons the fly's again, for [`PUSH_SETTLE_FRAMES`] running:
+    /// a refusal, written exactly as section 12.4 and row 37 always wrote it. A battle: a
+    /// trainer's challenge, and it teaches the ledgers nothing. Anything else -- the text, the
+    /// walk, the frames between -- is still the cartridge's, and the decision waits.
+    ///
+    /// The window is row 59's. A trainer's challenge text closes onto five frames of an ordinary
+    /// overworld -- no text, no script, no joypad bit, `wCurOpponent` still clear -- before
+    /// `StartTrainerBattle` runs (`home/trainers.asm`: it follows `DisplayTextID`, whose
+    /// close-down redraws the map first). Decided on the first of them, Route 3's first trainer
+    /// walled (11, 6), the one gap between the road's west end and the rest of it, for the
+    /// session, and the fly walked between Pewter City and that end for hours.
     fn observe_push(&mut self, state: &mut dyn MacroState) {
         if self.pending_push.is_empty() {
+            self.pending_push_calm = 0;
             return;
         }
         match class(state.scene()) {
-            Class::Battle | Class::ForcedSwitch => self.pending_push.clear(),
+            Class::Battle | Class::ForcedSwitch => {
+                self.pending_push.clear();
+                self.pending_push_calm = 0;
+            }
+            Class::Overworld if self.pending_push_calm + 1 < PUSH_SETTLE_FRAMES => {
+                self.pending_push_calm += 1;
+            }
             Class::Overworld => {
+                self.pending_push_calm = 0;
                 // Every macro the script ended while it held the joypad -- the walk it interrupted
                 // and any press made into its text -- in the order they ended.
                 for pending in std::mem::take(&mut self.pending_push) {
@@ -1058,7 +1084,7 @@ impl MacroMachine {
                     }
                 }
             }
-            _ => {}
+            _ => self.pending_push_calm = 0,
         }
     }
 
