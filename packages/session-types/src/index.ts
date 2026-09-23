@@ -14,6 +14,8 @@ export * from './workers';
 export * from './rpc';
 export * from './publishing';
 export * from './trace';
+export * from './extensions';
 export * as seed from './seed';
 export * as checkpoint from './checkpoint';
+export * as gameboy from './gameboy';
 export * as fixtures from './fixtures';

@@ -76,6 +76,8 @@ test('the schema set publishes the limits this package enforces', async () => {
   assert.equal(limits.get('maxAudioStreams'), media.MAX_AUDIO_STREAMS);
   assert.equal(limits.get('maxTypedValueBytes'), scalar.MAX_TYPED_VALUE_BYTES);
   assert.equal(limits.get('maxEnvelopeBytes'), canonical.MAX_ENVELOPE_BYTES);
+  const extensions = await import('../src/extensions');
+  assert.equal(limits.get('maxSlots'), extensions.MAX_SLOTS);
 });
 
 test('the closed enums this package knows are the ones the schema set declares', async () => {
@@ -97,4 +99,5 @@ test('the closed enums this package knows are the ones the schema set declares',
   assert.deepEqual(enums.get('Recovery'), [...workers.RECOVERY]);
   assert.deepEqual(enums.get('Determinism'), [...workers.DETERMINISM]);
   assert.deepEqual(enums.get('AxisRange'), [...workers.AXIS_RANGES]);
+  assert.deepEqual(enums.get('EpisodeRequestKind'), [...workers.EPISODE_REQUEST_KINDS]);
 });

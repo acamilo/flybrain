@@ -2659,6 +2659,8 @@ impl Coordinator {
             outcome_ids,
             event_ids: event_ids.to_vec(),
             published_boundary: k + 1,
+            // The synthetic composition takes no boundary actions (step-v1 section 8 amendment).
+            boundary_actions: Vec::new(),
         };
         let operational = TraceOperational {
             // Wall time is for pacing, health and presentation only.
@@ -2673,6 +2675,9 @@ impl Coordinator {
             // and nothing in the behaviour above.
             bus_call_ids: Vec::new(),
             delivery_ids: Vec::new(),
+            // Captures are recorded by the store path, not by the transition that reached the
+            // boundary; the synthetic trace records none.
+            captures: Vec::new(),
         };
         self.trace.transition(TransitionTrace { behaviour, operational });
     }

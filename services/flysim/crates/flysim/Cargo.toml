@@ -50,6 +50,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-normalization = "0.1"
 
 [dev-dependencies]
+# The legacy profile's pinned identities (`tests/legacy_profile_identity.rs`): test-only, so the
+# service itself does not link the session types.
+fly-session-types = { path = "../fly-session-types" }
 futures-util = "0.3"
 # `default-features = false` drops the remote-reference resolver (and with it reqwest and a
 # TLS stack): `packages/feed/src/schema.json` is self-contained, so nothing has to be fetched.

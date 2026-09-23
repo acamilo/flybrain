@@ -253,6 +253,7 @@
       "value": {
         "brainTicks": "17",
         "populationRateHz": 12.5,
+        "stimulusRemainingMs": null,
         "rates": [
           {
             "roleId": "kenyon",
@@ -271,8 +272,8 @@
         }
       },
       "note": "",
-      "canonical": "{\"brainTicks\":\"17\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}]}",
-      "digest": "de4c4e0a2cc3cac459929480a057495029a74e67e9444ea4e197b403659155ed"
+      "canonical": "{\"brainTicks\":\"17\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}],\"stimulusRemainingMs\":null}",
+      "digest": "8b1157faa3b7c12a06622fafdcf69406c5120fa667d0060501d2c6b7b6df308d"
     },
     {
       "name": "agent telemetry with no tracked roles",
@@ -280,6 +281,7 @@
       "value": {
         "brainTicks": "0",
         "populationRateHz": 0.0,
+        "stimulusRemainingMs": null,
         "rates": [],
         "learning": {
           "enabled": false,
@@ -289,8 +291,8 @@
         }
       },
       "note": "",
-      "canonical": "{\"brainTicks\":\"0\",\"learning\":{\"changed\":\"0\",\"enabled\":false,\"signal\":0,\"updates\":\"0\"},\"populationRateHz\":0,\"rates\":[]}",
-      "digest": "51c684931ea3d7c54f67a78a90d676944d9527b0bc4465d5a6d4e02b87ff7485"
+      "canonical": "{\"brainTicks\":\"0\",\"learning\":{\"changed\":\"0\",\"enabled\":false,\"signal\":0,\"updates\":\"0\"},\"populationRateHz\":0,\"rates\":[],\"stimulusRemainingMs\":null}",
+      "digest": "59bfa4d05fe3f5eb8f2e3bc9361feabb0c5e465735d958b9210c26162b53394d"
     },
     {
       "name": "session rpc request with a scope",
@@ -454,6 +456,7 @@
         "telemetry": {
           "brainTicks": "2500",
           "populationRateHz": 12.5,
+          "stimulusRemainingMs": null,
           "rates": [
             {
               "roleId": "kenyon",
@@ -486,8 +489,8 @@
         }
       },
       "note": "",
-      "canonical": "{\"agentId\":\"fly-a\",\"committedStep\":\"0\",\"decisionContextDigest\":\"ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4\",\"graph\":{\"datasetDigest\":\"6c0af1f0784ef63a393ee77d614e8246c625051360f3f1a48838374c5d355b52\",\"indexDigest\":\"52a7a9b441f686ebea398e3d65dbaa87b4fde4f8b2231fff951700548f6a4e42\",\"neuronCount\":\"139255\",\"rateRoles\":[\"kenyon\",\"mbon\"],\"supportedStimuli\":[\"sugar\",\"shock\"]},\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"telemetry\":{\"brainTicks\":\"2500\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}]},\"tickDuration\":{\"denominator\":\"1\",\"numerator\":\"1000000\"},\"warmupTicks\":\"2500\"}",
-      "digest": "707803be4867dc2f0f3d4bccedfaa7b97b1e52b9af78d21ae6957caba1a7e3f8"
+      "canonical": "{\"agentId\":\"fly-a\",\"committedStep\":\"0\",\"decisionContextDigest\":\"ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4\",\"graph\":{\"datasetDigest\":\"6c0af1f0784ef63a393ee77d614e8246c625051360f3f1a48838374c5d355b52\",\"indexDigest\":\"52a7a9b441f686ebea398e3d65dbaa87b4fde4f8b2231fff951700548f6a4e42\",\"neuronCount\":\"139255\",\"rateRoles\":[\"kenyon\",\"mbon\"],\"supportedStimuli\":[\"sugar\",\"shock\"]},\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"telemetry\":{\"brainTicks\":\"2500\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}],\"stimulusRemainingMs\":null},\"tickDuration\":{\"denominator\":\"1\",\"numerator\":\"1000000\"},\"warmupTicks\":\"2500\"}",
+      "digest": "372ee03780ef476ef7e89d8b6a48a1c6afe75394b494f6bc80f6a1aa9f805215"
     },
     {
       "name": "prepare params",
@@ -687,6 +690,7 @@
         "telemetry": {
           "brainTicks": "2534",
           "populationRateHz": 12.5,
+          "stimulusRemainingMs": null,
           "rates": [
             {
               "roleId": "kenyon",
@@ -706,8 +710,8 @@
         }
       },
       "note": "",
-      "canonical": "{\"agentId\":\"fly-a\",\"committedStep\":\"42\",\"decisionContextDigest\":\"ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4\",\"telemetry\":{\"brainTicks\":\"2534\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}]}}",
-      "digest": "9f0a8812101f8f41a147846f6a94b67ae7898ca143fa3cf44ae3a3d5924cd17c"
+      "canonical": "{\"agentId\":\"fly-a\",\"committedStep\":\"42\",\"decisionContextDigest\":\"ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4\",\"telemetry\":{\"brainTicks\":\"2534\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}],\"stimulusRemainingMs\":null}}",
+      "digest": "a78233a4bbd20c061cb40f9cf9491060e149379f5d1e6b9036115c0c88014de9"
     },
     {
       "name": "controller schema",
@@ -2408,6 +2412,7 @@
             "telemetry": {
               "brainTicks": "2500",
               "populationRateHz": 12.5,
+              "stimulusRemainingMs": null,
               "rates": [
                 {
                   "roleId": "kenyon",
@@ -2459,8 +2464,8 @@
         "eventIds": []
       },
       "note": "",
-      "canonical": "{\"agents\":[{\"agentId\":\"fly-a\",\"appliedControls\":null,\"selectedDecision\":null,\"telemetry\":{\"brainTicks\":\"2500\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}]}}],\"descriptorRevision\":\"7\",\"episodeId\":\"episode-1\",\"eventIds\":[],\"media\":{\"audio\":[],\"views\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"0\",\"viewId\":\"screen\"}]},\"progress\":{\"schema\":{\"digest\":\"80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1\",\"id\":\"pokemon.progress.v1\",\"version\":1},\"value\":{\"rank\":0}},\"publisherIncarnation\":\"pub-1\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"0\"},\"sequence\":\"0\",\"worldTime\":{\"denominator\":\"1\",\"numerator\":\"0\"}}",
-      "digest": "e9c432eee00e95c28d8a12428aaa9cb71568bcaf079b557b01fb1fde26723da9"
+      "canonical": "{\"agents\":[{\"agentId\":\"fly-a\",\"appliedControls\":null,\"selectedDecision\":null,\"telemetry\":{\"brainTicks\":\"2500\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}],\"stimulusRemainingMs\":null}}],\"descriptorRevision\":\"7\",\"episodeId\":\"episode-1\",\"eventIds\":[],\"media\":{\"audio\":[],\"views\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"0\",\"viewId\":\"screen\"}]},\"progress\":{\"schema\":{\"digest\":\"80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1\",\"id\":\"pokemon.progress.v1\",\"version\":1},\"value\":{\"rank\":0}},\"publisherIncarnation\":\"pub-1\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"0\"},\"sequence\":\"0\",\"worldTime\":{\"denominator\":\"1\",\"numerator\":\"0\"}}",
+      "digest": "8b3ea179376f0dbf44ddbffdc3a93a7751ef03983dfe81df131e415cb8d506a0"
     },
     {
       "name": "committed snapshot after a transition",
@@ -2485,6 +2490,7 @@
             "telemetry": {
               "brainTicks": "2534",
               "populationRateHz": 12.5,
+              "stimulusRemainingMs": null,
               "rates": [
                 {
                   "roleId": "kenyon",
@@ -2608,8 +2614,8 @@
         ]
       },
       "note": "",
-      "canonical": "{\"agents\":[{\"agentId\":\"fly-a\",\"appliedControls\":{\"axes\":[{\"id\":\"stick-x\",\"value\":0},{\"id\":\"trigger\",\"value\":0}],\"buttons\":[{\"down\":true,\"id\":\"a\"},{\"down\":false,\"id\":\"b\"},{\"down\":false,\"id\":\"start\"},{\"down\":false,\"id\":\"select\"},{\"down\":false,\"id\":\"up\"},{\"down\":false,\"id\":\"down\"},{\"down\":false,\"id\":\"left\"},{\"down\":false,\"id\":\"right\"}],\"portId\":\"port-1\"},\"selectedDecision\":{\"schema\":{\"digest\":\"e70451b26fb5462ec63729d8355912dad01c3963a95bec0e6a8452375717ad9d\",\"id\":\"gameboy.intent.v1\",\"version\":1},\"value\":{\"press\":\"a\"}},\"telemetry\":{\"brainTicks\":\"2534\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}]}}],\"descriptorRevision\":\"7\",\"episodeId\":\"episode-1\",\"eventIds\":[\"evt-1\"],\"media\":{\"audio\":[{\"discontinuity\":false,\"firstSample\":\"33600\",\"sampleFrames\":800,\"samples\":{\"artifactId\":\"audio-1\",\"byteLength\":\"6400\",\"contentType\":\"audio/x-f32le\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"streamId\":\"mix\"}],\"views\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"42\",\"viewId\":\"screen\"}]},\"progress\":{\"schema\":{\"digest\":\"80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1\",\"id\":\"pokemon.progress.v1\",\"version\":1},\"value\":{\"rank\":10}},\"publisherIncarnation\":\"pub-1\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"42\"},\"sequence\":\"42\",\"worldTime\":{\"denominator\":\"1\",\"numerator\":\"700000000\"}}",
-      "digest": "d5ed83ccb866318b3cf17b53c8a5b1dea2f404b10649f6b640bf5f2b88a31435"
+      "canonical": "{\"agents\":[{\"agentId\":\"fly-a\",\"appliedControls\":{\"axes\":[{\"id\":\"stick-x\",\"value\":0},{\"id\":\"trigger\",\"value\":0}],\"buttons\":[{\"down\":true,\"id\":\"a\"},{\"down\":false,\"id\":\"b\"},{\"down\":false,\"id\":\"start\"},{\"down\":false,\"id\":\"select\"},{\"down\":false,\"id\":\"up\"},{\"down\":false,\"id\":\"down\"},{\"down\":false,\"id\":\"left\"},{\"down\":false,\"id\":\"right\"}],\"portId\":\"port-1\"},\"selectedDecision\":{\"schema\":{\"digest\":\"e70451b26fb5462ec63729d8355912dad01c3963a95bec0e6a8452375717ad9d\",\"id\":\"gameboy.intent.v1\",\"version\":1},\"value\":{\"press\":\"a\"}},\"telemetry\":{\"brainTicks\":\"2534\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}],\"stimulusRemainingMs\":null}}],\"descriptorRevision\":\"7\",\"episodeId\":\"episode-1\",\"eventIds\":[\"evt-1\"],\"media\":{\"audio\":[{\"discontinuity\":false,\"firstSample\":\"33600\",\"sampleFrames\":800,\"samples\":{\"artifactId\":\"audio-1\",\"byteLength\":\"6400\",\"contentType\":\"audio/x-f32le\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"streamId\":\"mix\"}],\"views\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"42\",\"viewId\":\"screen\"}]},\"progress\":{\"schema\":{\"digest\":\"80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1\",\"id\":\"pokemon.progress.v1\",\"version\":1},\"value\":{\"rank\":10}},\"publisherIncarnation\":\"pub-1\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"42\"},\"sequence\":\"42\",\"worldTime\":{\"denominator\":\"1\",\"numerator\":\"700000000\"}}",
+      "digest": "aaef320591a2db47d46b3b0a6b3f2faf563ef7edd73b6b02c7604bb7a50c88bf"
     },
     {
       "name": "committed snapshot at a boundary installed by a restore",
@@ -2634,6 +2640,7 @@
             "telemetry": {
               "brainTicks": "2534",
               "populationRateHz": 12.5,
+              "stimulusRemainingMs": null,
               "rates": [
                 {
                   "roleId": "kenyon",
@@ -2702,8 +2709,8 @@
         ]
       },
       "note": "a restore re-establishes a committed boundary this epoch did not run a transition into",
-      "canonical": "{\"agents\":[{\"agentId\":\"fly-a\",\"appliedControls\":null,\"selectedDecision\":null,\"telemetry\":{\"brainTicks\":\"2534\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}]}}],\"descriptorRevision\":\"7\",\"episodeId\":\"episode-1\",\"eventIds\":[\"evt-1\"],\"media\":{\"audio\":[{\"discontinuity\":false,\"firstSample\":\"33600\",\"sampleFrames\":800,\"samples\":{\"artifactId\":\"audio-1\",\"byteLength\":\"6400\",\"contentType\":\"audio/x-f32le\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"streamId\":\"mix\"}],\"views\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"42\",\"viewId\":\"screen\"}]},\"progress\":{\"schema\":{\"digest\":\"80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1\",\"id\":\"pokemon.progress.v1\",\"version\":1},\"value\":{\"rank\":10}},\"publisherIncarnation\":\"pub-1\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"42\"},\"sequence\":\"42\",\"worldTime\":{\"denominator\":\"1\",\"numerator\":\"700000000\"}}",
-      "digest": "79a0ef10ed65c0720c34c7d99de1fe87ec2f0c26028994562cc4655b0f6acd1f"
+      "canonical": "{\"agents\":[{\"agentId\":\"fly-a\",\"appliedControls\":null,\"selectedDecision\":null,\"telemetry\":{\"brainTicks\":\"2534\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0.5,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"},{\"hz\":0,\"roleId\":\"mbon\"}],\"stimulusRemainingMs\":null}}],\"descriptorRevision\":\"7\",\"episodeId\":\"episode-1\",\"eventIds\":[\"evt-1\"],\"media\":{\"audio\":[{\"discontinuity\":false,\"firstSample\":\"33600\",\"sampleFrames\":800,\"samples\":{\"artifactId\":\"audio-1\",\"byteLength\":\"6400\",\"contentType\":\"audio/x-f32le\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"streamId\":\"mix\"}],\"views\":[{\"pixels\":{\"artifactId\":\"frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"42\",\"viewId\":\"screen\"}]},\"progress\":{\"schema\":{\"digest\":\"80fa973157f334bb3208dfff6f7a2f298e79f73f07c72c33f5725975c6cff8e1\",\"id\":\"pokemon.progress.v1\",\"version\":1},\"value\":{\"rank\":10}},\"publisherIncarnation\":\"pub-1\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"42\"},\"sequence\":\"42\",\"worldTime\":{\"denominator\":\"1\",\"numerator\":\"700000000\"}}",
+      "digest": "39fd3d104ee42c6d4cb832c8923415952d8b9f686f0d0f3281a6c5bfea56d622"
     },
     {
       "name": "transition trace",
@@ -2756,7 +2763,8 @@
           "eventIds": [
             "evt-1"
           ],
-          "publishedBoundary": "42"
+          "publishedBoundary": "42",
+          "boundaryActions": []
         },
         "operational": {
           "wallTimeNs": "1234567890",
@@ -2789,12 +2797,13 @@
           "deliveryIds": [
             "dlv-7",
             "own-9"
-          ]
+          ],
+          "captures": []
         }
       },
       "note": "",
-      "canonical": "{\"behaviour\":{\"acknowledgedBoundary\":\"42\",\"agents\":[{\"agentId\":\"fly-a\",\"brainTicks\":\"2517\",\"committedStep\":\"42\",\"decisionDigest\":\"a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"3\",\"numerator\":\"1000000\"},\"ticksAdvanced\":\"17\"},{\"agentId\":\"fly-b\",\"brainTicks\":\"2550\",\"committedStep\":\"42\",\"decisionDigest\":\"ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"1\",\"numerator\":\"0\"},\"ticksAdvanced\":\"17\"}],\"batchId\":\"batch-41\",\"controlDigest\":\"1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6\",\"eventIds\":[\"evt-1\"],\"observationBoundaries\":[{\"producedStep\":\"42\",\"viewId\":\"screen\"}],\"outcomeIds\":[\"outcome-1\"],\"publishedBoundary\":\"42\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"}},\"operational\":{\"advanceRequestId\":\"req-43\",\"busCallIds\":[\"call-100\",\"call-101\",\"call-102\"],\"commitRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-44\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-45\"}],\"deliveryIds\":[\"dlv-7\",\"own-9\"],\"prepareRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-41\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-42\"}],\"wallTimeNs\":\"1234567890\"}}",
-      "digest": "707701d6dcf5529a67cc9b1e300d5e1a273b9a7b02d91154d4a2a1978cd8e549"
+      "canonical": "{\"behaviour\":{\"acknowledgedBoundary\":\"42\",\"agents\":[{\"agentId\":\"fly-a\",\"brainTicks\":\"2517\",\"committedStep\":\"42\",\"decisionDigest\":\"a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"3\",\"numerator\":\"1000000\"},\"ticksAdvanced\":\"17\"},{\"agentId\":\"fly-b\",\"brainTicks\":\"2550\",\"committedStep\":\"42\",\"decisionDigest\":\"ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"1\",\"numerator\":\"0\"},\"ticksAdvanced\":\"17\"}],\"batchId\":\"batch-41\",\"boundaryActions\":[],\"controlDigest\":\"1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6\",\"eventIds\":[\"evt-1\"],\"observationBoundaries\":[{\"producedStep\":\"42\",\"viewId\":\"screen\"}],\"outcomeIds\":[\"outcome-1\"],\"publishedBoundary\":\"42\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"}},\"operational\":{\"advanceRequestId\":\"req-43\",\"busCallIds\":[\"call-100\",\"call-101\",\"call-102\"],\"captures\":[],\"commitRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-44\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-45\"}],\"deliveryIds\":[\"dlv-7\",\"own-9\"],\"prepareRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-41\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-42\"}],\"wallTimeNs\":\"1234567890\"}}",
+      "digest": "36ecd5d39f81863c30c0fd52a12d72eb3ba71f0f3b72b2349e2c7f02a1d8e3e5"
     },
     {
       "name": "trace behaviour on its own",
@@ -2846,11 +2855,12 @@
         "eventIds": [
           "evt-1"
         ],
-        "publishedBoundary": "42"
+        "publishedBoundary": "42",
+        "boundaryActions": []
       },
       "note": "the half two runs must agree on",
-      "canonical": "{\"acknowledgedBoundary\":\"42\",\"agents\":[{\"agentId\":\"fly-a\",\"brainTicks\":\"2517\",\"committedStep\":\"42\",\"decisionDigest\":\"a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"3\",\"numerator\":\"1000000\"},\"ticksAdvanced\":\"17\"},{\"agentId\":\"fly-b\",\"brainTicks\":\"2550\",\"committedStep\":\"42\",\"decisionDigest\":\"ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"1\",\"numerator\":\"0\"},\"ticksAdvanced\":\"17\"}],\"batchId\":\"batch-41\",\"controlDigest\":\"1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6\",\"eventIds\":[\"evt-1\"],\"observationBoundaries\":[{\"producedStep\":\"42\",\"viewId\":\"screen\"}],\"outcomeIds\":[\"outcome-1\"],\"publishedBoundary\":\"42\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"}}",
-      "digest": "d938188fe3006537dbc0038fabf2a05df584e64b361b1106d79f3f965dff414a"
+      "canonical": "{\"acknowledgedBoundary\":\"42\",\"agents\":[{\"agentId\":\"fly-a\",\"brainTicks\":\"2517\",\"committedStep\":\"42\",\"decisionDigest\":\"a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"3\",\"numerator\":\"1000000\"},\"ticksAdvanced\":\"17\"},{\"agentId\":\"fly-b\",\"brainTicks\":\"2550\",\"committedStep\":\"42\",\"decisionDigest\":\"ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"1\",\"numerator\":\"0\"},\"ticksAdvanced\":\"17\"}],\"batchId\":\"batch-41\",\"boundaryActions\":[],\"controlDigest\":\"1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6\",\"eventIds\":[\"evt-1\"],\"observationBoundaries\":[{\"producedStep\":\"42\",\"viewId\":\"screen\"}],\"outcomeIds\":[\"outcome-1\"],\"publishedBoundary\":\"42\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"}}",
+      "digest": "59ed2ef812fe44a5808d8251b253c76a642cdc6828ee964a1c90ef302b66c9e4"
     },
     {
       "name": "trace operational metadata on its own",
@@ -2886,11 +2896,799 @@
         "deliveryIds": [
           "dlv-7",
           "own-9"
-        ]
+        ],
+        "captures": []
       },
       "note": "recorded by step-v1 section 8, excluded from its comparison",
-      "canonical": "{\"advanceRequestId\":\"req-43\",\"busCallIds\":[\"call-100\",\"call-101\",\"call-102\"],\"commitRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-44\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-45\"}],\"deliveryIds\":[\"dlv-7\",\"own-9\"],\"prepareRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-41\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-42\"}],\"wallTimeNs\":\"1234567890\"}",
-      "digest": "07c3402ab0e48b186d56f667da980a15b2a48b21381235cff37523a24ff0dfff"
+      "canonical": "{\"advanceRequestId\":\"req-43\",\"busCallIds\":[\"call-100\",\"call-101\",\"call-102\"],\"captures\":[],\"commitRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-44\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-45\"}],\"deliveryIds\":[\"dlv-7\",\"own-9\"],\"prepareRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-41\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-42\"}],\"wallTimeNs\":\"1234567890\"}",
+      "digest": "d9fd215dbea34237559ff5a5826beca16d3646340f2ce76ee62115d21f7c27d6"
+    },
+    {
+      "name": "agent telemetry reporting a running stimulation pulse",
+      "type": "AgentTelemetry",
+      "value": {
+        "brainTicks": "70002",
+        "populationRateHz": 12.5,
+        "stimulusRemainingMs": 312.5,
+        "rates": [
+          {
+            "roleId": "kenyon",
+            "hz": 3.25
+          }
+        ],
+        "learning": {
+          "enabled": true,
+          "updates": "4",
+          "changed": "2",
+          "signal": 0.0
+        }
+      },
+      "note": "stimulusRemainingMs is what the coordinator's sugar admission reads from the last commit (2026-09-23)",
+      "canonical": "{\"brainTicks\":\"70002\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"}],\"stimulusRemainingMs\":312.5}",
+      "digest": "3f11ace6a1d79c429397d300f45a1ad9f601e89648986b32bf1de410ea73d986"
+    },
+    {
+      "name": "rollback episode request",
+      "type": "EpisodeRequest",
+      "value": {
+        "kind": "rollback",
+        "reason": "stall",
+        "outcome": {
+          "schema": {
+            "id": "legacy-ratchet-rollback-v1",
+            "version": 1,
+            "digest": "0610f899a4746e5991a07dbc3c847ada15d7c68cedf0664244a3c1d87c175c70"
+          },
+          "value": {
+            "slotId": "best",
+            "trigger": "stall"
+          }
+        }
+      },
+      "note": "only a composition declaring legacy-ratchet-rollback-v1 may act on it",
+      "canonical": "{\"kind\":\"rollback\",\"outcome\":{\"schema\":{\"digest\":\"0610f899a4746e5991a07dbc3c847ada15d7c68cedf0664244a3c1d87c175c70\",\"id\":\"legacy-ratchet-rollback-v1\",\"version\":1},\"value\":{\"slotId\":\"best\",\"trigger\":\"stall\"}},\"reason\":\"stall\"}",
+      "digest": "089505ca3db7f5ab546dc391d0b4ea0a6ca610cd06641d248ad5c9139457a3da"
+    },
+    {
+      "name": "save slot params",
+      "type": "SaveSlotParams",
+      "value": {
+        "slotId": "best"
+      },
+      "note": "",
+      "canonical": "{\"slotId\":\"best\"}",
+      "digest": "f448ea1813ae73979392f4d6a86edfe56d17d1347efef919a1ec2ed949f63b8c"
+    },
+    {
+      "name": "save slot result",
+      "type": "SaveSlotResult",
+      "value": {
+        "slotId": "best",
+        "boundary": "4101",
+        "stateDigest": "5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d",
+        "byteLength": "199616"
+      },
+      "note": "",
+      "canonical": "{\"boundary\":\"4101\",\"byteLength\":\"199616\",\"slotId\":\"best\",\"stateDigest\":\"5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d\"}",
+      "digest": "602100c80393c58536bd5251df42f476c059e42ea0d671fc6683fc1cf3aeab2a"
+    },
+    {
+      "name": "restore slot params",
+      "type": "RestoreSlotParams",
+      "value": {
+        "slotId": "best",
+        "priorEpoch": "epoch-7",
+        "policy": "legacy-ratchet-rollback-v1"
+      },
+      "note": "sent with the new epoch in scope",
+      "canonical": "{\"policy\":\"legacy-ratchet-rollback-v1\",\"priorEpoch\":\"epoch-7\",\"slotId\":\"best\"}",
+      "digest": "356e7503f75e3c1722ac68d7f8f95de370f4c4e914c651d24efe7e19954f07f3"
+    },
+    {
+      "name": "restore slot result",
+      "type": "RestoreSlotResult",
+      "value": {
+        "slotId": "best",
+        "committedStep": "4101",
+        "observation": {
+          "boundary": "4101",
+          "worldTime": {
+            "numerator": "35154861328125",
+            "denominator": "512"
+          },
+          "engineFrame": "4102",
+          "sensoryViews": [
+            {
+              "viewId": "lcd",
+              "producedStep": "4101",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "slot-frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "inspection": {
+            "schema": {
+              "id": "gameboy-memory-inspection-v1",
+              "version": 1,
+              "digest": "d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6"
+            },
+            "value": {
+              "memory": {
+                "storeId": "store-1",
+                "artifactId": "wram-4101",
+                "generation": "1",
+                "byteLength": "65536",
+                "contentType": "application/octet-stream",
+                "digest": null
+              },
+              "romDigest": "c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20"
+            }
+          },
+          "broadcastViews": [
+            {
+              "viewId": "lcd",
+              "producedStep": "4101",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "slot-frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "audio": []
+        }
+      },
+      "note": "same boundary, worldTime and engineFrame continue, the slot's archived frame, no audio chunk",
+      "canonical": "{\"committedStep\":\"4101\",\"observation\":{\"audio\":[],\"boundary\":\"4101\",\"broadcastViews\":[{\"pixels\":{\"artifactId\":\"slot-frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"4101\",\"viewId\":\"lcd\"}],\"engineFrame\":\"4102\",\"inspection\":{\"schema\":{\"digest\":\"d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6\",\"id\":\"gameboy-memory-inspection-v1\",\"version\":1},\"value\":{\"memory\":{\"artifactId\":\"wram-4101\",\"byteLength\":\"65536\",\"contentType\":\"application/octet-stream\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"romDigest\":\"c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20\"}},\"sensoryViews\":[{\"pixels\":{\"artifactId\":\"slot-frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"4101\",\"viewId\":\"lcd\"}],\"worldTime\":{\"denominator\":\"512\",\"numerator\":\"35154861328125\"}},\"slotId\":\"best\"}",
+      "digest": "81511c014fc260c0230b0e9eeaffe2897f32aef1b811adc18abc2c94a65c8d69"
+    },
+    {
+      "name": "agent rollback params",
+      "type": "AgentRollbackParams",
+      "value": {
+        "agentId": "fly",
+        "priorEpoch": "epoch-7",
+        "policy": "legacy-ratchet-rollback-v1",
+        "input": {
+          "boundary": "4101",
+          "views": [
+            {
+              "viewId": "lcd",
+              "producedStep": "4101",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "slot-frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "structured": null
+        },
+        "decisionContext": {
+          "schema": {
+            "id": "gameboy-readout-context-v1",
+            "version": 1,
+            "digest": "78a5312f8608a1399e7a16549a1b95a43b87137618d59815b9b06c1bb184014d"
+          },
+          "value": {
+            "boot": false,
+            "bound": [
+              "macro_go_objective",
+              "macro_talk"
+            ],
+            "location": {
+              "area": 2,
+              "x": 17,
+              "y": 9
+            }
+          }
+        }
+      },
+      "note": "",
+      "canonical": "{\"agentId\":\"fly\",\"decisionContext\":{\"schema\":{\"digest\":\"78a5312f8608a1399e7a16549a1b95a43b87137618d59815b9b06c1bb184014d\",\"id\":\"gameboy-readout-context-v1\",\"version\":1},\"value\":{\"boot\":false,\"bound\":[\"macro_go_objective\",\"macro_talk\"],\"location\":{\"area\":2,\"x\":17,\"y\":9}}},\"input\":{\"boundary\":\"4101\",\"structured\":null,\"views\":[{\"pixels\":{\"artifactId\":\"slot-frame-1\",\"byteLength\":\"92160\",\"contentType\":\"image/x-rgba8\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"producedStep\":\"4101\",\"viewId\":\"lcd\"}]},\"policy\":\"legacy-ratchet-rollback-v1\",\"priorEpoch\":\"epoch-7\"}",
+      "digest": "d3683e4a7b297cda897b1408155d86685903016009bd82e1ec2e5d1d35a8e46d"
+    },
+    {
+      "name": "agent rollback result",
+      "type": "AgentRollbackResult",
+      "value": {
+        "agentId": "fly",
+        "committedStep": "4101",
+        "decisionContextDigest": "ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4",
+        "telemetry": {
+          "brainTicks": "70002",
+          "populationRateHz": 12.5,
+          "stimulusRemainingMs": 312.5,
+          "rates": [
+            {
+              "roleId": "kenyon",
+              "hz": 3.25
+            }
+          ],
+          "learning": {
+            "enabled": true,
+            "updates": "4",
+            "changed": "2",
+            "signal": 0.0
+          }
+        }
+      },
+      "note": "no tick: committedStep is the scoped step",
+      "canonical": "{\"agentId\":\"fly\",\"committedStep\":\"4101\",\"decisionContextDigest\":\"ea7792a26f405e2ae9c6f49ca93bbe6076ceac0a1fc53d83426c7d7f2d9377e4\",\"telemetry\":{\"brainTicks\":\"70002\",\"learning\":{\"changed\":\"2\",\"enabled\":true,\"signal\":0,\"updates\":\"4\"},\"populationRateHz\":12.5,\"rates\":[{\"hz\":3.25,\"roleId\":\"kenyon\"}],\"stimulusRemainingMs\":312.5}}",
+      "digest": "8a109ad370b8a9c00333ea281092c04ed296c473d9189a71a718ec12e89a8d52"
+    },
+    {
+      "name": "readout context in macros mode",
+      "type": "GameboyReadoutContext",
+      "value": {
+        "boot": false,
+        "bound": [
+          "macro_go_objective",
+          "macro_talk"
+        ],
+        "location": {
+          "area": 2,
+          "x": 17,
+          "y": 9
+        }
+      },
+      "note": "",
+      "canonical": "{\"boot\":false,\"bound\":[\"macro_go_objective\",\"macro_talk\"],\"location\":{\"area\":2,\"x\":17,\"y\":9}}",
+      "digest": "a11982ed1f461efc82c6dec38254faf94a526991dc5d4c5f9c640aa45338381c"
+    },
+    {
+      "name": "readout context in raw mode on the title screen",
+      "type": "GameboyReadoutContext",
+      "value": {
+        "boot": true,
+        "bound": [],
+        "location": null
+      },
+      "note": "no macro group, boot gate open, no location",
+      "canonical": "{\"boot\":true,\"bound\":[],\"location\":null}",
+      "digest": "6d87ccb265f3f8698d993b5338556d8182aaa34acc04af5c32d155cecca58d69"
+    },
+    {
+      "name": "channels decision with a macro",
+      "type": "GameboyChannelsDecision",
+      "value": {
+        "buttons": [
+          {
+            "id": "up",
+            "down": true
+          },
+          {
+            "id": "down",
+            "down": false
+          },
+          {
+            "id": "left",
+            "down": false
+          },
+          {
+            "id": "right",
+            "down": false
+          },
+          {
+            "id": "a",
+            "down": false
+          },
+          {
+            "id": "b",
+            "down": false
+          },
+          {
+            "id": "start",
+            "down": false
+          },
+          {
+            "id": "select",
+            "down": false
+          }
+        ],
+        "macro": "macro_talk"
+      },
+      "note": "",
+      "canonical": "{\"buttons\":[{\"down\":true,\"id\":\"up\"},{\"down\":false,\"id\":\"down\"},{\"down\":false,\"id\":\"left\"},{\"down\":false,\"id\":\"right\"},{\"down\":false,\"id\":\"a\"},{\"down\":false,\"id\":\"b\"},{\"down\":false,\"id\":\"start\"},{\"down\":false,\"id\":\"select\"}],\"macro\":\"macro_talk\"}",
+      "digest": "6a0428a108f8fcd6b08883bc918ed414242f064ef287edd9426407f8ec51f2f1"
+    },
+    {
+      "name": "channels decision with nothing held",
+      "type": "GameboyChannelsDecision",
+      "value": {
+        "buttons": [
+          {
+            "id": "up",
+            "down": false
+          },
+          {
+            "id": "down",
+            "down": false
+          },
+          {
+            "id": "left",
+            "down": false
+          },
+          {
+            "id": "right",
+            "down": false
+          },
+          {
+            "id": "a",
+            "down": false
+          },
+          {
+            "id": "b",
+            "down": false
+          },
+          {
+            "id": "start",
+            "down": false
+          },
+          {
+            "id": "select",
+            "down": false
+          }
+        ],
+        "macro": null
+      },
+      "note": "",
+      "canonical": "{\"buttons\":[{\"down\":false,\"id\":\"up\"},{\"down\":false,\"id\":\"down\"},{\"down\":false,\"id\":\"left\"},{\"down\":false,\"id\":\"right\"},{\"down\":false,\"id\":\"a\"},{\"down\":false,\"id\":\"b\"},{\"down\":false,\"id\":\"start\"},{\"down\":false,\"id\":\"select\"}],\"macro\":null}",
+      "digest": "af16b20c291a798048d1f5459a7316c3ced9dce6a34515204e6e18fc8c70e45a"
+    },
+    {
+      "name": "memory inspection",
+      "type": "GameboyMemoryInspection",
+      "value": {
+        "memory": {
+          "storeId": "store-1",
+          "artifactId": "wram-4101",
+          "generation": "1",
+          "byteLength": "65536",
+          "contentType": "application/octet-stream",
+          "digest": null
+        },
+        "romDigest": "c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20"
+      },
+      "note": "",
+      "canonical": "{\"memory\":{\"artifactId\":\"wram-4101\",\"byteLength\":\"65536\",\"contentType\":\"application/octet-stream\",\"digest\":null,\"generation\":\"1\",\"storeId\":\"store-1\"},\"romDigest\":\"c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20\"}",
+      "digest": "5423dfb6dde26e1d2f4abd5094fbea79ce5499d71b32e883e4c43140cce8dec2"
+    },
+    {
+      "name": "rollback request on a game over",
+      "type": "LegacyRatchetRollbackRequest",
+      "value": {
+        "slotId": "best",
+        "trigger": "game-over"
+      },
+      "note": "",
+      "canonical": "{\"slotId\":\"best\",\"trigger\":\"game-over\"}",
+      "digest": "567846fcbbc1373e89d4f9265e1c183786ef55e866c7e475e44ce315b0ddb072"
+    },
+    {
+      "name": "the legacy profile",
+      "type": "LegacyGameboyProfile",
+      "value": {
+        "profileId": "gameboy-legacy-fafb-v783-v1",
+        "datasetId": "fafb-v783",
+        "fingerprintSchema": 1,
+        "datasetFingerprint": "75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc",
+        "kernelVersion": "lif-1ms-f64-v2",
+        "plasticityVersion": "fly-kc-mbon-rstdp-v2",
+        "tickDuration": {
+          "numerator": "1000000",
+          "denominator": "1"
+        },
+        "warmupMs": 2500,
+        "view": {
+          "viewId": "lcd",
+          "width": 160,
+          "height": 144
+        },
+        "supportedStimuli": [
+          "reward-pulse"
+        ],
+        "readoutContextSchema": {
+          "id": "gameboy-readout-context-v1",
+          "version": 1,
+          "digest": "78a5312f8608a1399e7a16549a1b95a43b87137618d59815b9b06c1bb184014d"
+        },
+        "decisionSchema": {
+          "id": "gameboy-channels-v1",
+          "version": 1,
+          "digest": "28bd89bfa41ec73fb2785959a64d9975b4a932e10cd9e51dc4bc29020c823595"
+        },
+        "legacyExceptions": [
+          "macro-roles-outside-fingerprint"
+        ]
+      },
+      "note": "the one document; its digest is the profile AssetRef digest",
+      "canonical": "{\"datasetFingerprint\":\"75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc\",\"datasetId\":\"fafb-v783\",\"decisionSchema\":{\"digest\":\"28bd89bfa41ec73fb2785959a64d9975b4a932e10cd9e51dc4bc29020c823595\",\"id\":\"gameboy-channels-v1\",\"version\":1},\"fingerprintSchema\":1,\"kernelVersion\":\"lif-1ms-f64-v2\",\"legacyExceptions\":[\"macro-roles-outside-fingerprint\"],\"plasticityVersion\":\"fly-kc-mbon-rstdp-v2\",\"profileId\":\"gameboy-legacy-fafb-v783-v1\",\"readoutContextSchema\":{\"digest\":\"78a5312f8608a1399e7a16549a1b95a43b87137618d59815b9b06c1bb184014d\",\"id\":\"gameboy-readout-context-v1\",\"version\":1},\"supportedStimuli\":[\"reward-pulse\"],\"tickDuration\":{\"denominator\":\"1\",\"numerator\":\"1000000\"},\"view\":{\"height\":144,\"viewId\":\"lcd\",\"width\":160},\"warmupMs\":2500}",
+      "digest": "41e5d1ac62ab23f1b2d7252d52faac08b269c85e6b4c9ed7a370c74032c60878"
+    },
+    {
+      "name": "an example legacy composition",
+      "type": "LegacyGameboyComposition",
+      "value": {
+        "compositionId": "pokered-live",
+        "scheduler": "lockstep-v1",
+        "profile": {
+          "id": "gameboy-legacy-fafb-v783-v1",
+          "digest": "41e5d1ac62ab23f1b2d7252d52faac08b269c85e6b4c9ed7a370c74032c60878",
+          "byteLength": "1137",
+          "format": "fly-profile-v1"
+        },
+        "executor": {
+          "id": "pokered-macros-v1",
+          "rom": {
+            "id": "pokered-rom",
+            "digest": "c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20",
+            "byteLength": "1048576",
+            "format": "gb-rom"
+          },
+          "adapter": "pokered-unique8-v6",
+          "symbolProvenance": "0cd19d3b877b7dc66d12c7050bed9a7f38154d4b",
+          "mode": "macros",
+          "macroChannels": [
+            "macro_go_objective",
+            "macro_go_out",
+            "macro_go_warp",
+            "macro_go_route",
+            "macro_go_item",
+            "macro_go_npc",
+            "macro_go_frontier",
+            "macro_go_shop",
+            "macro_go_heal",
+            "macro_talk",
+            "macro_menu",
+            "macro_next",
+            "macro_yes",
+            "macro_no",
+            "macro_close",
+            "macro_confirm",
+            "macro_back",
+            "macro_move_1",
+            "macro_move_2",
+            "macro_move_3",
+            "macro_move_4",
+            "macro_switch",
+            "macro_item",
+            "macro_throw_ball",
+            "macro_run",
+            "macro_buy_potion",
+            "macro_buy_ball",
+            "macro_buy_antidote",
+            "macro_buy_repel",
+            "macro_heal",
+            "macro_leave"
+          ]
+        },
+        "decoderConfigDigest": "82b6601f0390b742a67eca44ef935b49e16a73315db70f5644f1cbd21f7c8a52",
+        "environment": {
+          "extensions": [
+            "gameboy-slots-v1"
+          ],
+          "slots": [
+            "best"
+          ],
+          "stepDuration": {
+            "numerator": "8572265625",
+            "denominator": "512"
+          },
+          "inspectionSchema": {
+            "id": "gameboy-memory-inspection-v1",
+            "version": 1,
+            "digest": "d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6"
+          },
+          "controllerSchema": {
+            "id": "gameboy-joypad-v1",
+            "version": 1,
+            "digest": "1bde5fa114b99824ad608fba4ea85706cb0cebc6123a778dc1e5f89791d2a05e"
+          },
+          "setupFrames": 1,
+          "audio": {
+            "sampleRate": 48000,
+            "channels": 2
+          }
+        },
+        "episodePolicy": "legacy-ratchet-rollback-v1",
+        "restore": "legacy-transient-reset",
+        "checkpointFormatOfRecord": "FLYSIM01",
+        "flysimCompatibility": "lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu"
+      },
+      "note": "placeholder ROM digest; real macros-mode decoder digest and channels",
+      "canonical": "{\"checkpointFormatOfRecord\":\"FLYSIM01\",\"compositionId\":\"pokered-live\",\"decoderConfigDigest\":\"82b6601f0390b742a67eca44ef935b49e16a73315db70f5644f1cbd21f7c8a52\",\"environment\":{\"audio\":{\"channels\":2,\"sampleRate\":48000},\"controllerSchema\":{\"digest\":\"1bde5fa114b99824ad608fba4ea85706cb0cebc6123a778dc1e5f89791d2a05e\",\"id\":\"gameboy-joypad-v1\",\"version\":1},\"extensions\":[\"gameboy-slots-v1\"],\"inspectionSchema\":{\"digest\":\"d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6\",\"id\":\"gameboy-memory-inspection-v1\",\"version\":1},\"setupFrames\":1,\"slots\":[\"best\"],\"stepDuration\":{\"denominator\":\"512\",\"numerator\":\"8572265625\"}},\"episodePolicy\":\"legacy-ratchet-rollback-v1\",\"executor\":{\"adapter\":\"pokered-unique8-v6\",\"id\":\"pokered-macros-v1\",\"macroChannels\":[\"macro_go_objective\",\"macro_go_out\",\"macro_go_warp\",\"macro_go_route\",\"macro_go_item\",\"macro_go_npc\",\"macro_go_frontier\",\"macro_go_shop\",\"macro_go_heal\",\"macro_talk\",\"macro_menu\",\"macro_next\",\"macro_yes\",\"macro_no\",\"macro_close\",\"macro_confirm\",\"macro_back\",\"macro_move_1\",\"macro_move_2\",\"macro_move_3\",\"macro_move_4\",\"macro_switch\",\"macro_item\",\"macro_throw_ball\",\"macro_run\",\"macro_buy_potion\",\"macro_buy_ball\",\"macro_buy_antidote\",\"macro_buy_repel\",\"macro_heal\",\"macro_leave\"],\"mode\":\"macros\",\"rom\":{\"byteLength\":\"1048576\",\"digest\":\"c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20\",\"format\":\"gb-rom\",\"id\":\"pokered-rom\"},\"symbolProvenance\":\"0cd19d3b877b7dc66d12c7050bed9a7f38154d4b\"},\"flysimCompatibility\":\"lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu\",\"profile\":{\"byteLength\":\"1137\",\"digest\":\"41e5d1ac62ab23f1b2d7252d52faac08b269c85e6b4c9ed7a370c74032c60878\",\"format\":\"fly-profile-v1\",\"id\":\"gameboy-legacy-fafb-v783-v1\"},\"restore\":\"legacy-transient-reset\",\"scheduler\":\"lockstep-v1\"}",
+      "digest": "77d8a88ff7fea51eb29b1ae75fc9cf8c17c184e6a1e5a585e86399f41fd9c9b0"
+    },
+    {
+      "name": "an example legacy composition in raw mode",
+      "type": "LegacyGameboyComposition",
+      "value": {
+        "compositionId": "pokered-live",
+        "scheduler": "lockstep-v1",
+        "profile": {
+          "id": "gameboy-legacy-fafb-v783-v1",
+          "digest": "41e5d1ac62ab23f1b2d7252d52faac08b269c85e6b4c9ed7a370c74032c60878",
+          "byteLength": "1137",
+          "format": "fly-profile-v1"
+        },
+        "executor": {
+          "id": "pokered-macros-v1",
+          "rom": {
+            "id": "pokered-rom",
+            "digest": "c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20",
+            "byteLength": "1048576",
+            "format": "gb-rom"
+          },
+          "adapter": "pokered-unique8-v6",
+          "symbolProvenance": "0cd19d3b877b7dc66d12c7050bed9a7f38154d4b",
+          "mode": "raw",
+          "macroChannels": []
+        },
+        "decoderConfigDigest": "6234e4a0363cfe82b8d515943c4f645a3960eda8fa5bf9465009061f80d50812",
+        "environment": {
+          "extensions": [
+            "gameboy-slots-v1"
+          ],
+          "slots": [
+            "best"
+          ],
+          "stepDuration": {
+            "numerator": "8572265625",
+            "denominator": "512"
+          },
+          "inspectionSchema": {
+            "id": "gameboy-memory-inspection-v1",
+            "version": 1,
+            "digest": "d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6"
+          },
+          "controllerSchema": {
+            "id": "gameboy-joypad-v1",
+            "version": 1,
+            "digest": "1bde5fa114b99824ad608fba4ea85706cb0cebc6123a778dc1e5f89791d2a05e"
+          },
+          "setupFrames": 1,
+          "audio": {
+            "sampleRate": 48000,
+            "channels": 2
+          }
+        },
+        "episodePolicy": "legacy-ratchet-rollback-v1",
+        "restore": "legacy-transient-reset",
+        "checkpointFormatOfRecord": "FLYSIM01",
+        "flysimCompatibility": "lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu"
+      },
+      "note": "",
+      "canonical": "{\"checkpointFormatOfRecord\":\"FLYSIM01\",\"compositionId\":\"pokered-live\",\"decoderConfigDigest\":\"6234e4a0363cfe82b8d515943c4f645a3960eda8fa5bf9465009061f80d50812\",\"environment\":{\"audio\":{\"channels\":2,\"sampleRate\":48000},\"controllerSchema\":{\"digest\":\"1bde5fa114b99824ad608fba4ea85706cb0cebc6123a778dc1e5f89791d2a05e\",\"id\":\"gameboy-joypad-v1\",\"version\":1},\"extensions\":[\"gameboy-slots-v1\"],\"inspectionSchema\":{\"digest\":\"d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6\",\"id\":\"gameboy-memory-inspection-v1\",\"version\":1},\"setupFrames\":1,\"slots\":[\"best\"],\"stepDuration\":{\"denominator\":\"512\",\"numerator\":\"8572265625\"}},\"episodePolicy\":\"legacy-ratchet-rollback-v1\",\"executor\":{\"adapter\":\"pokered-unique8-v6\",\"id\":\"pokered-macros-v1\",\"macroChannels\":[],\"mode\":\"raw\",\"rom\":{\"byteLength\":\"1048576\",\"digest\":\"c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20\",\"format\":\"gb-rom\",\"id\":\"pokered-rom\"},\"symbolProvenance\":\"0cd19d3b877b7dc66d12c7050bed9a7f38154d4b\"},\"flysimCompatibility\":\"lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu\",\"profile\":{\"byteLength\":\"1137\",\"digest\":\"41e5d1ac62ab23f1b2d7252d52faac08b269c85e6b4c9ed7a370c74032c60878\",\"format\":\"fly-profile-v1\",\"id\":\"gameboy-legacy-fafb-v783-v1\"},\"restore\":\"legacy-transient-reset\",\"scheduler\":\"lockstep-v1\"}",
+      "digest": "ac42e702ec6c9b09482b1ee335743ef85fe599a72e2c34a4d32aea67d67d0201"
+    },
+    {
+      "name": "a rank climb: slot saved, then the milestone capture",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42",
+          "boundaryActions": [
+            {
+              "kind": "save-slot",
+              "slotId": "best",
+              "stateDigest": "5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d"
+            }
+          ]
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ],
+          "captures": [
+            {
+              "checkpointId": "milestone-11",
+              "afterActions": 1
+            }
+          ]
+        }
+      },
+      "note": "legacy-gameboy-v1 section 16: a slot save due at a boundary completes before any capture there",
+      "canonical": "{\"behaviour\":{\"acknowledgedBoundary\":\"42\",\"agents\":[{\"agentId\":\"fly-a\",\"brainTicks\":\"2517\",\"committedStep\":\"42\",\"decisionDigest\":\"a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"3\",\"numerator\":\"1000000\"},\"ticksAdvanced\":\"17\"},{\"agentId\":\"fly-b\",\"brainTicks\":\"2550\",\"committedStep\":\"42\",\"decisionDigest\":\"ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"1\",\"numerator\":\"0\"},\"ticksAdvanced\":\"17\"}],\"batchId\":\"batch-41\",\"boundaryActions\":[{\"kind\":\"save-slot\",\"slotId\":\"best\",\"stateDigest\":\"5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d\"}],\"controlDigest\":\"1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6\",\"eventIds\":[\"evt-1\"],\"observationBoundaries\":[{\"producedStep\":\"42\",\"viewId\":\"screen\"}],\"outcomeIds\":[\"outcome-1\"],\"publishedBoundary\":\"42\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"}},\"operational\":{\"advanceRequestId\":\"req-43\",\"busCallIds\":[\"call-100\",\"call-101\",\"call-102\"],\"captures\":[{\"afterActions\":1,\"checkpointId\":\"milestone-11\"}],\"commitRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-44\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-45\"}],\"deliveryIds\":[\"dlv-7\",\"own-9\"],\"prepareRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-41\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-42\"}],\"wallTimeNs\":\"1234567890\"}}",
+      "digest": "68c6f1e21cc6f63c36e69b73dbd5c11313b2a76e57f1e5e8468984516a6f96d5"
+    },
+    {
+      "name": "save, capture, rollback, capture at one boundary",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42",
+          "boundaryActions": [
+            {
+              "kind": "save-slot",
+              "slotId": "best",
+              "stateDigest": "5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d"
+            },
+            {
+              "kind": "rollback",
+              "slotId": "best",
+              "stateDigest": null
+            }
+          ]
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ],
+          "captures": [
+            {
+              "checkpointId": "periodic-7",
+              "afterActions": 1
+            },
+            {
+              "checkpointId": "after-rollback-7",
+              "afterActions": 2
+            }
+          ]
+        }
+      },
+      "note": "a durable save follows the rollback, as the legacy loop checkpoints after a recovery",
+      "canonical": "{\"behaviour\":{\"acknowledgedBoundary\":\"42\",\"agents\":[{\"agentId\":\"fly-a\",\"brainTicks\":\"2517\",\"committedStep\":\"42\",\"decisionDigest\":\"a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"3\",\"numerator\":\"1000000\"},\"ticksAdvanced\":\"17\"},{\"agentId\":\"fly-b\",\"brainTicks\":\"2550\",\"committedStep\":\"42\",\"decisionDigest\":\"ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"1\",\"numerator\":\"0\"},\"ticksAdvanced\":\"17\"}],\"batchId\":\"batch-41\",\"boundaryActions\":[{\"kind\":\"save-slot\",\"slotId\":\"best\",\"stateDigest\":\"5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d\"},{\"kind\":\"rollback\",\"slotId\":\"best\",\"stateDigest\":null}],\"controlDigest\":\"1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6\",\"eventIds\":[\"evt-1\"],\"observationBoundaries\":[{\"producedStep\":\"42\",\"viewId\":\"screen\"}],\"outcomeIds\":[\"outcome-1\"],\"publishedBoundary\":\"42\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"}},\"operational\":{\"advanceRequestId\":\"req-43\",\"busCallIds\":[\"call-100\",\"call-101\",\"call-102\"],\"captures\":[{\"afterActions\":1,\"checkpointId\":\"periodic-7\"},{\"afterActions\":2,\"checkpointId\":\"after-rollback-7\"}],\"commitRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-44\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-45\"}],\"deliveryIds\":[\"dlv-7\",\"own-9\"],\"prepareRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-41\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-42\"}],\"wallTimeNs\":\"1234567890\"}}",
+      "digest": "ae22a2c5e3eb5e65c6ca82c27b2f5242bd94983fca4b11978d7067dc4389d0bb"
     }
   ]
 }

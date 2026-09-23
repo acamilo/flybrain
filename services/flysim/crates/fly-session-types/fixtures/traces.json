@@ -54,7 +54,8 @@
         "evt-1",
         "evt-2"
       ],
-      "publishedBoundary": "42"
+      "publishedBoundary": "42",
+      "boundaryActions": []
     },
     "operational": {
       "wallTimeNs": "1234567890",
@@ -87,7 +88,8 @@
       "deliveryIds": [
         "dlv-7",
         "own-9"
-      ]
+      ],
+      "captures": []
     }
   },
   "variants": [
@@ -147,7 +149,8 @@
             "evt-1",
             "evt-2"
           ],
-          "publishedBoundary": "42"
+          "publishedBoundary": "42",
+          "boundaryActions": []
         },
         "operational": {
           "wallTimeNs": "1234567890",
@@ -180,7 +183,8 @@
           "deliveryIds": [
             "dlv-7",
             "own-9"
-          ]
+          ],
+          "captures": []
         }
       },
       "behaviourEquals": true,
@@ -242,7 +246,8 @@
             "evt-1",
             "evt-2"
           ],
-          "publishedBoundary": "42"
+          "publishedBoundary": "42",
+          "boundaryActions": []
         },
         "operational": {
           "wallTimeNs": "9999999999",
@@ -276,7 +281,8 @@
           "deliveryIds": [
             "dlv-91",
             "own-92"
-          ]
+          ],
+          "captures": []
         }
       },
       "behaviourEquals": true,
@@ -338,7 +344,8 @@
             "evt-1",
             "evt-2"
           ],
-          "publishedBoundary": "42"
+          "publishedBoundary": "42",
+          "boundaryActions": []
         },
         "operational": {
           "wallTimeNs": "1234567890",
@@ -371,7 +378,8 @@
           "deliveryIds": [
             "dlv-7",
             "own-9"
-          ]
+          ],
+          "captures": []
         }
       },
       "behaviourEquals": true,
@@ -433,7 +441,8 @@
             "evt-1",
             "evt-2"
           ],
-          "publishedBoundary": "42"
+          "publishedBoundary": "42",
+          "boundaryActions": []
         },
         "operational": {
           "wallTimeNs": "1234567890",
@@ -466,7 +475,8 @@
           "deliveryIds": [
             "dlv-7",
             "own-9"
-          ]
+          ],
+          "captures": []
         }
       },
       "behaviourEquals": false,
@@ -528,7 +538,8 @@
             "evt-1",
             "evt-2"
           ],
-          "publishedBoundary": "42"
+          "publishedBoundary": "42",
+          "boundaryActions": []
         },
         "operational": {
           "wallTimeNs": "1234567890",
@@ -561,7 +572,8 @@
           "deliveryIds": [
             "dlv-7",
             "own-9"
-          ]
+          ],
+          "captures": []
         }
       },
       "behaviourEquals": false,
@@ -623,7 +635,8 @@
             "evt-1",
             "evt-2"
           ],
-          "publishedBoundary": "42"
+          "publishedBoundary": "42",
+          "boundaryActions": []
         },
         "operational": {
           "wallTimeNs": "1234567890",
@@ -656,7 +669,8 @@
           "deliveryIds": [
             "dlv-7",
             "own-9"
-          ]
+          ],
+          "captures": []
         }
       },
       "behaviourEquals": false,
@@ -718,7 +732,8 @@
             "evt-1",
             "evt-2"
           ],
-          "publishedBoundary": "42"
+          "publishedBoundary": "42",
+          "boundaryActions": []
         },
         "operational": {
           "wallTimeNs": "1234567890",
@@ -751,7 +766,8 @@
           "deliveryIds": [
             "dlv-7",
             "own-9"
-          ]
+          ],
+          "captures": []
         }
       },
       "behaviourEquals": false,
@@ -813,7 +829,8 @@
             "evt-1",
             "evt-2"
           ],
-          "publishedBoundary": "42"
+          "publishedBoundary": "42",
+          "boundaryActions": []
         },
         "operational": {
           "wallTimeNs": "1234567890",
@@ -846,7 +863,8 @@
           "deliveryIds": [
             "dlv-7",
             "own-9"
-          ]
+          ],
+          "captures": []
         }
       },
       "behaviourEquals": false,
@@ -908,7 +926,8 @@
             "evt-1",
             "evt-2"
           ],
-          "publishedBoundary": "42"
+          "publishedBoundary": "42",
+          "boundaryActions": []
         },
         "operational": {
           "wallTimeNs": "1234567890",
@@ -941,7 +960,8 @@
           "deliveryIds": [
             "dlv-7",
             "own-9"
-          ]
+          ],
+          "captures": []
         }
       },
       "behaviourEquals": false,
@@ -1003,7 +1023,8 @@
             "evt-2",
             "evt-1"
           ],
-          "publishedBoundary": "42"
+          "publishedBoundary": "42",
+          "boundaryActions": []
         },
         "operational": {
           "wallTimeNs": "1234567890",
@@ -1036,7 +1057,8 @@
           "deliveryIds": [
             "dlv-7",
             "own-9"
-          ]
+          ],
+          "captures": []
         }
       },
       "behaviourEquals": false,
@@ -1098,7 +1120,8 @@
             "evt-1",
             "evt-2"
           ],
-          "publishedBoundary": "42"
+          "publishedBoundary": "42",
+          "boundaryActions": []
         },
         "operational": {
           "wallTimeNs": "1234567890",
@@ -1131,7 +1154,8 @@
           "deliveryIds": [
             "dlv-7",
             "own-9"
-          ]
+          ],
+          "captures": []
         }
       },
       "behaviourEquals": false,

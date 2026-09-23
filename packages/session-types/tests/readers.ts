@@ -17,6 +17,22 @@ import {
   readViewDescriptor,
   readViewRef,
 } from '../src/media';
+import {
+  readAgentRollbackParams,
+  readAgentRollbackResult,
+  readRestoreSlotParams,
+  readRestoreSlotResult,
+  readSaveSlotParams,
+  readSaveSlotResult,
+} from '../src/extensions';
+import {
+  readGameboyChannelsDecision,
+  readGameboyMemoryInspection,
+  readGameboyReadoutContext,
+  readLegacyGameboyComposition,
+  readLegacyGameboyProfile,
+  readLegacyRatchetRollbackRequest,
+} from '../src/gameboy';
 import { readCommittedSnapshot, readSessionDescriptor } from '../src/publishing';
 import {
   readSessionRpcFailure,
@@ -112,6 +128,18 @@ export const READERS: Record<string, (value: unknown) => unknown> = {
   TraceBehaviour: readTraceBehaviour,
   TraceOperational: readTraceOperational,
   TransitionTrace: readTransitionTrace,
+  SaveSlotParams: readSaveSlotParams,
+  SaveSlotResult: readSaveSlotResult,
+  RestoreSlotParams: readRestoreSlotParams,
+  RestoreSlotResult: readRestoreSlotResult,
+  AgentRollbackParams: readAgentRollbackParams,
+  AgentRollbackResult: readAgentRollbackResult,
+  GameboyReadoutContext: readGameboyReadoutContext,
+  GameboyChannelsDecision: readGameboyChannelsDecision,
+  GameboyMemoryInspection: readGameboyMemoryInspection,
+  LegacyRatchetRollbackRequest: readLegacyRatchetRollbackRequest,
+  LegacyGameboyProfile: readLegacyGameboyProfile,
+  LegacyGameboyComposition: readLegacyGameboyComposition,
 };
 
 /** Reads the value as `typeName` and hands back what the reader reconstructed. */

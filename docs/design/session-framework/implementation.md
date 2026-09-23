@@ -164,6 +164,18 @@ delayed rendering retains its handle. Distinguish AssetRef from transient Artifa
 (`feat/brain-profile-contract`) in the [MaleCNS backlog](../malecns-modular-implementation.md),
 which has not been built. Not started.
 
+**2026-09-23:** unblocked. The operator split FOUNDATION-02 (decision of 2026-09-23): its legacy
+half, PROF-02a, is the [legacy Game Boy composition](legacy-gameboy-v1.md) contract with
+machine-readable profile, readout-context and decision schemas in `fly-session-types` and
+`@flybrain/session-types`; the MaleCNS half (PROF-02b) is later and does not gate this slice.
+AGENT-01 builds the legacy profile `gameboy-legacy-fafb-v783-v1` first. It must: report
+`brainTicks` equal to the legacy `network.ms` (legacy-gameboy-v1 section 3); consume
+`gameboy-readout-context-v1` and return `gameboy-channels-v1`; keep the held channel, blocked
+window and last location as private readout state; report `stimulusRemainingMs`; answer
+`Agent.Rollback` under capability `legacy-ratchet-rollback-v1`; and choose the mapping from the
+legacy rate-role names (`command_0`, `macro_*`, which are not `Id`s) to `AgentGraph.rateRoles`,
+which that contract leaves open.
+
 **Implement:** adapter over existing LIF, plasticity, retina and fixed readout primitives;
 reference-first composition/goldens; independently seeded agent state and shared immutable data.
 Avoid using the old whole-frame `tick` wrapper if it changes the specified phase ordering.
@@ -179,6 +191,27 @@ dispatch order and varying worker count preserves results. Keep 64-role limits e
 **2026-09-22:** blocked. AGENT-01 is blocked, and environment/task extraction is
 RUNTIME-01 (`refactor/environment-task-boundary`) in the same backlog, which has not been
 built. Not started.
+
+**2026-09-23:** unblocked. RUNTIME-01's contract is the RT-01a amendments of 2026-09-23 to
+[workers-v1](workers-v1.md) (sections 1, 3, 4, 5 and the new section 7),
+[step-v1](step-v1.md) (sections 2, 3, 5 and 6) and [state-media-v1](state-media-v1.md)
+(sections 2, 3, 4, 5 and 7), with the Game Boy specifics in
+[legacy-gameboy-v1](legacy-gameboy-v1.md), all implementing the operator's decisions of
+2026-09-23. ENV-01 and AGENT-01 may proceed in parallel against the schemas and fixtures; ENV-01
+needs FND-01's trace harness for its "legacy fixtures unchanged" acceptance. ENV-01 must also:
+add the one read-only bulk memory read to the shim and prove it mutates nothing; publish the
+memory image per boundary; declare the one-frame setup scaffold; convert audio to f32 and leave
+the DC blocker to the edge; implement `gameboy-slots-v1`; and make the coordinator refuse
+`episodeRequest.kind = "rollback"` in any composition that declares no rollback policy (the
+synthetic coordinator today pauses on every episode request, which is safe but not the rule).
+
+**Amendment, 2026-09-23 (operator decision of 2026-09-23).** The "Implement" paragraph below said
+to keep `legacy-gameboy-v1` separately routed. The operator decided on a full port instead: the
+legacy composition runs on `lockstep-v1` as declared in legacy-gameboy-v1, and "exact old
+ordering/hash semantics" is kept by construction and by test rather than by a separate route --
+the frame order maps one to one (section 4), the legacy clock equals the rational one
+(section 3), and the fingerprint and compatibility string are embedded unchanged (sections 2
+and 12). The acceptance criteria below stand.
 
 **Implement:** binjgb environment, task-local memory inspector and identity/existing action
 adapter. Keep `legacy-gameboy-v1` separately routed with exact old ordering/hash semantics.

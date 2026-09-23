@@ -227,6 +227,7 @@
       "value": {
         "brainTicks": "17",
         "populationRateHz": 12.5,
+        "stimulusRemainingMs": null,
         "rates": [
           {
             "roleId": "kenyon",
@@ -248,6 +249,7 @@
       "value": {
         "brainTicks": "17",
         "populationRateHz": 12.5,
+        "stimulusRemainingMs": null,
         "rates": [
           {
             "roleId": "kenyon",
@@ -273,6 +275,7 @@
       "value": {
         "brainTicks": "17",
         "populationRateHz": 12.5,
+        "stimulusRemainingMs": null,
         "rates": [
           {
             "roleId": "role-0",
@@ -550,6 +553,7 @@
       "value": {
         "brainTicks": "17",
         "populationRateHz": 12.5,
+        "stimulusRemainingMs": null,
         "rates": [
           {
             "roleId": "kenyon",
@@ -2730,6 +2734,7 @@
         "telemetry": {
           "brainTicks": "2500",
           "populationRateHz": 12.5,
+          "stimulusRemainingMs": null,
           "rates": [
             {
               "roleId": "kenyon",
@@ -2779,6 +2784,7 @@
         "telemetry": {
           "brainTicks": "2500",
           "populationRateHz": 12.5,
+          "stimulusRemainingMs": null,
           "rates": [
             {
               "roleId": "kenyon",
@@ -2828,6 +2834,7 @@
         "telemetry": {
           "brainTicks": "2500",
           "populationRateHz": 12.5,
+          "stimulusRemainingMs": null,
           "rates": [
             {
               "roleId": "kenyon",
@@ -2864,6 +2871,7 @@
         "telemetry": {
           "brainTicks": "2500",
           "populationRateHz": 12.5,
+          "stimulusRemainingMs": null,
           "rates": [
             {
               "roleId": "kenyon",
@@ -2913,6 +2921,7 @@
         "telemetry": {
           "brainTicks": "2500",
           "populationRateHz": 12.5,
+          "stimulusRemainingMs": null,
           "rates": [
             {
               "roleId": "kenyon",
@@ -2962,6 +2971,7 @@
         "telemetry": {
           "brainTicks": "2500",
           "populationRateHz": 12.5,
+          "stimulusRemainingMs": null,
           "rates": [
             {
               "roleId": "kenyon",
@@ -3012,6 +3022,7 @@
         "telemetry": {
           "brainTicks": "2500",
           "populationRateHz": 12.5,
+          "stimulusRemainingMs": null,
           "rates": [
             {
               "roleId": "kenyon",
@@ -4051,6 +4062,7 @@
             "telemetry": {
               "brainTicks": "2500",
               "populationRateHz": 12.5,
+              "stimulusRemainingMs": null,
               "rates": [
                 {
                   "roleId": "kenyon",
@@ -4122,6 +4134,7 @@
             "telemetry": {
               "brainTicks": "2534",
               "populationRateHz": 12.5,
+              "stimulusRemainingMs": null,
               "rates": [
                 {
                   "roleId": "kenyon",
@@ -4193,6 +4206,7 @@
             "telemetry": {
               "brainTicks": "2534",
               "populationRateHz": 12.5,
+              "stimulusRemainingMs": null,
               "rates": [
                 {
                   "roleId": "kenyon",
@@ -4273,6 +4287,7 @@
             "telemetry": {
               "brainTicks": "2534",
               "populationRateHz": 12.5,
+              "stimulusRemainingMs": null,
               "rates": [
                 {
                   "roleId": "kenyon",
@@ -4372,7 +4387,8 @@
           "observationBoundaries": [],
           "outcomeIds": [],
           "eventIds": [],
-          "publishedBoundary": "42"
+          "publishedBoundary": "42",
+          "boundaryActions": []
         },
         "operational": {
           "wallTimeNs": "1",
@@ -4390,10 +4406,2074 @@
             }
           ],
           "busCallIds": [],
-          "deliveryIds": []
+          "deliveryIds": [],
+          "captures": []
         }
       },
       "reason": "a commit acknowledges the transition's next boundary"
+    },
+    {
+      "name": "telemetry with a negative stimulation remainder",
+      "type": "AgentTelemetry",
+      "value": {
+        "brainTicks": "70002",
+        "populationRateHz": 12.5,
+        "stimulusRemainingMs": -1.0,
+        "rates": [
+          {
+            "roleId": "kenyon",
+            "hz": 3.25
+          }
+        ],
+        "learning": {
+          "enabled": true,
+          "updates": "4",
+          "changed": "2",
+          "signal": 0.0
+        }
+      },
+      "reason": "stimulusRemainingMs is finite and nonnegative"
+    },
+    {
+      "name": "telemetry without stimulusRemainingMs",
+      "type": "AgentTelemetry",
+      "value": {
+        "brainTicks": "70002",
+        "populationRateHz": 12.5,
+        "rates": [
+          {
+            "roleId": "kenyon",
+            "hz": 3.25
+          }
+        ],
+        "learning": {
+          "enabled": true,
+          "updates": "4",
+          "changed": "2",
+          "signal": 0.0
+        }
+      },
+      "reason": "the field is required; null says the agent reports none"
+    },
+    {
+      "name": "episode request of an unknown kind",
+      "type": "EpisodeRequest",
+      "value": {
+        "kind": "restart",
+        "reason": "stall",
+        "outcome": {
+          "schema": {
+            "id": "legacy-ratchet-rollback-v1",
+            "version": 1,
+            "digest": "0610f899a4746e5991a07dbc3c847ada15d7c68cedf0664244a3c1d87c175c70"
+          },
+          "value": {
+            "slotId": "best",
+            "trigger": "stall"
+          }
+        }
+      },
+      "reason": "EpisodeRequestKind is closed: terminal or rollback"
+    },
+    {
+      "name": "save slot params with a bad slot id",
+      "type": "SaveSlotParams",
+      "value": {
+        "slotId": "Best"
+      },
+      "reason": "slotId is an Id"
+    },
+    {
+      "name": "save slot result with no bytes",
+      "type": "SaveSlotResult",
+      "value": {
+        "slotId": "best",
+        "boundary": "4101",
+        "stateDigest": "5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d",
+        "byteLength": "0"
+      },
+      "reason": "byteLength is positive"
+    },
+    {
+      "name": "restore slot params naming another policy",
+      "type": "RestoreSlotParams",
+      "value": {
+        "slotId": "best",
+        "priorEpoch": "epoch-7",
+        "policy": "round-reset-v1"
+      },
+      "reason": "legacy-ratchet-rollback-v1 is the only rollback policy defined"
+    },
+    {
+      "name": "restore slot result carrying an audio chunk",
+      "type": "RestoreSlotResult",
+      "value": {
+        "slotId": "best",
+        "committedStep": "4101",
+        "observation": {
+          "boundary": "4101",
+          "worldTime": {
+            "numerator": "35154861328125",
+            "denominator": "512"
+          },
+          "engineFrame": "4102",
+          "sensoryViews": [
+            {
+              "viewId": "lcd",
+              "producedStep": "4101",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "slot-frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "inspection": {
+            "schema": {
+              "id": "gameboy-memory-inspection-v1",
+              "version": 1,
+              "digest": "d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6"
+            },
+            "value": {
+              "memory": {
+                "storeId": "store-1",
+                "artifactId": "wram-4101",
+                "generation": "1",
+                "byteLength": "65536",
+                "contentType": "application/octet-stream",
+                "digest": null
+              },
+              "romDigest": "c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20"
+            }
+          },
+          "broadcastViews": [
+            {
+              "viewId": "lcd",
+              "producedStep": "4101",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "slot-frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "audio": [
+            {
+              "streamId": "mix",
+              "firstSample": "800",
+              "sampleFrames": 800,
+              "samples": {
+                "storeId": "store-1",
+                "artifactId": "audio-1",
+                "generation": "1",
+                "byteLength": "6400",
+                "contentType": "audio/x-f32le",
+                "digest": null
+              },
+              "discontinuity": true
+            }
+          ]
+        }
+      },
+      "reason": "a restored slot ran no transition"
+    },
+    {
+      "name": "restore slot result at another boundary",
+      "type": "RestoreSlotResult",
+      "value": {
+        "slotId": "best",
+        "committedStep": "4102",
+        "observation": {
+          "boundary": "4101",
+          "worldTime": {
+            "numerator": "35154861328125",
+            "denominator": "512"
+          },
+          "engineFrame": "4102",
+          "sensoryViews": [
+            {
+              "viewId": "lcd",
+              "producedStep": "4101",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "slot-frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "inspection": {
+            "schema": {
+              "id": "gameboy-memory-inspection-v1",
+              "version": 1,
+              "digest": "d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6"
+            },
+            "value": {
+              "memory": {
+                "storeId": "store-1",
+                "artifactId": "wram-4101",
+                "generation": "1",
+                "byteLength": "65536",
+                "contentType": "application/octet-stream",
+                "digest": null
+              },
+              "romDigest": "c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20"
+            }
+          },
+          "broadcastViews": [
+            {
+              "viewId": "lcd",
+              "producedStep": "4101",
+              "pixels": {
+                "storeId": "store-1",
+                "artifactId": "slot-frame-1",
+                "generation": "1",
+                "byteLength": "92160",
+                "contentType": "image/x-rgba8",
+                "digest": null
+              }
+            }
+          ],
+          "audio": []
+        }
+      },
+      "reason": "the observation boundary is the committed step"
+    },
+    {
+      "name": "agent rollback params naming another policy",
+      "type": "AgentRollbackParams",
+      "value": {
+        "agentId": "fly",
+        "priorEpoch": "epoch-7",
+        "policy": "fresh-brain-v1",
+        "input": {
+          "boundary": "4101",
+          "views": [],
+          "structured": null
+        },
+        "decisionContext": {
+          "schema": {
+            "id": "gameboy-readout-context-v1",
+            "version": 1,
+            "digest": "78a5312f8608a1399e7a16549a1b95a43b87137618d59815b9b06c1bb184014d"
+          },
+          "value": {
+            "boot": false,
+            "bound": [
+              "macro_go_objective",
+              "macro_talk"
+            ],
+            "location": {
+              "area": 2,
+              "x": 17,
+              "y": 9
+            }
+          }
+        }
+      },
+      "reason": "legacy-ratchet-rollback-v1 is the only rollback policy defined"
+    },
+    {
+      "name": "agent rollback result with a bad digest",
+      "type": "AgentRollbackResult",
+      "value": {
+        "agentId": "fly",
+        "committedStep": "4101",
+        "decisionContextDigest": "xyz",
+        "telemetry": {
+          "brainTicks": "70002",
+          "populationRateHz": 12.5,
+          "stimulusRemainingMs": 312.5,
+          "rates": [
+            {
+              "roleId": "kenyon",
+              "hz": 3.25
+            }
+          ],
+          "learning": {
+            "enabled": true,
+            "updates": "4",
+            "changed": "2",
+            "signal": 0.0
+          }
+        }
+      },
+      "reason": "decisionContextDigest is a Digest"
+    },
+    {
+      "name": "readout context with a repeated bound channel",
+      "type": "GameboyReadoutContext",
+      "value": {
+        "boot": false,
+        "bound": [
+          "macro_talk",
+          "macro_talk"
+        ],
+        "location": {
+          "area": 2,
+          "x": 17,
+          "y": 9
+        }
+      },
+      "reason": "bound is unique"
+    },
+    {
+      "name": "readout context with a bound channel that is not a channel name",
+      "type": "GameboyReadoutContext",
+      "value": {
+        "boot": false,
+        "bound": [
+          "Macro-Talk"
+        ],
+        "location": {
+          "area": 2,
+          "x": 17,
+          "y": 9
+        }
+      },
+      "reason": "a channel name is ^[a-z][a-z0-9_]{0,63}$"
+    },
+    {
+      "name": "readout context with a negative coordinate",
+      "type": "GameboyReadoutContext",
+      "value": {
+        "boot": false,
+        "bound": [
+          "macro_go_objective",
+          "macro_talk"
+        ],
+        "location": {
+          "area": 2,
+          "x": -1,
+          "y": 9
+        }
+      },
+      "reason": "coordinates are 0..=4294967295"
+    },
+    {
+      "name": "readout context without location",
+      "type": "GameboyReadoutContext",
+      "value": {
+        "boot": false,
+        "bound": [
+          "macro_go_objective",
+          "macro_talk"
+        ]
+      },
+      "reason": "location is required; null is no information"
+    },
+    {
+      "name": "readout context with an extra field",
+      "type": "GameboyReadoutContext",
+      "value": {
+        "boot": false,
+        "bound": [
+          "macro_go_objective",
+          "macro_talk"
+        ],
+        "location": {
+          "area": 2,
+          "x": 17,
+          "y": 9
+        },
+        "blocked": "up"
+      },
+      "reason": "the blocked direction is the agent's own; the context does not carry it"
+    },
+    {
+      "name": "channels decision with seven buttons",
+      "type": "GameboyChannelsDecision",
+      "value": {
+        "buttons": [
+          {
+            "id": "up",
+            "down": true
+          },
+          {
+            "id": "down",
+            "down": false
+          },
+          {
+            "id": "left",
+            "down": false
+          },
+          {
+            "id": "right",
+            "down": false
+          },
+          {
+            "id": "a",
+            "down": false
+          },
+          {
+            "id": "b",
+            "down": false
+          },
+          {
+            "id": "start",
+            "down": false
+          }
+        ],
+        "macro": "macro_talk"
+      },
+      "reason": "exactly eight buttons"
+    },
+    {
+      "name": "channels decision with buttons out of order",
+      "type": "GameboyChannelsDecision",
+      "value": {
+        "buttons": [
+          {
+            "id": "select",
+            "down": false
+          },
+          {
+            "id": "start",
+            "down": false
+          },
+          {
+            "id": "b",
+            "down": false
+          },
+          {
+            "id": "a",
+            "down": false
+          },
+          {
+            "id": "right",
+            "down": false
+          },
+          {
+            "id": "left",
+            "down": false
+          },
+          {
+            "id": "down",
+            "down": false
+          },
+          {
+            "id": "up",
+            "down": true
+          }
+        ],
+        "macro": "macro_talk"
+      },
+      "reason": "GAMEBOY_BUTTON_BITS order"
+    },
+    {
+      "name": "channels decision with an invalid macro",
+      "type": "GameboyChannelsDecision",
+      "value": {
+        "buttons": [
+          {
+            "id": "up",
+            "down": true
+          },
+          {
+            "id": "down",
+            "down": false
+          },
+          {
+            "id": "left",
+            "down": false
+          },
+          {
+            "id": "right",
+            "down": false
+          },
+          {
+            "id": "a",
+            "down": false
+          },
+          {
+            "id": "b",
+            "down": false
+          },
+          {
+            "id": "start",
+            "down": false
+          },
+          {
+            "id": "select",
+            "down": false
+          }
+        ],
+        "macro": "TALK"
+      },
+      "reason": "macro is a channel name"
+    },
+    {
+      "name": "memory inspection of the wrong size",
+      "type": "GameboyMemoryInspection",
+      "value": {
+        "memory": {
+          "storeId": "store-1",
+          "artifactId": "wram-4101",
+          "generation": "1",
+          "byteLength": "8192",
+          "contentType": "application/octet-stream",
+          "digest": null
+        },
+        "romDigest": "c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20"
+      },
+      "reason": "the image is the whole 64 KiB address space"
+    },
+    {
+      "name": "memory inspection without a rom digest",
+      "type": "GameboyMemoryInspection",
+      "value": {
+        "memory": {
+          "storeId": "store-1",
+          "artifactId": "wram-4101",
+          "generation": "1",
+          "byteLength": "65536",
+          "contentType": "application/octet-stream",
+          "digest": null
+        }
+      },
+      "reason": "the executor reads ROM banks by the content digest"
+    },
+    {
+      "name": "rollback request with an unknown trigger",
+      "type": "LegacyRatchetRollbackRequest",
+      "value": {
+        "slotId": "best",
+        "trigger": "boredom"
+      },
+      "reason": "stall or game-over"
+    },
+    {
+      "name": "legacy profile with another fingerprint",
+      "type": "LegacyGameboyProfile",
+      "value": {
+        "profileId": "gameboy-legacy-fafb-v783-v1",
+        "datasetId": "fafb-v783",
+        "fingerprintSchema": 1,
+        "datasetFingerprint": "75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eef0",
+        "kernelVersion": "lif-1ms-f64-v2",
+        "plasticityVersion": "fly-kc-mbon-rstdp-v2",
+        "tickDuration": {
+          "numerator": "1000000",
+          "denominator": "1"
+        },
+        "warmupMs": 2500,
+        "view": {
+          "viewId": "lcd",
+          "width": 160,
+          "height": 144
+        },
+        "supportedStimuli": [
+          "reward-pulse"
+        ],
+        "readoutContextSchema": {
+          "id": "gameboy-readout-context-v1",
+          "version": 1,
+          "digest": "78a5312f8608a1399e7a16549a1b95a43b87137618d59815b9b06c1bb184014d"
+        },
+        "decisionSchema": {
+          "id": "gameboy-channels-v1",
+          "version": 1,
+          "digest": "28bd89bfa41ec73fb2785959a64d9975b4a932e10cd9e51dc4bc29020c823595"
+        },
+        "legacyExceptions": [
+          "macro-roles-outside-fingerprint"
+        ]
+      },
+      "reason": "another fingerprint is another profile"
+    },
+    {
+      "name": "legacy profile with another kernel",
+      "type": "LegacyGameboyProfile",
+      "value": {
+        "profileId": "gameboy-legacy-fafb-v783-v1",
+        "datasetId": "fafb-v783",
+        "fingerprintSchema": 1,
+        "datasetFingerprint": "75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc",
+        "kernelVersion": "lif-1ms-f64-v3",
+        "plasticityVersion": "fly-kc-mbon-rstdp-v2",
+        "tickDuration": {
+          "numerator": "1000000",
+          "denominator": "1"
+        },
+        "warmupMs": 2500,
+        "view": {
+          "viewId": "lcd",
+          "width": 160,
+          "height": 144
+        },
+        "supportedStimuli": [
+          "reward-pulse"
+        ],
+        "readoutContextSchema": {
+          "id": "gameboy-readout-context-v1",
+          "version": 1,
+          "digest": "78a5312f8608a1399e7a16549a1b95a43b87137618d59815b9b06c1bb184014d"
+        },
+        "decisionSchema": {
+          "id": "gameboy-channels-v1",
+          "version": 1,
+          "digest": "28bd89bfa41ec73fb2785959a64d9975b4a932e10cd9e51dc4bc29020c823595"
+        },
+        "legacyExceptions": [
+          "macro-roles-outside-fingerprint"
+        ]
+      },
+      "reason": "the pinned default kernel is unchanged"
+    },
+    {
+      "name": "legacy profile with another plasticity version",
+      "type": "LegacyGameboyProfile",
+      "value": {
+        "profileId": "gameboy-legacy-fafb-v783-v1",
+        "datasetId": "fafb-v783",
+        "fingerprintSchema": 1,
+        "datasetFingerprint": "75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc",
+        "kernelVersion": "lif-1ms-f64-v2",
+        "plasticityVersion": "fly-kc-mbon-rstdp-v3",
+        "tickDuration": {
+          "numerator": "1000000",
+          "denominator": "1"
+        },
+        "warmupMs": 2500,
+        "view": {
+          "viewId": "lcd",
+          "width": 160,
+          "height": 144
+        },
+        "supportedStimuli": [
+          "reward-pulse"
+        ],
+        "readoutContextSchema": {
+          "id": "gameboy-readout-context-v1",
+          "version": 1,
+          "digest": "78a5312f8608a1399e7a16549a1b95a43b87137618d59815b9b06c1bb184014d"
+        },
+        "decisionSchema": {
+          "id": "gameboy-channels-v1",
+          "version": 1,
+          "digest": "28bd89bfa41ec73fb2785959a64d9975b4a932e10cd9e51dc4bc29020c823595"
+        },
+        "legacyExceptions": [
+          "macro-roles-outside-fingerprint"
+        ]
+      },
+      "reason": "the pinned plasticity is unchanged"
+    },
+    {
+      "name": "legacy profile with a 2 ms tick",
+      "type": "LegacyGameboyProfile",
+      "value": {
+        "profileId": "gameboy-legacy-fafb-v783-v1",
+        "datasetId": "fafb-v783",
+        "fingerprintSchema": 1,
+        "datasetFingerprint": "75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc",
+        "kernelVersion": "lif-1ms-f64-v2",
+        "plasticityVersion": "fly-kc-mbon-rstdp-v2",
+        "tickDuration": {
+          "numerator": "2000000",
+          "denominator": "1"
+        },
+        "warmupMs": 2500,
+        "view": {
+          "viewId": "lcd",
+          "width": 160,
+          "height": 144
+        },
+        "supportedStimuli": [
+          "reward-pulse"
+        ],
+        "readoutContextSchema": {
+          "id": "gameboy-readout-context-v1",
+          "version": 1,
+          "digest": "78a5312f8608a1399e7a16549a1b95a43b87137618d59815b9b06c1bb184014d"
+        },
+        "decisionSchema": {
+          "id": "gameboy-channels-v1",
+          "version": 1,
+          "digest": "28bd89bfa41ec73fb2785959a64d9975b4a932e10cd9e51dc4bc29020c823595"
+        },
+        "legacyExceptions": [
+          "macro-roles-outside-fingerprint"
+        ]
+      },
+      "reason": "one model tick is 1 ms"
+    },
+    {
+      "name": "legacy profile naming a synthetic context schema",
+      "type": "LegacyGameboyProfile",
+      "value": {
+        "profileId": "gameboy-legacy-fafb-v783-v1",
+        "datasetId": "fafb-v783",
+        "fingerprintSchema": 1,
+        "datasetFingerprint": "75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc",
+        "kernelVersion": "lif-1ms-f64-v2",
+        "plasticityVersion": "fly-kc-mbon-rstdp-v2",
+        "tickDuration": {
+          "numerator": "1000000",
+          "denominator": "1"
+        },
+        "warmupMs": 2500,
+        "view": {
+          "viewId": "lcd",
+          "width": 160,
+          "height": 144
+        },
+        "supportedStimuli": [
+          "reward-pulse"
+        ],
+        "readoutContextSchema": {
+          "id": "gameboy-readout-context-v1",
+          "version": 1,
+          "digest": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "decisionSchema": {
+          "id": "gameboy-channels-v1",
+          "version": 1,
+          "digest": "28bd89bfa41ec73fb2785959a64d9975b4a932e10cd9e51dc4bc29020c823595"
+        },
+        "legacyExceptions": [
+          "macro-roles-outside-fingerprint"
+        ]
+      },
+      "reason": "the context schema is the registered gameboy-readout-context-v1"
+    },
+    {
+      "name": "legacy profile without its declared exception",
+      "type": "LegacyGameboyProfile",
+      "value": {
+        "profileId": "gameboy-legacy-fafb-v783-v1",
+        "datasetId": "fafb-v783",
+        "fingerprintSchema": 1,
+        "datasetFingerprint": "75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc",
+        "kernelVersion": "lif-1ms-f64-v2",
+        "plasticityVersion": "fly-kc-mbon-rstdp-v2",
+        "tickDuration": {
+          "numerator": "1000000",
+          "denominator": "1"
+        },
+        "warmupMs": 2500,
+        "view": {
+          "viewId": "lcd",
+          "width": 160,
+          "height": 144
+        },
+        "supportedStimuli": [
+          "reward-pulse"
+        ],
+        "readoutContextSchema": {
+          "id": "gameboy-readout-context-v1",
+          "version": 1,
+          "digest": "78a5312f8608a1399e7a16549a1b95a43b87137618d59815b9b06c1bb184014d"
+        },
+        "decisionSchema": {
+          "id": "gameboy-channels-v1",
+          "version": 1,
+          "digest": "28bd89bfa41ec73fb2785959a64d9975b4a932e10cd9e51dc4bc29020c823595"
+        },
+        "legacyExceptions": []
+      },
+      "reason": "the macro-role exception is declared, not hidden"
+    },
+    {
+      "name": "composition naming another profile",
+      "type": "LegacyGameboyComposition",
+      "value": {
+        "compositionId": "pokered-live",
+        "scheduler": "lockstep-v1",
+        "profile": {
+          "id": "gameboy-legacy-fafb-v783-v1",
+          "digest": "0000000000000000000000000000000000000000000000000000000000000000",
+          "byteLength": "1137",
+          "format": "fly-profile-v1"
+        },
+        "executor": {
+          "id": "pokered-macros-v1",
+          "rom": {
+            "id": "pokered-rom",
+            "digest": "c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20",
+            "byteLength": "1048576",
+            "format": "gb-rom"
+          },
+          "adapter": "pokered-unique8-v6",
+          "symbolProvenance": "0cd19d3b877b7dc66d12c7050bed9a7f38154d4b",
+          "mode": "macros",
+          "macroChannels": [
+            "macro_go_objective",
+            "macro_talk",
+            "macro_next",
+            "macro_move_1"
+          ]
+        },
+        "decoderConfigDigest": "5c3f2f084bef674fed492b82e5e0951e993c856ae98f5453d180cd06143dc854",
+        "environment": {
+          "extensions": [
+            "gameboy-slots-v1"
+          ],
+          "slots": [
+            "best"
+          ],
+          "stepDuration": {
+            "numerator": "8572265625",
+            "denominator": "512"
+          },
+          "inspectionSchema": {
+            "id": "gameboy-memory-inspection-v1",
+            "version": 1,
+            "digest": "d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6"
+          },
+          "controllerSchema": {
+            "id": "gameboy-joypad-v1",
+            "version": 1,
+            "digest": "1bde5fa114b99824ad608fba4ea85706cb0cebc6123a778dc1e5f89791d2a05e"
+          },
+          "setupFrames": 1,
+          "audio": {
+            "sampleRate": 48000,
+            "channels": 2
+          }
+        },
+        "episodePolicy": "legacy-ratchet-rollback-v1",
+        "restore": "legacy-transient-reset",
+        "checkpointFormatOfRecord": "FLYSIM01",
+        "flysimCompatibility": "lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu"
+      },
+      "reason": "the profile AssetRef digest is the legacy profile's"
+    },
+    {
+      "name": "composition in raw mode with macro channels",
+      "type": "LegacyGameboyComposition",
+      "value": {
+        "compositionId": "pokered-live",
+        "scheduler": "lockstep-v1",
+        "profile": {
+          "id": "gameboy-legacy-fafb-v783-v1",
+          "digest": "41e5d1ac62ab23f1b2d7252d52faac08b269c85e6b4c9ed7a370c74032c60878",
+          "byteLength": "1137",
+          "format": "fly-profile-v1"
+        },
+        "executor": {
+          "id": "pokered-macros-v1",
+          "rom": {
+            "id": "pokered-rom",
+            "digest": "c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20",
+            "byteLength": "1048576",
+            "format": "gb-rom"
+          },
+          "adapter": "pokered-unique8-v6",
+          "symbolProvenance": "0cd19d3b877b7dc66d12c7050bed9a7f38154d4b",
+          "mode": "raw",
+          "macroChannels": [
+            "macro_go_objective",
+            "macro_talk",
+            "macro_next",
+            "macro_move_1"
+          ]
+        },
+        "decoderConfigDigest": "5c3f2f084bef674fed492b82e5e0951e993c856ae98f5453d180cd06143dc854",
+        "environment": {
+          "extensions": [
+            "gameboy-slots-v1"
+          ],
+          "slots": [
+            "best"
+          ],
+          "stepDuration": {
+            "numerator": "8572265625",
+            "denominator": "512"
+          },
+          "inspectionSchema": {
+            "id": "gameboy-memory-inspection-v1",
+            "version": 1,
+            "digest": "d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6"
+          },
+          "controllerSchema": {
+            "id": "gameboy-joypad-v1",
+            "version": 1,
+            "digest": "1bde5fa114b99824ad608fba4ea85706cb0cebc6123a778dc1e5f89791d2a05e"
+          },
+          "setupFrames": 1,
+          "audio": {
+            "sampleRate": 48000,
+            "channels": 2
+          }
+        },
+        "episodePolicy": "legacy-ratchet-rollback-v1",
+        "restore": "legacy-transient-reset",
+        "checkpointFormatOfRecord": "FLYSIM01",
+        "flysimCompatibility": "lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu"
+      },
+      "reason": "raw mode deals no macro channels"
+    },
+    {
+      "name": "composition in macros mode with no channels",
+      "type": "LegacyGameboyComposition",
+      "value": {
+        "compositionId": "pokered-live",
+        "scheduler": "lockstep-v1",
+        "profile": {
+          "id": "gameboy-legacy-fafb-v783-v1",
+          "digest": "41e5d1ac62ab23f1b2d7252d52faac08b269c85e6b4c9ed7a370c74032c60878",
+          "byteLength": "1137",
+          "format": "fly-profile-v1"
+        },
+        "executor": {
+          "id": "pokered-macros-v1",
+          "rom": {
+            "id": "pokered-rom",
+            "digest": "c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20",
+            "byteLength": "1048576",
+            "format": "gb-rom"
+          },
+          "adapter": "pokered-unique8-v6",
+          "symbolProvenance": "0cd19d3b877b7dc66d12c7050bed9a7f38154d4b",
+          "mode": "macros",
+          "macroChannels": []
+        },
+        "decoderConfigDigest": "5c3f2f084bef674fed492b82e5e0951e993c856ae98f5453d180cd06143dc854",
+        "environment": {
+          "extensions": [
+            "gameboy-slots-v1"
+          ],
+          "slots": [
+            "best"
+          ],
+          "stepDuration": {
+            "numerator": "8572265625",
+            "denominator": "512"
+          },
+          "inspectionSchema": {
+            "id": "gameboy-memory-inspection-v1",
+            "version": 1,
+            "digest": "d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6"
+          },
+          "controllerSchema": {
+            "id": "gameboy-joypad-v1",
+            "version": 1,
+            "digest": "1bde5fa114b99824ad608fba4ea85706cb0cebc6123a778dc1e5f89791d2a05e"
+          },
+          "setupFrames": 1,
+          "audio": {
+            "sampleRate": 48000,
+            "channels": 2
+          }
+        },
+        "episodePolicy": "legacy-ratchet-rollback-v1",
+        "restore": "legacy-transient-reset",
+        "checkpointFormatOfRecord": "FLYSIM01",
+        "flysimCompatibility": "lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu"
+      },
+      "reason": "macros mode needs its channels"
+    },
+    {
+      "name": "composition with another executor",
+      "type": "LegacyGameboyComposition",
+      "value": {
+        "compositionId": "pokered-live",
+        "scheduler": "lockstep-v1",
+        "profile": {
+          "id": "gameboy-legacy-fafb-v783-v1",
+          "digest": "41e5d1ac62ab23f1b2d7252d52faac08b269c85e6b4c9ed7a370c74032c60878",
+          "byteLength": "1137",
+          "format": "fly-profile-v1"
+        },
+        "executor": {
+          "id": "identity-v1",
+          "rom": {
+            "id": "pokered-rom",
+            "digest": "c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20",
+            "byteLength": "1048576",
+            "format": "gb-rom"
+          },
+          "adapter": "pokered-unique8-v6",
+          "symbolProvenance": "0cd19d3b877b7dc66d12c7050bed9a7f38154d4b",
+          "mode": "macros",
+          "macroChannels": [
+            "macro_go_objective",
+            "macro_talk",
+            "macro_next",
+            "macro_move_1"
+          ]
+        },
+        "decoderConfigDigest": "5c3f2f084bef674fed492b82e5e0951e993c856ae98f5453d180cd06143dc854",
+        "environment": {
+          "extensions": [
+            "gameboy-slots-v1"
+          ],
+          "slots": [
+            "best"
+          ],
+          "stepDuration": {
+            "numerator": "8572265625",
+            "denominator": "512"
+          },
+          "inspectionSchema": {
+            "id": "gameboy-memory-inspection-v1",
+            "version": 1,
+            "digest": "d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6"
+          },
+          "controllerSchema": {
+            "id": "gameboy-joypad-v1",
+            "version": 1,
+            "digest": "1bde5fa114b99824ad608fba4ea85706cb0cebc6123a778dc1e5f89791d2a05e"
+          },
+          "setupFrames": 1,
+          "audio": {
+            "sampleRate": 48000,
+            "channels": 2
+          }
+        },
+        "episodePolicy": "legacy-ratchet-rollback-v1",
+        "restore": "legacy-transient-reset",
+        "checkpointFormatOfRecord": "FLYSIM01",
+        "flysimCompatibility": "lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu"
+      },
+      "reason": "the executor extension is pokered-macros-v1"
+    },
+    {
+      "name": "composition with exact restore",
+      "type": "LegacyGameboyComposition",
+      "value": {
+        "compositionId": "pokered-live",
+        "scheduler": "lockstep-v1",
+        "profile": {
+          "id": "gameboy-legacy-fafb-v783-v1",
+          "digest": "41e5d1ac62ab23f1b2d7252d52faac08b269c85e6b4c9ed7a370c74032c60878",
+          "byteLength": "1137",
+          "format": "fly-profile-v1"
+        },
+        "executor": {
+          "id": "pokered-macros-v1",
+          "rom": {
+            "id": "pokered-rom",
+            "digest": "c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20",
+            "byteLength": "1048576",
+            "format": "gb-rom"
+          },
+          "adapter": "pokered-unique8-v6",
+          "symbolProvenance": "0cd19d3b877b7dc66d12c7050bed9a7f38154d4b",
+          "mode": "macros",
+          "macroChannels": [
+            "macro_go_objective",
+            "macro_talk",
+            "macro_next",
+            "macro_move_1"
+          ]
+        },
+        "decoderConfigDigest": "5c3f2f084bef674fed492b82e5e0951e993c856ae98f5453d180cd06143dc854",
+        "environment": {
+          "extensions": [
+            "gameboy-slots-v1"
+          ],
+          "slots": [
+            "best"
+          ],
+          "stepDuration": {
+            "numerator": "8572265625",
+            "denominator": "512"
+          },
+          "inspectionSchema": {
+            "id": "gameboy-memory-inspection-v1",
+            "version": 1,
+            "digest": "d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6"
+          },
+          "controllerSchema": {
+            "id": "gameboy-joypad-v1",
+            "version": 1,
+            "digest": "1bde5fa114b99824ad608fba4ea85706cb0cebc6123a778dc1e5f89791d2a05e"
+          },
+          "setupFrames": 1,
+          "audio": {
+            "sampleRate": 48000,
+            "channels": 2
+          }
+        },
+        "episodePolicy": "legacy-ratchet-rollback-v1",
+        "restore": "exact",
+        "checkpointFormatOfRecord": "FLYSIM01",
+        "flysimCompatibility": "lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu"
+      },
+      "reason": "the legacy composition declares legacy-transient-reset"
+    },
+    {
+      "name": "composition without the slots extension",
+      "type": "LegacyGameboyComposition",
+      "value": {
+        "compositionId": "pokered-live",
+        "scheduler": "lockstep-v1",
+        "profile": {
+          "id": "gameboy-legacy-fafb-v783-v1",
+          "digest": "41e5d1ac62ab23f1b2d7252d52faac08b269c85e6b4c9ed7a370c74032c60878",
+          "byteLength": "1137",
+          "format": "fly-profile-v1"
+        },
+        "executor": {
+          "id": "pokered-macros-v1",
+          "rom": {
+            "id": "pokered-rom",
+            "digest": "c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20",
+            "byteLength": "1048576",
+            "format": "gb-rom"
+          },
+          "adapter": "pokered-unique8-v6",
+          "symbolProvenance": "0cd19d3b877b7dc66d12c7050bed9a7f38154d4b",
+          "mode": "macros",
+          "macroChannels": [
+            "macro_go_objective",
+            "macro_talk",
+            "macro_next",
+            "macro_move_1"
+          ]
+        },
+        "decoderConfigDigest": "5c3f2f084bef674fed492b82e5e0951e993c856ae98f5453d180cd06143dc854",
+        "environment": {
+          "extensions": [
+            "world-step-v1"
+          ],
+          "slots": [
+            "best"
+          ],
+          "stepDuration": {
+            "numerator": "8572265625",
+            "denominator": "512"
+          },
+          "inspectionSchema": {
+            "id": "gameboy-memory-inspection-v1",
+            "version": 1,
+            "digest": "d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6"
+          },
+          "controllerSchema": {
+            "id": "gameboy-joypad-v1",
+            "version": 1,
+            "digest": "1bde5fa114b99824ad608fba4ea85706cb0cebc6123a778dc1e5f89791d2a05e"
+          },
+          "setupFrames": 1,
+          "audio": {
+            "sampleRate": 48000,
+            "channels": 2
+          }
+        },
+        "episodePolicy": "legacy-ratchet-rollback-v1",
+        "restore": "legacy-transient-reset",
+        "checkpointFormatOfRecord": "FLYSIM01",
+        "flysimCompatibility": "lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu"
+      },
+      "reason": "the rollback policy needs gameboy-slots-v1"
+    },
+    {
+      "name": "composition with a 60 Hz step",
+      "type": "LegacyGameboyComposition",
+      "value": {
+        "compositionId": "pokered-live",
+        "scheduler": "lockstep-v1",
+        "profile": {
+          "id": "gameboy-legacy-fafb-v783-v1",
+          "digest": "41e5d1ac62ab23f1b2d7252d52faac08b269c85e6b4c9ed7a370c74032c60878",
+          "byteLength": "1137",
+          "format": "fly-profile-v1"
+        },
+        "executor": {
+          "id": "pokered-macros-v1",
+          "rom": {
+            "id": "pokered-rom",
+            "digest": "c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20",
+            "byteLength": "1048576",
+            "format": "gb-rom"
+          },
+          "adapter": "pokered-unique8-v6",
+          "symbolProvenance": "0cd19d3b877b7dc66d12c7050bed9a7f38154d4b",
+          "mode": "macros",
+          "macroChannels": [
+            "macro_go_objective",
+            "macro_talk",
+            "macro_next",
+            "macro_move_1"
+          ]
+        },
+        "decoderConfigDigest": "5c3f2f084bef674fed492b82e5e0951e993c856ae98f5453d180cd06143dc854",
+        "environment": {
+          "extensions": [
+            "gameboy-slots-v1"
+          ],
+          "slots": [
+            "best"
+          ],
+          "stepDuration": {
+            "numerator": "50000000",
+            "denominator": "3"
+          },
+          "inspectionSchema": {
+            "id": "gameboy-memory-inspection-v1",
+            "version": 1,
+            "digest": "d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6"
+          },
+          "controllerSchema": {
+            "id": "gameboy-joypad-v1",
+            "version": 1,
+            "digest": "1bde5fa114b99824ad608fba4ea85706cb0cebc6123a778dc1e5f89791d2a05e"
+          },
+          "setupFrames": 1,
+          "audio": {
+            "sampleRate": 48000,
+            "channels": 2
+          }
+        },
+        "episodePolicy": "legacy-ratchet-rollback-v1",
+        "restore": "legacy-transient-reset",
+        "checkpointFormatOfRecord": "FLYSIM01",
+        "flysimCompatibility": "lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu"
+      },
+      "reason": "one Game Boy frame is 8572265625/512 ns, not 1/60 s"
+    },
+    {
+      "name": "composition whose compatibility string names another adapter",
+      "type": "LegacyGameboyComposition",
+      "value": {
+        "compositionId": "pokered-live",
+        "scheduler": "lockstep-v1",
+        "profile": {
+          "id": "gameboy-legacy-fafb-v783-v1",
+          "digest": "41e5d1ac62ab23f1b2d7252d52faac08b269c85e6b4c9ed7a370c74032c60878",
+          "byteLength": "1137",
+          "format": "fly-profile-v1"
+        },
+        "executor": {
+          "id": "pokered-macros-v1",
+          "rom": {
+            "id": "pokered-rom",
+            "digest": "c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20",
+            "byteLength": "1048576",
+            "format": "gb-rom"
+          },
+          "adapter": "pokered-unique8-v6",
+          "symbolProvenance": "0cd19d3b877b7dc66d12c7050bed9a7f38154d4b",
+          "mode": "macros",
+          "macroChannels": [
+            "macro_go_objective",
+            "macro_talk",
+            "macro_next",
+            "macro_move_1"
+          ]
+        },
+        "decoderConfigDigest": "5c3f2f084bef674fed492b82e5e0951e993c856ae98f5453d180cd06143dc854",
+        "environment": {
+          "extensions": [
+            "gameboy-slots-v1"
+          ],
+          "slots": [
+            "best"
+          ],
+          "stepDuration": {
+            "numerator": "8572265625",
+            "denominator": "512"
+          },
+          "inspectionSchema": {
+            "id": "gameboy-memory-inspection-v1",
+            "version": 1,
+            "digest": "d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6"
+          },
+          "controllerSchema": {
+            "id": "gameboy-joypad-v1",
+            "version": 1,
+            "digest": "1bde5fa114b99824ad608fba4ea85706cb0cebc6123a778dc1e5f89791d2a05e"
+          },
+          "setupFrames": 1,
+          "audio": {
+            "sampleRate": 48000,
+            "channels": 2
+          }
+        },
+        "episodePolicy": "legacy-ratchet-rollback-v1",
+        "restore": "legacy-transient-reset",
+        "checkpointFormatOfRecord": "FLYSIM01",
+        "flysimCompatibility": "lif-1ms-f64-v2/pokered-unique8-v5/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu"
+      },
+      "reason": "the FLYSIM01 string and the declaration describe the same fly"
+    },
+    {
+      "name": "composition with FLYSESS1 as format of record",
+      "type": "LegacyGameboyComposition",
+      "value": {
+        "compositionId": "pokered-live",
+        "scheduler": "lockstep-v1",
+        "profile": {
+          "id": "gameboy-legacy-fafb-v783-v1",
+          "digest": "41e5d1ac62ab23f1b2d7252d52faac08b269c85e6b4c9ed7a370c74032c60878",
+          "byteLength": "1137",
+          "format": "fly-profile-v1"
+        },
+        "executor": {
+          "id": "pokered-macros-v1",
+          "rom": {
+            "id": "pokered-rom",
+            "digest": "c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20",
+            "byteLength": "1048576",
+            "format": "gb-rom"
+          },
+          "adapter": "pokered-unique8-v6",
+          "symbolProvenance": "0cd19d3b877b7dc66d12c7050bed9a7f38154d4b",
+          "mode": "macros",
+          "macroChannels": [
+            "macro_go_objective",
+            "macro_talk",
+            "macro_next",
+            "macro_move_1"
+          ]
+        },
+        "decoderConfigDigest": "5c3f2f084bef674fed492b82e5e0951e993c856ae98f5453d180cd06143dc854",
+        "environment": {
+          "extensions": [
+            "gameboy-slots-v1"
+          ],
+          "slots": [
+            "best"
+          ],
+          "stepDuration": {
+            "numerator": "8572265625",
+            "denominator": "512"
+          },
+          "inspectionSchema": {
+            "id": "gameboy-memory-inspection-v1",
+            "version": 1,
+            "digest": "d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6"
+          },
+          "controllerSchema": {
+            "id": "gameboy-joypad-v1",
+            "version": 1,
+            "digest": "1bde5fa114b99824ad608fba4ea85706cb0cebc6123a778dc1e5f89791d2a05e"
+          },
+          "setupFrames": 1,
+          "audio": {
+            "sampleRate": 48000,
+            "channels": 2
+          }
+        },
+        "episodePolicy": "legacy-ratchet-rollback-v1",
+        "restore": "legacy-transient-reset",
+        "checkpointFormatOfRecord": "FLYSESS1",
+        "flysimCompatibility": "lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu"
+      },
+      "reason": "FLYSIM01 stays until RETIRE-01"
+    },
+    {
+      "name": "a capture taken before the boundary's slot save",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42",
+          "boundaryActions": [
+            {
+              "kind": "save-slot",
+              "slotId": "best",
+              "stateDigest": "5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d"
+            }
+          ]
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ],
+          "captures": [
+            {
+              "checkpointId": "milestone-11",
+              "afterActions": 0
+            }
+          ]
+        }
+      },
+      "reason": "a checkpoint must not pair the new ledger with the old slot (review round 1, B1)"
+    },
+    {
+      "name": "a capture counting actions that were never applied",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42",
+          "boundaryActions": [
+            {
+              "kind": "save-slot",
+              "slotId": "best",
+              "stateDigest": "5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d"
+            }
+          ]
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ],
+          "captures": [
+            {
+              "checkpointId": "milestone-11",
+              "afterActions": 2
+            }
+          ]
+        }
+      },
+      "reason": "afterActions <= the boundary's actions"
+    },
+    {
+      "name": "a slot save after a rollback",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42",
+          "boundaryActions": [
+            {
+              "kind": "rollback",
+              "slotId": "best",
+              "stateDigest": null
+            },
+            {
+              "kind": "save-slot",
+              "slotId": "best",
+              "stateDigest": "5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d"
+            }
+          ]
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ],
+          "captures": []
+        }
+      },
+      "reason": "nothing follows a rollback at the same boundary"
+    },
+    {
+      "name": "a slot save without its state digest",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42",
+          "boundaryActions": [
+            {
+              "kind": "save-slot",
+              "slotId": "best",
+              "stateDigest": null
+            }
+          ]
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ],
+          "captures": []
+        }
+      },
+      "reason": "a slot save records the saved state's digest"
+    },
+    {
+      "name": "the same slot saved twice at one boundary",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42",
+          "boundaryActions": [
+            {
+              "kind": "save-slot",
+              "slotId": "best",
+              "stateDigest": "5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d"
+            },
+            {
+              "kind": "save-slot",
+              "slotId": "best",
+              "stateDigest": "5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d"
+            }
+          ]
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ],
+          "captures": []
+        }
+      },
+      "reason": "a slot is saved at most once per boundary"
+    },
+    {
+      "name": "an unknown boundary action",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42",
+          "boundaryActions": [
+            {
+              "kind": "reset",
+              "slotId": "best",
+              "stateDigest": null
+            }
+          ]
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ],
+          "captures": []
+        }
+      },
+      "reason": "BoundaryActionKind is closed"
+    },
+    {
+      "name": "captures recorded out of order",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42",
+          "boundaryActions": [
+            {
+              "kind": "save-slot",
+              "slotId": "best",
+              "stateDigest": "5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d"
+            },
+            {
+              "kind": "rollback",
+              "slotId": "best",
+              "stateDigest": null
+            }
+          ]
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ],
+          "captures": [
+            {
+              "checkpointId": "a",
+              "afterActions": 2
+            },
+            {
+              "checkpointId": "b",
+              "afterActions": 1
+            }
+          ]
+        }
+      },
+      "reason": "captures are recorded in the order taken"
     }
   ]
 }

@@ -44,6 +44,42 @@ pub struct TraceObservation {
     pub produced_step: u64,
 }
 
+/// The kind of an action taken at the boundary a transition reached, after all of its commits
+/// (amendment of 2026-09-23, RT-01a).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoundaryActionKind {
+    SaveSlot,
+    Rollback,
+}
+
+impl BoundaryActionKind {
+    pub const ALL: &'static [&'static str] = &["save-slot", "rollback"];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BoundaryActionKind::SaveSlot => "save-slot",
+            BoundaryActionKind::Rollback => "rollback",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<BoundaryActionKind> {
+        match s {
+            "save-slot" => Ok(BoundaryActionKind::SaveSlot),
+            "rollback" => Ok(BoundaryActionKind::Rollback),
+            _ => err("boundary action kind must be save-slot or rollback"),
+        }
+    }
+}
+
+/// One boundary action, in the order the coordinator applied it: an `Environment.SaveSlot`
+/// (with the saved state's digest) or a rollback to a slot (no digest).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundaryAction {
+    pub kind: BoundaryActionKind,
+    pub slot_id: String,
+    pub state_digest: Option<String>,
+}
+
 /// The fields two runs of the same transition must agree on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TraceBehaviour {
@@ -60,6 +96,9 @@ pub struct TraceBehaviour {
     /// Task event ids in task order.
     pub event_ids: Vec<String>,
     pub published_boundary: u64,
+    /// Slot saves and a rollback at the reached boundary, in application order. Empty for a
+    /// composition without them.
+    pub boundary_actions: Vec<BoundaryAction>,
 }
 
 impl TraceBehaviour {
@@ -126,6 +165,22 @@ impl DomainType for TraceBehaviour {
         let outcome_ids = crate::scalar::id_list(&mut f, "outcomeIds", 0, MAX_RATE_ROLES)?;
         let event_ids = crate::scalar::id_list(&mut f, "eventIds", 0, MAX_RATE_ROLES)?;
         let published_boundary = f.u64_string("publishedBoundary")?;
+        let boundary_actions = list(&mut f, "boundaryActions", 0, MAX_BOUNDARY_ACTIONS, |v| {
+            let mut a = Fields::new(v, "TraceBehaviour.boundaryActions")?;
+            let kind = BoundaryActionKind::parse(a.string("kind")?)?;
+            let slot_id = a.id("slotId")?;
+            let state_digest = match a.value("stateDigest")? {
+                Value::Null => None,
+                Value::String(d) => Some(d.clone()),
+                _ => return err("stateDigest must be null or a digest"),
+            };
+            a.finish()?;
+            Ok(BoundaryAction {
+                kind,
+                slot_id,
+                state_digest,
+            })
+        })?;
         f.finish()?;
         let b = TraceBehaviour {
             scope,
@@ -137,6 +192,7 @@ impl DomainType for TraceBehaviour {
             outcome_ids,
             event_ids,
             published_boundary,
+            boundary_actions,
         };
         b.validate()?;
         Ok(b)
@@ -190,6 +246,24 @@ impl DomainType for TraceBehaviour {
                 Value::Array(self.event_ids.iter().map(|i| i.clone().into()).collect()),
             ),
             ("publishedBoundary", u64_json(self.published_boundary)),
+            (
+                "boundaryActions",
+                Value::Array(
+                    self.boundary_actions
+                        .iter()
+                        .map(|a| {
+                            obj(vec![
+                                ("kind", a.kind.as_str().into()),
+                                ("slotId", a.slot_id.clone().into()),
+                                (
+                                    "stateDigest",
+                                    a.state_digest.clone().map_or(Value::Null, Value::String),
+                                ),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
         ])
     }
 
@@ -244,7 +318,54 @@ impl DomainType for TraceBehaviour {
             self.outcome_ids.iter().map(String::as_str),
             "TraceBehaviour.outcomeIds",
         )?;
+        self.validate_boundary_actions()
+    }
+}
+
+/// Boundary actions per transition: every slot at most once, plus one rollback.
+pub const MAX_BOUNDARY_ACTIONS: usize = crate::extensions::MAX_SLOTS + 1;
+
+impl TraceBehaviour {
+    /// Slot saves come first, each slot at most once, with the saved state's digest; at most
+    /// one rollback, last, naming a slot and no digest (step-v1 section 6 amendment).
+    fn validate_boundary_actions(&self) -> Result<()> {
+        let mut rolled_back = false;
+        let mut saved: Vec<&str> = Vec::new();
+        for action in &self.boundary_actions {
+            if !is_id(&action.slot_id) {
+                return err("TraceBehaviour: boundary action slotId is not a valid id");
+            }
+            if rolled_back {
+                return err("TraceBehaviour: nothing follows a rollback at the same boundary");
+            }
+            match action.kind {
+                BoundaryActionKind::SaveSlot => {
+                    match &action.state_digest {
+                        Some(d) if is_digest(d) => {}
+                        _ => return err("TraceBehaviour: a slot save records its state digest"),
+                    }
+                    if saved.contains(&action.slot_id.as_str()) {
+                        return err("TraceBehaviour: a slot is saved at most once per boundary");
+                    }
+                    saved.push(&action.slot_id);
+                }
+                BoundaryActionKind::Rollback => {
+                    if action.state_digest.is_some() {
+                        return err("TraceBehaviour: a rollback records no state digest");
+                    }
+                    rolled_back = true;
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// How many leading boundary actions are slot saves.
+    pub fn slot_saves(&self) -> usize {
+        self.boundary_actions
+            .iter()
+            .take_while(|a| a.kind == BoundaryActionKind::SaveSlot)
+            .count()
     }
 }
 
@@ -267,6 +388,18 @@ pub struct TraceOperational {
     /// these and nothing in [`TraceBehaviour`].
     pub bus_call_ids: Vec<BusCallId>,
     pub delivery_ids: Vec<OwnerToken>,
+    /// Checkpoint captures (and FLYSIM01 exports) taken at the reached boundary, each with the
+    /// number of boundary actions already applied when it was taken. Operational because a
+    /// capture's schedule is wall-clock policy; the ordering rule against slot saves is checked
+    /// by [`TransitionTrace`] (amendment of 2026-09-23, legacy-gameboy-v1 section 16).
+    pub captures: Vec<TraceCapture>,
+}
+
+/// One checkpoint capture at the reached boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TraceCapture {
+    pub checkpoint_id: String,
+    pub after_actions: u64,
 }
 
 impl DomainType for TraceOperational {
@@ -296,6 +429,16 @@ impl DomainType for TraceOperational {
             Some(s) => OwnerToken::parse(s),
             None => err("every deliveryId must be a string"),
         })?;
+        let captures = list(&mut f, "captures", 0, MAX_BOUNDARY_ACTIONS + 1, |v| {
+            let mut c = Fields::new(v, "TraceOperational.captures")?;
+            let checkpoint_id = c.id("checkpointId")?;
+            let after_actions = c.int("afterActions", 0, MAX_BOUNDARY_ACTIONS as u64)?;
+            c.finish()?;
+            Ok(TraceCapture {
+                checkpoint_id,
+                after_actions,
+            })
+        })?;
         f.finish()?;
         let o = TraceOperational {
             wall_time_ns,
@@ -304,6 +447,7 @@ impl DomainType for TraceOperational {
             commit_request_ids,
             bus_call_ids,
             delivery_ids,
+            captures,
         };
         o.validate()?;
         Ok(o)
@@ -341,6 +485,20 @@ impl DomainType for TraceOperational {
                         .collect(),
                 ),
             ),
+            (
+                "captures",
+                Value::Array(
+                    self.captures
+                        .iter()
+                        .map(|c| {
+                            obj(vec![
+                                ("checkpointId", c.checkpoint_id.clone().into()),
+                                ("afterActions", Value::from(c.after_actions)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
         ])
     }
 
@@ -361,6 +519,17 @@ impl DomainType for TraceOperational {
             self.delivery_ids.iter().map(OwnerToken::as_str),
             "TraceOperational.deliveryIds",
         )?;
+        require_unique(
+            self.captures.iter().map(|c| c.checkpoint_id.as_str()),
+            "TraceOperational.captures",
+        )?;
+        let mut last = 0;
+        for capture in &self.captures {
+            if capture.after_actions < last {
+                return err("TraceOperational: captures are recorded in the order they were taken");
+            }
+            last = capture.after_actions;
+        }
         Ok(())
     }
 }
@@ -411,6 +580,9 @@ impl TransitionTrace {
         }
         if a.event_ids != b.event_ids {
             out.push("eventIds differ".to_owned());
+        }
+        if a.boundary_actions != b.boundary_actions {
+            out.push("boundaryActions differ".to_owned());
         }
         let ids_a: Vec<&str> = a.agents.iter().map(|x| x.agent_id.as_str()).collect();
         let ids_b: Vec<&str> = b.agents.iter().map(|x| x.agent_id.as_str()).collect();
@@ -479,6 +651,25 @@ impl DomainType for TransitionTrace {
                         request.agent_id
                     ));
                 }
+            }
+        }
+        // A slot save due at a boundary completes before any capture at that boundary, so a
+        // checkpoint never pairs a task ledger that names the new slot with the old slot
+        // contents (legacy-gameboy-v1 section 16, review round 1 of 2026-09-23).
+        let saves = self.behaviour.slot_saves() as u64;
+        let actions = self.behaviour.boundary_actions.len() as u64;
+        for capture in &self.operational.captures {
+            if capture.after_actions < saves {
+                return err(format!(
+                    "TransitionTrace: capture {:?} was taken before this boundary's slot saves completed",
+                    capture.checkpoint_id
+                ));
+            }
+            if capture.after_actions > actions {
+                return err(format!(
+                    "TransitionTrace: capture {:?} counts more boundary actions than were applied",
+                    capture.checkpoint_id
+                ));
             }
         }
         Ok(())

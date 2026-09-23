@@ -68,6 +68,15 @@ already created. Builders use separate worktrees; the coordinator reviews contra
 - **Done:** empty required populations, malformed CSR and incorrect profile restores fail;
   legacy FAFB artifacts and default numerical version strings remain unchanged.
 
+**2026-09-23: split by operator decision.** PROF-02a, the legacy profile, is done as a contract:
+[legacy Game Boy composition v1](session-framework/legacy-gameboy-v1.md) defines
+`gameboy-legacy-fafb-v783-v1` (today's schema-1 fingerprint embedded, `lif-1ms-f64-v2` and
+`fly-kc-mbon-rstdp-v2` unchanged, the macro-role exception declared), the readout context
+`gameboy-readout-context-v1`, the decision `gameboy-channels-v1`, and a composition declaration
+whose digest carries the decoder and macro-channel configuration instead of the legacy
+compatibility string. PROF-02b -- the bundle manifests, role mapping, strict graph validation and
+profile-mismatch fixtures above -- is later and gates DATA-01, not the session port.
+
 ### DATA-01 — Acquire and normalize MaleCNS
 
 - **Branch:** `feat/malecns-import`
@@ -107,6 +116,16 @@ already created. Builders use separate worktrees; the coordinator reviews contra
 - Preserve existing imports through a facade; avoid simultaneous directory moves.
 - **Done:** existing single-agent action/reward traces match and a fake environment can be
   driven through the same boundary without importing binjgb or task-specific addresses.
+
+**2026-09-23: contract written (RT-01a), implementation pending.** The operator decided the
+boundary: macros run in the coordinator's action executor over a per-boundary 64-KiB memory
+image carried as an inspection artifact plus the ROM as an `AssetRef`; the emulator shim gains
+one read-only bulk read and the joypad stays its only write; the Pokémon task and executor are
+one object (`pokered-macros-v1`); the ratchet is the `legacy-ratchet-rollback-v1` episode policy
+over the environment extension `gameboy-slots-v1`. The dated amendments are in
+[workers-v1](session-framework/workers-v1.md), [step-v1](session-framework/step-v1.md) and
+[state-media-v1](session-framework/state-media-v1.md); the session implementation guide's
+ENV-01 carries the build.
 
 ### RUNTIME-02 — Extract the single-agent session
 

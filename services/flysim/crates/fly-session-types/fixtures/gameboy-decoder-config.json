@@ -1,0 +1,335 @@
+{
+  "description": "decoderConfigDigest vectors (legacy-gameboy-v1 section 12): the canonical form of gameboy_decoder_config_with_macros / gameboyDecoderConfig for raw mode and the Pokemon Red macro group. Written by FLY_UPDATE_FIXTURES=1 cargo test -p flysim --test legacy_profile_identity; both languages must reproduce every form and digest.",
+  "cases": [
+    {
+      "name": "raw",
+      "macroChannels": [],
+      "form": {
+        "form": "gameboy-decoder-config-v1",
+        "exclusive": {
+          "channels": [
+            {
+              "channel": "up",
+              "role": "command_0"
+            },
+            {
+              "channel": "down",
+              "role": "command_1"
+            },
+            {
+              "channel": "left",
+              "role": "command_2"
+            },
+            {
+              "channel": "right",
+              "role": "command_3"
+            }
+          ],
+          "decisionMs": 800.0,
+          "holdMs": 800.0,
+          "hysteresis": 1.05,
+          "fatigueGain": 0.08,
+          "fatigueDecay": 0.8,
+          "blockedFatigue": 0.35,
+          "blockedMs": 800.0
+        },
+        "macros": null,
+        "pulses": [
+          {
+            "channel": "a",
+            "role": "command_4",
+            "holdMs": 85.0,
+            "cooldownMs": 480.0,
+            "threshold": 1.0,
+            "boot": null,
+            "throttleGroup": null
+          },
+          {
+            "channel": "b",
+            "role": "command_5",
+            "holdMs": 85.0,
+            "cooldownMs": 480.0,
+            "threshold": 1.0,
+            "boot": null,
+            "throttleGroup": null
+          },
+          {
+            "channel": "start",
+            "role": "command_6",
+            "holdMs": 55.0,
+            "cooldownMs": 30000.0,
+            "threshold": 1.35,
+            "boot": {
+              "cooldownMs": 2500.0,
+              "threshold": 1.0
+            },
+            "throttleGroup": "system"
+          },
+          {
+            "channel": "select",
+            "role": "command_7",
+            "holdMs": 55.0,
+            "cooldownMs": 30000.0,
+            "threshold": 1.35,
+            "boot": {
+              "cooldownMs": 2500.0,
+              "threshold": 1.0
+            },
+            "throttleGroup": "system"
+          }
+        ],
+        "clearLockoutMs": 480.0
+      },
+      "canonical": "{\"clearLockoutMs\":480,\"exclusive\":{\"blockedFatigue\":0.35,\"blockedMs\":800,\"channels\":[{\"channel\":\"up\",\"role\":\"command_0\"},{\"channel\":\"down\",\"role\":\"command_1\"},{\"channel\":\"left\",\"role\":\"command_2\"},{\"channel\":\"right\",\"role\":\"command_3\"}],\"decisionMs\":800,\"fatigueDecay\":0.8,\"fatigueGain\":0.08,\"holdMs\":800,\"hysteresis\":1.05},\"form\":\"gameboy-decoder-config-v1\",\"macros\":null,\"pulses\":[{\"boot\":null,\"channel\":\"a\",\"cooldownMs\":480,\"holdMs\":85,\"role\":\"command_4\",\"threshold\":1,\"throttleGroup\":null},{\"boot\":null,\"channel\":\"b\",\"cooldownMs\":480,\"holdMs\":85,\"role\":\"command_5\",\"threshold\":1,\"throttleGroup\":null},{\"boot\":{\"cooldownMs\":2500,\"threshold\":1},\"channel\":\"start\",\"cooldownMs\":30000,\"holdMs\":55,\"role\":\"command_6\",\"threshold\":1.35,\"throttleGroup\":\"system\"},{\"boot\":{\"cooldownMs\":2500,\"threshold\":1},\"channel\":\"select\",\"cooldownMs\":30000,\"holdMs\":55,\"role\":\"command_7\",\"threshold\":1.35,\"throttleGroup\":\"system\"}]}",
+      "digest": "6234e4a0363cfe82b8d515943c4f645a3960eda8fa5bf9465009061f80d50812"
+    },
+    {
+      "name": "macros",
+      "macroChannels": [
+        "macro_go_objective",
+        "macro_go_out",
+        "macro_go_warp",
+        "macro_go_route",
+        "macro_go_item",
+        "macro_go_npc",
+        "macro_go_frontier",
+        "macro_go_shop",
+        "macro_go_heal",
+        "macro_talk",
+        "macro_menu",
+        "macro_next",
+        "macro_yes",
+        "macro_no",
+        "macro_close",
+        "macro_confirm",
+        "macro_back",
+        "macro_move_1",
+        "macro_move_2",
+        "macro_move_3",
+        "macro_move_4",
+        "macro_switch",
+        "macro_item",
+        "macro_throw_ball",
+        "macro_run",
+        "macro_buy_potion",
+        "macro_buy_ball",
+        "macro_buy_antidote",
+        "macro_buy_repel",
+        "macro_heal",
+        "macro_leave"
+      ],
+      "form": {
+        "form": "gameboy-decoder-config-v1",
+        "exclusive": {
+          "channels": [
+            {
+              "channel": "up",
+              "role": "command_0"
+            },
+            {
+              "channel": "down",
+              "role": "command_1"
+            },
+            {
+              "channel": "left",
+              "role": "command_2"
+            },
+            {
+              "channel": "right",
+              "role": "command_3"
+            }
+          ],
+          "decisionMs": 800.0,
+          "holdMs": 800.0,
+          "hysteresis": 1.05,
+          "fatigueGain": 0.08,
+          "fatigueDecay": 0.8,
+          "blockedFatigue": 0.35,
+          "blockedMs": 800.0
+        },
+        "macros": {
+          "channels": [
+            {
+              "channel": "macro_go_objective",
+              "role": "macro_go_objective"
+            },
+            {
+              "channel": "macro_go_out",
+              "role": "macro_go_out"
+            },
+            {
+              "channel": "macro_go_warp",
+              "role": "macro_go_warp"
+            },
+            {
+              "channel": "macro_go_route",
+              "role": "macro_go_route"
+            },
+            {
+              "channel": "macro_go_item",
+              "role": "macro_go_item"
+            },
+            {
+              "channel": "macro_go_npc",
+              "role": "macro_go_npc"
+            },
+            {
+              "channel": "macro_go_frontier",
+              "role": "macro_go_frontier"
+            },
+            {
+              "channel": "macro_go_shop",
+              "role": "macro_go_shop"
+            },
+            {
+              "channel": "macro_go_heal",
+              "role": "macro_go_heal"
+            },
+            {
+              "channel": "macro_talk",
+              "role": "macro_talk"
+            },
+            {
+              "channel": "macro_menu",
+              "role": "macro_menu"
+            },
+            {
+              "channel": "macro_next",
+              "role": "macro_next"
+            },
+            {
+              "channel": "macro_yes",
+              "role": "macro_yes"
+            },
+            {
+              "channel": "macro_no",
+              "role": "macro_no"
+            },
+            {
+              "channel": "macro_close",
+              "role": "macro_close"
+            },
+            {
+              "channel": "macro_confirm",
+              "role": "macro_confirm"
+            },
+            {
+              "channel": "macro_back",
+              "role": "macro_back"
+            },
+            {
+              "channel": "macro_move_1",
+              "role": "macro_move_1"
+            },
+            {
+              "channel": "macro_move_2",
+              "role": "macro_move_2"
+            },
+            {
+              "channel": "macro_move_3",
+              "role": "macro_move_3"
+            },
+            {
+              "channel": "macro_move_4",
+              "role": "macro_move_4"
+            },
+            {
+              "channel": "macro_switch",
+              "role": "macro_switch"
+            },
+            {
+              "channel": "macro_item",
+              "role": "macro_item"
+            },
+            {
+              "channel": "macro_throw_ball",
+              "role": "macro_throw_ball"
+            },
+            {
+              "channel": "macro_run",
+              "role": "macro_run"
+            },
+            {
+              "channel": "macro_buy_potion",
+              "role": "macro_buy_potion"
+            },
+            {
+              "channel": "macro_buy_ball",
+              "role": "macro_buy_ball"
+            },
+            {
+              "channel": "macro_buy_antidote",
+              "role": "macro_buy_antidote"
+            },
+            {
+              "channel": "macro_buy_repel",
+              "role": "macro_buy_repel"
+            },
+            {
+              "channel": "macro_heal",
+              "role": "macro_heal"
+            },
+            {
+              "channel": "macro_leave",
+              "role": "macro_leave"
+            }
+          ],
+          "decisionMs": 800.0,
+          "holdMs": 800.0,
+          "hysteresis": 1.05,
+          "fatigueGain": 0.08,
+          "fatigueDecay": 0.8,
+          "blockedFatigue": 0.35,
+          "blockedMs": 800.0
+        },
+        "pulses": [
+          {
+            "channel": "a",
+            "role": "command_4",
+            "holdMs": 85.0,
+            "cooldownMs": 480.0,
+            "threshold": 1.0,
+            "boot": null,
+            "throttleGroup": null
+          },
+          {
+            "channel": "b",
+            "role": "command_5",
+            "holdMs": 85.0,
+            "cooldownMs": 480.0,
+            "threshold": 1.0,
+            "boot": null,
+            "throttleGroup": null
+          },
+          {
+            "channel": "start",
+            "role": "command_6",
+            "holdMs": 55.0,
+            "cooldownMs": 30000.0,
+            "threshold": 1.35,
+            "boot": {
+              "cooldownMs": 2500.0,
+              "threshold": 1.0
+            },
+            "throttleGroup": "system"
+          },
+          {
+            "channel": "select",
+            "role": "command_7",
+            "holdMs": 55.0,
+            "cooldownMs": 30000.0,
+            "threshold": 1.35,
+            "boot": {
+              "cooldownMs": 2500.0,
+              "threshold": 1.0
+            },
+            "throttleGroup": "system"
+          }
+        ],
+        "clearLockoutMs": 480.0
+      },
+      "canonical": "{\"clearLockoutMs\":480,\"exclusive\":{\"blockedFatigue\":0.35,\"blockedMs\":800,\"channels\":[{\"channel\":\"up\",\"role\":\"command_0\"},{\"channel\":\"down\",\"role\":\"command_1\"},{\"channel\":\"left\",\"role\":\"command_2\"},{\"channel\":\"right\",\"role\":\"command_3\"}],\"decisionMs\":800,\"fatigueDecay\":0.8,\"fatigueGain\":0.08,\"holdMs\":800,\"hysteresis\":1.05},\"form\":\"gameboy-decoder-config-v1\",\"macros\":{\"blockedFatigue\":0.35,\"blockedMs\":800,\"channels\":[{\"channel\":\"macro_go_objective\",\"role\":\"macro_go_objective\"},{\"channel\":\"macro_go_out\",\"role\":\"macro_go_out\"},{\"channel\":\"macro_go_warp\",\"role\":\"macro_go_warp\"},{\"channel\":\"macro_go_route\",\"role\":\"macro_go_route\"},{\"channel\":\"macro_go_item\",\"role\":\"macro_go_item\"},{\"channel\":\"macro_go_npc\",\"role\":\"macro_go_npc\"},{\"channel\":\"macro_go_frontier\",\"role\":\"macro_go_frontier\"},{\"channel\":\"macro_go_shop\",\"role\":\"macro_go_shop\"},{\"channel\":\"macro_go_heal\",\"role\":\"macro_go_heal\"},{\"channel\":\"macro_talk\",\"role\":\"macro_talk\"},{\"channel\":\"macro_menu\",\"role\":\"macro_menu\"},{\"channel\":\"macro_next\",\"role\":\"macro_next\"},{\"channel\":\"macro_yes\",\"role\":\"macro_yes\"},{\"channel\":\"macro_no\",\"role\":\"macro_no\"},{\"channel\":\"macro_close\",\"role\":\"macro_close\"},{\"channel\":\"macro_confirm\",\"role\":\"macro_confirm\"},{\"channel\":\"macro_back\",\"role\":\"macro_back\"},{\"channel\":\"macro_move_1\",\"role\":\"macro_move_1\"},{\"channel\":\"macro_move_2\",\"role\":\"macro_move_2\"},{\"channel\":\"macro_move_3\",\"role\":\"macro_move_3\"},{\"channel\":\"macro_move_4\",\"role\":\"macro_move_4\"},{\"channel\":\"macro_switch\",\"role\":\"macro_switch\"},{\"channel\":\"macro_item\",\"role\":\"macro_item\"},{\"channel\":\"macro_throw_ball\",\"role\":\"macro_throw_ball\"},{\"channel\":\"macro_run\",\"role\":\"macro_run\"},{\"channel\":\"macro_buy_potion\",\"role\":\"macro_buy_potion\"},{\"channel\":\"macro_buy_ball\",\"role\":\"macro_buy_ball\"},{\"channel\":\"macro_buy_antidote\",\"role\":\"macro_buy_antidote\"},{\"channel\":\"macro_buy_repel\",\"role\":\"macro_buy_repel\"},{\"channel\":\"macro_heal\",\"role\":\"macro_heal\"},{\"channel\":\"macro_leave\",\"role\":\"macro_leave\"}],\"decisionMs\":800,\"fatigueDecay\":0.8,\"fatigueGain\":0.08,\"holdMs\":800,\"hysteresis\":1.05},\"pulses\":[{\"boot\":null,\"channel\":\"a\",\"cooldownMs\":480,\"holdMs\":85,\"role\":\"command_4\",\"threshold\":1,\"throttleGroup\":null},{\"boot\":null,\"channel\":\"b\",\"cooldownMs\":480,\"holdMs\":85,\"role\":\"command_5\",\"threshold\":1,\"throttleGroup\":null},{\"boot\":{\"cooldownMs\":2500,\"threshold\":1},\"channel\":\"start\",\"cooldownMs\":30000,\"holdMs\":55,\"role\":\"command_6\",\"threshold\":1.35,\"throttleGroup\":\"system\"},{\"boot\":{\"cooldownMs\":2500,\"threshold\":1},\"channel\":\"select\",\"cooldownMs\":30000,\"holdMs\":55,\"role\":\"command_7\",\"threshold\":1.35,\"throttleGroup\":\"system\"}]}",
+      "digest": "82b6601f0390b742a67eca44ef935b49e16a73315db70f5644f1cbd21f7c8a52"
+    }
+  ]
+}

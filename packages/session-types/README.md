@@ -26,6 +26,8 @@ control contracts are unchanged and still live in [`@flybrain/feed`](../feed).
 | `trace` | The step-v1 section 8 record and the behaviour-only comparator |
 | `seed` | `seed-derivation-v1` |
 | `checkpoint` | The `FLYSESS1` envelope layout |
+| `extensions` | `Environment.SaveSlot`/`RestoreSlot` and `Agent.Rollback` payloads (2026-09-23) |
+| `gameboy` | The legacy Game Boy composition: registered schemas, profile, composition declaration |
 | `fixtures` | Loading the shared corpus |
 
 ## Reading a payload

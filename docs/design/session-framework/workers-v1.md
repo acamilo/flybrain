@@ -22,6 +22,9 @@ rpc.result. Large inputs/outputs use owned bus attachments, never another worker
 | `State.Capture` | Coordinator → agent/environment | Immutable snapshot of committed boundary |
 | `State.StageRestore` | Coordinator → agent/environment | Validate replacement state under new epoch |
 | `State.ActivateRestore` | Coordinator → agent/environment | Install staged state; remain quiescent |
+| `Environment.SaveSlot` | Coordinator → environment | Capability `gameboy-slots-v1`; record a slot at the committed boundary (section 7) |
+| `Environment.RestoreSlot` | Coordinator → environment | Capability `gameboy-slots-v1`; boundary k under a new epoch (section 7) |
+| `Agent.Rollback` | Coordinator → agent | Capability `legacy-ratchet-rollback-v1`; Ready(e,k) → Ready(e',k), no tick (section 7) |
 
 State methods have payloads in [state and media](state-media-v1.md). Artifact lifetime and
 message consumption are bus operations managed by the SDK, not Worker/Coordinator methods.
@@ -51,6 +54,8 @@ interface AgentTelemetry {
   rates: { roleId: Id; hz: number }[];
   learning: { enabled: boolean; updates: U64; changed: U64; signal: number };
 }
+// Amendment 2026-09-23: AgentTelemetry also carries
+//   stimulusRemainingMs: number | null;  // pulse still running after the operation; null = reports none
 ```
 
 `AssetRef` names persistent content in a preprovisioned local registry; it is not an arbitrary path or
@@ -74,6 +79,15 @@ Rates must be finite/nonnegative, unique by role ID and in profile-defined order
 finite; shipped positive-only task profiles reject negatives. Empty rewards do not imply a
 different numerical rule. `id`/`eventId` is unique within its outcome or command namespace;
 the coordinator assigns stable IDs before sending a mutating request.
+
+**Amendment, 2026-09-23 (RT-01a; operator decision of 2026-09-23).** `AgentTelemetry` gains
+`stimulusRemainingMs: number | null`: the milliseconds of stimulation pulse still running when
+the operation that reports the telemetry completed, or `null` for an agent that has no pulse to
+report. The operator decided that sugar admission reads the legacy `reward_remaining` from the
+last commit's telemetry (section 5 amendment), and no field carried it. It is finite and
+nonnegative; it is a report, never an input. The field is required-and-nullable like every
+optional field in these contracts, so every existing producer now writes `null`. It changes
+`contractDigest`, which [session RPC](ipc-v1.md) section 4 already provides for.
 
 ## 2. Agent methods
 
@@ -283,6 +297,25 @@ The environment only needs backend-relevant portions of task setup, not reward r
 neural policies. `taskConfig` resolves a declared setup configuration; the complete task
 implementation and ledger stay in the coordinator.
 
+**Amendment, 2026-09-23 (RT-01a; operator decision of 2026-09-23).** Three readings for the
+Game Boy environment of the legacy composition ([legacy-gameboy-v1](legacy-gameboy-v1.md)
+sections 8 and 9), stated here because they are about this method's shape:
+
+- *Setup scaffold.* The backend configuration may declare setup frames the environment runs
+  with every control neutral before it returns O[0]. The legacy composition declares exactly
+  **one frame with no button down**, which is what its fresh start does; O[0] then has
+  `engineFrame` `"1"`, `worldTime` `0/1` and no audio chunk. These frames are declared
+  scaffold, attributed to no fly, and never a transition.
+- *Inspection may be artifact-backed.* `inspection` is a `TypedValue` under the descriptor's
+  schema; the legacy schema `gameboy-memory-inspection-v1` carries a 64-KiB memory image as an
+  `ArtifactRef` (listed in the bus attachments) plus the ROM's digest. This is the "explicit
+  artifact-backed schema" section 1 requires for typed state over 32 KiB, and it is the one
+  bulk transfer per boundary the section 4 rule against per-byte remote reads asks for. The
+  environment's only write to a running game remains the controller batch.
+- *Audio.* The environment publishes native samples in the declared f32 format; converting a
+  backend's integer samples to f32 is the environment's job (binjgb: `sample / 255`), and any
+  filtering for listening -- the legacy DC blocker -- is presentation, applied by the edge.
+
 ### Environment.Advance
 
 ```ts
@@ -349,6 +382,18 @@ but not a port assignment. The coordinator supplies the port. Per-agent executor
 private; a running macro may emit controls according to its declared policy, but only after
 neural selection. The first implementation supports the stateless identity executor only.
 
+**Amendment, 2026-09-23 (RT-01a; operator decision of 2026-09-23).** The legacy composition
+declares the extension **`executor: pokered-macros-v1`**: its task and its action executor are
+**one object** implementing both interfaces above, serving one agent on one port
+([legacy-gameboy-v1](legacy-gameboy-v1.md) section 10). They share state that neither could
+reach through a declared channel if split: the executor's scene observation is the `bound` set
+the task hands the decoder, the macros read the task's exploration ledgers, and the macro layer's
+progress signal feeds the ratchet. The executor reads the boundary's memory image and the ROM
+`AssetRef`, never the emulator. "Stateless identity executor only" remains true of the
+synthetic composition; a stateful executor is permitted exactly where a composition declares
+one by name, and its state is captured or declared transient by that composition's restore
+semantics (state-media-v1 section 4 amendment).
+
 The executor's currentGameState is a coherent read-only inspector view at this boundary;
 progressView supplies task history/objectives. It updates its selected action every step
 (movement, path replanning, interaction, completion), not merely replaying a blind button
@@ -372,6 +417,15 @@ not arbitrary raw inspector memory or incoming chat.
 It requests a coordinator-owned policy transition after final reward commit; it cannot reset
 the environment directly. Generic progress is a TypedValue, not mandatory Pokémon ladder data.
 
+**Amendment, 2026-09-23 (RT-01a; operator decision of 2026-09-23).** `episodeRequest.kind` is
+`"terminal"` or **`"rollback"`**. A rollback request asks for the composition's declared
+rollback policy; its `outcome` is that policy's registered schema. The only policy defined is
+`legacy-ratchet-rollback-v1` (outcome `{slotId, trigger}`), applied at the boundary the
+transition just committed without a pause ([step-v1](step-v1.md) section 6 amendment). A
+composition that declares no rollback policy treats the request as a task failure. It still
+"cannot reset the environment directly": the coordinator applies the policy through the
+section 7 methods.
+
 ## 5. Admission and audience boundary
 
 The first synthetic implementation has no audience input. Later integration maps permitted
@@ -386,6 +440,19 @@ v2 contract must specify accepted/applied/rolled-back/aborted states and reconci
 paid interactions are enabled. Do not inherit a claim of durable exactly-once stimulation
 from these in-memory worker request caches.
 
+**Amendment, 2026-09-23 (RT-01a; operator decision of 2026-09-23).** Sugar in the legacy
+composition is admitted by the coordinator with the legacy rules -- the rate limiter and "no
+overlap with an active pulse" -- reading the pulse from `stimulusRemainingMs` of the **last
+completed commit**. The operator accepted that this value can be one commit old; both
+consequences are bounded to one frame and are listed in
+[legacy-gameboy-v1](legacy-gameboy-v1.md) section 15. Admitted sugar is a profile-supported
+`reward-pulse` stimulus in the next Prepare's `preStepStimulations`. Because admission and
+application are now separate, each admission record carries its interaction id and ends
+`applied` or, if the epoch fails before that Prepare commits, `aborted`; the edge fulfils the
+first and refunds the second, and the slice wiring the bridge tests both. This is the
+accepted/applied/aborted distinction the paragraph above asks for, for this one interaction
+kind; paid interactions in general still need the public v2 contract.
+
 ## 6. Health, shutdown and extensions
 
 All workers implement the common Hello/Status/Shutdown/Acknowledge methods. Capture/restore
@@ -395,3 +462,56 @@ advertised. Unsupported methods return `UNSUPPORTED`, mutation none.
 New task-specific fields belong in registered TypedValue schemas. New worker capabilities,
 variable-duration stepping, subscriptions or additional sensor modalities require a contract
 change and shared fixtures. An unconstrained plugin dictionary is not a substitute for that.
+
+## 7. Extension methods (amendment, 2026-09-23)
+
+**Amendment, 2026-09-23 (RT-01a; operator decision of 2026-09-23).** The operator decided on a
+full port of the live fly, whose ratchet rolls the *game* back to a saved state while the brain
+continues. Neither half of that is expressible with sections 2 and 3: there is no method that
+saves or restores world state outside a coherent group checkpoint, and none that installs a new
+input in an agent without a transition. These three methods are that, generically shaped, each
+behind a capability a worker advertises in `Worker.Hello`; a worker without it answers
+`UNSUPPORTED`, mutation none. Payloads are in `fly-session-types` (`extensions`) and
+`@flybrain/session-types`, in the session schema set.
+
+```ts
+// Environment.SaveSlot -- capability gameboy-slots-v1. Scope: the committed boundary (e, k).
+interface SaveSlotParams { slotId: Id }                        // a slot the composition declares
+interface SaveSlotResult { slotId: Id; boundary: U64;          // == scope.step
+                           stateDigest: Digest; byteLength: U64 }
+
+// Environment.RestoreSlot -- capability gameboy-slots-v1. Scope: (e', k), a NEW epoch.
+interface RestoreSlotParams { slotId: Id; priorEpoch: Id;      // the environment is Ready(e, k)
+                              policy: "legacy-ratchet-rollback-v1" }
+interface RestoreSlotResult { slotId: Id; committedStep: U64;  // == k: no transition ran
+                              observation: WorldObservation }  // boundary k, no audio chunk
+
+// Agent.Rollback -- capability legacy-ratchet-rollback-v1. Scope: (e', k), the same new epoch.
+interface AgentRollbackParams { agentId: Id; priorEpoch: Id;   // the agent is Ready(e, k)
+                                policy: "legacy-ratchet-rollback-v1";
+                                input: SensoryInput;           // boundary k: the restored world
+                                decisionContext: TypedValue }  // for the next Prepare
+interface AgentRollbackResult { agentId: Id; committedStep: U64; // == k: no tick ran
+                                decisionContextDigest: Digest; telemetry: AgentTelemetry }
+```
+
+- Both environment methods run only at a committed boundary with no Advance outstanding.
+  `SaveSlot` replaces the slot's contents with the world state and the frame on screen at that
+  boundary; slots are environment state and belong to its `State.Capture` payload. It is one
+  operation per boundary under the section-5 operation key of [session RPC](ipc-v1.md).
+- `RestoreSlot` and `Agent.Rollback` move a participant from `(priorEpoch, k)` to
+  `(scope.epoch, k)`; `priorEpoch` must differ from the scoped epoch, and after the move every
+  request scoped to the prior epoch is `STALE_EPOCH`. The restored observation keeps the
+  boundary number, `worldTime` and `engineFrame`, and returns fresh artifacts; it carries no
+  audio chunk, and the next chunk marks a discontinuity (state-media-v1 section 2).
+- `Agent.Rollback` applies the policy's agent half and nothing else: for
+  `legacy-ratchet-rollback-v1`, clear decoder holds and plastic eligibility, install `input`
+  without a tick, reset the readout's transient (held channel, blocked window, location from
+  the context), keep the brain clock, membrane, RNG, rates and gains. No reward, stimulation or
+  calibration. It is the only way to install an input outside a Commit.
+- A failure of any of these methods mid-policy fails the epoch; recovery is the coherent group
+  restore of [state-media-v1](state-media-v1.md) section 6. There is no partial rollback.
+- `maxSlots` is 4 (a crate-chosen bound, published in the schema set).
+
+The sequence that uses them is [step-v1](step-v1.md) section 6's amendment and
+[legacy-gameboy-v1](legacy-gameboy-v1.md) section 11.

@@ -481,6 +481,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "fly-session-types",
  "flybrain-core",
  "flybrain-gb",
  "futures-util",

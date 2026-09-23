@@ -179,6 +179,9 @@ impl FakeModel {
                 changed: self.learning_changed,
                 signal: self.last_signal,
             },
+            // The synthetic model has no stimulation pulse to report (workers-v1 section 1,
+            // amendment 2026-09-23): only a profile with a pulse reports what is left of it.
+            stimulus_remaining_ms: None,
         }
     }
 }

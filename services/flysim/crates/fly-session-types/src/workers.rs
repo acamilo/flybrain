@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::media::{AudioDescriptor, MAX_VIEWS, ViewDescriptor, ViewRef, audio_list, view_list};
 use crate::scalar::{
-    DomainRequestId, DomainType, RationalNs, Result, SchemaRef, TypedValue, constant,
+    DomainRequestId, DomainType, RationalNs, Result, SchemaRef, TypedValue,
     constant_true, enumeration, err, finite, finite_in, i32_field, id_list, is_digest, is_id, list,
     obj, require_same_order, require_unique, u64_json,
 };
@@ -505,6 +505,10 @@ pub struct AgentTelemetry {
     pub population_rate_hz: f64,
     pub rates: Vec<RateSample>,
     pub learning: LearningTelemetry,
+    /// Milliseconds of stimulation pulse still running after this operation, or `None` for
+    /// an agent that reports none. Amendment 2026-09-23 (RT-01a): the coordinator's sugar
+    /// admission reads it from the last commit (workers-v1 section 5).
+    pub stimulus_remaining_ms: Option<f64>,
 }
 
 impl AgentTelemetry {
@@ -526,6 +530,10 @@ impl DomainType for AgentTelemetry {
         let mut f = Fields::new(value, "AgentTelemetry")?;
         let brain_ticks = f.u64_string("brainTicks")?;
         let population_rate_hz = finite_in(&mut f, "populationRateHz", 0.0, f64::MAX)?;
+        let stimulus_remaining_ms = match f.value("stimulusRemainingMs")? {
+            Value::Null => None,
+            _ => Some(finite_in(&mut f, "stimulusRemainingMs", 0.0, f64::MAX)?),
+        };
         let rates = list(&mut f, "rates", 0, MAX_RATE_ROLES, |v| {
             let mut r = Fields::new(v, "AgentTelemetry.rates")?;
             let role_id = r.id("roleId")?;
@@ -554,6 +562,7 @@ impl DomainType for AgentTelemetry {
             population_rate_hz,
             rates,
             learning,
+            stimulus_remaining_ms,
         };
         t.validate()?;
         Ok(t)
@@ -586,6 +595,10 @@ impl DomainType for AgentTelemetry {
                     ("signal", Value::from(self.learning.signal)),
                 ]),
             ),
+            (
+                "stimulusRemainingMs",
+                self.stimulus_remaining_ms.map_or(Value::Null, Value::from),
+            ),
         ])
     }
 
@@ -613,6 +626,11 @@ impl DomainType for AgentTelemetry {
         }
         if !self.learning.signal.is_finite() {
             return err("AgentTelemetry: learning.signal must be finite");
+        }
+        if let Some(remaining) = self.stimulus_remaining_ms
+            && (!remaining.is_finite() || remaining < 0.0)
+        {
+            return err("AgentTelemetry: stimulusRemainingMs must be null or finite and nonnegative");
         }
         Ok(())
     }
@@ -2474,9 +2492,40 @@ impl DomainType for TaskEvent {
     }
 }
 
-/// `episodeRequest`: null, or a terminal request the coordinator may act on.
+/// The kind of an `episodeRequest` (workers-v1 section 4).
+///
+/// `Rollback` is the amendment of 2026-09-23 (RT-01a): a request for the composition's declared
+/// rollback policy, applied at the committed boundary the transition just reached. Only a
+/// composition that declares such a policy may act on it; any other refuses it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EpisodeRequestKind {
+    Terminal,
+    Rollback,
+}
+
+impl EpisodeRequestKind {
+    pub const ALL: &'static [&'static str] = &["terminal", "rollback"];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EpisodeRequestKind::Terminal => "terminal",
+            EpisodeRequestKind::Rollback => "rollback",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<EpisodeRequestKind> {
+        match s {
+            "terminal" => Ok(EpisodeRequestKind::Terminal),
+            "rollback" => Ok(EpisodeRequestKind::Rollback),
+            _ => err("EpisodeRequest: kind must be terminal or rollback"),
+        }
+    }
+}
+
+/// `episodeRequest`: null, or a request the coordinator may act on.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EpisodeRequest {
+    pub kind: EpisodeRequestKind,
     pub reason: String,
     pub outcome: TypedValue,
 }
@@ -2486,18 +2535,26 @@ impl DomainType for EpisodeRequest {
 
     fn from_json(value: &Value) -> Result<EpisodeRequest> {
         let mut f = Fields::new(value, "EpisodeRequest")?;
-        constant(&mut f, "kind", "terminal")?;
+        let kind = EpisodeRequestKind::parse(&enumeration(
+            &mut f,
+            "kind",
+            EpisodeRequestKind::ALL,
+        )?)?;
         let reason = f.id("reason")?;
         let outcome = TypedValue::from_json(f.value("outcome")?)?;
         f.finish()?;
-        let r = EpisodeRequest { reason, outcome };
+        let r = EpisodeRequest {
+            kind,
+            reason,
+            outcome,
+        };
         r.validate()?;
         Ok(r)
     }
 
     fn to_json(&self) -> Value {
         obj(vec![
-            ("kind", "terminal".into()),
+            ("kind", self.kind.as_str().into()),
             ("reason", self.reason.clone().into()),
             ("outcome", self.outcome.to_json()),
         ])
