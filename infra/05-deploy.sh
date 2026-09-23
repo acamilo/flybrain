@@ -300,8 +300,9 @@ if [ -n "$RELEASE_TARBALL" ]; then
     #
     # FLY_ACCEPT_ADAPTERS is the *other* override, and the opposite one: it keeps
     # the run. It names adapter version strings whose checkpoints the new build
-    # may migrate — e.g. FLY_ACCEPT_ADAPTERS=pokered-unique8-v5 for the deploy
-    # that adds the catch reward. It only applies when the adapter segment is the
+    # may migrate — e.g. FLY_ACCEPT_ADAPTERS=pokered-unique8-v6 for the deploy
+    # that adds the engagement rewards (v7; v5 -> v6 was the catch reward's).
+    # It only applies when the adapter segment is the
     # ONLY difference between the two strings and the new build's adapter says it
     # can read that one; a dataset, kernel, emulator or state-format change is
     # still a refusal, because none of those has a migration. The same variable is
@@ -354,7 +355,7 @@ The difference is usually an adapter/ladder or dataset version bump. Three ways 
   * deploy a build whose string matches (check out the commit the running release was built from), or
   * if the ADAPTER VERSION is the only segment that differs and the new build documents a
     migration from the old one, re-run with FLY_ACCEPT_ADAPTERS set to the adapter id in the live
-    string (e.g. FLY_ACCEPT_ADAPTERS=pokered-unique8-v5). The run is kept; flysim applies the same
+    string (e.g. FLY_ACCEPT_ADAPTERS=pokered-unique8-v6). The run is kept; flysim applies the same
     rule at restore. See docs/design/flysim.md, \"Restoring across an adapter version\", or
   * accept losing everything the brain has learned and re-run with FLY_RESET_STATE=1, which
     archives ${state_dir}'s checkpoints to ${state_dir}.<timestamp> (kept, not deleted) and

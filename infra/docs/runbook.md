@@ -263,7 +263,7 @@ pct exec $CTID -- /opt/fly/bin/fly-reset-to-milestone $N
 #    (a) the running release already wrote that checkpoint -> nothing to deploy, skip to 5.
 #    (b) the new build bumps the ADAPTER VERSION and nothing else -> name the checkpoint's
 #        adapter so the gate and flysim both migrate instead of refusing:
-FLY_ACCEPT_ADAPTERS=pokered-unique8-v5 infra/05-deploy.sh <release-env> <release-tarball>
+FLY_ACCEPT_ADAPTERS=pokered-unique8-v6 infra/05-deploy.sh <release-env> <release-tarball>
 #    The gate logs "the adapter version is the only difference, and it is named; the run is KEPT
 #    and migrated", and writes FLY_ACCEPT_ADAPTERS into /etc/fly/fly.env so flysim applies the
 #    same rule at restore. Anything else about the string differing is still a refusal.

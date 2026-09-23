@@ -89,7 +89,9 @@ decoder preset to use.
   disassembly at commit 0cd19d3 (`symbols.rs`), gates rewards on a playable state, baselines already
   achieved flags on the first sample so a restore never replays them, and pays only positive
   rewards: story flags, exploration coverage (capped per map), new areas, Pokédex entries, trainer
-  flags, decaying wild wins, badges. Version `pokered-unique8-v5`.
+  flags, decaying wild wins, badges, exits found outdoors, catches, conversations indoors and items
+  picked up (`docs/rewards-learning.md`). Version `pokered-unique8-v7`; a deploy that names the
+  previous version in `FLY_ACCEPT_ADAPTERS` migrates its checkpoints instead of refusing them.
 - Ratchet (`ratchet.rs`): a 38-rung ladder (boot, bedroom, Pallet Town, Oak's lab, starter, parcel,
   Pokédex, each town, each badge, the Elite Four, Champion). On first reaching a higher rung in a
   safe state it archives the emulator snapshot; on a stall (120 s without new exploration) or a game

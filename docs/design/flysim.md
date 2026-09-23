@@ -387,6 +387,17 @@ on-screen ticker cannot disagree with what the sim did.
   absent from a `v5` state and restores empty, which is the truth about a run that was never paid
   for a catch. `STATE_VERSION` does not move, because the schema did not.
 
+  **`v6` -> `v7`** (2026-09-23, the engagement rewards) is the same migration for the next pair,
+  and `pokered-unique8-v7`'s `migrates_from()` is `["pokered-unique8-v6"]` and nothing else -- `v5`
+  is no longer migrated, because the live run is `v6`. The deploy that ships it sets
+  `FLY_ACCEPT_ADAPTERS=pokered-unique8-v6`. No field is added this time: `talk` and `item` key
+  their ledgers into the existing `seen` array, as `boundary` did, so a `v6` state restores
+  unchanged with no `talk:` keys. The one step is at the first sample after the restore, not in
+  `import_state`: a ledger without the `items:seeded` key writes an `item:`/`hidden:` key for every
+  item the cartridge already shows as taken, pays for none, and marks the seed, so a rollback to a
+  slot from before a `v6`-era pickup cannot pay for it (`docs/rewards-learning.md`, "The seed").
+  `STATE_VERSION` stays 4.
+
 - **Restarting a run from an earlier rung** (2026-09-22). `FLY_RESET_STATE=1` throws the run away;
   `infra/bin/fly-reset-to-milestone <N>` keeps it and rewinds it. It archives both stores to a
   dated directory, rewrites `milestone-<N>.checkpoint` with the ratchet's `attempts` and
