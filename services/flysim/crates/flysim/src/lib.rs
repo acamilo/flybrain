@@ -184,7 +184,9 @@ pub fn run(config: Config) -> Result<()> {
     notifier.notify("STOPPING=1\n");
     drop(sim);
     if let Some((bus_runtime, bus)) = bus_runtime {
-        bus.router.shutdown();
+        // The publisher ends by itself once the watch sender is gone; stopping the runtime under
+        // it, rather than the router first, keeps a last in-flight publish from being logged as
+        // a refusal. The edge sees the socket close either way.
         drop(bus);
         bus_runtime.shutdown_timeout(std::time::Duration::from_secs(1));
     }
