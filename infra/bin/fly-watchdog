@@ -68,6 +68,7 @@ log_info() {
 : "${WD_LOOP_DOMINANCE_PCT:=95}"          # or one macro being this share of the window
 : "${WD_LOOP_MIN_EVENTS:=20}"             # floor under the dominance rule (see check 10)
 : "${WD_LOOP_STALL_PCT:=90}"              # decisions that ended refused/blocked/timeout: this share is a stall (row 57)
+: "${WD_LOOP_BUSY_MIN:=100}"              # this many decisions with no reward and no new ground, two probes running, is busy going nowhere (row 58)
 : "${WD_LOOP_REPORT:=${WD_RUN_DIR}/loop.json}"
 
 mkdir -p "$WD_RUN_DIR" "$WD_STATE_DIR"
@@ -212,6 +213,11 @@ write_textfile_metrics() {
         echo "# HELP fly_loop_done Macros that ended done in the last check-10 window (-1 before the first probe)."
         echo "# TYPE fly_loop_done gauge"
         echo "fly_loop_done $(cat "${WD_RUN_DIR}/loop.done" 2>/dev/null || echo -1)"
+        # Row 58: an undo pair diluted by other macros completes everything and
+        # earns nothing; the reward events in the window are what say so.
+        echo "# HELP fly_loop_rewards Reward events in the last check-10 window (-1 before the first probe)."
+        echo "# TYPE fly_loop_rewards gauge"
+        echo "fly_loop_rewards $(cat "${WD_RUN_DIR}/loop.rewards" 2>/dev/null || echo -1)"
         echo "# HELP fly_places_delta Growth in game.uniqueLocations (the exploration count) since the previous check-10 probe. -1 when there is no previous probe to compare against."
         echo "# TYPE fly_places_delta gauge"
         echo "fly_places_delta $(cat "${WD_RUN_DIR}/loop.places_delta" 2>/dev/null || echo -1)"
@@ -766,6 +772,16 @@ check_capture_freeze() {
 #                    this probe AND the previous one (two probes, so a single
 #                    unlucky window never flags).
 #
+# Row 58: `GO OBJECTIVE` into the Pewter Gym, `GO OUT` straight back out, for
+# 25 minutes, with GO ITEM / GO FRONTIER / YES / NO mixed in — ten distinct
+# names, every macro `done`, so neither the sequence rule (four names at
+# most) nor zero-progress could fire, and the exploration count sat still.
+# What the window did not have was a single reward event. So the stream also
+# carries the `reward` events, and one more rule reads them, behind the same
+# gate:
+#   unrewarded     — WD_LOOP_BUSY_MIN+ decisions and no reward event in the
+#                    window, on this probe AND the previous one.
+#
 # The tile rule is what separates a loop from a legitimately repeating
 # explorer (macros-traps.md: `GO FRONTIER` x19 over 93 tiles is a walk longer
 # than the frame cap, not a trap), and the watchdog has no tile counter. The
@@ -816,7 +832,7 @@ loop_status_fields() {
 loop_macro_stream() {
     [ -f "$FLY_EVENT_LOG" ] || return 0
     tail -n "$WD_LOOP_TAIL_LINES" "$FLY_EVENT_LOG" 2>/dev/null \
-        | jq -r 'fromjson? // empty | select(.kind == "macro") | "\(.brainMs)\t\(.label)"' -R 2>/dev/null \
+        | jq -r 'fromjson? // empty | select(.kind == "macro" or .kind == "reward") | "\(.brainMs)\t\(.label)\t\(.kind)"' -R 2>/dev/null \
         || true
 }
 
@@ -824,23 +840,28 @@ loop_macro_stream() {
 #
 #   total US distinct US topCount US period US repeats US windowFrom US
 #   windowTo US topName US block US tail US decisions US refused US blocked US
-#   timeout US done
+#   timeout US done US rewards
 #
 # `total` counts start events inside the window, `decisions` starts plus
 # refusals (the sequence, `distinct` and `topCount` are over decisions), and
-# the last four count each outcome in the window. `period`/`repeats` describe
+# the next four count each outcome in the window, and `rewards` the reward
+# events in it (row 58). `period`/`repeats` describe
 # the shortest repeating block at the END of the sequence (0/0 when nothing
 # repeats), `block` is that block comma-joined, and `tail` is the last 12
 # names for context. The window ends at the newest macro event's own brain
 # clock, not at `now`: brain time is the only clock the event log carries.
 loop_analyze() {
     awk -F'\t' -v win="$WD_LOOP_WINDOW_MS" -v maxp="$WD_LOOP_MAX_PERIOD" '
-    { ms[NR] = $1 + 0; lbl[NR] = $2; n = NR }
+    # Reward lines are counted and nothing else: the window still ends at the
+    # newest macro event, as it always has.
+    $3 == "reward" { rms[++nr] = $1 + 0; next }
+    { ms[++n] = $1 + 0; lbl[n] = $2 }
     END {
-        if (n == 0) { printf "0\0370\0370\0370\0370\0370\0370\037\037\037\0370\0370\0370\0370\0370\n"; exit }
+        if (n == 0) { printf "0\0370\0370\0370\0370\0370\0370\037\037\037\0370\0370\0370\0370\0370\0370\n"; exit }
         to = ms[n]; from = to - win
         k = 0; distinct = 0; topn = 0; top = ""
-        starts = 0; refused = 0; blocked = 0; timeout = 0; done = 0
+        starts = 0; refused = 0; blocked = 0; timeout = 0; done = 0; rewards = 0
+        for (q = 1; q <= nr; q++) if (rms[q] >= from) rewards++
         for (i = 1; i <= n; i++) {
             if (ms[i] < from) continue
             if (lbl[i] ~ / blocked$/) { blocked++; continue }
@@ -873,9 +894,9 @@ loop_analyze() {
         tailstr = ""
         start = k - 11; if (start < 1) start = 1
         for (j = start; j <= k; j++) tailstr = tailstr (tailstr == "" ? "" : ", ") seq[j]
-        printf "%d\037%d\037%d\037%d\037%d\037%d\037%d\037%s\037%s\037%s\037%d\037%d\037%d\037%d\037%d\n", \
+        printf "%d\037%d\037%d\037%d\037%d\037%d\037%d\037%s\037%s\037%s\037%d\037%d\037%d\037%d\037%d\037%d\n", \
             starts, distinct, topn, period, repeats, from, to, top, block, tailstr, \
-            k, refused, blocked, timeout, done
+            k, refused, blocked, timeout, done, rewards
     }'
 }
 
@@ -933,20 +954,21 @@ check_loop() {
     echo "$delta" > "${WD_RUN_DIR}/loop.places_delta"
 
     local analysis total distinct topn period repeats win_from win_to top block tailstr
-    local decisions refused blocked timeouts completed
+    local decisions refused blocked timeouts completed rewards
     analysis="$(loop_macro_stream | loop_analyze)"
     IFS=$'\037' read -r total distinct topn period repeats win_from win_to top block tailstr \
-        decisions refused blocked timeouts completed <<< "$analysis"
+        decisions refused blocked timeouts completed rewards <<< "$analysis"
     total="${total:-0}"; distinct="${distinct:-0}"; topn="${topn:-0}"
     period="${period:-0}"; repeats="${repeats:-0}"
     decisions="${decisions:-0}"; refused="${refused:-0}"; blocked="${blocked:-0}"
-    timeouts="${timeouts:-0}"; completed="${completed:-0}"
+    timeouts="${timeouts:-0}"; completed="${completed:-0}"; rewards="${rewards:-0}"
     echo "$distinct" > "${WD_RUN_DIR}/loop.distinct"
     echo "$period" > "${WD_RUN_DIR}/loop.period"
     echo "$repeats" > "${WD_RUN_DIR}/loop.repeats"
     echo "$refused" > "${WD_RUN_DIR}/loop.refused"
     echo "$(( blocked + timeouts ))" > "${WD_RUN_DIR}/loop.blocked"
     echo "$completed" > "${WD_RUN_DIR}/loop.done"
+    echo "$rewards" > "${WD_RUN_DIR}/loop.rewards"
 
     local prev_suspected=0
     [ -f "${WD_RUN_DIR}/loop.suspected" ] && prev_suspected="$(cat "${WD_RUN_DIR}/loop.suspected" 2>/dev/null || echo 0)"
@@ -966,6 +988,14 @@ check_loop() {
     case "${prev_idle:-}" in ''|*[!0-9]*) prev_idle=0 ;; esac
     [ "$decisions" -gt 0 ] && [ "$completed" -eq 0 ] && [ "$grown" -eq 0 ] && idle=1
     echo "$idle" > "$idle_file"
+
+    # Busy going nowhere (row 58), judged over two probes like zero progress:
+    # many decisions, not one reward event, no new ground.
+    local busy_file="${WD_RUN_DIR}/loop.prev_unrewarded" prev_busy=0 busy=0
+    [ -f "$busy_file" ] && prev_busy="$(cat "$busy_file" 2>/dev/null || echo 0)"
+    case "${prev_busy:-}" in ''|*[!0-9]*) prev_busy=0 ;; esac
+    [ "$decisions" -ge "$WD_LOOP_BUSY_MIN" ] && [ "$rewards" -eq 0 ] && [ "$grown" -eq 0 ] && busy=1
+    echo "$busy" > "$busy_file"
 
     local failed=$(( refused + blocked + timeouts ))
     local suspected=0 reason=""
@@ -991,6 +1021,11 @@ check_loop() {
             # which is silence (above), not a loop.
             suspected=1
             reason="dominant"
+        elif [ "$busy" -eq 1 ] && [ "$prev_busy" -eq 1 ]; then
+            # Row 58: an undo pair diluted by other macros. Every one of them
+            # completes, none of them earns anything, and the ground stays put.
+            suspected=1
+            reason="unrewarded"
         fi
     fi
     echo "$suspected" > "${WD_RUN_DIR}/loop.suspected"
@@ -1022,6 +1057,7 @@ check_loop() {
         --argjson blocked "$blocked" \
         --argjson timeouts "$timeouts" \
         --argjson completed "$completed" \
+        --argjson rewards "$rewards" \
         --argjson windowFrom "${win_from:-0}" \
         --argjson windowTo "${win_to:-0}" \
         --argjson windowMs "$WD_LOOP_WINDOW_MS" \
@@ -1050,6 +1086,7 @@ check_loop() {
             macroStarts: $total,
             decisions: $decisions,
             outcomes: { done: $completed, blocked: $blocked, timeout: $timeouts, refused: $refused },
+            rewards: $rewards,
             tail: (if $tail == "" then [] else ($tail | split(", ")) end)
           },
           dominant: { name: (if $dominant == "" then null else $dominant end),
@@ -1073,7 +1110,9 @@ check_loop() {
 
     local mins=$(( WD_LOOP_WINDOW_MS / 60000 ))
     if [ "$suspected" -eq 1 ]; then
-        if [ "$reason" = "stalled" ] || [ "$reason" = "zero-progress" ]; then
+        if [ "$reason" = "unrewarded" ]; then
+            log_err "loop suspected (unrewarded): ${decisions} decisions and no reward event in the last ${mins} brain minutes, two probes running — ${completed} done, top [${top}] x${topn}, ${distinct} distinct name(s), tail [${tailstr}], exploration count ${places:-?} unchanged (delta ${delta}), rung ${rank:-?} '${mlabel:-?}' for ${since:-?}s. NOT acting: nothing restarted, nothing pressed, the game untouched — macros that complete and earn nothing are an undo pair or a ring. Report: ${WD_LOOP_REPORT}; see infra/docs/runbook.md 'loop suspected'."
+        elif [ "$reason" = "stalled" ] || [ "$reason" = "zero-progress" ]; then
             log_err "loop suspected (${reason}): [${shown}] — ${decisions} decisions in the last ${mins} brain minutes, ${total} started, ${completed} done, ${refused} refused, $(( blocked + timeouts )) blocked or timed out, exploration count ${places:-?} unchanged (delta ${delta}), rung ${rank:-?} '${mlabel:-?}' for ${since:-?}s. NOT acting: nothing restarted, nothing pressed, the game untouched — a pad whose buttons cannot run is a macro bug. Report: ${WD_LOOP_REPORT}; see infra/docs/runbook.md 'loop suspected'."
         elif [ "$reason" = "sequence" ]; then
             log_err "loop suspected: [${shown}] x${repeats} (period ${period}) in the last ${mins} brain minutes — ${total} macro starts, ${distinct} distinct name(s), exploration count ${places:-?} unchanged (delta ${delta}), rung ${rank:-?} '${mlabel:-?}' for ${since:-?}s. NOT acting: nothing restarted, nothing pressed, the game untouched — a loop is a macro target-choice bug and a bounce would only restore the same loop. Report: ${WD_LOOP_REPORT}; see infra/docs/runbook.md 'loop suspected'."
