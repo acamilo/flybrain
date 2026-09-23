@@ -792,3 +792,13 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   game draws (a clerk's text box lists nothing, so a cursor step waits), and a purchase past the
   three cursor rows is not on the pad. From the live checkpoint the fly leaves the mart in 0.19
   brain minutes where it never left before; hunt tiles 1 -> 62, blocked starts 1,494 -> 82.
+- 2026-09-23 (v0.5.3, loop review, auto): row 56, the Pewter Gym guide. His YES/NO box is drawn
+  at a different place from the one row 41 pinned, so the seam read no prompt on any of the
+  frames it was up, dealt NEXT beside YES and NO on a choice, and every NO un-armed the pending
+  TALK, so the guide never entered the talked ledger and his fifty-two-press ring ran for hours.
+  Fix: the two-option border is found around the cursor the game parks in it, read whole; which
+  kind a NO was is decided when the box closes. From the live checkpoint the fly leaves the gym
+  on frame 1,337 where it never left in twenty brain minutes; hunt tiles 83 -> 441, dialog frames
+  32,496 -> 2,849. Rung 11 is not reached on either hunt arm: GO OBJECTIVE is on the Pewter pad
+  and the fly picks the frontier instead, which is the fly's choice, not a trap. The watchdog's
+  distinct-macro rule cannot see a four-macro ring; the watcher's zero-progress check covers it.
