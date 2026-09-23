@@ -365,6 +365,24 @@ impl Wram {
         self.set(ram::wNumSprites, count)
     }
 
+    /// One sprite the cartridge is not drawing: `$ff` in its image index, which is what
+    /// `CheckSpriteAvailability` writes for a sprite off the screen or switched off, and the
+    /// movement byte that decides whether the window test applies to it (row 58).
+    pub fn npc_undrawn(
+        &mut self,
+        slot: u8,
+        picture: u8,
+        x: u8,
+        y: u8,
+        movement: u8,
+    ) -> &mut Self {
+        self.npc(slot, picture, x, y, 0x00);
+        let data1 = ram::wSpriteStateData1 + u16::from(slot) * poke::SPRITE_BYTES;
+        let data2 = ram::wSpriteStateData2 + u16::from(slot) * poke::SPRITE_BYTES;
+        self.set(data1 + poke::SPRITE_IMAGE_INDEX, poke::SPRITE_NOT_DRAWN)
+            .set(data2 + poke::SPRITE_MOVEMENT_BYTE, movement)
+    }
+
     /// The current map's sign table: `bg_event`s, `Y, X` per entry with no bias, and a text id
     /// each.
     pub fn signs(&mut self, signs: &[(u8, u8, u8)]) -> &mut Self {

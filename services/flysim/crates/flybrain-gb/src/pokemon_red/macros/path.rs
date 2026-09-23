@@ -348,6 +348,28 @@ pub fn person_targets(state: &mut dyn MacroState) -> Vec<(Tile, TalkTarget)> {
     out
 }
 
+/// The people of this map the cartridge is not drawing only because they are off the screen,
+/// keyed as [`person_targets`] keys the drawn ones (row 58).
+///
+/// Kept apart from [`person_targets`] on purpose: that list is what `GO NPC`, `TALK` and the
+/// talked ledger's facing test read, and a sprite outside the window may also be a toggleable
+/// object the cartridge has switched off ([`GameState::offscreen_npcs`]). The one reader is the
+/// ladder's own target list, which has to know the leader is in the room before the fly can see
+/// him.
+///
+/// [`GameState::offscreen_npcs`]: super::state::GameState::offscreen_npcs
+pub fn offscreen_person_targets(state: &mut dyn MacroState) -> Vec<(Tile, TalkTarget)> {
+    let mut out: Vec<(Tile, TalkTarget)> = state
+        .offscreen_npcs()
+        .iter()
+        .filter(|npc| npc.person())
+        .map(|npc| (Tile::new(npc.x, npc.y), TalkTarget::Sprite(npc.slot)))
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// What is on `tile`: the thing a press at it would talk to, or `None` for bare ground.
 ///
 /// People first, because a person standing on a sign's tile is what the press would reach.

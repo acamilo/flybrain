@@ -655,6 +655,15 @@ pub trait GameState {
     /// the same sixteen slots. [`Npc::person`] is the test that separates the two.
     fn npcs(&mut self) -> Vec<Npc>;
 
+    /// Sprites of the current map the cartridge is not drawing only because they are off the
+    /// screen (row 58, `pokemon_red::state::offscreen_npcs`).
+    ///
+    /// Defaulted to none, which narrows: a seam that cannot answer knows the drawn sprites and
+    /// nothing more, which is what every reader had before row 58.
+    fn offscreen_npcs(&mut self) -> Vec<Npc> {
+        Vec::new()
+    }
+
     /// The current map's signs, i.e. its `bg_event` text tiles.
     ///
     /// Empty on a map with none. Required rather than defaulted like the rest of this trait: an
