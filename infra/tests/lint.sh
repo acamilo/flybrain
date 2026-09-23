@@ -460,19 +460,73 @@ else
         && pass "flyedge.service keeps its metrics on loopback" \
         || fail "flyedge.service FLY_EDGE_METRICS_ADDR must be a 127.0.0.1 address"
 fi
-if grep -E '^(Wants|Requires)=' "$INFRA_DIR/units/fly.target" | grep -q 'flyedge'; then
+# Every unit a target's Wants=/Requires= names, with backslash continuations joined and
+# comments dropped: fly.target spreads both lists over several physical lines, and the
+# continuation line is exactly where a new unit would be added.
+target_pulls() {
+    awk '
+        /^[[:space:]]*[#;]/ { next }
+        {
+            line = $0
+            cont = sub(/\\[[:space:]]*$/, "", line)
+            buf = buf line
+            if (cont) next
+            if (buf ~ /^[[:space:]]*(Wants|Requires)=/) { sub(/^[^=]*=/, "", buf); print buf }
+            buf = ""
+        }
+    ' "$1" | tr -s ' \t' '\n' | grep -v '^$' || true
+}
+if target_pulls "$INFRA_DIR/units/fly.target" | grep -qx 'flyedge.service'; then
     fail "fly.target pulls flyedge.service in; it must stay off until the operator enables it"
 else
     pass "fly.target does not pull flyedge.service in"
 fi
+# The parser itself: a unit named only on a continuation line must be found, a commented one
+# must not, and the real fly.target must still yield flysim.service.
+tp_fixture="$(mktemp "${TMPDIR:-/tmp}/fly-lint-target.XXXXXX")"
+cat > "$tp_fixture" <<'TPTARGET'
+[Unit]
+Wants=network-online.target xvfb.service \
+      flysim.service flyedge.service
+# Requires=commented.service
+Requires=xvfb.service \
+         pulse.service
+TPTARGET
+tp_units="$(target_pulls "$tp_fixture")"
+if printf '%s\n' "$tp_units" | grep -qx 'flyedge.service' \
+    && printf '%s\n' "$tp_units" | grep -qx 'pulse.service' \
+    && ! printf '%s\n' "$tp_units" | grep -qx 'commented.service' \
+    && target_pulls "$INFRA_DIR/units/fly.target" | grep -qx 'flysim.service'; then
+    pass "target_pulls reads continuation lines and skips comments (fixture + fly.target)"
+else
+    fail "target_pulls missed a continuation line or read a comment: $(echo "$tp_units" | tr '\n' ' ')"
+fi
+rm -f "$tp_fixture"
 if grep -E '^(ALWAYS_ON_UNITS|APP_UNITS)=' "$INFRA_DIR/07-enable.sh" "$INFRA_DIR/verify.sh" | grep -q 'flyedge'; then
     fail "07-enable.sh or verify.sh lists flyedge.service as always-on"
 else
     pass "07-enable.sh and verify.sh leave flyedge.service alone"
 fi
-grep -qF 'echo "FLY_FEED_VIA=${FLY_FEED_VIA:-direct}"' "$INFRA_DIR/05-deploy.sh" \
-    && pass "05-deploy.sh writes FLY_FEED_VIA with direct as the default" \
-    || fail "05-deploy.sh must write FLY_FEED_VIA=\${FLY_FEED_VIA:-direct} into fly.env"
+if grep -qF 'FLY_FEED_VIA_EFFECTIVE="$(feed_via_normalize "${FLY_FEED_VIA:-}")"' "$INFRA_DIR/05-deploy.sh" \
+    && grep -qF 'echo "FLY_FEED_VIA=${FLY_FEED_VIA_EFFECTIVE}"' "$INFRA_DIR/05-deploy.sh"; then
+    pass "05-deploy.sh validates FLY_FEED_VIA and writes the normalized value"
+else
+    fail "05-deploy.sh must run FLY_FEED_VIA through feed_via_normalize and write FLY_FEED_VIA_EFFECTIVE"
+fi
+# shellcheck source=../lib/common.sh
+fv_out="$(bash -c '. "$1/lib/common.sh"
+    for v in "" direct DIRECT bus Bus BUS; do printf "%s=%s " "${v:-empty}" "$(feed_via_normalize "$v")"; done
+    for v in buss "bus " direct,bus; do feed_via_normalize "$v" >/dev/null && printf "ACCEPTED:%s " "$v"; done; true' _ "$INFRA_DIR" 2>&1)"
+if [ "$fv_out" = "empty=direct direct=direct DIRECT=direct bus=bus Bus=bus BUS=bus " ]; then
+    pass "feed_via_normalize: direct|bus in any case, empty is direct, anything else refused"
+else
+    fail "feed_via_normalize: got '$fv_out'"
+fi
+if grep -qE '^[[:space:]]*for u in flysim .*\bflyedge\b.*; do$' "$INFRA_DIR/05-deploy.sh"; then
+    pass "05-deploy.sh writes a cpuset drop-in for flyedge.service"
+else
+    fail "05-deploy.sh cpuset loop must include flyedge (the page's CPUs, never flysim's)"
+fi
 if grep -qE '^Environment=FLY_FEED_VIA' "$INFRA_DIR/units/flysim.service"; then
     fail "flysim.service pins FLY_FEED_VIA; it belongs to fly.env so a box can be switched by deploy"
 else
@@ -502,6 +556,9 @@ else
     feed_url_case "direct" "FLY_FEED_VIA=direct" "" "http://sim"
     feed_url_case "no FLY_FEED_VIA line (a fly.env before it)" "FLY_GAME=pokemon-red" "" "http://sim"
     feed_url_case "bus" "FLY_FEED_VIA=bus" "" "http://edge"
+    feed_url_case "Bus (flysim lowercases)" "FLY_FEED_VIA=Bus" "" "http://edge"
+    feed_url_case "BUS" "FLY_FEED_VIA=BUS" "" "http://edge"
+    feed_url_case "quoted bus" 'FLY_FEED_VIA="bus"' "" "http://edge"
     feed_url_case "explicit override wins" "FLY_FEED_VIA=bus" "http://other" "http://other"
     rm -rf "$fe_fixture"
 fi

@@ -351,7 +351,8 @@ feed_metrics_url() {
     fi
     local via=""
     if [ -f "$FLY_ENV_FILE" ]; then
-        via="$(awk -F= '/^FLY_FEED_VIA=/ { print $2; exit }' "$FLY_ENV_FILE" 2>/dev/null | tr -d ' \r' || true)"
+        # Lowercased: flysim reads the value case-insensitively, so `Bus` is bus mode.
+        via="$(awk -F= '/^FLY_FEED_VIA=/ { print $2; exit }' "$FLY_ENV_FILE" 2>/dev/null | tr -d ' \r"' | tr '[:upper:]' '[:lower:]' || true)"
     fi
     if [ "$via" = "bus" ]; then
         echo "$FLY_EDGE_METRICS_URL"
