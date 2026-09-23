@@ -429,6 +429,81 @@ fn a_text_box_is_open_from_the_font_flag_and_waiting_from_the_box() {
     assert!(!text_box(&mut wram).waiting);
 }
 
+/// Row 56: a two-option box is the one Red drew, not the one row 41 pinned.
+///
+/// Row 41 read the border at (11, 6)-(19, 11) because that is where the Pokémon Center's script
+/// puts it, and named the limit in its own residual. The Pewter Gym guide's "Let me take you to the
+/// top!" draws the same menu at **(14, 7)-(19, 11)** with the cursor at column 15, so the pinned
+/// reading answered `false` on all 260 frames of a surveyed conversation while the box was drawn on
+/// ten of them (`examples/scene_probe.rs`, `FLY_PROBE_CATCH=dialog`). The pad was therefore
+/// `NEXT, YES, NO` on a box that was a choice -- two channels for one A press, 12.10's forbidden
+/// pair -- and the reopened-prompt exclusion never armed, because it only judges an answer to a
+/// prompt this crate can read.
+///
+/// What is the same in both boxes is a fact about `DisplayTwoOptionMenu` rather than about a
+/// script: the cursor goes in the box's first interior column. The top is not, so it is found.
+#[test]
+fn a_yes_no_prompt_is_the_box_drawn_around_the_cursor_wherever_red_draws_it() {
+    // The centre's own box, which row 41 surveyed: still a prompt.
+    let mut wram = Wram::overworld();
+    wram.yes_no_prompt();
+    assert!(yes_no_prompt(&mut wram), "the box at (11, 6)-(19, 11)");
+
+    // The gym guide's, three columns over and one row shorter. This is row 56.
+    let mut wram = Wram::overworld();
+    wram.gym_yes_no_prompt();
+    assert!(yes_no_prompt(&mut wram), "the box at (14, 7)-(19, 11)");
+
+    // Both halves stay load-bearing: the cursor bytes outlive the box on every other frame of the
+    // conversation, and a frame with no box drawn is not a choice.
+    let mut wram = Wram::overworld();
+    wram.dialogue_box().yes_no_cursor(poke::GYM_GUIDE_YES_NO_CURSOR_X);
+    assert!(!yes_no_prompt(&mut wram), "the cursor bytes with no box are not a prompt");
+
+    // The font flag gates it, exactly as it gates `waiting`.
+    let mut wram = Wram::overworld();
+    wram.gym_yes_no_prompt().set(ram::wFontLoaded, 0);
+    assert!(!yes_no_prompt(&mut wram), "no text display, no prompt");
+
+    // A box the cursor is not parked in is not the cursor's box: the left edge is one column left
+    // of the first item, and that is the whole of what ties the two together.
+    let mut wram = Wram::overworld();
+    wram.dialogue_box()
+        .draw_box(4, 7, 9, 11)
+        .yes_no_cursor(poke::GYM_GUIDE_YES_NO_CURSOR_X);
+    assert!(!yes_no_prompt(&mut wram), "a box somewhere else on the screen");
+
+    // And a menu of more than two options is not this menu, box or no box.
+    let mut wram = Wram::overworld();
+    wram.gym_yes_no_prompt().set(ram::wMaxMenuItem, 2);
+    assert!(!yes_no_prompt(&mut wram), "three options is not a two-option box");
+
+    // The pads the two frames are dealt: a readable choice is the choice's own answers and `NEXT`
+    // is off it (12.10 in a dialog), and a plain box of the same conversation keeps all three.
+    use crate::pokemon_red::macros::palette::{MacroKind, scene_set};
+    let pad = |wram: &mut Wram| {
+        let scene = crate::pokemon_red::scene::detect(wram);
+        let mut poke = PokeState::new(wram);
+        scene_set(scene, &mut poke)
+    };
+
+    let mut wram = Wram::overworld();
+    wram.gym_yes_no_prompt();
+    assert_eq!(
+        pad(&mut wram),
+        vec![MacroKind::Yes, MacroKind::No],
+        "the guide's box is a choice, so the pad is its answers"
+    );
+
+    let mut wram = Wram::overworld();
+    wram.dialogue_box().yes_no_cursor(poke::GYM_GUIDE_YES_NO_CURSOR_X);
+    assert_eq!(
+        pad(&mut wram),
+        vec![MacroKind::Next, MacroKind::Yes, MacroKind::No],
+        "a plain box of the same conversation"
+    );
+}
+
 #[test]
 fn the_start_menu_counts_its_items() {
     let mut wram = Wram::overworld();
