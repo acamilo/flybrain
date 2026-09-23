@@ -4387,7 +4387,8 @@
           "observationBoundaries": [],
           "outcomeIds": [],
           "eventIds": [],
-          "publishedBoundary": "42"
+          "publishedBoundary": "42",
+          "boundaryActions": []
         },
         "operational": {
           "wallTimeNs": "1",
@@ -4405,7 +4406,8 @@
             }
           ],
           "busCallIds": [],
-          "deliveryIds": []
+          "deliveryIds": [],
+          "captures": []
         }
       },
       "reason": "a commit acknowledges the transition's next boundary"
@@ -5759,6 +5761,719 @@
         "flysimCompatibility": "lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu"
       },
       "reason": "FLYSIM01 stays until RETIRE-01"
+    },
+    {
+      "name": "a capture taken before the boundary's slot save",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42",
+          "boundaryActions": [
+            {
+              "kind": "save-slot",
+              "slotId": "best",
+              "stateDigest": "5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d"
+            }
+          ]
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ],
+          "captures": [
+            {
+              "checkpointId": "milestone-11",
+              "afterActions": 0
+            }
+          ]
+        }
+      },
+      "reason": "a checkpoint must not pair the new ledger with the old slot (review round 1, B1)"
+    },
+    {
+      "name": "a capture counting actions that were never applied",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42",
+          "boundaryActions": [
+            {
+              "kind": "save-slot",
+              "slotId": "best",
+              "stateDigest": "5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d"
+            }
+          ]
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ],
+          "captures": [
+            {
+              "checkpointId": "milestone-11",
+              "afterActions": 2
+            }
+          ]
+        }
+      },
+      "reason": "afterActions <= the boundary's actions"
+    },
+    {
+      "name": "a slot save after a rollback",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42",
+          "boundaryActions": [
+            {
+              "kind": "rollback",
+              "slotId": "best",
+              "stateDigest": null
+            },
+            {
+              "kind": "save-slot",
+              "slotId": "best",
+              "stateDigest": "5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d"
+            }
+          ]
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ],
+          "captures": []
+        }
+      },
+      "reason": "nothing follows a rollback at the same boundary"
+    },
+    {
+      "name": "a slot save without its state digest",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42",
+          "boundaryActions": [
+            {
+              "kind": "save-slot",
+              "slotId": "best",
+              "stateDigest": null
+            }
+          ]
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ],
+          "captures": []
+        }
+      },
+      "reason": "a slot save records the saved state's digest"
+    },
+    {
+      "name": "the same slot saved twice at one boundary",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42",
+          "boundaryActions": [
+            {
+              "kind": "save-slot",
+              "slotId": "best",
+              "stateDigest": "5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d"
+            },
+            {
+              "kind": "save-slot",
+              "slotId": "best",
+              "stateDigest": "5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d"
+            }
+          ]
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ],
+          "captures": []
+        }
+      },
+      "reason": "a slot is saved at most once per boundary"
+    },
+    {
+      "name": "an unknown boundary action",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42",
+          "boundaryActions": [
+            {
+              "kind": "reset",
+              "slotId": "best",
+              "stateDigest": null
+            }
+          ]
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ],
+          "captures": []
+        }
+      },
+      "reason": "BoundaryActionKind is closed"
+    },
+    {
+      "name": "captures recorded out of order",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42",
+          "boundaryActions": [
+            {
+              "kind": "save-slot",
+              "slotId": "best",
+              "stateDigest": "5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d"
+            },
+            {
+              "kind": "rollback",
+              "slotId": "best",
+              "stateDigest": null
+            }
+          ]
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ],
+          "captures": [
+            {
+              "checkpointId": "a",
+              "afterActions": 2
+            },
+            {
+              "checkpointId": "b",
+              "afterActions": 1
+            }
+          ]
+        }
+      },
+      "reason": "captures are recorded in the order taken"
     }
   ]
 }

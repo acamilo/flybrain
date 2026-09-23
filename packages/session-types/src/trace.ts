@@ -23,6 +23,25 @@ import {
   ownerToken,
 } from './scalar';
 import { MAX_AGENTS, MAX_RATE_ROLES } from './workers';
+import { MAX_SLOTS } from './extensions';
+
+/** Boundary actions at the reached boundary (amendment of 2026-09-23, RT-01a). */
+export const BOUNDARY_ACTION_KINDS = ['save-slot', 'rollback'] as const;
+export type BoundaryActionKind = (typeof BOUNDARY_ACTION_KINDS)[number];
+/** Every slot at most once, plus one rollback. */
+export const MAX_BOUNDARY_ACTIONS = MAX_SLOTS + 1;
+
+export interface BoundaryAction {
+  kind: BoundaryActionKind;
+  slotId: Id;
+  stateDigest: Digest | null;
+}
+
+/** A checkpoint capture at the reached boundary and how many boundary actions preceded it. */
+export interface TraceCapture {
+  checkpointId: Id;
+  afterActions: number;
+}
 
 export interface TraceAgent {
   agentId: Id;
@@ -49,6 +68,7 @@ export interface TraceBehaviour {
   outcomeIds: Id[];
   eventIds: Id[];
   publishedBoundary: U64;
+  boundaryActions: BoundaryAction[];
 }
 
 export interface TraceRequest {
@@ -63,6 +83,7 @@ export interface TraceOperational {
   commitRequestIds: TraceRequest[];
   busCallIds: BusCallId[];
   deliveryIds: OwnerToken[];
+  captures: TraceCapture[];
 }
 
 export interface TransitionTrace {
@@ -107,7 +128,18 @@ export function readTraceBehaviour(value: unknown): TraceBehaviour {
   const outcomeIds = reader.idList('outcomeIds', 0, MAX_RATE_ROLES);
   const eventIds = reader.idList('eventIds', 0, MAX_RATE_ROLES);
   const publishedBoundary = reader.u64('publishedBoundary');
+  const boundaryActions = reader.list('boundaryActions', 0, MAX_BOUNDARY_ACTIONS, (item) => {
+    const action = new Reader(item, 'TraceBehaviour.boundaryActions');
+    const entry: BoundaryAction = {
+      kind: action.enumeration('kind', BOUNDARY_ACTION_KINDS),
+      slotId: action.id('slotId'),
+      stateDigest: action.value('stateDigest') === null ? null : action.digest('stateDigest'),
+    };
+    action.finish();
+    return entry;
+  });
   reader.finish();
+  validateBoundaryActions(boundaryActions);
 
   requireUnique(
     agents.map((agent) => agent.agentId),
@@ -141,7 +173,37 @@ export function readTraceBehaviour(value: unknown): TraceBehaviour {
     outcomeIds,
     eventIds,
     publishedBoundary,
+    boundaryActions,
   };
+}
+
+/** Slot saves first, each slot once with its digest; at most one rollback, last, no digest. */
+function validateBoundaryActions(actions: readonly BoundaryAction[]): void {
+  let rolledBack = false;
+  const saved: string[] = [];
+  for (const action of actions) {
+    if (rolledBack) fail('TraceBehaviour: nothing follows a rollback at the same boundary');
+    if (action.kind === 'save-slot') {
+      if (action.stateDigest === null) fail('TraceBehaviour: a slot save records its state digest');
+      if (saved.includes(action.slotId)) {
+        fail('TraceBehaviour: a slot is saved at most once per boundary');
+      }
+      saved.push(action.slotId);
+    } else {
+      if (action.stateDigest !== null) fail('TraceBehaviour: a rollback records no state digest');
+      rolledBack = true;
+    }
+  }
+}
+
+/** How many leading boundary actions are slot saves. */
+export function slotSaves(behaviour: TraceBehaviour): number {
+  let count = 0;
+  for (const action of behaviour.boundaryActions) {
+    if (action.kind !== 'save-slot') break;
+    count += 1;
+  }
+  return count;
 }
 
 export function readTraceOperational(value: unknown): TraceOperational {
@@ -162,6 +224,15 @@ export function readTraceOperational(value: unknown): TraceOperational {
     commitRequestIds: reader.list('commitRequestIds', 1, MAX_AGENTS, readRequests),
     busCallIds: reader.list('busCallIds', 0, 64, busCallId),
     deliveryIds: reader.list('deliveryIds', 0, 64, ownerToken),
+    captures: reader.list('captures', 0, MAX_BOUNDARY_ACTIONS + 1, (item) => {
+      const capture = new Reader(item, 'TraceOperational.captures');
+      const entry: TraceCapture = {
+        checkpointId: capture.id('checkpointId'),
+        afterActions: capture.int('afterActions', 0, MAX_BOUNDARY_ACTIONS),
+      };
+      capture.finish();
+      return entry;
+    }),
   };
   reader.finish();
   requireUnique(
@@ -174,6 +245,17 @@ export function readTraceOperational(value: unknown): TraceOperational {
   );
   requireUnique(operational.busCallIds, 'TraceOperational.busCallIds');
   requireUnique(operational.deliveryIds, 'TraceOperational.deliveryIds');
+  requireUnique(
+    operational.captures.map((capture) => capture.checkpointId),
+    'TraceOperational.captures',
+  );
+  let last = 0;
+  for (const capture of operational.captures) {
+    if (capture.afterActions < last) {
+      fail('TraceOperational: captures are recorded in the order they were taken');
+    }
+    last = capture.afterActions;
+  }
   return operational;
 }
 
@@ -192,6 +274,20 @@ export function readTransitionTrace(value: unknown): TransitionTrace {
           `TransitionTrace: request recorded for "${request.agentId}", which is not in the transition`,
         );
       }
+    }
+  }
+  // A slot save due at a boundary completes before any capture there (legacy-gameboy-v1 16).
+  const saves = slotSaves(trace.behaviour);
+  for (const capture of trace.operational.captures) {
+    if (capture.afterActions < saves) {
+      fail(
+        `TransitionTrace: capture "${capture.checkpointId}" was taken before this boundary's slot saves completed`,
+      );
+    }
+    if (capture.afterActions > trace.behaviour.boundaryActions.length) {
+      fail(
+        `TransitionTrace: capture "${capture.checkpointId}" counts more boundary actions than were applied`,
+      );
     }
   }
   return trace;
@@ -242,6 +338,7 @@ export function behaviourDiff(left: TransitionTrace, right: TransitionTrace): st
   }
   if (differs(a.outcomeIds, b.outcomeIds)) out.push('outcomeIds differ');
   if (differs(a.eventIds, b.eventIds)) out.push('eventIds differ');
+  if (differs(a.boundaryActions, b.boundaryActions)) out.push('boundaryActions differ');
   const idsA = a.agents.map((agent) => agent.agentId);
   const idsB = b.agents.map((agent) => agent.agentId);
   if (differs(idsA, idsB)) {

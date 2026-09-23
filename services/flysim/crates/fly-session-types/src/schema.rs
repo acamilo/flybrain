@@ -127,6 +127,11 @@ pub const ENUMS: &[EnumSchema] = &[
         members: &["lockstep-v1"],
     },
     EnumSchema {
+        name: "BoundaryActionKind",
+        source: "step-v1 8",
+        members: crate::trace::BoundaryActionKind::ALL,
+    },
+    EnumSchema {
         name: "EpisodeRequestKind",
         source: "workers-v1 4",
         members: crate::workers::EpisodeRequestKind::ALL,
@@ -1070,6 +1075,11 @@ pub const SCHEMAS: &[TypeSchema] = &[
             req("outcomeIds", "array<Id>", "task outcome ids in task order"),
             req("eventIds", "array<Id>", "task event ids in task order"),
             req("publishedBoundary", "U64", ""),
+            req(
+                "boundaryActions",
+                "array<{kind:BoundaryActionKind,slotId:Id,stateDigest:Digest|null}>",
+                "<= 5, application order: slot saves first (each slot once, digest set), then at most one rollback (no digest)",
+            ),
         ],
     },
     TypeSchema {
@@ -1103,6 +1113,11 @@ pub const SCHEMAS: &[TypeSchema] = &[
             ),
             req("busCallIds", "array<BusCallId>", "call-<U64>"),
             req("deliveryIds", "array<OwnerToken>", "dlv-<U64> or own-<U64>"),
+            req(
+                "captures",
+                "array<{checkpointId:Id,afterActions:int}>",
+                "taken order, unique checkpointId; afterActions >= the boundary's slot saves and <= its actions",
+            ),
         ],
     },
 ];

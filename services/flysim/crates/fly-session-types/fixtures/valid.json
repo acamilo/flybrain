@@ -2763,7 +2763,8 @@
           "eventIds": [
             "evt-1"
           ],
-          "publishedBoundary": "42"
+          "publishedBoundary": "42",
+          "boundaryActions": []
         },
         "operational": {
           "wallTimeNs": "1234567890",
@@ -2796,12 +2797,13 @@
           "deliveryIds": [
             "dlv-7",
             "own-9"
-          ]
+          ],
+          "captures": []
         }
       },
       "note": "",
-      "canonical": "{\"behaviour\":{\"acknowledgedBoundary\":\"42\",\"agents\":[{\"agentId\":\"fly-a\",\"brainTicks\":\"2517\",\"committedStep\":\"42\",\"decisionDigest\":\"a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"3\",\"numerator\":\"1000000\"},\"ticksAdvanced\":\"17\"},{\"agentId\":\"fly-b\",\"brainTicks\":\"2550\",\"committedStep\":\"42\",\"decisionDigest\":\"ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"1\",\"numerator\":\"0\"},\"ticksAdvanced\":\"17\"}],\"batchId\":\"batch-41\",\"controlDigest\":\"1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6\",\"eventIds\":[\"evt-1\"],\"observationBoundaries\":[{\"producedStep\":\"42\",\"viewId\":\"screen\"}],\"outcomeIds\":[\"outcome-1\"],\"publishedBoundary\":\"42\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"}},\"operational\":{\"advanceRequestId\":\"req-43\",\"busCallIds\":[\"call-100\",\"call-101\",\"call-102\"],\"commitRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-44\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-45\"}],\"deliveryIds\":[\"dlv-7\",\"own-9\"],\"prepareRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-41\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-42\"}],\"wallTimeNs\":\"1234567890\"}}",
-      "digest": "707701d6dcf5529a67cc9b1e300d5e1a273b9a7b02d91154d4a2a1978cd8e549"
+      "canonical": "{\"behaviour\":{\"acknowledgedBoundary\":\"42\",\"agents\":[{\"agentId\":\"fly-a\",\"brainTicks\":\"2517\",\"committedStep\":\"42\",\"decisionDigest\":\"a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"3\",\"numerator\":\"1000000\"},\"ticksAdvanced\":\"17\"},{\"agentId\":\"fly-b\",\"brainTicks\":\"2550\",\"committedStep\":\"42\",\"decisionDigest\":\"ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"1\",\"numerator\":\"0\"},\"ticksAdvanced\":\"17\"}],\"batchId\":\"batch-41\",\"boundaryActions\":[],\"controlDigest\":\"1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6\",\"eventIds\":[\"evt-1\"],\"observationBoundaries\":[{\"producedStep\":\"42\",\"viewId\":\"screen\"}],\"outcomeIds\":[\"outcome-1\"],\"publishedBoundary\":\"42\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"}},\"operational\":{\"advanceRequestId\":\"req-43\",\"busCallIds\":[\"call-100\",\"call-101\",\"call-102\"],\"captures\":[],\"commitRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-44\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-45\"}],\"deliveryIds\":[\"dlv-7\",\"own-9\"],\"prepareRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-41\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-42\"}],\"wallTimeNs\":\"1234567890\"}}",
+      "digest": "36ecd5d39f81863c30c0fd52a12d72eb3ba71f0f3b72b2349e2c7f02a1d8e3e5"
     },
     {
       "name": "trace behaviour on its own",
@@ -2853,11 +2855,12 @@
         "eventIds": [
           "evt-1"
         ],
-        "publishedBoundary": "42"
+        "publishedBoundary": "42",
+        "boundaryActions": []
       },
       "note": "the half two runs must agree on",
-      "canonical": "{\"acknowledgedBoundary\":\"42\",\"agents\":[{\"agentId\":\"fly-a\",\"brainTicks\":\"2517\",\"committedStep\":\"42\",\"decisionDigest\":\"a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"3\",\"numerator\":\"1000000\"},\"ticksAdvanced\":\"17\"},{\"agentId\":\"fly-b\",\"brainTicks\":\"2550\",\"committedStep\":\"42\",\"decisionDigest\":\"ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"1\",\"numerator\":\"0\"},\"ticksAdvanced\":\"17\"}],\"batchId\":\"batch-41\",\"controlDigest\":\"1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6\",\"eventIds\":[\"evt-1\"],\"observationBoundaries\":[{\"producedStep\":\"42\",\"viewId\":\"screen\"}],\"outcomeIds\":[\"outcome-1\"],\"publishedBoundary\":\"42\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"}}",
-      "digest": "d938188fe3006537dbc0038fabf2a05df584e64b361b1106d79f3f965dff414a"
+      "canonical": "{\"acknowledgedBoundary\":\"42\",\"agents\":[{\"agentId\":\"fly-a\",\"brainTicks\":\"2517\",\"committedStep\":\"42\",\"decisionDigest\":\"a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"3\",\"numerator\":\"1000000\"},\"ticksAdvanced\":\"17\"},{\"agentId\":\"fly-b\",\"brainTicks\":\"2550\",\"committedStep\":\"42\",\"decisionDigest\":\"ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"1\",\"numerator\":\"0\"},\"ticksAdvanced\":\"17\"}],\"batchId\":\"batch-41\",\"boundaryActions\":[],\"controlDigest\":\"1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6\",\"eventIds\":[\"evt-1\"],\"observationBoundaries\":[{\"producedStep\":\"42\",\"viewId\":\"screen\"}],\"outcomeIds\":[\"outcome-1\"],\"publishedBoundary\":\"42\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"}}",
+      "digest": "59ed2ef812fe44a5808d8251b253c76a642cdc6828ee964a1c90ef302b66c9e4"
     },
     {
       "name": "trace operational metadata on its own",
@@ -2893,11 +2896,12 @@
         "deliveryIds": [
           "dlv-7",
           "own-9"
-        ]
+        ],
+        "captures": []
       },
       "note": "recorded by step-v1 section 8, excluded from its comparison",
-      "canonical": "{\"advanceRequestId\":\"req-43\",\"busCallIds\":[\"call-100\",\"call-101\",\"call-102\"],\"commitRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-44\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-45\"}],\"deliveryIds\":[\"dlv-7\",\"own-9\"],\"prepareRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-41\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-42\"}],\"wallTimeNs\":\"1234567890\"}",
-      "digest": "07c3402ab0e48b186d56f667da980a15b2a48b21381235cff37523a24ff0dfff"
+      "canonical": "{\"advanceRequestId\":\"req-43\",\"busCallIds\":[\"call-100\",\"call-101\",\"call-102\"],\"captures\":[],\"commitRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-44\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-45\"}],\"deliveryIds\":[\"dlv-7\",\"own-9\"],\"prepareRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-41\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-42\"}],\"wallTimeNs\":\"1234567890\"}",
+      "digest": "d9fd215dbea34237559ff5a5826beca16d3646340f2ce76ee62115d21f7c27d6"
     },
     {
       "name": "agent telemetry reporting a running stimulation pulse",
@@ -3338,12 +3342,39 @@
           "mode": "macros",
           "macroChannels": [
             "macro_go_objective",
+            "macro_go_out",
+            "macro_go_warp",
+            "macro_go_route",
+            "macro_go_item",
+            "macro_go_npc",
+            "macro_go_frontier",
+            "macro_go_shop",
+            "macro_go_heal",
             "macro_talk",
+            "macro_menu",
             "macro_next",
-            "macro_move_1"
+            "macro_yes",
+            "macro_no",
+            "macro_close",
+            "macro_confirm",
+            "macro_back",
+            "macro_move_1",
+            "macro_move_2",
+            "macro_move_3",
+            "macro_move_4",
+            "macro_switch",
+            "macro_item",
+            "macro_throw_ball",
+            "macro_run",
+            "macro_buy_potion",
+            "macro_buy_ball",
+            "macro_buy_antidote",
+            "macro_buy_repel",
+            "macro_heal",
+            "macro_leave"
           ]
         },
-        "decoderConfigDigest": "5c3f2f084bef674fed492b82e5e0951e993c856ae98f5453d180cd06143dc854",
+        "decoderConfigDigest": "82b6601f0390b742a67eca44ef935b49e16a73315db70f5644f1cbd21f7c8a52",
         "environment": {
           "extensions": [
             "gameboy-slots-v1"
@@ -3376,9 +3407,9 @@
         "checkpointFormatOfRecord": "FLYSIM01",
         "flysimCompatibility": "lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu"
       },
-      "note": "placeholder ROM and decoder digests",
-      "canonical": "{\"checkpointFormatOfRecord\":\"FLYSIM01\",\"compositionId\":\"pokered-live\",\"decoderConfigDigest\":\"5c3f2f084bef674fed492b82e5e0951e993c856ae98f5453d180cd06143dc854\",\"environment\":{\"audio\":{\"channels\":2,\"sampleRate\":48000},\"controllerSchema\":{\"digest\":\"1bde5fa114b99824ad608fba4ea85706cb0cebc6123a778dc1e5f89791d2a05e\",\"id\":\"gameboy-joypad-v1\",\"version\":1},\"extensions\":[\"gameboy-slots-v1\"],\"inspectionSchema\":{\"digest\":\"d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6\",\"id\":\"gameboy-memory-inspection-v1\",\"version\":1},\"setupFrames\":1,\"slots\":[\"best\"],\"stepDuration\":{\"denominator\":\"512\",\"numerator\":\"8572265625\"}},\"episodePolicy\":\"legacy-ratchet-rollback-v1\",\"executor\":{\"adapter\":\"pokered-unique8-v6\",\"id\":\"pokered-macros-v1\",\"macroChannels\":[\"macro_go_objective\",\"macro_talk\",\"macro_next\",\"macro_move_1\"],\"mode\":\"macros\",\"rom\":{\"byteLength\":\"1048576\",\"digest\":\"c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20\",\"format\":\"gb-rom\",\"id\":\"pokered-rom\"},\"symbolProvenance\":\"0cd19d3b877b7dc66d12c7050bed9a7f38154d4b\"},\"flysimCompatibility\":\"lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu\",\"profile\":{\"byteLength\":\"1137\",\"digest\":\"41e5d1ac62ab23f1b2d7252d52faac08b269c85e6b4c9ed7a370c74032c60878\",\"format\":\"fly-profile-v1\",\"id\":\"gameboy-legacy-fafb-v783-v1\"},\"restore\":\"legacy-transient-reset\",\"scheduler\":\"lockstep-v1\"}",
-      "digest": "f0142c7f09a1319453b472cdddbc1855062af5733f89d1fbc0b82c0adb52b0c7"
+      "note": "placeholder ROM digest; real macros-mode decoder digest and channels",
+      "canonical": "{\"checkpointFormatOfRecord\":\"FLYSIM01\",\"compositionId\":\"pokered-live\",\"decoderConfigDigest\":\"82b6601f0390b742a67eca44ef935b49e16a73315db70f5644f1cbd21f7c8a52\",\"environment\":{\"audio\":{\"channels\":2,\"sampleRate\":48000},\"controllerSchema\":{\"digest\":\"1bde5fa114b99824ad608fba4ea85706cb0cebc6123a778dc1e5f89791d2a05e\",\"id\":\"gameboy-joypad-v1\",\"version\":1},\"extensions\":[\"gameboy-slots-v1\"],\"inspectionSchema\":{\"digest\":\"d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6\",\"id\":\"gameboy-memory-inspection-v1\",\"version\":1},\"setupFrames\":1,\"slots\":[\"best\"],\"stepDuration\":{\"denominator\":\"512\",\"numerator\":\"8572265625\"}},\"episodePolicy\":\"legacy-ratchet-rollback-v1\",\"executor\":{\"adapter\":\"pokered-unique8-v6\",\"id\":\"pokered-macros-v1\",\"macroChannels\":[\"macro_go_objective\",\"macro_go_out\",\"macro_go_warp\",\"macro_go_route\",\"macro_go_item\",\"macro_go_npc\",\"macro_go_frontier\",\"macro_go_shop\",\"macro_go_heal\",\"macro_talk\",\"macro_menu\",\"macro_next\",\"macro_yes\",\"macro_no\",\"macro_close\",\"macro_confirm\",\"macro_back\",\"macro_move_1\",\"macro_move_2\",\"macro_move_3\",\"macro_move_4\",\"macro_switch\",\"macro_item\",\"macro_throw_ball\",\"macro_run\",\"macro_buy_potion\",\"macro_buy_ball\",\"macro_buy_antidote\",\"macro_buy_repel\",\"macro_heal\",\"macro_leave\"],\"mode\":\"macros\",\"rom\":{\"byteLength\":\"1048576\",\"digest\":\"c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20\",\"format\":\"gb-rom\",\"id\":\"pokered-rom\"},\"symbolProvenance\":\"0cd19d3b877b7dc66d12c7050bed9a7f38154d4b\"},\"flysimCompatibility\":\"lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu\",\"profile\":{\"byteLength\":\"1137\",\"digest\":\"41e5d1ac62ab23f1b2d7252d52faac08b269c85e6b4c9ed7a370c74032c60878\",\"format\":\"fly-profile-v1\",\"id\":\"gameboy-legacy-fafb-v783-v1\"},\"restore\":\"legacy-transient-reset\",\"scheduler\":\"lockstep-v1\"}",
+      "digest": "77d8a88ff7fea51eb29b1ae75fc9cf8c17c184e6a1e5a585e86399f41fd9c9b0"
     },
     {
       "name": "an example legacy composition in raw mode",
@@ -3405,7 +3436,7 @@
           "mode": "raw",
           "macroChannels": []
         },
-        "decoderConfigDigest": "5c3f2f084bef674fed492b82e5e0951e993c856ae98f5453d180cd06143dc854",
+        "decoderConfigDigest": "6234e4a0363cfe82b8d515943c4f645a3960eda8fa5bf9465009061f80d50812",
         "environment": {
           "extensions": [
             "gameboy-slots-v1"
@@ -3439,8 +3470,225 @@
         "flysimCompatibility": "lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu"
       },
       "note": "",
-      "canonical": "{\"checkpointFormatOfRecord\":\"FLYSIM01\",\"compositionId\":\"pokered-live\",\"decoderConfigDigest\":\"5c3f2f084bef674fed492b82e5e0951e993c856ae98f5453d180cd06143dc854\",\"environment\":{\"audio\":{\"channels\":2,\"sampleRate\":48000},\"controllerSchema\":{\"digest\":\"1bde5fa114b99824ad608fba4ea85706cb0cebc6123a778dc1e5f89791d2a05e\",\"id\":\"gameboy-joypad-v1\",\"version\":1},\"extensions\":[\"gameboy-slots-v1\"],\"inspectionSchema\":{\"digest\":\"d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6\",\"id\":\"gameboy-memory-inspection-v1\",\"version\":1},\"setupFrames\":1,\"slots\":[\"best\"],\"stepDuration\":{\"denominator\":\"512\",\"numerator\":\"8572265625\"}},\"episodePolicy\":\"legacy-ratchet-rollback-v1\",\"executor\":{\"adapter\":\"pokered-unique8-v6\",\"id\":\"pokered-macros-v1\",\"macroChannels\":[],\"mode\":\"raw\",\"rom\":{\"byteLength\":\"1048576\",\"digest\":\"c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20\",\"format\":\"gb-rom\",\"id\":\"pokered-rom\"},\"symbolProvenance\":\"0cd19d3b877b7dc66d12c7050bed9a7f38154d4b\"},\"flysimCompatibility\":\"lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu\",\"profile\":{\"byteLength\":\"1137\",\"digest\":\"41e5d1ac62ab23f1b2d7252d52faac08b269c85e6b4c9ed7a370c74032c60878\",\"format\":\"fly-profile-v1\",\"id\":\"gameboy-legacy-fafb-v783-v1\"},\"restore\":\"legacy-transient-reset\",\"scheduler\":\"lockstep-v1\"}",
-      "digest": "efd699cf8cf2485dd2ac8a84ff43c9bc3711a78181f32285ed31a2ee86e16925"
+      "canonical": "{\"checkpointFormatOfRecord\":\"FLYSIM01\",\"compositionId\":\"pokered-live\",\"decoderConfigDigest\":\"6234e4a0363cfe82b8d515943c4f645a3960eda8fa5bf9465009061f80d50812\",\"environment\":{\"audio\":{\"channels\":2,\"sampleRate\":48000},\"controllerSchema\":{\"digest\":\"1bde5fa114b99824ad608fba4ea85706cb0cebc6123a778dc1e5f89791d2a05e\",\"id\":\"gameboy-joypad-v1\",\"version\":1},\"extensions\":[\"gameboy-slots-v1\"],\"inspectionSchema\":{\"digest\":\"d6cb62248bfdac2ffdf00290ffbebf9a101b1fe28f7be766d24db28ede8da3e6\",\"id\":\"gameboy-memory-inspection-v1\",\"version\":1},\"setupFrames\":1,\"slots\":[\"best\"],\"stepDuration\":{\"denominator\":\"512\",\"numerator\":\"8572265625\"}},\"episodePolicy\":\"legacy-ratchet-rollback-v1\",\"executor\":{\"adapter\":\"pokered-unique8-v6\",\"id\":\"pokered-macros-v1\",\"macroChannels\":[],\"mode\":\"raw\",\"rom\":{\"byteLength\":\"1048576\",\"digest\":\"c840ea493f9bf41505f26cf5b1db26815dd588e7ec91d5fd6f1ad4d363dc4f20\",\"format\":\"gb-rom\",\"id\":\"pokered-rom\"},\"symbolProvenance\":\"0cd19d3b877b7dc66d12c7050bed9a7f38154d4b\"},\"flysimCompatibility\":\"lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu\",\"profile\":{\"byteLength\":\"1137\",\"digest\":\"41e5d1ac62ab23f1b2d7252d52faac08b269c85e6b4c9ed7a370c74032c60878\",\"format\":\"fly-profile-v1\",\"id\":\"gameboy-legacy-fafb-v783-v1\"},\"restore\":\"legacy-transient-reset\",\"scheduler\":\"lockstep-v1\"}",
+      "digest": "ac42e702ec6c9b09482b1ee335743ef85fe599a72e2c34a4d32aea67d67d0201"
+    },
+    {
+      "name": "a rank climb: slot saved, then the milestone capture",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42",
+          "boundaryActions": [
+            {
+              "kind": "save-slot",
+              "slotId": "best",
+              "stateDigest": "5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d"
+            }
+          ]
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ],
+          "captures": [
+            {
+              "checkpointId": "milestone-11",
+              "afterActions": 1
+            }
+          ]
+        }
+      },
+      "note": "legacy-gameboy-v1 section 16: a slot save due at a boundary completes before any capture there",
+      "canonical": "{\"behaviour\":{\"acknowledgedBoundary\":\"42\",\"agents\":[{\"agentId\":\"fly-a\",\"brainTicks\":\"2517\",\"committedStep\":\"42\",\"decisionDigest\":\"a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"3\",\"numerator\":\"1000000\"},\"ticksAdvanced\":\"17\"},{\"agentId\":\"fly-b\",\"brainTicks\":\"2550\",\"committedStep\":\"42\",\"decisionDigest\":\"ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"1\",\"numerator\":\"0\"},\"ticksAdvanced\":\"17\"}],\"batchId\":\"batch-41\",\"boundaryActions\":[{\"kind\":\"save-slot\",\"slotId\":\"best\",\"stateDigest\":\"5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d\"}],\"controlDigest\":\"1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6\",\"eventIds\":[\"evt-1\"],\"observationBoundaries\":[{\"producedStep\":\"42\",\"viewId\":\"screen\"}],\"outcomeIds\":[\"outcome-1\"],\"publishedBoundary\":\"42\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"}},\"operational\":{\"advanceRequestId\":\"req-43\",\"busCallIds\":[\"call-100\",\"call-101\",\"call-102\"],\"captures\":[{\"afterActions\":1,\"checkpointId\":\"milestone-11\"}],\"commitRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-44\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-45\"}],\"deliveryIds\":[\"dlv-7\",\"own-9\"],\"prepareRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-41\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-42\"}],\"wallTimeNs\":\"1234567890\"}}",
+      "digest": "68c6f1e21cc6f63c36e69b73dbd5c11313b2a76e57f1e5e8468984516a6f96d5"
+    },
+    {
+      "name": "save, capture, rollback, capture at one boundary",
+      "type": "TransitionTrace",
+      "value": {
+        "behaviour": {
+          "scope": {
+            "sessionId": "demo",
+            "epoch": "epoch-1",
+            "step": "41"
+          },
+          "agents": [
+            {
+              "agentId": "fly-a",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2517",
+              "remainder": {
+                "numerator": "1000000",
+                "denominator": "3"
+              },
+              "decisionDigest": "a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b",
+              "committedStep": "42"
+            },
+            {
+              "agentId": "fly-b",
+              "profileDigest": "1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0",
+              "ticksAdvanced": "17",
+              "brainTicks": "2550",
+              "remainder": {
+                "numerator": "0",
+                "denominator": "1"
+              },
+              "decisionDigest": "ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e",
+              "committedStep": "42"
+            }
+          ],
+          "batchId": "batch-41",
+          "controlDigest": "1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6",
+          "acknowledgedBoundary": "42",
+          "observationBoundaries": [
+            {
+              "viewId": "screen",
+              "producedStep": "42"
+            }
+          ],
+          "outcomeIds": [
+            "outcome-1"
+          ],
+          "eventIds": [
+            "evt-1"
+          ],
+          "publishedBoundary": "42",
+          "boundaryActions": [
+            {
+              "kind": "save-slot",
+              "slotId": "best",
+              "stateDigest": "5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d"
+            },
+            {
+              "kind": "rollback",
+              "slotId": "best",
+              "stateDigest": null
+            }
+          ]
+        },
+        "operational": {
+          "wallTimeNs": "1234567890",
+          "prepareRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-41"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-42"
+            }
+          ],
+          "advanceRequestId": "req-43",
+          "commitRequestIds": [
+            {
+              "agentId": "fly-a",
+              "requestId": "req-44"
+            },
+            {
+              "agentId": "fly-b",
+              "requestId": "req-45"
+            }
+          ],
+          "busCallIds": [
+            "call-100",
+            "call-101",
+            "call-102"
+          ],
+          "deliveryIds": [
+            "dlv-7",
+            "own-9"
+          ],
+          "captures": [
+            {
+              "checkpointId": "periodic-7",
+              "afterActions": 1
+            },
+            {
+              "checkpointId": "after-rollback-7",
+              "afterActions": 2
+            }
+          ]
+        }
+      },
+      "note": "a durable save follows the rollback, as the legacy loop checkpoints after a recovery",
+      "canonical": "{\"behaviour\":{\"acknowledgedBoundary\":\"42\",\"agents\":[{\"agentId\":\"fly-a\",\"brainTicks\":\"2517\",\"committedStep\":\"42\",\"decisionDigest\":\"a62db30eb7427e2ea9ec58661e69a1eff38e67f21ec97df7d91b24015890d89b\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"3\",\"numerator\":\"1000000\"},\"ticksAdvanced\":\"17\"},{\"agentId\":\"fly-b\",\"brainTicks\":\"2550\",\"committedStep\":\"42\",\"decisionDigest\":\"ddc2e7b8b300cda681c3d91368050fcb95dd66d20fd295834c31307d3df2623e\",\"profileDigest\":\"1900eab6c028483d7126599ee6f50de0d27907b5c65fa90524580b4b0f9852b0\",\"remainder\":{\"denominator\":\"1\",\"numerator\":\"0\"},\"ticksAdvanced\":\"17\"}],\"batchId\":\"batch-41\",\"boundaryActions\":[{\"kind\":\"save-slot\",\"slotId\":\"best\",\"stateDigest\":\"5d41402abc4b2a76b9719d911017c592ae9d3a0c8a7a6f5d2e3d4c5b6a7f8e9d\"},{\"kind\":\"rollback\",\"slotId\":\"best\",\"stateDigest\":null}],\"controlDigest\":\"1e2135d1b50f14d3d3d6cbe24a4294bcb9e4d5d3c28eb1ce4980ff2a17c5d3b6\",\"eventIds\":[\"evt-1\"],\"observationBoundaries\":[{\"producedStep\":\"42\",\"viewId\":\"screen\"}],\"outcomeIds\":[\"outcome-1\"],\"publishedBoundary\":\"42\",\"scope\":{\"epoch\":\"epoch-1\",\"sessionId\":\"demo\",\"step\":\"41\"}},\"operational\":{\"advanceRequestId\":\"req-43\",\"busCallIds\":[\"call-100\",\"call-101\",\"call-102\"],\"captures\":[{\"afterActions\":1,\"checkpointId\":\"periodic-7\"},{\"afterActions\":2,\"checkpointId\":\"after-rollback-7\"}],\"commitRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-44\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-45\"}],\"deliveryIds\":[\"dlv-7\",\"own-9\"],\"prepareRequestIds\":[{\"agentId\":\"fly-a\",\"requestId\":\"req-41\"},{\"agentId\":\"fly-b\",\"requestId\":\"req-42\"}],\"wallTimeNs\":\"1234567890\"}}",
+      "digest": "ae22a2c5e3eb5e65c6ca82c27b2f5242bd94983fca4b11978d7067dc4389d0bb"
     }
   ]
 }
