@@ -87,6 +87,24 @@ pub mod poke {
     pub const YES_NO_CURSOR_Y: u8 = 8;
     pub const YES_NO_CURSOR_X: u8 = 12;
 
+    /// The Pewter Gym guide's two-option box, surveyed the same way (row 56): a *second* place the
+    /// same routine draws the same menu, which is what took the pinned rectangle above off its
+    /// pedestal.
+    pub const GYM_GUIDE_YES_NO_BOX: (u16, u16, u16, u16) = (14, 7, 19, 11);
+    pub const GYM_GUIDE_YES_NO_CURSOR_X: u8 = 15;
+
+    /// How far above the first item the two-option box's top edge is looked for (row 56).
+    ///
+    /// `DisplayTwoOptionMenu` puts the cursor in the box's first interior *column*, so the left
+    /// edge is one column left of `wTopMenuItemX` in both boxes surveyed. The *top* is not fixed:
+    /// the nurse's is two rows above the first item and the gym guide's is one, because one menu
+    /// carries a caption line and the other does not. So the top is found rather than computed,
+    /// looking up at most this many rows for the border's own corner.
+    pub const TWO_OPTION_CAPTION_ROWS: u16 = 3;
+    /// And how far below the first item the bottom edge is looked for: two options and the border.
+    /// Both surveyed boxes end three rows below the first item.
+    pub const TWO_OPTION_BOX_ROWS: u16 = 4;
+
     /// The move list's own box, and the junction tile in its top edge
     /// (`infra/docs/macros-traps.md`, row 50).
     ///
@@ -594,30 +612,71 @@ pub fn text_box(memory: &mut dyn MemoryReader) -> TextBox {
 ///
 /// `docs/design/macros-wram.md` says there is no "a choice is open" flag, and there is not -- so
 /// this is the same construction [`text_box`] makes for `waiting`: a WRAM flag plus the figure the
-/// game draws. `DisplayTwoOptionMenu` draws its own little box in the top right and parks the
-/// shared cursor inside it, and **both halves are needed**: the cursor bytes are not cleared when
-/// the box closes, so at the rung-10 checkpoint every one of the nurse's forty-six text frames
-/// reads `wTopMenuItemY` 8, `wTopMenuItemX` 12, `wMaxMenuItem` 1 and `wMenuWatchedKeys` `$03`
-/// while the box itself is drawn on exactly one of them (`infra/docs/macros-traps.md`, row 41).
+/// game draws. **Both halves are needed**: the cursor bytes are not cleared when the box closes,
+/// so at the rung-10 Pokemon Center every one of the nurse's forty-six text frames reads
+/// `wTopMenuItemY` 8, `wTopMenuItemX` 12, `wMaxMenuItem` 1 and `wMenuWatchedKeys` `$03` while the
+/// box itself is drawn on exactly one of them (`infra/docs/macros-traps.md`, row 41).
 ///
-/// **What it does not claim.** Red places a two-option menu where the script that asks for it
-/// says, so a prompt drawn somewhere else reads `false` here and its dialog keeps the pad it has
-/// always had. This is the box the nurse's "heal your POKeMON?" is drawn in, surveyed; it is not a
-/// general answer to "is a choice open", and nothing in the palette treats it as one.
+/// **The figure is found rather than pinned, since row 56.** Row 41 read one rectangle,
+/// (11, 6)-(19, 11), because that is where the centre's script puts it, and named the limit in its
+/// own residual: "Red places a two-option menu where the script asking for it says, so a prompt
+/// drawn elsewhere reads `false` and keeps the pad it had". Row 56 is that residual, measured. The
+/// Pewter Gym guide's "Let me take you to the top!" draws the same menu at
+/// **(14, 7)-(19, 11)** with the cursor at column 15, so this read `false` on every frame of his
+/// conversation: the pad was `NEXT, YES, NO` on a box that was a choice -- 12.10's forbidden pair,
+/// because an A press at a two-option menu *is* `YES` -- and the reopened-prompt exclusion never
+/// armed, because it only judges an answer to a prompt this crate can read. Surveyed over 260
+/// presses (`examples/scene_probe.rs`, `FLY_PROBE_CATCH=dialog`): the box was drawn on 10 frames,
+/// this answered `false` on all 260, and `wTextBoxID` read `TWO_OPTION_MENU` on exactly the 10.
+///
+/// So the screen half is now [`two_option_box_drawn`], which asks for the border **around the
+/// cursor the game parked in it**, wherever on screen that is.
+///
+/// **What it still does not claim.** A frame with a two-option cursor and no border anywhere near
+/// it reads `false`, which is the whole point of reading the figure; and a menu of two options that
+/// is not a question about the world is still just a menu -- what the pad makes of a readable
+/// prompt is [`super::macros::palette`]'s business, not this function's.
 pub fn yes_no_prompt(memory: &mut dyn MemoryReader) -> bool {
     if read(memory, ram::wFontLoaded) & poke::BIT_FONT_LOADED == 0 {
         return false;
     }
     let cursor = cursor(memory);
-    if cursor.top_y != poke::YES_NO_CURSOR_Y
-        || cursor.top_x != poke::YES_NO_CURSOR_X
-        || cursor.max != 1
-        || cursor.watched_keys != poke::pad::A | poke::pad::B
-    {
+    if cursor.max != 1 || cursor.watched_keys != poke::pad::A | poke::pad::B {
         return false;
     }
-    let (left, top, right, bottom) = poke::YES_NO_BOX;
-    border_drawn(memory, left, top, right, bottom)
+    two_option_box_drawn(memory, cursor.top_x, cursor.top_y)
+}
+
+/// Whether `DisplayTwoOptionMenu`'s own box is drawn around the cursor the game parked in it.
+///
+/// One fact about the routine rather than about any one script (row 56): the cursor goes in the
+/// box's **first interior column**, so the border's left edge is one column to the left of
+/// `wTopMenuItemX`. Both surveyed boxes satisfy it -- the nurse's left edge is 11 with the cursor
+/// at 12, the gym guide's is 14 with the cursor at 15 -- and the *top* satisfies no such rule,
+/// because the nurse's box begins two rows above the first item and the guide's one. So the top is
+/// found: the nearest row above the cursor whose left column holds the border's top-left corner,
+/// looking up at most [`poke::TWO_OPTION_CAPTION_ROWS`]. The rest of the figure is then read
+/// **whole** by [`border_drawn`], exactly as `waiting` and the move list are, because a single
+/// frame tile id is an ordinary character.
+fn two_option_box_drawn(memory: &mut dyn MemoryReader, cursor_x: u8, cursor_y: u8) -> bool {
+    let Some(left) = u16::from(cursor_x).checked_sub(1) else {
+        return false;
+    };
+    let row = u16::from(cursor_y);
+    if row == 0 || left + 2 >= poke::SCREEN_WIDTH || row + 1 >= poke::SCREEN_HEIGHT {
+        return false;
+    }
+    let Some(top) = (row.saturating_sub(poke::TWO_OPTION_CAPTION_ROWS)..row)
+        .rev()
+        .find(|top| screen_tile(memory, left, *top) == poke::frame::TOP_LEFT)
+    else {
+        return false;
+    };
+    let last = (row + poke::TWO_OPTION_BOX_ROWS).min(poke::SCREEN_HEIGHT - 1);
+    ((row + 1)..=last).any(|bottom| {
+        ((left + 2)..poke::SCREEN_WIDTH)
+            .any(|right| border_drawn(memory, left, top, right, bottom))
+    })
 }
 
 /// Whether `MoveSelectionMenu`'s own box is the figure on screen (`infra/docs/macros-traps.md`,
@@ -678,6 +737,34 @@ fn move_list_drawn(memory: &mut dyn MemoryReader) -> bool {
 /// tiles wearing a text box's clothes.
 pub fn dialog_border(memory: &mut dyn MemoryReader) -> (bool, bool) {
     (box_drawn(memory, 0, 12, 19, 17), border_drawn(memory, 0, 12, 19, 17))
+}
+
+/// Every complete [`border_drawn`] rectangle on screen, as `(left, top, right, bottom)`.
+///
+/// A diagnostic, beside [`dialog_border`], and the reading row 56 turns on. The dialogue box and
+/// the two-option box are both read at *pinned* coordinates, because that is where the scripts
+/// that draw them put them — so a prompt Red drew somewhere else is invisible to
+/// [`yes_no_prompt`], and "invisible" and "not there" are the same answer from inside the seam.
+/// This asks the screen instead: which rectangles on this frame are whole `TextBoxBorder`
+/// figures. Every rectangle at least three by three is tried, which is 130,000 reads of a
+/// memoized buffer and is a survey tool rather than a per-frame accessor.
+pub fn drawn_boxes(memory: &mut dyn MemoryReader) -> Vec<(u16, u16, u16, u16)> {
+    let mut found = Vec::new();
+    for top in 0..poke::SCREEN_HEIGHT {
+        for left in 0..poke::SCREEN_WIDTH {
+            if screen_tile(memory, left, top) != poke::frame::TOP_LEFT {
+                continue;
+            }
+            for bottom in (top + 2)..poke::SCREEN_HEIGHT {
+                for right in (left + 2)..poke::SCREEN_WIDTH {
+                    if border_drawn(memory, left, top, right, bottom) {
+                        found.push((left, top, right, bottom));
+                    }
+                }
+            }
+        }
+    }
+    found
 }
 
 pub fn dialog_corners(memory: &mut dyn MemoryReader) -> [u8; 4] {

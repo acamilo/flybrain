@@ -159,7 +159,7 @@ forces. A battle that is neither — text, an animation, the turn resolving — 
 | a submenu | the weakest rule here, and the reason `Unknown` exists: `wListMenuID` is the bag or an elevator list, or the party list geometry outside a battle. A submenu none of those catch reads as `Unknown`, never as `Overworld`. | trace |
 | mart | `wTextBoxID` = `BUY_SELL_QUIT_MENU` (`$15`) for the BUY / SELL / QUIT choice, and `engine/events/pokemart.asm:17` is its only user in the game; the buy list is `wListMenuID` = `$02` and the sell list is the bag's own `$03`, recognised only while the mart's template is still the last one drawn. | trace |
 | PC | `wMiscFlags` bit 3, above. | trace |
-| a two-option YES/NO box | **new 2026-09-22** (`docs/design/macros.md` section 12.12). `wFontLoaded` bit 0, plus the border `DisplayTwoOptionMenu` draws at (11, 6)-(19, 11), plus the shared cursor parked at `wTopMenuItemY` 8, `wTopMenuItemX` 12 with `wMaxMenuItem` 1 and `wMenuWatchedKeys` = A\|B. **Both halves are load-bearing**: the cursor bytes survive the box closing, so all forty-six frames of a Pokémon Center nurse's conversation carry that geometry while the box is drawn on exactly one of them. It does **not** answer "is a choice open" in general — Red places a two-option menu where the script asking for it says, and a prompt drawn elsewhere reads `false`. | ROM (the rung-10 Pokémon Center checkpoint, surveyed one raw A pulse at a time: `examples/scene_probe.rs`, `FLY_PROBE_CATCH=nurse`) |
+| a two-option YES/NO box | **new 2026-09-22, generalised 2026-09-23** (`docs/design/macros.md` sections 12.12 and 12.20). `wFontLoaded` bit 0, plus a two-option cursor (`wMaxMenuItem` 1, `wMenuWatchedKeys` = A\|B), plus the border `DisplayTwoOptionMenu` drew **around the cursor it parked** -- see section 11. **Both halves are load-bearing**: the cursor bytes survive the box closing, so all forty-six frames of a nurse's conversation and all fifty-two of a gym guide's carry that geometry while the box is drawn on a handful of them. The border is no longer pinned to one rectangle, because Red places the menu where the script asking for it says and two of those places are surveyed. | ROM (the rung-10 Pokemon Center and the rung-10 Pewter Gym checkpoints, each surveyed one raw pulse at a time: `examples/scene_probe.rs`, `FLY_PROBE_CATCH=nurse` and `=dialog`) |
 
 ### Money and bag
 
@@ -834,3 +834,62 @@ the HRAM joypad bytes, which is the measurement seeing its own held button.
   reported rather than guessed — `docs/design/ladder.md`'s rule. `ITEM` and `THROW BALL` are the
   two macros it costs.
 - **The party list, likewise**: `PartyMenuInit`'s geometry outlives its list.
+
+## 11. A two-option box is the one the cartridge drew (2026-09-23, `docs/design/macros.md` 12.20)
+
+Section 10 read one menu by the figure it draws; row 41 read the YES/NO box the same way but at a
+**pinned** rectangle, (11, 6)-(19, 11), and named the limit in its own residual: Red places a
+two-option menu where the script asking for it says, so a prompt drawn elsewhere read `false`.
+
+Row 56 is that residual, live: the Pewter Gym guide's "Let me take you to the top!" draws the same
+menu at **(14, 7)-(19, 11)** with the shared cursor at row 8, column **15**. Over 260 surveyed
+presses of his conversation the box was drawn on **10** frames and `yes_no_prompt` answered `false`
+on **all 260** -- so the dialog pad was `NEXT, YES, NO` on a box that was a choice, and the whole of
+12.12 (no `NEXT` on a prompt, the nurse's one bound answer, the reopened-prompt exclusion) was
+inert wherever the box was not the centre's.
+
+### The accessor
+
+Nothing in the reviewed symbol list says "a choice is open" and nothing can be added by hand
+(`gen_symbols.py` refuses a hand-written address, and the disassembly is not built on this box), so
+the reading is the construction `text_box`'s `waiting` already makes -- a WRAM flag plus the figure
+-- with the figure **found** rather than pinned:
+
+1. `wFontLoaded` bit 0, as for every text display;
+2. the cursor is a two-option menu's: `wMaxMenuItem` 1 and `wMenuWatchedKeys` = A\|B;
+3. the border's **left edge is one column to the left of `wTopMenuItemX`**, because
+   `DisplayTwoOptionMenu` writes the cursor into the box's first interior column. This holds in
+   both surveyed boxes -- left 11 with the cursor at 12, left 14 with the cursor at 15 -- and it is
+   the only geometric relation that does;
+4. the **top** is looked up from the cursor's row for the border's own top-left corner, at most
+   three rows, because the nurse's box begins two rows above the first item and the guide's one:
+   one menu carries a caption line and the other does not;
+5. and the rest of the figure is then read **whole** by `border_drawn` -- both verticals, both
+   horizontal runs and all four corners -- because a single frame tile id is an ordinary character.
+
+### The survey
+
+`examples/scene_probe.rs`, `FLY_PROBE_CATCH=dialog`, which walks a conversation one raw pulse at a
+time and prints, per frame, the seam's reading beside **every complete `TextBoxBorder` on screen**
+(`state::drawn_boxes`, a diagnostic that tries every rectangle rather than one). Two checkpoints,
+400 frames:
+
+| checkpoint | a box drawn above the dialogue box | `wTextBoxID` = `TWO_OPTION_MENU` (`$14`) | the new reading | frames |
+| --- | --- | --- | --- | ---: |
+| rung-10 Pewter Gym | false | false | false | 250 |
+| rung-10 Pewter Gym | **true** | **true** | **true** | 10 |
+| rung-10 Pokémon Center | false | false | false | 136 |
+| rung-10 Pokémon Center | **true** | **true** | **true** | 4 |
+
+The three agree exactly on all 400 frames. **`wTextBoxID` is recorded and not used**: it would be a
+tighter reading still, and row 41's own note says the nurse's *plain* boxes read `$01` — which is
+confirmed here — but no survey on this branch covers Red's other two-option menus, and a reading
+this crate has not verified does not go in (`docs/design/ladder.md`). It is the named strengthening.
+
+### What it does not claim
+
+A frame whose two-option cursor bytes have outlived their box reads `false`, which is the whole
+point of reading the figure; a border drawn somewhere the cursor is not parked is not the cursor's
+box; and a menu of more than two options is not this menu. What the pad makes of a readable prompt
+is `pokemon_red::macros::palette`'s business (`docs/design/macros.md` 12.12 and 12.20), not this
+accessor's.

@@ -3410,9 +3410,12 @@ fn a_conversation_that_walks_the_fly_off_its_tile_is_not_talked_to() {
 }
 
 #[test]
-fn a_fly_that_answers_no_has_not_talked_to_anything() {
+fn a_fly_that_declines_an_offer_has_not_talked_to_anything() {
     // The catching tutorial's own shape: a yes/no box, and `NO` is a real answer the pad has to be
     // able to give. What it must not do is retire the thing that asked -- the offer stands.
+    //
+    // Since row 56 the box has to be a **readable prompt** for that to be the reading: a `NO` on a
+    // plain text box declines nothing, and the test below is the other half.
     let mut world = World::room().at(3, 3);
     world.facing = Facing::Down;
     world.npcs = vec![Npc { slot: 4, picture: 1, x: 3, y: 4, facing: Facing::Up }];
@@ -3422,21 +3425,67 @@ fn a_fly_that_answers_no_has_not_talked_to_anything() {
     while machine.step(&mut world).is_some() {
         world.frame(buttons::NONE);
     }
-    // The box is open, so the scene is a dialog and the pad is the dialog's.
+    // The box is open and it is the choice, so the scene is a dialog and the pad is its answers.
     world.scene = Scene::Dialog;
+    world.prompt = true;
     let (dialog, no) = pick(&mut world, MacroKind::No);
-    // Both answers are on the pad, whatever the box is: there is no WRAM observable for "a choice
-    // is open" (section 12.2, row 15).
-    assert!(names(&dialog).contains(&"YES"), "{:?}", names(&dialog));
-    assert!(names(&dialog).contains(&"NO"), "{:?}", names(&dialog));
+    assert_eq!(names(&dialog), ["YES", "NO"], "a readable choice deals its own answers (12.12)");
     machine.start(&dialog, no, &mut world).expect("NO is bound in a dialog");
     while machine.step(&mut world).is_some() {
         world.frame(buttons::NONE);
     }
     world.scene = Scene::Overworld;
     machine.observe_frame(&mut world);
-    assert_eq!(machine.take_talked(), None, "a no is not a conversation had");
+    assert_eq!(machine.take_talked(), None, "a declined offer is not a conversation had");
     assert!(on_the_pad(&mut world, MacroKind::Talk), "the offer stands");
+}
+
+#[test]
+fn a_no_pressed_inside_a_conversation_is_not_a_declined_offer() {
+    // Row 56, the Pewter Gym guide. His conversation is fifty-two boxes long and `NO`'s B advances
+    // a plain one exactly as `NEXT`'s A does -- it declines nothing. Clearing the pending `TALK` on
+    // it meant the talked ledger never learned the conversation had happened, so `TALK` was on the
+    // overworld pad every hold, and an A press at him reopened the whole ring: thirty brain
+    // minutes of scene `dialog` with no walk macro dealt at all.
+    //
+    // Which of the two a `NO` was is decided where it can be seen: by whether the box closes on it.
+    let mut world = World::room().at(3, 3);
+    world.facing = Facing::Down;
+    world.npcs = vec![Npc { slot: 4, picture: 1, x: 3, y: 4, facing: Facing::Up }];
+    let mut machine = MacroMachine::new(1);
+    let (palette, slot) = pick(&mut world, MacroKind::Talk);
+    machine.start(&palette, slot, &mut world).expect("TALK is bound at a person");
+    while machine.step(&mut world).is_some() {
+        world.frame(buttons::NONE);
+    }
+
+    // Deep inside the conversation: a plain text box, not a choice.
+    world.scene = Scene::Dialog;
+    world.prompt = false;
+    let (dialog, no) = pick(&mut world, MacroKind::No);
+    assert!(names(&dialog).contains(&"NEXT"), "a plain box deals all three: {:?}", names(&dialog));
+    machine.start(&dialog, no, &mut world).expect("NO is bound in a dialog");
+    while machine.step(&mut world).is_some() {
+        world.frame(buttons::NONE);
+    }
+
+    // The box is still open, so nothing is decided yet -- the conversation is still running.
+    machine.observe_frame(&mut world);
+    assert_eq!(machine.take_talked(), None, "the box is still open");
+
+    // And when the text is gone the conversation counts, which is what shuts the ring's door.
+    world.scene = Scene::Overworld;
+    machine.observe_frame(&mut world);
+    assert_eq!(
+        machine.take_talked(),
+        Some((world.map, TalkTarget::Sprite(4))),
+        "a conversation walked through to its end is a conversation had"
+    );
+    world.talked.insert(TalkTarget::Sprite(4));
+    assert!(
+        !on_the_pad(&mut world, MacroKind::Talk),
+        "`TALK` is the ring's door and this run has been through it"
+    );
 }
 
 #[test]

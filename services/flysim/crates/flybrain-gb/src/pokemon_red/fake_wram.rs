@@ -238,6 +238,29 @@ impl Wram {
         self.set(ram::wFontLoaded, poke::BIT_FONT_LOADED).draw_box(0, 12, 19, 17)
     }
 
+    /// The two-option YES/NO box where a Pokémon Center's script draws it (row 41): the box at
+    /// (11, 6)-(19, 11) over the dialogue box, with the cursor parked in its first interior column.
+    pub fn yes_no_prompt(&mut self) -> &mut Self {
+        let (left, top, right, bottom) = poke::YES_NO_BOX;
+        self.dialogue_box().draw_box(left, top, right, bottom).yes_no_cursor(poke::YES_NO_CURSOR_X)
+    }
+
+    /// The same menu where the **Pewter Gym guide's** script draws it (row 56): (14, 7)-(19, 11),
+    /// three columns over and one row shorter, cursor at column 15. This is the box the pinned
+    /// reading could not see, and the reason every frame of his conversation read as plain text.
+    pub fn gym_yes_no_prompt(&mut self) -> &mut Self {
+        let (left, top, right, bottom) = poke::GYM_GUIDE_YES_NO_BOX;
+        self.dialogue_box()
+            .draw_box(left, top, right, bottom)
+            .yes_no_cursor(poke::GYM_GUIDE_YES_NO_CURSOR_X)
+    }
+
+    /// The cursor bytes `DisplayTwoOptionMenu` parks and **nothing clears**, with no box drawn:
+    /// what every other frame of the conversation reads back (rows 41 and 56).
+    pub fn yes_no_cursor(&mut self, column: u8) -> &mut Self {
+        self.cursor(poke::YES_NO_CURSOR_Y, column, 0, 1, poke::pad::A | poke::pad::B)
+    }
+
     /// The start menu, Pokédex entry included.
     pub fn start_menu(&mut self) -> &mut Self {
         self.set(ram::wFontLoaded, poke::BIT_FONT_LOADED)

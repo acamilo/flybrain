@@ -1202,6 +1202,158 @@ fn shop_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64) 
     }
 }
 
+/// Everything that tells one box of a conversation from another, on one line (row 56).
+///
+/// The two readings side by side: what the seam makes of the frame ([`state::yes_no_prompt`], and
+/// the scene the pad is dealt for), and **where the cartridge actually drew a box**
+/// ([`state::drawn_boxes`]). A prompt Red draws somewhere other than the nurse's corner reads
+/// `yesno=false` on the left of that line and shows up as a rectangle on the right of it, which is
+/// the whole question row 56 asks.
+fn dialog_frame(gb: &mut Emulator) -> String {
+    let text = state::text_box(gb);
+    let boxes: Vec<String> = state::drawn_boxes(gb)
+        .into_iter()
+        .map(|(left, top, right, bottom)| format!("({left},{top})-({right},{bottom})"))
+        .collect();
+    format!(
+        "{:?} open={} waiting={} yesno={} cursor=({},{},{},{},{:#04x}) textbox={:#04x} \
+         boxes=[{}] | {} | {}",
+        scene::detect(gb),
+        text.open,
+        text.waiting,
+        state::yes_no_prompt(gb),
+        gb.read8(ram::wTopMenuItemY),
+        gb.read8(ram::wTopMenuItemX),
+        gb.read8(ram::wCurrentMenuItem),
+        gb.read8(ram::wMaxMenuItem),
+        gb.read8(ram::wMenuWatchedKeys),
+        gb.read8(ram::wTextBoxID),
+        boxes.join(" "),
+        box_line(gb, 14),
+        box_line(gb, 16),
+    )
+}
+
+/// The pad the palette deals for the frame that is up, by name.
+fn dialog_pad(gb: &mut Emulator, adapter: &PokemonRedReward) -> String {
+    use flybrain_gb::pokemon_red::macros::cartridge::MacroState;
+    use flybrain_gb::pokemon_red::macros::plan;
+    let ledger = AdapterLedger(adapter);
+    let mut poke = flybrain_gb::pokemon_red::state::PokeState::with_ledger(gb, &ledger);
+    let state: &mut dyn MacroState = &mut poke;
+    let scene = state.scene();
+    let plan = plan::plan_for(scene, state);
+    let names: Vec<&str> = plan.slots.iter().flatten().map(|spec| spec.name).collect();
+    format!("{names:?}")
+}
+
+/// Row 56's conversation survey: which box the fly is answering in a gym, and where Red draws it.
+///
+/// `FLY_PROBE_CATCH=dialog`. The live loop was map 54, scene `dialog`, `YES` 64 / `NO` 62 /
+/// `NEXT` 59 / `TALK` 6 over ten brain minutes with no walk macro dealt at all, and three readings
+/// fit that: a conversation that re-offers its choice for ever, a talked ledger that never records
+/// the person, or a prompt the seam cannot see. They are told apart by walking the conversation
+/// press by press and printing both readings of every frame, so this walks it.
+///
+/// `FLY_PROBE_ANSWER` picks the button the survey presses on a frame where a box **is** drawn
+/// somewhere: `a` (the default) or `b`. Everything else gets an A, because A is what advances a
+/// plain box. The pad is printed beside each frame, so a row where the pad is `NEXT, YES, NO` on a
+/// frame with a two-option box on screen is the trap said out loud.
+fn dialog_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64) {
+    use flybrain_gb::pokemon_red::macros::cartridge::MacroState;
+    use flybrain_gb::pokemon_red::macros::palette;
+
+    let pulse = |gb: &mut Emulator, adapter: &mut PokemonRedReward, mask: u8, ms: &mut f64| {
+        for phase in 0..16 {
+            gb.set_buttons(if phase < 8 { mask } else { 0 });
+            gb.run_frame().expect("a frame should complete");
+            *ms += MS_PER_FRAME;
+            adapter.sample(gb, *ms);
+        }
+    };
+
+    println!("\n## What the fly is standing on, and what it is facing\n");
+    {
+        let ledger = AdapterLedger(adapter);
+        let mut poke = flybrain_gb::pokemon_red::state::PokeState::with_ledger(gb, &ledger);
+        let state: &mut dyn MacroState = &mut poke;
+        println!("- player: {:?}", state.player());
+        println!("- objective: {:?}", state.objective());
+        println!("- facing: {:?}", palette::facing_target(state));
+        println!("- `facing_untalked` = {}", palette::facing_untalked(state));
+        println!("- untalked people: {:?}", palette::untalked_people(state));
+        println!("- untalked objects: {:?}", palette::untalked_objects(state));
+        println!("- `yes_no_prompt` = {}", state.yes_no_prompt());
+    }
+    println!("\n## The screen at the checkpoint\n\n```\n{}\n```\n", screen_rows(gb));
+    println!("```");
+    for row in screen_text(gb) {
+        println!("{row}");
+    }
+    println!("```\n");
+    println!("- the frame: {}", dialog_frame(gb));
+    println!("- the pad: {}", dialog_pad(gb, adapter));
+
+    let answer = std::env::var("FLY_PROBE_ANSWER").unwrap_or_else(|_| "a".to_string());
+    let answer_mask =
+        if answer == "b" { flybrain_gb::buttons::B } else { flybrain_gb::buttons::A };
+
+    println!(
+        "\n## The conversation, one raw pulse at a time (a box on screen gets `{answer}`)\n"
+    );
+    println!("```");
+    let mut last = String::new();
+    let mut boxes_seen: BTreeMap<String, usize> = BTreeMap::new();
+    let mut classes: BTreeMap<(bool, bool, bool), u64> = BTreeMap::new();
+    for index in 0..env_usize("FLY_PROBE_PULSES", 200) {
+        let choice = if state::drawn_boxes(gb).iter().any(|(_, top, _, _)| *top < 12) {
+            answer_mask
+        } else {
+            flybrain_gb::buttons::A
+        };
+        pulse(gb, adapter, choice, ms);
+        let drawn = state::drawn_boxes(gb);
+        for (left, top, right, bottom) in &drawn {
+            *boxes_seen.entry(format!("({left},{top})-({right},{bottom})")).or_default() += 1;
+        }
+        *classes
+            .entry((
+                drawn.iter().any(|(_, top, _, _)| *top < 12),
+                gb.read8(ram::wTextBoxID) == 0x14,
+                state::yes_no_prompt(gb),
+            ))
+            .or_default() += 1;
+        let now = format!("{} pad={}", dialog_frame(gb), dialog_pad(gb, adapter));
+        if now != last {
+            println!("#{index:<3} {now}");
+            last = now;
+        }
+    }
+    println!("```\n");
+    println!("Every rectangle the cartridge drew over the survey, and on how many frames:\n");
+    for (figure, count) in &boxes_seen {
+        println!("- `{figure}` on {count} frames");
+    }
+    println!("\n{}", separator_table(&classes));
+}
+
+/// How the candidate readings of "a two-option box is up" separate the frames of a survey.
+///
+/// Three columns, because three things could say it and only a measurement says which: the
+/// cartridge's own `wTextBoxID`, the seam's pinned-geometry [`state::yes_no_prompt`], and the
+/// generalised reading -- a complete border drawn around the cursor the game parked, wherever on
+/// screen that is. A row where the box is drawn and a column reads `false` is that column missing
+/// the prompt.
+fn separator_table(classes: &BTreeMap<(bool, bool, bool), u64>) -> String {
+    let mut out = String::from(
+        "| a box drawn above the dialogue box | `wTextBoxID` = `$14` | `yes_no_prompt` | frames |\n         | --- | --- | --- | ---: |\n",
+    );
+    for ((drawn, textbox, prompt), frames) in classes {
+        out.push_str(&format!("| {drawn} | {textbox} | {prompt} | {frames} |\n"));
+    }
+    out
+}
+
 fn main() {
     let Some(path) = std::env::var_os("FLY_ROM") else {
         println!("FLY_ROM is not set, so there is nothing to probe.");
@@ -1274,6 +1426,13 @@ fn main() {
     // press at the counter really opens.
     if std::env::var("FLY_PROBE_CATCH").is_ok_and(|value| value == "shop") {
         shop_survey(&mut gb, &mut adapter, &mut ms);
+        return;
+    }
+
+    // Row 56's conversation survey: which box a gym's guide draws, where he draws it, and what
+    // the dialog pad makes of it press by press.
+    if std::env::var("FLY_PROBE_CATCH").is_ok_and(|value| value == "dialog") {
+        dialog_survey(&mut gb, &mut adapter, &mut ms);
         return;
     }
 

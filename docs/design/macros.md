@@ -1304,6 +1304,76 @@ offered, and the two presses that leave a counter are.
 Nothing here changes which button the fly presses. The decoder, the reward catalog, the adapter
 version and the compatibility string are untouched.
 
+### 12.20 A two-option box is the one the cartridge drew, and a `NO` inside a conversation declines nothing (2026-09-23, row 56)
+
+Live on the release box: map 54 (**Pewter Gym**), scene `dialog`, rank 10, **thirty-plus brain
+minutes of zero progress** with the explore and wild-win counters frozen, **747 macro starts in ten
+brain minutes**, and a mix of `YES` 64 / `NO` 62 / `NEXT` 59 / `TALK` 6 with **no walk macro dealt
+at all**. The watchdog did not flag it: four distinct macros is exactly its threshold. Surveyed
+from the live checkpoint with a new probe mode (`examples/scene_probe.rs`,
+`FLY_PROBE_CATCH=dialog`), which walks the conversation one raw pulse at a time and prints, per
+frame, what the seam makes of it beside **every complete `TextBoxBorder` the cartridge actually
+drew**. `infra/docs/macros-traps.md` has the survey whole.
+
+The shape is **row 41's ring one town over**: the gym guide's conversation is fifty-two presses --
+"Hiya! I can tell you have what it takes to become a POKeMON champ!", "Let me take you to the
+top!" with a YES/NO box, the type-matchup tutorial, "matches could be made easier!" -- the box
+closes for a frame, and the next A press at the guide two tiles away opens the whole thing again.
+Nothing in it changes the world. Two things kept the fly walking it, and both are readings rather
+than pads.
+
+- **The box was drawn where this crate was not looking.** 12.12 read the border at
+  (11, 6)-(19, 11), because that is where a Pokemon Center's script puts it, and said so in its own
+  residual: "Red places a two-option menu where the script asking for it says, so a prompt drawn
+  elsewhere reads `false` and its dialog keeps the pad it has always had". The guide's box is at
+  **(14, 7)-(19, 11)** with the cursor at column 15. Over 260 surveyed presses the box was drawn on
+  **10 frames** and `yes_no_prompt` answered `false` on **all 260** -- so the pad was
+  `NEXT, YES, NO` on a frame that was a *choice*, which is 12.10's forbidden pair (an A press at a
+  two-option menu confirms the option the cursor is on, and that is what `YES` is), and the
+  reopened-prompt exclusion of 12.12 never armed, because it only judges an answer to a prompt this
+  crate can read. **The whole of 12.12 was inert in that gym.**
+- **So the figure is found rather than pinned.** One fact about `DisplayTwoOptionMenu` rather than
+  about any one script: the cursor goes in the box's **first interior column**, so the border's
+  left edge is one column to the left of `wTopMenuItemX` -- true of both boxes surveyed. The *top*
+  obeys no such rule, because the nurse's box begins two rows above the first item and the guide's
+  one, so the top is found by looking up for the border's own corner and the figure is then read
+  **whole**, exactly as `waiting` and the move list are. `docs/design/macros-wram.md` section 11
+  has the accessor. Measured over both checkpoints, 400 frames: the reading is true on the 14
+  frames a two-option box is drawn and false on the other 386, and `wTextBoxID` = `TWO_OPTION_MENU`
+  agrees with it exactly -- which is recorded as a third reading and **not** put in the accessor,
+  because no survey here covers Red's other two-option menus.
+- **And a `NO` pressed inside a conversation declines nothing.** 12.4's rule -- "the fly said no, so
+  whatever it said no to is still on offer" -- took the pending `TALK` off the moment any `NO`
+  finished. A `NO`'s B press advances a plain text box exactly as `NEXT`'s A does, about a third of
+  the fifty-two presses that walk the guide's ring are `NO`, so the talked ledger **never learned
+  the conversation had happened**: `TALK` was on the overworld pad every hold and was the ring's
+  own door. In the twenty-brain-minute reproduction `TALK` started **25** times on that one map.
+- **Which of the two a `NO` was is decided where it can be seen: by whether the box closes on it.**
+  The decision moves to the frame the text goes away, which is where the talked entry is written
+  anyway, and the reading is the answer still standing there -- `pending_answer`, armed only by an
+  answer to a prompt this crate can read and alive for one hold (12.12). A declining `NO` still
+  standing when the box closes is a `NO` the box closed *on*, and the offer stands; anything else
+  is a conversation walked through to its end, and the person is retired. The nurse's own declined
+  heal is unchanged: it writes her into the ledger by 12.12's named inversion, one person wide.
+- **What the pad does instead, which is the point.** With the guide retired, the gym's overworld pad
+  is `GO OBJECTIVE`, `GO OUT`, `GO FRONTIER`, `GO HEAL` -- the walks -- and the fly is out of the
+  room in 0.37 brain minutes against never in twenty. Nothing new is on any pad and nothing is
+  ranked: `TALK` goes off a person this run has already had the conversation with, which is the
+  ledger 9.2 added doing exactly what it was added for, and `NEXT` goes off a readable prompt,
+  which is 12.10.
+
+**What the harness holds.** Unit: a two-option box reads as a prompt at both surveyed geometries
+and at neither without its border, its font flag or its two-option cursor; a box the cursor is not
+parked in is not the cursor's box; the pads the two frames are dealt (`YES, NO` against
+`NEXT, YES, NO`); a declined offer leaves the thing on offer; and a `NO` deeper inside a
+conversation leaves the conversation counted and `TALK` off the pad. ROM-gated from the live
+checkpoint: the fly leaves map 54, `NEXT` is on no pad while a readable prompt is open, and **no
+readable prompt is answered more than four times for one person in a session**, against 439
+answers at one person in the twenty-minute reproduction.
+
+The decoder, the reward catalog, the adapter version, the roles and the compatibility string are
+untouched.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")
@@ -1380,7 +1450,7 @@ observe is not a precondition, it is a guess.
 | Overworld, inside a mart or a centre, counter unfaced | GO SHOP or GO HEAL, TALK when facing the counter | new, and it is the one place a pad is deliberately *narrow*. The errand is paid on entering and never offered again, so a walk that leaves the building spends the one visit the area gets — measured: the fly reached the mart in 1.7 brain minutes and `GO OBJECTIVE` walked it straight back out over the doormat. While the counter is unfaced nothing on the pad leaves (row 34b) |
 | Overworld, inside a mart or a centre, counter faced | the indoor pad, plus HEAL in a centre | the suppression is released by facing the counter, by talking to it, or by a walk to it failing. Since **12.12** `TALK` is not on it at a *nurse* the party has no use for: her conversation is a service whose need the cartridge publishes, and a ring of text that ends where it began is section 12.2's trap |
 | Dialog, a plain text box | NEXT, YES, NO | A and B both advance a plain box, so all three are dealt for one — what it buys is the fly being able to answer *no*. Forty-five of the nurse's forty-six frames are this row (**12.12**) |
-| Dialog, a readable YES/NO box | YES, NO — or **one of them** at a Pokémon Center's nurse | **new, 12.12.** `NEXT` is off it: an A press at a two-option menu confirms the option the cursor is on, which is what `YES` is, so the two are one press under two names (12.10). At the nurse's own prompt the bound answer is the one that changes something — `YES` with a hurt or statused party, `NO` with a full one. An answer whose prompt comes straight back is excluded for the blocked window, and the exclusion never empties the pad |
+| Dialog, a readable YES/NO box (**the box the cartridge drew**, 12.20) | YES, NO — or **one of them** at a Pokémon Center's nurse | **new, 12.12.** `NEXT` is off it: an A press at a two-option menu confirms the option the cursor is on, which is what `YES` is, so the two are one press under two names (12.10). At the nurse's own prompt the bound answer is the one that changes something — `YES` with a hurt or statused party, `NO` with a full one. An answer whose prompt comes straight back is excluded for the blocked window, and the exclusion never empties the pad |
 | Menu (the start menu) | CLOSE, CONFIRM, BACK | unchanged as a *scene*, and since **12.11** nothing on any other pad opens it: the fly reaches it with the **raw** START button, which still reaches the cartridge in macros mode, and moves its cursor with the raw D-pad. A SAVE or a POKéDEX button would be a macro per start-menu entry and is not asked for -- which is precisely why `MENU` had nothing behind it |
 | Menu (the bag, an elevator, the party list outside a battle) | CLOSE, CONFIRM, BACK | unchanged |
 | Unknown (the Pokédex, the trainer card, OPTION, a naming screen, a mid-warp frame) | NEXT, **BACK** | **BACK added** (row 9): B is what leaves the first three, and A leaves none of them |
