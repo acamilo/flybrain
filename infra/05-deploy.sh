@@ -112,6 +112,11 @@ fi
 require_pve_host
 need pct
 
+# Who serves the feed (docs/design/flybus.md): refused here, before section 1 flips
+# /opt/fly/current, rather than half way through the deploy or at flysim's boot.
+FLY_FEED_VIA_EFFECTIVE="$(feed_via_normalize "${FLY_FEED_VIA:-}")" \
+    || die "05-deploy: FLY_FEED_VIA must be 'direct' or 'bus', got '${FLY_FEED_VIA}'"
+
 # CHROMIUM_PROFILE is validated here, not left to the launcher: a typo or a
 # `vgl` on a container that never had VirtualGL installed would only show up as
 # flystage refusing to start, i.e. a black stream, minutes after the deploy
@@ -413,9 +418,6 @@ log "05-deploy: non-secret env files"
 # never drift apart (see cpuset_partition's own header comment). They are
 # assigned in section 0b, which needs them earlier than this for the
 # deploy-time cpu pinning; nothing between here and there changes them.
-# Who serves the feed (docs/design/flybus.md): refused here rather than at flysim's boot.
-FLY_FEED_VIA_EFFECTIVE="$(feed_via_normalize "${FLY_FEED_VIA:-}")" \
-    || die "05-deploy: FLY_FEED_VIA must be 'direct' or 'bus', got '${FLY_FEED_VIA}'"
 
 tmp_fly_env="$(mktemp)"
 tmp_flypush_env="$(mktemp)"
