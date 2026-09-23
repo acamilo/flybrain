@@ -1379,6 +1379,14 @@ fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64)
     let mut outcomes: BTreeMap<String, u64> = BTreeMap::new();
     let mut single_refusals = 0u32;
     let mut caught_at: Option<usize> = None;
+    // `FLY_PROBE_CATCH_MAP=54` with `FLY_PROBE_CATCH_ENTRIES=4` reads the frame the fly is given
+    // the buttons back on its fourth arrival on map 54 (row 58: the pad in and out of one door).
+    let catch_map: Option<u8> =
+        std::env::var("FLY_PROBE_CATCH_MAP").ok().and_then(|value| value.parse().ok());
+    let catch_entries = env_usize("FLY_PROBE_CATCH_ENTRIES", 4);
+    let mut entries = 0usize;
+    let mut arrived_at = 0usize;
+    let mut last_map: Option<u8> = None;
 
     // `FLY_PROBE_HOLD=right:96,up:32` holds raw directions first and prints where the fly is
     // every eight frames: what the cartridge does with a press, before any macro is asked.
@@ -1502,6 +1510,25 @@ fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64)
             caught_at = Some(frame);
             break;
         }
+        if let (Some(want), Some(player)) = (catch_map, player) {
+            if player.map == want && last_map != Some(want) {
+                entries += 1;
+                arrived_at = frame;
+            }
+            last_map = Some(player.map);
+            // Forty frames in: the first frames on a new map byte still carry the old map's
+            // warps (the tear 12.16 names), and a reading there says nothing about the room.
+            if player.map == want
+                && entries >= catch_entries
+                && frame >= arrived_at + 40
+                && !running
+                && matches!(observed.scene, flybrain_gb::SceneId::Overworld)
+                && !observed.bindings.is_empty()
+            {
+                caught_at = Some(frame);
+                break;
+            }
+        }
     }
     println!("```\n");
     println!("- refusals: {refusals:?}");
@@ -1512,8 +1539,13 @@ fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64)
         return;
     };
     println!(
-        "\n## Caught on frame {frame} ({:.1} brain minutes): one button, refused twenty holds running\n",
-        frame as f64 * MS_PER_FRAME / 60_000.0
+        "\n## Caught on frame {frame} ({:.1} brain minutes): {}\n",
+        frame as f64 * MS_PER_FRAME / 60_000.0,
+        if single_refusals >= catch_after {
+            "one button, refused twenty holds running".to_string()
+        } else {
+            format!("arrival {entries} on map {catch_map:?}")
+        }
     );
     let (pushed, frontiers) = macros.fences();
     println!("- pushed tiles (no window): {pushed:?}");
@@ -1525,6 +1557,16 @@ fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64)
         println!("- objective: {:?}", state.objective());
         println!("- `objective_goals`: {:?}", palette::objective_goals(state));
         println!("- `objective_targets`: {:?}", palette::objective_targets(state));
+        for (tile, target) in path::person_targets(state) {
+            println!(
+                "  - person {target:?} at ({:2},{:2}): talked {}, blocked {}, reached {}",
+                tile.x,
+                tile.y,
+                state.talked(target),
+                state.blocked(TargetKey::Thing(target)),
+                state.reached(TargetKey::Thing(target))
+            );
+        }
         println!("- `untalked_people`: {:?}", palette::untalked_people(state));
         println!("- `untalked_objects`: {:?}", palette::untalked_objects(state));
         println!("- `facing_untalked`: {}", palette::facing_untalked(state));
