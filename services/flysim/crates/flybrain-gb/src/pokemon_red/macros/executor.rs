@@ -959,8 +959,24 @@ impl MacroMachine {
         // the text is gone.
         if class(state.scene()) != Class::Talking {
             self.pending_talk = None;
-            self.talked = Some((pending.map, pending.target));
+            // A conversation the fly *declined its way out of* is not a conversation it has had:
+            // whatever it said no to is still on offer, which is section 12.4's rule and the one
+            // 12.12 inverts for the nurse alone. The box closing is what tells that apart from a
+            // `NO` pressed dozens of boxes deep, and [`MacroMachine::pending_answer`] is the
+            // reading: it is armed only by an answer to a prompt this crate can read and it lives
+            // for one hold, so a declining `NO` still standing here is a `NO` this box closed on.
+            if !self.declined_out_of(pending.map) {
+                self.talked = Some((pending.map, pending.target));
+            }
         }
+    }
+
+    /// Whether the answer still standing on `map` is a `NO` to a readable prompt: a declined offer
+    /// rather than a conversation walked through (section 12.20).
+    fn declined_out_of(&self, map: u8) -> bool {
+        self.pending_answer.is_some_and(|pending| {
+            pending.answered.map == map && pending.answered.prompt && !pending.answered.yes
+        })
     }
 
     /// One frame after a `YES` or `NO`: decide whether the box it answered has come straight back.
@@ -1099,11 +1115,12 @@ impl MacroMachine {
                     {
                         self.pending_talk = Some(PendingTalk { map, target, at });
                     }
-                    // The fly said no. Whatever it said no to is still on offer, so the thing it
-                    // was facing is not retired.
-                    if active.kind == MacroKind::No {
-                        self.pending_talk = None;
-                    }
+                    // The fly said no, and whether that retires what it was facing is decided
+                    // when the box closes rather than here (section 12.20). A `NO` inside a
+                    // conversation is the B that advances a plain box -- it declines nothing --
+                    // and clearing the pending talk on it kept the Pewter Gym guide `untalked`
+                    // for thirty brain minutes: his conversation is fifty-two boxes long and
+                    // about a third of the presses that walk it are `NO`.
                     // An answer, and the box it answered: armed so that the same prompt coming
                     // straight back is recorded (section 12.12), and the nurse written into the
                     // talked ledger when what was declined was *her* offer. That is 12.4's rule
