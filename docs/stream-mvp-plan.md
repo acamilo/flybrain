@@ -850,3 +850,19 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   beside one that works, as a move out of PP is not. ROM test: 2,657 of 2,657 own-turn frames dealt
   the refused move before, 0 of 568 after; battles won 0 -> 3 of 12 -> 14. The real-brain hunt did
   not finish at this load; recorded as a deviation. Ethos check held.
+- 2026-09-23 (v0.6.1, loop review, auto): row 59, Mt. Moon. With the Boulder Badge the live fly
+  reached rung 12 and rang on Route 4 (GO ROUTE 233, GO OBJECTIVE 122, GO OUT 111 per ten minutes,
+  one new tile), and restarts did not hold: the map graph was wrong, not a ledger. The geography
+  table is now the cartridge's own headers and warps: Route 3 connects north to Route 4, Mt.
+  Moon's doors are on Route 4 (1F at (18,5), B1F's exit at (24,5)); Routes 14/15 and 24/25 were
+  in the wrong compass columns and Routes 22/23 were missing; a map can be several pieces (Route
+  4 two, Mt. Moon B1F four chambers, B2F three), the fly's piece read from the decoded grid and a
+  warp landing in the piece that holds its destination; sea and fence connections (Pallet/21,
+  Cinnabar/20, 20/19, 22/23) are no longer exits. A trainer's challenge leaves five frames of
+  plain overworld before the battle, and a push-back is now written only after thirty frames of
+  the fly's own. From the live Route 4 checkpoint: crossings of the west doors 56 -> 13, into Mt.
+  Moon at frame 278; from the badge checkpoint the fly reaches Mt. Moon and rung 12 where the base
+  rang at Pewter. The reviewer checked all 36 connection rows and every piece against the
+  disassembly. The trap hunt was not run at this load (recorded deviation). Also shipped: FND-01,
+  one LegacyFrame for the service and every harness (no live behaviour change), FLY_TRACE and the
+  sugar journal. Ethos check held.
