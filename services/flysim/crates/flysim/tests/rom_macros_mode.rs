@@ -3290,3 +3290,159 @@ fn the_gym_is_not_a_door_in_and_a_door_out_from_the_rung_ten_checkpoint() {
         "the fly never went up the room past the doormat rows: highest row {highest_row:?}"
     );
 }
+
+fn row60_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_ROW60_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// Route 1, from the checkpoint taken mid-trap: Squirtle L5 (TACKLE, TAIL WHIP) against wild
+/// Pidgey and Rattata.
+///
+/// **What was live** (2026-09-23, v0.5.5, rank 9 after the reset to milestone 1): `MOVE 2` 183
+/// times and `MOVE 1` once, "Nothing happened!" on the screen, twenty-five brain minutes with no
+/// reward. TAIL WHIP took the Pidgey's DEFENSE to where the cartridge refuses it (the stat at 1,
+/// or the stage at -6) and the pad kept dealing it beside TACKLE; every battle ended with Squirtle
+/// fainted and the fly back home (`infra/docs/macros-traps.md` row 60). The checkpoint itself is
+/// the frame Squirtle fainted.
+///
+/// The driver is the real palette with the live readout's measured favourite: `MOVE 2` whenever
+/// the pad deals it, otherwise a uniform choice per hold -- a harness choice, not the fly's. The
+/// claims:
+///
+/// - **no `MOVE n` is dealt for a move the cartridge answers with nothing while another move
+///   would do something**, on any frame of the fly's own turn, and the run does reach that state;
+/// - **a wild battle is won** inside the budget, which the base never does with this driver.
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_ROW60_CHECKPOINT=.local/checkpoints/release-rank9-row60.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture tail_whip
+/// ```
+#[test]
+fn tail_whip_at_its_limit_is_not_dealt_and_a_route_one_battle_is_won() {
+    use flybrain_gb::pokemon_red::macros::PokemonPalette;
+    use flybrain_gb::pokemon_red::state;
+    use flybrain_gb::pokemon_red::symbols::ram;
+    use flybrain_gb::{MacroPalette, MemoryReader, Started};
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = row60_checkpoint() else {
+        eprintln!("skipped: no FLY_ROW60_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert_ne!(run.gb.read8(ram::wIsInBattle), 0, "the checkpoint is inside the Route 1 battle");
+
+    let budget = 72_000u32;
+    let hold_frames = 48u32;
+    let mut palette = PokemonPalette::new(SEED);
+    let mut rng = 20_260_923u32;
+    let mut running = false;
+    let mut since_decision = hold_frames;
+    let mut ms = run.ms;
+    let mut at_a_limit = 0u32;
+    let mut dealt_without_effect = 0u32;
+    let mut starts = std::collections::BTreeMap::<&'static str, u32>::new();
+    // (frames, the enemy fainted, the fly's Pokemon standing at the end)
+    let mut battles: Vec<(u32, bool, bool)> = Vec::new();
+    let mut current: Option<(u32, bool, bool)> = Some((0, false, false));
+    for _ in 0..budget {
+        palette.clock(ms);
+        let observed = {
+            let ledger = AdapterLedger(&run.adapter);
+            palette.observe(&mut run.gb, &ledger)
+        };
+        let names: Vec<&str> = observed.bindings.iter().map(|binding| binding.name).collect();
+        if let Some(battle) = state::battle(&mut run.gb)
+            && battle.own_turn
+            && let Some(own) = battle.own
+        {
+            let mut nothing = [false; 4];
+            let mut useful = [false; 4];
+            for (slot, entry) in own.moves.iter().enumerate() {
+                if let Some(entry) = entry.filter(|entry| entry.id != 0) {
+                    nothing[slot] = state::move_without_effect(&mut run.gb, entry.id) == Some(true);
+                    useful[slot] = entry.pp > 0 && !nothing[slot];
+                }
+            }
+            if nothing.iter().any(|flag| *flag) && useful.iter().any(|flag| *flag) {
+                at_a_limit += 1;
+                for (slot, name) in ["MOVE 1", "MOVE 2", "MOVE 3", "MOVE 4"].iter().enumerate() {
+                    if nothing[slot] && names.contains(name) {
+                        dealt_without_effect += 1;
+                    }
+                }
+            }
+        }
+        let mut mask = 0u8;
+        {
+            let ledger = AdapterLedger(&run.adapter);
+            if running {
+                match palette.step(&mut run.gb, &ledger) {
+                    Some(held) => mask = held,
+                    None => running = false,
+                }
+            } else if since_decision >= hold_frames && !observed.bindings.is_empty() {
+                since_decision = 0;
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                let binding = observed
+                    .bindings
+                    .iter()
+                    .find(|binding| binding.name == "MOVE 2")
+                    .unwrap_or(&observed.bindings[rng as usize % observed.bindings.len()]);
+                if let Started::Running(_) = palette.start(binding.slot, &mut run.gb, &ledger) {
+                    *starts.entry(binding.name).or_default() += 1;
+                    running = true;
+                    match palette.step(&mut run.gb, &ledger) {
+                        Some(held) => mask = held,
+                        None => running = false,
+                    }
+                }
+            }
+        }
+        since_decision += 1;
+        run.gb.set_buttons(mask);
+        run.gb.run_frame().expect("a frame should complete");
+        ms += MS_PER_FRAME;
+        run.adapter.sample(&mut run.gb, ms);
+
+        let fighting = run.gb.read8(ram::wIsInBattle) != 0;
+        match (&mut current, fighting) {
+            (Some((frames, fainted, standing)), true) => {
+                *frames += 1;
+                if let Some(battle) = state::battle(&mut run.gb) {
+                    *fainted |= battle.enemy.is_some_and(|enemy| enemy.hp == 0);
+                    if let Some(own) = battle.own {
+                        *standing = own.hp > 0;
+                    }
+                }
+            }
+            (None, true) => current = Some((1, false, true)),
+            (Some(battle), false) => {
+                battles.push(*battle);
+                current = None;
+            }
+            (None, false) => {}
+        }
+    }
+    let won = battles.iter().filter(|battle| battle.1 && battle.2).count();
+    eprintln!(
+        "{:.1} brain minutes: battles ended {} (won {won}), (frames, enemy fainted, standing) \
+         {battles:?}, still in one {current:?}; own-turn frames with a move without effect beside a \
+         useful one {at_a_limit}, the refused move dealt on {dealt_without_effect}; starts \
+         {starts:?}; rank {}",
+        (ms - run.ms) / 60_000.0,
+        battles.len(),
+        run.adapter.progress().rank,
+    );
+    assert!(at_a_limit > 0, "the run never reached the trap's own state");
+    assert_eq!(
+        dealt_without_effect, 0,
+        "a MOVE n the cartridge answers with nothing was dealt beside one it does not"
+    );
+    assert!(won > 0, "no wild battle was won in {budget} frames: {battles:?}");
+}
