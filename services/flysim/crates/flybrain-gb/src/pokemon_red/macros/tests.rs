@@ -4873,6 +4873,32 @@ fn a_tile_the_cartridge_pushes_the_fly_off_is_not_a_tile_to_walk_to() {
     );
 }
 
+// ---------------------------------------------------------------------------------------------
+// Row 57: an escorted walk, and where it was escorted from
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn an_escorted_walk_walls_the_tile_it_reached_not_the_one_it_set_out_from() {
+    // Row 57's other half. Pewter City's youngster takes the joypad on four tiles by the road
+    // east and walks the fly to the gym. A `GO ROUTE` that set out from the town's south entrance
+    // and reached one of those tiles wrote the *south entrance* into the pushed ledger -- a wall
+    // with no window, twenty-six tiles from where the script fired -- and a dozen of those fenced
+    // the fly into a pocket. The tile the walk had reached is where the cartridge took over.
+    let mut world = World::room().at(3, 6);
+    world.map = maps::PEWTER_CITY;
+    world.connections = Connections { north: true, south: false, east: false, west: false };
+    // Three tiles walked north, then the script: the scene changes with the game driving the fly.
+    world.scripted_at = Some(52);
+    world.switch = Some((52, Scene::Dialog));
+
+    let mut machine = MacroMachine::new(1);
+    let _ = run_with(&mut machine, &mut world, MacroKind::GoRoute);
+    let (map, tile) = machine.take_pushed().expect("the script moved the fly: a push-back");
+    assert_eq!(map, maps::PEWTER_CITY);
+    assert_ne!(tile, Tile::new(3, 6), "not the tile the walk set out from");
+    assert_eq!(tile, world.player, "the tile the walk had reached when the script took over");
+}
+
 /// The push-back writes the ledger, and it writes the *tile* rather than the target.
 #[test]
 fn a_scripted_push_back_records_the_tile_it_happened_on() {

@@ -1088,8 +1088,20 @@ impl MacroMachine {
                 // say (row 37 of `infra/docs/macros-traps.md`). The fly may already have been
                 // walked a tile by the script, so the tile the macro set out from is the honest
                 // answer when there is one and the current tile otherwise.
+                //
+                // **Except for a walk** (row 57). A walk set out from wherever the last one left
+                // the fly, and the script fired on the tile the walk had *reached*: Pewter City's
+                // youngster takes the joypad on four tiles by the road east, and a `GO ROUTE` that
+                // set out from the town's south entrance twenty-six tiles away walled the south
+                // entrance -- with no window, in the middle of the town. A dozen of those fenced
+                // the fly into a pocket no walk could leave. The tile a walk last stood the fly on
+                // is its own record of where the cartridge took over.
                 if let Some(player) = at {
-                    let tile = active.from.unwrap_or(Tile::new(player.x, player.y));
+                    let current = Tile::new(player.x, player.y);
+                    let tile = match active.plan.front() {
+                        Some(Step::Walk(walk)) => walk.expect.unwrap_or(current),
+                        _ => active.from.unwrap_or(current),
+                    };
                     self.pushed_tile = Some((player.map, tile));
                 }
             }
