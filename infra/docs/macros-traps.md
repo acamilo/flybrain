@@ -2757,5 +2757,88 @@ route survey above is the reproduction; the hunt is reported, not smoothed.
 - `cargo clippy --all-targets`: **0 warnings**.
 - `npm test` 663 passed; `npm run typecheck` clean.
 - `infra/tests/lint.sh`: ALL CHECKS PASSED, check 10's two new cases and the de-PII guard included.
-- `flysim --print-compatibility`: **648 bytes, sha256 `4929f340...9ebd9`**, byte-identical to the
-  base. Decoder, reward catalog, adapter version and roles untouched.
+- `flysim --print-compatibility`: byte-identical to the base on both bases this branch has had:
+  648 bytes, sha256 `4929f340...9ebd9` on v0.5.5 (`7784a9d`), and 648 bytes, `8ce67b97...a8f68`
+  on `main` after the engagement rewards (adapter v7). Decoder, reward catalog, adapter version
+  and roles untouched.
+
+## 2026-09-23, row 60: TAIL WHIP after it stopped working
+
+### What was live
+
+Map 12 (Route 1), rank 9, v0.5.5, after the operator reset the run to milestone 1: Squirtle L5
+(TACKLE, TAIL WHIP) in wild battles with Pidgey, "Nothing happened!" on the screen. Since the reset
+`MOVE 2` 183 starts and `MOVE 1` one; the last reward 25 brain minutes before the checkpoint,
+1,600 decisions since, one wild win in the whole run. Check 10 flagged `unrewarded` -- correctly:
+100+ decisions, no reward event, no new ground on two probes. It is unchanged.
+
+### The survey: the pad on the fly's own turn
+
+The route probe from the checkpoint (`FLY_PROBE_CATCH=route`, `FLY_PROBE_PREFER="MOVE 2"`, the
+live readout's favourite; 72,000 frames) now prints the battle bytes on every pad change. The
+checkpoint is the frame Squirtle fainted: Pidgey L3, DEFENSE stage 1 (-6), DEFENSE 2, TAIL WHIP's
+row `$27`: effect `$13` power 0. In the next battle DEFENSE reached **1 at stage -5**, which
+`StatModifierDownEffect` refuses as well. From then on the own-turn pad was `MOVE 1, MOVE 2, RUN`
+over the menu and `BACK, MOVE 1, MOVE 2` over the list: **every own-turn pad with TAIL WHIP
+refused dealt `MOVE 2`** (72 of 72; a 73rd frame was a list with no placeable cursor, `NEXT`
+alone), TACKLE beside it every time. `MOVE 1` was never missing; `MOVE 2` was a
+button that could change nothing.
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 60 | `MOVE n` is bound by PP alone, so a move the cartridge refuses ("Nothing happened!", "didn't affect") stays on the pad beside one that works | any stat move at its stage or stat limit, any status move at a target it cannot affect; Route 1, TAIL WHIP at a Pidgey's DEFENSE 1, every battle lost | `a_move_the_cartridge_answers_with_nothing_is_off_the_pad_beside_one_it_does_not`, `a_spent_move_and_a_move_without_effect_leave_the_one_that_works`, `with_no_move_that_does_anything_the_moves_stay_as_pp_deals_them`, six `state` tests, `tail_whip_at_its_limit_is_not_dealt_and_a_route_one_battle_is_won` (ROM) | **fixed**: `state::move_data` reads the move's row of `Moves` (`$0E:$4000`) from the cartridge image; `state::move_without_effect` answers the refusals decided before the roll (stage 1/13, stat 1/999, Mist or substitute, a statused, Poison or Ground target); the palette treats such a move as it treats a spent one. `docs/design/macros.md` 12.23, `macros-wram.md` section 13 |
+
+### Before and after
+
+The ROM-gated run, 72,000 frames (20.1 brain minutes) from the checkpoint, the real palette
+driven with `MOVE 2` preferred and a uniform choice otherwise; base is this branch with the
+palette commit reverted:
+
+| measure | base | branch |
+| --- | ---: | ---: |
+| own-turn frames with a refused move beside a useful one | 2,657 | 568 |
+| ... of them dealing the refused move | **2,657** | **0** |
+| battles ended / won | 12 / **0** | 14 / **3** |
+| battles ended with the fly's Pokémon fainted | 12 | 8 |
+| battle length, frames, median / max | 4,970 / 8,994 | 3,594 / 4,793 |
+| `MOVE 2` / `MOVE 1` / `RUN` starts | 94 / 0 / 0 | 56 / 5 / 4 |
+
+The route survey, same driver and checkpoint: base never leaves Pallet Town, Red's house and
+Route 1 (637 tiles at the end); the branch reaches Viridian City, its Pokémon Center and mart and
+Route 2 (748).
+
+The survey itself, same driver: own-turn pads dealing a refused TAIL WHIP 72 -> **0** (of 11 at
+the limit); `MOVE 2` / `MOVE 1` / `RUN` done 94 / 0 / 0 -> 56 / 4 / 4; maps with a macro done 4 -> 10.
+
+**The real-brain trap hunt was not run to the end.** Both 20-minute arms (`trap_hunt` now reports
+payouts by kind, battle lengths and wins, and `MOVE n` starts on a move without effect) were
+started from the checkpoint and stopped after 1 h 48 min wall at about 19 CPU-minutes each: the box
+sat at load 25-40 and a stub arm ticks the same brain. The ROM-gated run and the survey above are
+the before/after; they drive the real palette with the live readout's measured preference instead
+of the brain, which is the deviation.
+
+### Residuals, named rather than worked around
+
+- **The fly still spends TAIL WHIP while it works.** Six presses at stage 7 to 1 are the fly's
+  choice, and a Squirtle at 8/20 can faint doing it; eight of fourteen battles on the branch
+  still ended that way. What changed is that the seventh is not on the pad.
+- **Not covered, same kind, nothing early reaches it:** Confuse Ray and Supersonic on a confused
+  target, Leech Seed on a seeded or Grass target, Focus Energy, Mist, Reflect and Light Screen
+  already up, Disable on a disabled target, and a damaging move the type chart makes "doesn't
+  affect" (the chart is another ROM table). `macros-wram.md` section 13.
+- **With no move that would do anything, the moves stay as PP deals them.** Taking them away would
+  leave an open list with `BACK` alone (12.11); a turn that ends on "Nothing happened!" still ends.
+
+### Gates
+
+- `cargo test --release -p flybrain-gb` with `FLY_ROM`: 426 + 27 passed, 0 failed.
+- `cargo test --release -p flysim --no-fail-fast` with `FLY_ROM` and the row-60 checkpoint:
+  all passed but `integration::the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_killed`,
+  the known load failure (`total` 1 against 38, or the feed at 14-18 Hz, on a box at load 30),
+  failing the same two ways on the base.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `npm test` 663 passed; `npm run typecheck` clean; `infra/tests/lint.sh` ALL CHECKS PASSED.
+- `flysim --print-compatibility`: byte-identical to the base on both bases this branch has had:
+  648 bytes, sha256 `4929f340...9ebd9` on v0.5.5 (`7784a9d`), and 648 bytes, `8ce67b97...a8f68`
+  on `main` after the engagement rewards (adapter v7). Decoder, reward catalog, adapter version
+  and roles untouched.
