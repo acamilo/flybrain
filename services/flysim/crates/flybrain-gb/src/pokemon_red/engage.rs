@@ -85,14 +85,17 @@ impl Conversation {
     }
 }
 
-/// Samples after the box opens in which `wSpriteIndex` may still be read.
+/// Samples after the box opens by which `DisplayTextID` has certainly written its argument.
 ///
-/// `DisplayTextIDInit` sets the font bit a few hundred cycles before `DisplayTextID` copies its
-/// argument into `wSpriteIndex`, with no frame in between -- but a frame boundary is wherever the
-/// CPU happens to be at the vertical blank, so a sample can land between the two. A stale
-/// argument names the previous conversation, which is either not in front of the fly (and does
-/// not resolve) or the same thing (and is the same key), so a short window costs nothing.
-const OPENING_SAMPLES: u8 = 3;
+/// `DisplayTextIDInit` sets the font bit and then loads the font's tiles into VRAM, which takes
+/// frames; `DisplayTextID` copies its argument into `wSpriteIndex` only after that. Measured on
+/// the cartridge (`tests/rom_engage.rs`, the Viridian Forest north gate): the bit rose on one
+/// frame and the argument arrived **twenty frames** later. Until then the byte still holds
+/// whatever the *last* text was about -- which may well be the person in front of the fly, from
+/// a conversation that did not pay -- so it is not read as this conversation's argument until it
+/// has changed, or until this many samples have gone by, after which an unchanged byte means the
+/// new text is about the same thing as the last one. More than twice the measured delay.
+const ARGUMENT_SETTLED: u8 = 45;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Armed {
@@ -102,12 +105,17 @@ struct Armed {
     /// The fly had the joypad and was standing still: [`state::controllable`] and a zero
     /// `wWalkCounter`. The overworld only reads an A press in that state.
     ready: bool,
+    /// `wSpriteIndex` before the box opened: the previous text's argument.
+    stale: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Opening {
     map: u8,
     samples: u8,
+    stale: u8,
+    /// The bottom dialogue box has been on screen during this opening.
+    dialogue: bool,
 }
 
 /// The `talk` rule's per-frame watch. Transient: a restore or a rollback clears it, so a
@@ -143,7 +151,9 @@ impl TalkWatch {
     ///    tile it is on now. A script's text opens with the joypad already taken, or on the frame
     ///    a step onto a trigger tile ends; neither is `ready`.
     /// 2. **It is with the thing in front of the fly.** `DisplayTextID` copies its argument into
-    ///    `wSpriteIndex`: a value up to `wNumSprites` is a sprite slot, and that sprite must stand
+    ///    `wSpriteIndex` once the font is loaded ([`ARGUMENT_SETTLED`] has the timing, and why
+    ///    the byte is read only once it has changed or settled), in the bottom dialogue box --
+    ///    the start menu is drawn elsewhere. A value up to `wNumSprites` is a sprite slot, and that sprite must stand
     ///    on the tile the player faces -- or one further, across a counter, on a tileset that has
     ///    counter tiles (`IsSpriteOrSignInFrontOfPlayer`'s `.extendRangeOverCounter`). A larger
     ///    value is a text id, and it must be the text id of the sign on the tile the player faces.
@@ -162,13 +172,30 @@ impl TalkWatch {
     ) -> Option<Conversation> {
         let open = memory.read8(ram::wFontLoaded) & poke::BIT_FONT_LOADED != 0;
         if !open {
-            self.opening = None;
+            // A box that closes before its argument was ever seen to change: a short text about
+            // the same thing as the last one. The argument was written before a letter printed,
+            // so it is this text's; the dialogue box must have been drawn for it.
+            let argument = memory.read8(ram::wSpriteIndex);
+            if let Some(opening) = self.opening.take()
+                && opening.dialogue
+                && opening.map == map
+                && let Some(thing) = thing_named(memory, argument)
+            {
+                self.pending = Some(Conversation { map, thing });
+            }
             let finished = self
                 .pending
                 .take()
                 .filter(|conversation| conversation.map == map);
             let ready = state::controllable(memory) && memory.read8(ram::wWalkCounter) == 0;
-            self.armed = Some(Armed { map, x, y, ready });
+            let stale = argument;
+            self.armed = Some(Armed {
+                map,
+                x,
+                y,
+                ready,
+                stale,
+            });
             return finished;
         }
         if let Some(armed) = self.armed.take()
@@ -179,17 +206,26 @@ impl TalkWatch {
             && self.pending.is_none()
             && indoor(memory.read8(ram::wCurMapTileset))
         {
-            self.opening = Some(Opening { map, samples: 0 });
+            self.opening = Some(Opening {
+                map,
+                samples: 0,
+                stale: armed.stale,
+                dialogue: false,
+            });
         }
         if let Some(opening) = self.opening.as_mut() {
             opening.samples += 1;
+            opening.dialogue |= state::text_box(memory).waiting;
             let map = opening.map;
-            let expired = opening.samples >= OPENING_SAMPLES;
-            if let Some(thing) = thing_in_front(memory) {
-                self.pending = Some(Conversation { map, thing });
+            let argument = memory.read8(ram::wSpriteIndex);
+            if argument != opening.stale || opening.samples >= ARGUMENT_SETTLED {
+                // One reading, whichever way it goes: the argument this text was opened with,
+                // and only while the dialogue box is what is drawn (not the start menu's).
+                let dialogue = state::text_box(memory).waiting;
                 self.opening = None;
-            } else if expired {
-                self.opening = None;
+                if dialogue && let Some(thing) = thing_named(memory, argument) {
+                    self.pending = Some(Conversation { map, thing });
+                }
             }
         }
         None
@@ -219,8 +255,11 @@ fn is_item_ball(memory: &mut dyn MemoryReader, slot: u8) -> bool {
 }
 
 /// `DisplayTextID`'s argument, if it names something the player is facing.
-fn thing_in_front(memory: &mut dyn MemoryReader) -> Option<Thing> {
-    let argument = memory.read8(ram::wSpriteIndex);
+///
+/// The caller also asks for the bottom dialogue box ([`state::text_box`]'s `waiting`):
+/// `DisplayTextIDInit` draws it for every text id but the start menu's, which it draws at the top
+/// right instead.
+fn thing_named(memory: &mut dyn MemoryReader, argument: u8) -> Option<Thing> {
     if argument == 0 {
         // TEXT_START_MENU.
         return None;

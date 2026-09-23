@@ -1401,17 +1401,59 @@ impl Fixture {
         self.memory.set(ram::wSpriteStateData1 + 9, facing);
     }
 
+    /// `DisplayTextIDInit`'s `TextBoxBorder` at screen (0, 12)-(19, 17), the box every text id
+    /// but the start menu's is drawn in; or the map's own tiles again once it is gone.
+    fn dialogue_box(&mut self, drawn: bool) {
+        use super::state::poke::frame;
+        let at = |x: u16, y: u16| ram::wTileMap + y * 20 + x;
+        for y in 12..=17u16 {
+            for x in 0..20u16 {
+                let tile = if !drawn {
+                    0
+                } else {
+                    match (x, y) {
+                        (0, 12) => frame::TOP_LEFT,
+                        (19, 12) => frame::TOP_RIGHT,
+                        (0, 17) => frame::BOTTOM_LEFT,
+                        (19, 17) => frame::BOTTOM_RIGHT,
+                        (_, 12) | (_, 17) => frame::HORIZONTAL,
+                        (0, _) | (19, _) => frame::VERTICAL,
+                        _ => 0x7f,
+                    }
+                };
+                self.memory.set(at(x, y), tile);
+            }
+        }
+    }
+
+    /// The box opening: the font bit, the border, and -- `delay` samples later, the way the
+    /// cartridge loads the font's tiles first -- `DisplayTextID`'s argument.
+    fn open_box(&mut self, argument: u8, delay: usize) -> Vec<RewardEvent> {
+        self.memory.set(ram::wFontLoaded, 1);
+        self.dialogue_box(true);
+        let mut events = Vec::new();
+        for _ in 0..delay {
+            events.extend(self.sample());
+        }
+        self.memory.set(ram::wSpriteIndex, argument);
+        events.extend(self.sample());
+        events
+    }
+
+    fn close_box(&mut self) -> Vec<RewardEvent> {
+        self.memory.set(ram::wFontLoaded, 0);
+        self.dialogue_box(false);
+        self.sample()
+    }
+
     /// One conversation as the cartridge draws it: a sample with the box closed (the frame the A
     /// press was read on), `DisplayTextIDInit` setting the font bit and `DisplayTextID` copying
     /// `argument` into `wSpriteIndex`, a few frames of text, and `CloseTextDisplay`.
     fn talk(&mut self, argument: u8) -> Vec<RewardEvent> {
         let mut events = self.sample();
-        self.memory.set(ram::wFontLoaded, 1);
-        self.memory.set(ram::wSpriteIndex, argument);
+        events.extend(self.open_box(argument, 20));
         events.extend(self.sample());
-        events.extend(self.sample());
-        self.memory.set(ram::wFontLoaded, 0);
-        events.extend(self.sample());
+        events.extend(self.close_box());
         events
     }
 
@@ -1462,12 +1504,9 @@ fn a_conversation_the_fly_opens_indoors_pays_once_when_its_box_closes() {
 
     // Nothing on the frames the box is open: the payout waits for it to close.
     let mut events = f.sample();
-    f.memory.set(ram::wFontLoaded, 1);
-    f.memory.set(ram::wSpriteIndex, 1);
-    events.extend(f.sample());
+    events.extend(f.open_box(1, 20));
     assert_eq!(count_of_kind(&events, kind::TALK), 0, "not while the box is open");
-    f.memory.set(ram::wFontLoaded, 0);
-    let events = f.sample();
+    let events = f.close_box();
     assert_eq!(kinds(&events), ["talk"]);
     assert_eq!(events[0].value, 0.10);
     assert_eq!(events[0].stimulation_ms, 100);
@@ -1563,14 +1602,30 @@ fn text_the_fly_did_not_open_pays_nothing() {
     // the frames after it are the fly's, but the box did not open on one of them.
     f.memory.set(ram::wJoyIgnore, 0xff);
     f.sample();
-    f.memory.set(ram::wFontLoaded, 1);
-    f.memory.set(ram::wSpriteIndex, 1);
-    f.sample();
+    f.open_box(1, 0);
     f.memory.set(ram::wJoyIgnore, 0);
     f.sample();
     f.sample();
+    assert_eq!(count_of_kind(&f.close_box(), kind::TALK), 0, "no open edge after a ready frame");
+
+    // START in front of someone: the menu's box is not the dialogue box, and `wSpriteIndex`
+    // still names the last person spoken to for the frames before the menu's own id arrives.
+    f.memory.set(ram::wSpriteIndex, 1);
+    f.sample();
+    f.memory.set(ram::wFontLoaded, 1);
+    for _ in 0..20 {
+        f.sample();
+    }
+    f.memory.set(ram::wSpriteIndex, 0);
+    f.sample();
     f.memory.set(ram::wFontLoaded, 0);
-    assert_eq!(count_of_kind(&f.sample(), kind::TALK), 0, "no open edge after a ready frame");
+    assert_eq!(count_of_kind(&f.sample(), kind::TALK), 0, "the start menu is not a conversation");
+
+    // The argument never arrives inside the window: nothing is guessed.
+    f.memory.set(ram::wSpriteIndex, 0);
+    f.sample();
+    f.open_box(1, 60);
+    assert_eq!(count_of_kind(&f.close_box(), kind::TALK), 0, "a second of frames, then no more");
 
     // None of that was recorded: the person is still worth one conversation.
     assert_eq!(kinds(&f.talk_events(1)), ["talk"]);
@@ -1584,22 +1639,17 @@ fn a_conversation_that_ends_somewhere_else_pays_nothing() {
     f.sprite(1, 5, 4, (0, 0));
     f.face(FACING_UP);
     f.sample();
-    f.memory.set(ram::wFontLoaded, 1);
-    f.memory.set(ram::wSpriteIndex, 1);
-    f.sample();
+    f.open_box(1, 20);
     // The script warped the fly out while the box was up.
     f.on_map(maps::PEWTER_CITY, 0);
-    f.memory.set(ram::wFontLoaded, 0);
-    assert_eq!(count_of_kind(&f.sample(), kind::TALK), 0);
+    assert_eq!(count_of_kind(&f.close_box(), kind::TALK), 0);
 
     // A rollback mid-conversation, likewise: the watch is transient.
     f.on_map(maps::PEWTER_GYM, GYM);
     f.sample();
-    f.memory.set(ram::wFontLoaded, 1);
-    f.sample();
+    f.open_box(1, 20);
     f.reward.clear_transient();
-    f.memory.set(ram::wFontLoaded, 0);
-    assert_eq!(count_of_kind(&f.sample(), kind::TALK), 0);
+    assert_eq!(count_of_kind(&f.close_box(), kind::TALK), 0);
 }
 
 #[test]
@@ -1819,4 +1869,28 @@ fn a_v6_state_restores_under_v7_with_empty_talk_and_seeded_item_ledgers() {
     f.sprite(1, 5, 4, (0, 0));
     f.face(FACING_UP);
     assert_eq!(kinds(&f.talk_events(1)), ["talk"]);
+}
+
+#[test]
+fn a_warp_is_classified_by_the_header_still_loaded_while_the_map_id_has_moved_on() {
+    // `WarpFound2` writes the destination into `wCurMap` and then plays the map-change sound for
+    // thirty-odd frames before `EnterMap` loads the new header (`tests/rom_engage.rs` measured
+    // it at Route 2's gate door). On those frames the tileset and the warp table are still the
+    // map the fly is leaving, and the exit it is standing on is that map's.
+    let mut f = Fixture::booted();
+    f.on_map(maps::ROUTE_2, 0);
+    f.warps(&[(3, 11)]);
+    f.visit(3, 10);
+    // Town -> building: the id is the gate's, the header is still Route 2's, and Route 2's
+    // door is an outdoor exit, so its on-exit half pays as it always did.
+    f.memory.set(ram::wCurMap, 0x2f);
+    assert_eq!(boundary_values(&f.visit(3, 11)), [0.10]);
+
+    // Building -> town: the id is Pewter's, the header still the museum's, whose door is an
+    // indoor exit and pays nothing.
+    f.on_map(0x34, 10);
+    f.warps(&[(10, 7)]);
+    f.visit(10, 6);
+    f.memory.set(ram::wCurMap, maps::PEWTER_CITY);
+    assert!(boundary_values(&f.visit(10, 7)).is_empty());
 }
