@@ -36,9 +36,11 @@
 //! | `FLY_TRAP_THREADS` | 4 | sweep threads |
 //! | `FLY_TRAP_SEED` | 20260917 | seeds the palette |
 //! | `FLY_TRAP_SEED_*` | unset | rebuilds session ledgers a restore starts empty: `PUSHED`, `EXHAUSTED`, `TALKED`, `BLOCKED`, `STOOD` (`examples/support/ledgers.rs`, row 57) |
+//! | `FLY_TRACE` | unset | a path: the stream's per-frame trace of this run (`flysim::trace`), comparable with the service's own |
 //!
-//! The frame order is `simloop.rs`'s, as `examples/palette_bench.rs` expresses it, so what this
-//! measures is the loop that ships rather than a second implementation of it. Without a
+//! The frame is `flysim::frame::LegacyFrame`, the one the stream runs, restored the way the stream
+//! restores it, so what this measures is the loop that ships rather than a second implementation
+//! of it; `FLY_TRACE` records it in the stream's own trace format. Without a
 //! checkpoint it refuses rather than booting the intro: a trap hunt is about a state the stream
 //! was actually in.
 
@@ -46,18 +48,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use flybrain_core::agent::{AgentConfig, NeuralAgent, RewardEvent as NeuralReward, TickOptions};
+use flybrain_core::agent::{AgentConfig, NeuralAgent};
 use flybrain_core::dataset::load_brain_dataset_from_dir;
-use flybrain_core::decoder::gameboy::{gameboy_decoder_config_with_macros, to_button_mask};
+use flybrain_core::decoder::gameboy::gameboy_decoder_config_with_macros;
 use flybrain_core::lif::SweepPlan;
 use flybrain_gb::adapter::GameAdapter;
 use flybrain_gb::pokemon_red::PokemonRedReward;
 use flybrain_gb::ratchet::Ratchet;
-use flybrain_gb::recovery::{NeuralRecovery, recover_game};
 use flybrain_gb::{AdapterLedger, DEFAULT_AUDIO_FRAMES, DEFAULT_AUDIO_FREQUENCY, Emulator};
 use flysim::config::Config;
+use flysim::frame::{Executed, FrameObserver, LegacyFrame, Parts};
 use flysim::macros::{MacroLayer, macro_layer};
 use flysim::snapshot::MacroMode;
+use flysim::trace::FrameTrace;
 
 #[path = "support/ledgers.rs"]
 mod ledgers;
@@ -152,28 +155,6 @@ const STUB_HOLDS_PER_CHANNEL: usize = 1;
 
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name).ok().and_then(|value| value.parse().ok()).unwrap_or(default)
-}
-
-/// The neural half of a ratchet recovery, exactly as `simloop.rs` wires it.
-struct AgentRecovery<'a> {
-    agent: &'a mut NeuralAgent,
-}
-
-impl NeuralRecovery for AgentRecovery<'_> {
-    fn clear_decoder_holds(&mut self) {
-        let ms = self.agent.network.ms;
-        self.agent.decoder.clear_holds(ms);
-    }
-
-    fn clear_eligibility(&mut self) {
-        let ms = self.agent.network.ms;
-        self.agent.network.plasticity.clear_eligibility(ms);
-    }
-
-    fn set_visual_frame(&mut self, frame: &[u8]) {
-        let (width, height) = (self.agent.frame.width, self.agent.frame.height);
-        self.agent.network.set_visual_frame(frame, width, height);
-    }
 }
 
 /// Where the fly stood on one frame, and what it started on it.
@@ -312,6 +293,161 @@ struct Trap {
     macros: usize,
 }
 
+/// The hunt's look inside the stream's frame (`flysim::frame`): what it reads before and after
+/// the executor decides, and the stub readout. Everything else is the frame's own order.
+struct Hunt {
+    stub: bool,
+    stub_hold: usize,
+    stub_next_ms: f64,
+    hold_ms: f64,
+    running: Option<Running>,
+    scene_run: (&'static str, u64, f64),
+    /// Read before `decide`, because `decide` is what starts the macro whose scene this is.
+    dialog_map: Option<u8>,
+    battle_sub: Option<&'static str>,
+    trace: Trace,
+}
+
+impl FrameObserver for Hunt {
+    /// The brain is still ticked -- the frame order, the plasticity and the cost are the run's --
+    /// and only the *readout* is replaced, so a stub run and a brain run differ in who chooses and
+    /// in nothing else.
+    fn readout(&mut self, ms: f64, bound: Option<&[String]>, active: &mut Vec<String>) {
+        if !self.stub {
+            return;
+        }
+        let hot = STUB_CHANNELS[(self.stub_hold / STUB_HOLDS_PER_CHANNEL) % STUB_CHANNELS.len()];
+        if ms >= self.stub_next_ms {
+            self.stub_next_ms = ms + self.hold_ms;
+            self.stub_hold += 1;
+        }
+        *active = bound.unwrap_or_default().iter().filter(|channel| *channel == hot).cloned().collect();
+    }
+
+    fn before_execute(&mut self, _frame: &LegacyFrame, parts: &mut Parts<'_>, _active: &[String]) {
+        let layer_scene = parts.macros.as_deref().map_or("", MacroLayer::scene_name);
+        self.dialog_map = (layer_scene == "dialog" || layer_scene == "unknown")
+            .then(|| flybrain_gb::pokemon_red::state::player(parts.emulator).map(|p| p.map))
+            .flatten();
+        self.battle_sub = battle_sub_state(parts.emulator);
+        if let Some(sub) = self.battle_sub {
+            *self.trace.battle_frames.entry(sub).or_insert(0) += 1;
+            let pad = self.trace.battle_pads.entry(sub).or_default();
+            for channel in parts.macros.as_deref().map(MacroLayer::bound_channels).unwrap_or_default() {
+                pad.insert(channel);
+            }
+        }
+    }
+
+    fn executed(&mut self, frame: &LegacyFrame, parts: &mut Parts<'_>, executed: &Executed) {
+        let ms = parts.agent.network.ms;
+        let location = frame.location;
+        let trace = &mut self.trace;
+        for event in &executed.events {
+            match event.outcome {
+                None => {
+                    trace.starts.push((ms, event.name));
+                    // Which press answered a box, and on which map: 991 `YES` in twenty brain
+                    // minutes is a fact about one conversation, and this is what says which.
+                    if let Some(map) = self.dialog_map {
+                        *trace.dialog_macros.entry((event.name, map)).or_insert(0) += 1;
+                    }
+                    if let Some(sub) = self.battle_sub {
+                        *trace.battle_starts.entry((event.name, sub)).or_insert(0) += 1;
+                    }
+                    if let Some(battle) = trace.battle_now.as_mut() {
+                        battle.1 += 1;
+                    }
+                    if let Some(slot) = event.name.strip_prefix("MOVE ") {
+                        trace.move_starts.0 += 1;
+                        let id = flybrain_gb::pokemon_red::state::battle(parts.emulator)
+                            .and_then(|battle| battle.own)
+                            .zip(slot.parse::<usize>().ok())
+                            .and_then(|(own, slot)| own.moves.get(slot - 1).copied().flatten())
+                            .map(|entry| entry.id);
+                        if id.is_some_and(|id| {
+                            flybrain_gb::pokemon_red::state::move_without_effect(parts.emulator, id)
+                                == Some(true)
+                        }) {
+                            trace.move_starts.1 += 1;
+                        }
+                    }
+                    self.running = Some(Running {
+                        name: event.name,
+                        from: location,
+                        tiles: location.into_iter().collect(),
+                        frames: 0,
+                        reach: 0,
+                    });
+                }
+                Some(outcome) => {
+                    *trace.outcomes.entry(outcome.as_str()).or_insert(0) += 1;
+                    if outcome.as_str() == "refused" {
+                        *trace.refusals.entry(event.name).or_insert(0) += 1;
+                        let key = Some((event.name, location));
+                        trace.refusal_run = if trace.refusal_run.0 == key {
+                            (key, trace.refusal_run.1 + 1)
+                        } else {
+                            (key, 1)
+                        };
+                        if trace.refusal_run.1 > trace.longest_refusal_run.0 {
+                            trace.longest_refusal_run = (trace.refusal_run.1, event.name);
+                        }
+                    }
+                    if let Some(run) = self.running.take() {
+                        let net = match (run.from, location) {
+                            (Some((map, x, y)), Some((at, ax, ay))) if map == at => {
+                                ax.abs_diff(x) + ay.abs_diff(y)
+                            }
+                            _ => 0,
+                        };
+                        trace.episodes.push(Episode {
+                            name: run.name,
+                            outcome: outcome.as_str(),
+                            frames: run.frames,
+                            tiles: run.tiles.len(),
+                            net,
+                            reach: run.reach,
+                        });
+                    }
+                }
+            }
+        }
+        {
+            let text = flybrain_gb::pokemon_red::state::text_box(parts.emulator);
+            let (corners, border) = flybrain_gb::pokemon_red::state::dialog_border(parts.emulator);
+            match (text.open, corners, border) {
+                (true, true, true) => trace.font_corners_border += 1,
+                (true, true, false) => trace.font_corners_no_border += 1,
+                (true, false, _) => trace.font_no_corners += 1,
+                (false, true, _) => trace.corners_no_font += 1,
+                (false, false, _) => {}
+            }
+        }
+        if let Some(layer) = parts.macros.as_deref() {
+            let name = layer.scene_name();
+            *trace.scenes.entry(name).or_insert(0) += 1;
+            if name == self.scene_run.0 {
+                self.scene_run.1 += 1;
+            } else {
+                self.scene_run = (name, 1, ms);
+            }
+            let longest = trace.longest_scene.entry(name).or_insert((0, 0.0));
+            if self.scene_run.1 > longest.0 {
+                *longest = (self.scene_run.1, self.scene_run.2 - trace.began_ms);
+            }
+            // Where the text box is, which is the half the scene histogram could not say.
+            if name == "dialog" || name == "unknown" {
+                let where_ = flybrain_gb::pokemon_red::state::player(parts.emulator)
+                    .map(|player| (player.map, player.x, player.y));
+                if let Some(key) = where_ {
+                    *trace.dialog_frames.entry(key).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+}
+
 /// Run `minutes` brain minutes of the sim loop's frame order from `checkpoint`, recording where
 /// the fly stood and what it started.
 fn run(
@@ -325,8 +461,6 @@ fn run(
 ) -> Trace {
     let began_wall = std::time::Instant::now();
     let stub = std::env::var("FLY_TRAP_STUB").is_ok_and(|value| value == "1");
-    let mut stub_hold = 0usize;
-    let mut stub_next_ms = f64::NEG_INFINITY;
     let mut emulator = Emulator::new(rom, DEFAULT_AUDIO_FREQUENCY, DEFAULT_AUDIO_FRAMES)
         .expect("binjgb should accept the cartridge");
     let mut adapter = PokemonRedReward::new();
@@ -339,34 +473,28 @@ fn run(
         .or(preset.exclusive.as_ref())
         .expect("the preset has a group")
         .hold_ms;
-    let blocked_ms =
-        preset.exclusive.as_ref().expect("the preset has an exclusive group").blocked_ms;
     let agent_config = AgentConfig::with_decoder(preset);
     let mut ratchet = Ratchet::with_policy(adapter.recovery_policy());
-
-    emulator
-        .import_state(&checkpoint.runtime.emulator)
-        .expect("the checkpoint's emulator state should import");
-    adapter
-        .import_state(&checkpoint.runtime.reward)
-        .expect("the checkpoint's reward ledger should import");
-    let snapshot = (!checkpoint.runtime.ratchet_game.is_empty()).then(|| {
-        flybrain_gb::ratchet::Snapshot {
-            game: checkpoint.runtime.ratchet_game.clone(),
-            frame: checkpoint.runtime.ratchet_frame.clone(),
-        }
-    });
-    ratchet
-        .import(Some(checkpoint.runtime.ratchet), snapshot, adapter.rank_ladder().len())
-        .expect("the checkpoint's ratchet state should import");
-
     let mut agent = NeuralAgent::new(Arc::clone(data), agent_config).expect("a valid agent");
     if threads > 1 {
         agent.set_sweep_plan(SweepPlan::with_threads(threads).expect("a sweep plan"));
     }
-    agent.import_state(&checkpoint.agent).expect("the checkpoint's agent should import");
-    let (width, height) = (agent.frame.width, agent.frame.height);
-    agent.network.set_visual_frame(&checkpoint.runtime.framebuffer, width, height);
+    // The stream's own restore, into the stream's own frame: a fresh process's readout transient
+    // (`restore: legacy-transient-reset`), which is what the fly has after the service restarts.
+    let mut frame = LegacyFrame::new()
+        .with_trace(FrameTrace::from_env().expect("FLY_TRACE should name a writable file"));
+    frame
+        .restore(
+            &mut Parts {
+                agent: &mut agent,
+                emulator: &mut emulator,
+                adapter: &mut adapter,
+                ratchet: &mut ratchet,
+                macros: None,
+            },
+            checkpoint,
+        )
+        .expect("the checkpoint should restore");
 
     let mut config = Config::default();
     config.loop_.game = "pokemon-red".to_string();
@@ -391,239 +519,90 @@ fn run(
 
     let began_ms = agent.network.ms;
     let until = began_ms + minutes * MINUTE_MS;
-    let mut frame = emulator.framebuffer().to_vec();
-    let mut payouts: Vec<flybrain_gb::RewardEvent> = Vec::new();
-    let mut location = adapter.location();
-    let mut blocked_since_ms = began_ms;
-    let mut held_channel: Option<String> = agent.decoder.current().map(str::to_string);
-    let mut rank = adapter.progress().rank;
-    let mut running: Option<Running> = None;
+    let rank = adapter.progress().rank;
     // A periodic one-liner for a run that is going nowhere: what the fly is standing on, what it
     // faces, and which text box the detector is looking at. Off unless asked for, because it is a
     // diagnostic and the tables above are the report.
     let trace_every_ms = env_f64("FLY_TRAP_TRACE_SECONDS", 0.0) * 1000.0;
     let mut next_trace = began_ms;
-    // The scene of the frames in a row, for "stuck in a text box" against "in and out of one".
-    let mut scene_run: (&'static str, u64, f64) = ("", 0, began_ms);
-    let mut trace = Trace {
-        steps: Vec::new(),
-        starts: Vec::new(),
-        episodes: Vec::new(),
-        began_ms,
-        ended_ms: began_ms,
-        frames: 0,
-        recoveries: 0,
-        rungs: vec![(rank, adapter.progress().rank_label, 0.0)],
-        outcomes: BTreeMap::new(),
-        scenes: BTreeMap::new(),
-        dialog_frames: BTreeMap::new(),
-        dialog_macros: BTreeMap::new(),
-        ended_in: ("", String::new()),
-        longest_scene: BTreeMap::new(),
-        ended_why: String::new(),
-        ended_grid: String::new(),
-        font_corners_border: 0,
-        font_corners_no_border: 0,
-        font_no_corners: 0,
-        corners_no_font: 0,
-        battle_frames: BTreeMap::new(),
-        battle_starts: BTreeMap::new(),
-        battle_pads: BTreeMap::new(),
-        battles: Vec::new(),
-        battle_now: None,
-        payouts_by_kind: BTreeMap::new(),
-        move_starts: (0, 0),
-        wall_seconds: 0.0,
-        seeded: seeded_note,
-        refusals: BTreeMap::new(),
-        refusal_run: (None, 0),
-        longest_refusal_run: (0, ""),
+    let mut hunt = Hunt {
+        stub,
+        stub_hold: 0,
+        stub_next_ms: f64::NEG_INFINITY,
+        hold_ms,
+        running: None,
+        // The scene of the frames in a row, for "stuck in a text box" against "in and out of one".
+        scene_run: ("", 0, began_ms),
+        dialog_map: None,
+        battle_sub: None,
+        trace: Trace {
+            steps: Vec::new(),
+            starts: Vec::new(),
+            episodes: Vec::new(),
+            began_ms,
+            ended_ms: began_ms,
+            frames: 0,
+            recoveries: 0,
+            rungs: vec![(rank, adapter.progress().rank_label, 0.0)],
+            outcomes: BTreeMap::new(),
+            scenes: BTreeMap::new(),
+            dialog_frames: BTreeMap::new(),
+            dialog_macros: BTreeMap::new(),
+            ended_in: ("", String::new()),
+            longest_scene: BTreeMap::new(),
+            ended_why: String::new(),
+            ended_grid: String::new(),
+            font_corners_border: 0,
+            font_corners_no_border: 0,
+            font_no_corners: 0,
+            corners_no_font: 0,
+            battle_frames: BTreeMap::new(),
+            battle_starts: BTreeMap::new(),
+            battle_pads: BTreeMap::new(),
+            battles: Vec::new(),
+            battle_now: None,
+            payouts_by_kind: BTreeMap::new(),
+            move_starts: (0, 0),
+            wall_seconds: 0.0,
+            seeded: seeded_note,
+            refusals: BTreeMap::new(),
+            refusal_run: (None, 0),
+            longest_refusal_run: (0, ""),
+        },
     };
+    let mut rank = rank;
 
+    // One observation before the first frame, as the sim loop takes after a restore.
     if let Some(layer) = macros.as_mut() {
         let ledger = AdapterLedger(&adapter);
         let _ = layer.observe(&mut emulator, &ledger, agent.network.ms);
     }
 
     while agent.network.ms < until {
-        let rewards: Vec<NeuralReward> = payouts
-            .iter()
-            .map(|event| {
-                NeuralReward::with_stimulation(event.value, f64::from(event.stimulation_ms))
-            })
-            .collect();
-        let options = TickOptions { rewards: &rewards, boot: adapter.boot(), learn: true };
-        let ms = agent.network.ms;
-        let blocked = (blocked_ms > 0.0 && ms - blocked_since_ms >= blocked_ms)
-            .then(|| agent.decoder.current().map(str::to_string))
-            .flatten();
-        let bound = macros.as_ref().map(MacroLayer::bound_channels);
-        let result = agent
-            .tick_bound(&frame, &options, blocked.as_deref(), bound.as_deref())
-            .expect("a tick");
-        // The brain is still ticked — the frame order, the plasticity and the cost are the run's —
-        // and only the *readout* is replaced, so a stub run and a brain run differ in who chooses
-        // and in nothing else.
-        let active: Vec<String> = if stub {
-            let hot = STUB_CHANNELS[(stub_hold / STUB_HOLDS_PER_CHANNEL) % STUB_CHANNELS.len()];
-            if ms >= stub_next_ms {
-                stub_next_ms = ms + hold_ms;
-                stub_hold += 1;
-            }
-            bound
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .filter(|channel| *channel == hot)
-                .cloned()
-                .collect()
-        } else {
-            result.active.clone()
+        let mut parts = Parts {
+            agent: &mut agent,
+            emulator: &mut emulator,
+            adapter: &mut adapter,
+            ratchet: &mut ratchet,
+            macros: macros.as_mut(),
         };
-        let held = agent.decoder.current().map(str::to_string);
-        if held != held_channel {
-            held_channel = held;
-            blocked_since_ms = ms;
-        }
-
-        let ms = agent.network.ms;
-        let mut mask = to_button_mask(&active);
-        // Read before `decide`, because `decide` is what starts the macro whose scene this is.
-        let layer_scene = macros.as_ref().map_or("", MacroLayer::scene_name);
-        let dialog_map = (layer_scene == "dialog" || layer_scene == "unknown")
-            .then(|| flybrain_gb::pokemon_red::state::player(&mut emulator).map(|p| p.map))
-            .flatten();
-        let battle_sub = battle_sub_state(&mut emulator);
-        if let Some(sub) = battle_sub {
-            *trace.battle_frames.entry(sub).or_insert(0) += 1;
-            let pad = trace.battle_pads.entry(sub).or_default();
-            for channel in bound.as_deref().unwrap_or_default() {
-                pad.insert(channel.clone());
-            }
-        }
-        if let Some(layer) = macros.as_mut() {
-            let ledger = AdapterLedger(&adapter);
-            let decision = layer.decide(&active, mask, ms, &mut emulator, &ledger);
-            mask = decision.mask;
-            for event in &decision.events {
-                match event.outcome {
-                    None => {
-                        trace.starts.push((ms, event.name));
-                        // Which press answered a box, and on which map: 991 `YES` in twenty brain
-                        // minutes is a fact about one conversation, and this is what says which.
-                        if let Some(map) = dialog_map {
-                            *trace.dialog_macros.entry((event.name, map)).or_insert(0) += 1;
-                        }
-                        if let Some(sub) = battle_sub {
-                            *trace.battle_starts.entry((event.name, sub)).or_insert(0) += 1;
-                        }
-                        if let Some(battle) = trace.battle_now.as_mut() {
-                            battle.1 += 1;
-                        }
-                        if let Some(slot) = event.name.strip_prefix("MOVE ") {
-                            trace.move_starts.0 += 1;
-                            let id = flybrain_gb::pokemon_red::state::battle(&mut emulator)
-                                .and_then(|battle| battle.own)
-                                .zip(slot.parse::<usize>().ok())
-                                .and_then(|(own, slot)| own.moves.get(slot - 1).copied().flatten())
-                                .map(|entry| entry.id);
-                            if id.is_some_and(|id| {
-                                flybrain_gb::pokemon_red::state::move_without_effect(&mut emulator, id)
-                                    == Some(true)
-                            }) {
-                                trace.move_starts.1 += 1;
-                            }
-                        }
-                        running = Some(Running {
-                            name: event.name,
-                            from: location,
-                            tiles: location.into_iter().collect(),
-                            frames: 0,
-                            reach: 0,
-                        });
-                    }
-                    Some(outcome) => {
-                        *trace.outcomes.entry(outcome.as_str()).or_insert(0) += 1;
-                        if outcome.as_str() == "refused" {
-                            *trace.refusals.entry(event.name).or_insert(0) += 1;
-                            let key = Some((event.name, location));
-                            trace.refusal_run = if trace.refusal_run.0 == key {
-                                (key, trace.refusal_run.1 + 1)
-                            } else {
-                                (key, 1)
-                            };
-                            if trace.refusal_run.1 > trace.longest_refusal_run.0 {
-                                trace.longest_refusal_run = (trace.refusal_run.1, event.name);
-                            }
-                        }
-                        if let Some(run) = running.take() {
-                            let net = match (run.from, location) {
-                                (Some((map, x, y)), Some((at, ax, ay))) if map == at => {
-                                    ax.abs_diff(x) + ay.abs_diff(y)
-                                }
-                                _ => 0,
-                            };
-                            trace.episodes.push(Episode {
-                                name: run.name,
-                                outcome: outcome.as_str(),
-                                frames: run.frames,
-                                tiles: run.tiles.len(),
-                                net,
-                                reach: run.reach,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        {
-            let text = flybrain_gb::pokemon_red::state::text_box(&mut emulator);
-            let (corners, border) =
-                flybrain_gb::pokemon_red::state::dialog_border(&mut emulator);
-            match (text.open, corners, border) {
-                (true, true, true) => trace.font_corners_border += 1,
-                (true, true, false) => trace.font_corners_no_border += 1,
-                (true, false, _) => trace.font_no_corners += 1,
-                (false, true, _) => trace.corners_no_font += 1,
-                (false, false, _) => {}
-            }
-        }
-        if let Some(layer) = macros.as_ref() {
-            let name = layer.scene_name();
-            *trace.scenes.entry(name).or_insert(0) += 1;
-            if name == scene_run.0 {
-                scene_run.1 += 1;
-            } else {
-                scene_run = (name, 1, ms);
-            }
-            let longest = trace.longest_scene.entry(name).or_insert((0, 0.0));
-            if scene_run.1 > longest.0 {
-                *longest = (scene_run.1, scene_run.2 - began_ms);
-            }
-            // Where the text box is, which is the half the scene histogram could not say.
-            if name == "dialog" || name == "unknown" {
-                let where_ = flybrain_gb::pokemon_red::state::player(&mut emulator)
-                    .map(|player| (player.map, player.x, player.y));
-                if let Some(key) = where_ {
-                    *trace.dialog_frames.entry(key).or_insert(0) += 1;
-                }
-            }
-        }
-        emulator.set_buttons(mask as u8);
-        emulator.run_frame().expect("a frame should complete");
-        trace.frames += 1;
-        frame.copy_from_slice(emulator.framebuffer());
-
-        payouts = adapter.sample(&mut emulator, ms);
-        for payout in &payouts {
-            let entry = trace.payouts_by_kind.entry(payout.kind).or_insert((0, 0.0));
+        let transition = frame.transition(&mut parts, &mut hunt).expect("a frame");
+        let ms = transition.ms;
+        hunt.trace.frames += 1;
+        for payout in &transition.evaluated.rewards {
+            let entry = hunt.trace.payouts_by_kind.entry(payout.kind).or_insert((0, 0.0));
             *entry = (entry.0 + 1, entry.1 + payout.value);
         }
         {
             use flybrain_gb::MemoryReader;
+            let trace = &mut hunt.trace;
             let fighting =
-                emulator.read8(flybrain_gb::pokemon_red::symbols::ram::wIsInBattle) != 0;
-            let won = payouts.iter().any(|payout| matches!(payout.kind, "battle" | "trainer"));
+                parts.emulator.read8(flybrain_gb::pokemon_red::symbols::ram::wIsInBattle) != 0;
+            let won = transition
+                .evaluated
+                .rewards
+                .iter()
+                .any(|payout| matches!(payout.kind, "battle" | "trainer"));
             match (fighting, trace.battle_now.as_mut()) {
                 (true, Some(battle)) => {
                     battle.0 += 1;
@@ -638,19 +617,15 @@ fn run(
                 (false, None) => {}
             }
         }
-        if let Some(layer) = macros.as_mut() {
-            let ledger = AdapterLedger(&adapter);
-            let _ = layer.observe(&mut emulator, &ledger, agent.network.ms);
-        }
 
         if trace_every_ms > 0.0 && ms >= next_trace {
             next_trace = ms + trace_every_ms;
-            let scene = macros.as_ref().map_or("", MacroLayer::scene_name);
+            let scene = parts.macros.as_deref().map_or("", MacroLayer::scene_name);
             use flybrain_gb::pokemon_red::macros::cartridge::{MacroState, Tile};
             // Read before the state borrows the emulator: this is the same call the state makes,
             // and the only one that can say *which* refusal a frame is.
-            let refusal = flybrain_gb::pokemon_red::state::map_grid(&mut emulator).err();
-            let mut state = flybrain_gb::pokemon_red::state::PokeState::new(&mut emulator);
+            let refusal = flybrain_gb::pokemon_red::state::map_grid(parts.emulator).err();
+            let mut state = flybrain_gb::pokemon_red::state::PokeState::new(parts.emulator);
             let state: &mut dyn MacroState = &mut state;
             let player = state.player();
             let ahead = player.and_then(|player| {
@@ -658,22 +633,18 @@ fn run(
                 flybrain_gb::pokemon_red::macros::path::target_at(state, ahead)
             });
             let ground = grid_line(state, player, refusal);
-            let why = flybrain_gb::pokemon_red::scene::why_unknown(&mut emulator);
+            let why = flybrain_gb::pokemon_red::scene::why_unknown(parts.emulator);
             println!(
                 "trace {:7.2} min  scene={scene:<9} player={player:?} ahead={ahead:?}\n    {why}\n    {ground}",
                 (ms - began_ms) / MINUTE_MS
             );
         }
 
-        let now = adapter.location();
-        if now.is_some() && now != location {
-            location = now;
-            blocked_since_ms = ms;
-        }
+        let location = frame.location;
         if let Some((map, x, y)) = location {
-            trace.steps.push((ms, map, x, y));
+            hunt.trace.steps.push((ms, map, x, y));
         }
-        if let Some(run) = running.as_mut() {
+        if let Some(run) = hunt.running.as_mut() {
             run.frames += 1;
             if let Some(at) = location {
                 run.tiles.insert(at);
@@ -685,47 +656,18 @@ fn run(
             }
         }
 
-        let progress = adapter.progress();
+        let progress = transition.evaluated.progress;
         if progress.rank != rank {
             rank = progress.rank;
-            trace.rungs.push((rank, progress.rank_label, ms - began_ms));
+            hunt.trace.rungs.push((rank, progress.rank_label, ms - began_ms));
         }
-        let safe = adapter.safe_for_snapshot();
-        let capture_due = safe && u64::from(progress.rank) > ratchet.state.best;
-        let captured = capture_due.then(|| flybrain_gb::ratchet::Snapshot {
-            game: emulator.export_state().expect("state export"),
-            frame: frame.clone(),
-        });
-        let recover = ratchet.observe_with_game_over(
-            safe,
-            u64::from(progress.rank),
-            progress.unique_locations as u64,
-            ms as u64,
-            adapter.game_over(),
-            || captured.expect("the ratchet only captures when a snapshot was prepared"),
-        );
-        if recover {
-            let snapshot = flybrain_gb::ratchet::Snapshot {
-                game: ratchet.game().expect("a recovery has a snapshot").to_vec(),
-                frame: ratchet.frame().expect("a recovery has a framebuffer").to_vec(),
-            };
-            let restored = {
-                let mut neural = AgentRecovery { agent: &mut agent };
-                recover_game(&mut emulator, &mut adapter, &mut neural, &snapshot)
-                    .expect("recovering the game")
-            };
-            frame.copy_from_slice(&restored);
-            emulator.set_buttons(0);
-            trace.recoveries += 1;
-            location = adapter.location();
-            held_channel = None;
-            blocked_since_ms = ms;
-            if let Some(layer) = macros.as_mut() {
-                layer.cancel(ms);
-            }
-            running = None;
+        let boundary = frame.boundary(&mut parts, &progress, ms).expect("the boundary");
+        if boundary.rollback.is_some() {
+            hunt.trace.recoveries += 1;
+            hunt.running = None;
         }
     }
+    let mut trace = hunt.trace;
     trace.ended_in = (
         macros.as_ref().map_or("", MacroLayer::scene_name),
         adapter.mode().to_string(),

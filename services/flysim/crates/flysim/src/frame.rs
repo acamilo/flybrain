@@ -332,6 +332,25 @@ impl LegacyFrame {
         Ok(Transition { ticks, ms, bound, active, executed, audio, evaluated })
     }
 
+    /// The rest of phase B and phase C behind a stub readout, for the drivers that measure the
+    /// macros without a brain (the ROM tests, the scene probe). The driver decodes its stub,
+    /// calls [`LegacyFrame::execute`] with no raw mask, reads what it measures, and then this runs
+    /// the frame and evaluates it. There is no commit and no ratchet.
+    ///
+    /// A stub has no phase A to advance its clock in, so it keeps its own and advances it with the
+    /// emulator frame: it decides at its clock and evaluates at `evaluate_ms`, one frame later.
+    pub fn stub_advance(
+        &mut self,
+        macros: Option<&mut MacroLayer>,
+        emulator: &mut Emulator,
+        adapter: &mut dyn GameAdapter,
+        evaluate_ms: f64,
+    ) -> Result<Evaluated> {
+        self.run(emulator)?;
+        let _ = self.take_frame(emulator);
+        Ok(self.evaluate(emulator, adapter, macros, evaluate_ms))
+    }
+
     /// Phase A: brain ticks and the decode, masked to `bound`.
     pub fn prepare(
         &mut self,
@@ -424,12 +443,6 @@ impl LegacyFrame {
     ) -> Result<Vec<u8>> {
         self.run(emulator)?;
         observer.after(FramePhase::Emulated, agent);
-        Ok(self.take_frame(emulator))
-    }
-
-    /// [`LegacyFrame::advance`] without a brain, for the stub-readout drivers.
-    pub fn advance_stub(&mut self, emulator: &mut Emulator) -> Result<Vec<u8>> {
-        self.run(emulator)?;
         Ok(self.take_frame(emulator))
     }
 

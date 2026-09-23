@@ -808,6 +808,8 @@ fn accept_survey(
     // [box not drawn, box drawn] x [press refused, press honoured], over every frame whose cursor
     // bytes say "the move list" -- which is the whole of what the seam read before row 50.
     let mut readings = [[0usize; 2]; 2];
+    // The stream's frame (`flysim::frame::LegacyFrame`), behind the stub readout.
+    let mut legacy = flysim::frame::LegacyFrame::new();
 
     println!("\n## Row 50: every battle frame, pressed at\n");
     println!("```");
@@ -823,18 +825,9 @@ fn accept_survey(
         }
         let bound = layer.bound_channels();
         let active = decoder.decode_bound(&rates(hot), *ms, false, None, Some(&bound));
-        let mask = {
-            let ledger = AdapterLedger(adapter);
-            layer.decide(&active, 0, *ms, gb, &ledger).mask
-        };
-        gb.set_buttons(mask as u8);
-        gb.run_frame().expect("a frame should complete");
+        legacy.execute(Some(&mut *layer), &active, 0, *ms, gb, &*adapter);
         *ms += MS_PER_FRAME;
-        adapter.sample(gb, *ms);
-        {
-            let ledger = AdapterLedger(adapter);
-            let _ = layer.observe(gb, &ledger, *ms);
-        }
+        legacy.stub_advance(Some(&mut *layer), gb, adapter, *ms).expect("a frame should complete");
 
         let Some((name, own_turn, forced)) = battle_reading(gb, adapter) else { continue };
         let geom = move_cursor_geometry(gb);
@@ -1801,6 +1794,8 @@ fn main() {
     let mut noattack = 0usize;
     let mut before = (0u8, 0u8, 0u8);
     let mut surveyed = 0usize;
+    // The stream's frame (`flysim::frame::LegacyFrame`), behind the stub readout.
+    let mut legacy = flysim::frame::LegacyFrame::new();
     for frame in 0..budget {
         let bursting = ms < next_burst + BURST_MS;
         let hot = bursting.then(|| channels[(burst / HOLDS_PER_SLOT) % channels.len()]);
@@ -1810,18 +1805,11 @@ fn main() {
         }
         let bound = layer.bound_channels();
         let active = decoder.decode_bound(&rates(hot), ms, false, None, Some(&bound));
-        let mask = {
-            let ledger = AdapterLedger(&adapter);
-            layer.decide(&active, 0, ms, &mut gb, &ledger).mask
-        };
-        gb.set_buttons(mask as u8);
-        gb.run_frame().expect("a frame should complete");
+        legacy.execute(Some(&mut layer), &active, 0, ms, &mut gb, &adapter);
         ms += MS_PER_FRAME;
-        adapter.sample(&mut gb, ms);
-        {
-            let ledger = AdapterLedger(&adapter);
-            let _ = layer.observe(&mut gb, &ledger, ms);
-        }
+        legacy
+            .stub_advance(Some(&mut layer), &mut gb, &mut adapter, ms)
+            .expect("a frame should complete");
         if catch_script
             && gb.read8(ram::wSimulatedJoypadStatesIndex) != 0
             && gb.read8(ram::wCurMap) == 1

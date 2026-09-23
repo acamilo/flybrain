@@ -43,6 +43,7 @@ use flybrain_gb::{
     AdapterLedger, DEFAULT_AUDIO_FRAMES, DEFAULT_AUDIO_FREQUENCY, Emulator, GameAdapter,
 };
 use flysim::config::Config;
+use flysim::frame::LegacyFrame;
 use flysim::macros::{MacroLayer, macro_layer};
 use flysim::snapshot::MacroMode;
 
@@ -92,6 +93,8 @@ struct Run {
     gb: Emulator,
     adapter: PokemonRedReward,
     layer: MacroLayer,
+    /// The stream's frame (`flysim::frame::LegacyFrame`), behind the stub readout.
+    legacy: LegacyFrame,
     decoder: PopulationDecoder,
     channels: Vec<&'static str>,
     ms: f64,
@@ -124,6 +127,7 @@ impl Run {
             gb,
             adapter,
             layer,
+            legacy: LegacyFrame::new(),
             decoder,
             channels,
             ms: 0.0,
@@ -161,18 +165,14 @@ impl Run {
         };
         let bound = self.layer.bound_channels();
         let active = self.decoder.decode_bound(&rates(hot), self.ms, false, None, Some(&bound));
-        let mask = {
-            let ledger = AdapterLedger(&self.adapter);
-            self.layer.decide(&active, 0, self.ms, &mut self.gb, &ledger).mask
-        };
-        self.gb.set_buttons(mask as u8);
-        self.gb.run_frame().expect("a frame should complete");
+        self.legacy.execute(Some(&mut self.layer), &active, 0, self.ms, &mut self.gb, &self.adapter);
         self.ms += MS_PER_FRAME;
         self.frame += 1;
-        let ms = self.ms;
-        self.payouts.extend(self.adapter.sample(&mut self.gb, ms));
-        let ledger = AdapterLedger(&self.adapter);
-        let _ = self.layer.observe(&mut self.gb, &ledger, ms);
+        let evaluated = self
+            .legacy
+            .stub_advance(Some(&mut self.layer), &mut self.gb, &mut self.adapter, self.ms)
+            .expect("a frame should complete");
+        self.payouts.extend(evaluated.rewards);
     }
 
     fn catches(&self) -> Vec<&RewardEvent> {
