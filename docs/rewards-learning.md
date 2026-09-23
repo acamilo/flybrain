@@ -49,10 +49,10 @@ set, which this rule deliberately did not do.
 finding what is in a place -- new ground, a door, a person or sign it opened, an item it picked up
 -- at the same quiet scale (0.05 to 0.15). Not `area`, which counts maps and is a notable row; not
 `story`, which is the plot; not `wildwin`, which is a battle. No feed kind was added, so
-`docs/feed-protocol.md` and the stage's switch statements did not move. What did move is the one
-word that would have been untrue: the Pokémon Red ticker's `explore` row said "new place", which is
-not what a conversation or an item is, and now says **"new find"** ("3 new finds" collapsed), which
-is true of all four. The event labels -- `TALKED TO #<slot> IN AREA <map>`, `READ SIGN #<id> IN
+`docs/feed-protocol.md` and the stage's switch statements did not move. The Pokémon Red ticker's
+`explore` row still says "new place" ("3 new places" collapsed) for all four: "new find" was
+proposed and the operator kept "new place" (2026-09-23), so a conversation or an item reads as a
+new place on screen. The event labels -- `TALKED TO #<slot> IN AREA <map>`, `READ SIGN #<id> IN
 AREA <map>`, `FOUND ITEM #<item>`, `FOUND A HIDDEN ITEM` -- reach the event log, `/status` and the
 checkpoint. Both also reset the stage's stall meter, which counts `explore`: engaging with a
 building is progress in the sense the operator asked for.

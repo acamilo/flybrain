@@ -296,8 +296,8 @@ impl RewardKind {
             // already counts -- new ground, a door found -- at the same quiet scale (0.05 to
             // 0.15), so both publish there and the feed's closed kind set does not move. Not
             // `area`, which counts maps and is a notable row; not `story`, which is the plot;
-            // not `wildwin`, which is a battle. The Pokémon Red ticker's copy for `explore` says
-            // "new find" so that the row is true of all four (`apps/stage/src/games/pokemon-red.ts`).
+            // not `wildwin`, which is a battle. The Pokémon Red ticker's copy for `explore` stays
+            // "new place" for all four, the operator's call (`apps/stage/src/games/pokemon-red.ts`).
             "talk" => Self::Explore,
             "item" => Self::Explore,
             // The platformer.
