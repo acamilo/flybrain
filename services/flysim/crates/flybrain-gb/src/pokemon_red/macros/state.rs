@@ -536,18 +536,22 @@ impl MapGrid {
     /// reachable ones is fenced in, and no amount of re-planning is going to help it
     /// (`docs/design/macros.md` section 15, `examples/scene_probe.rs`).
     pub fn reachable_from(&self, x: u8, y: u8) -> usize {
-        if self.index(x, y).is_none() {
-            return 0;
-        }
+        self.reachable(x, y).iter().filter(|seen| **seen).count()
+    }
+
+    /// Whether `(tx, ty)` is among the tiles [`MapGrid::reachable_from`] counts from `(x, y)`.
+    ///
+    /// The whole flood at once, row-major like the grid itself, so a caller asking about several
+    /// tiles pays for one walk. Off the map is never reachable.
+    pub fn reachable(&self, x: u8, y: u8) -> Reachable {
         let mut seen = vec![false; self.tiles.len()];
+        let Some(start) = self.index(x, y) else {
+            return Reachable { width: self.width, seen };
+        };
+        seen[start] = true;
         let mut queue = std::collections::VecDeque::new();
-        if let Some(index) = self.index(x, y) {
-            seen[index] = true;
-        }
         queue.push_back((x, y));
-        let mut count = 0;
         while let Some((tx, ty)) = queue.pop_front() {
-            count += 1;
             for facing in [Facing::Up, Facing::Down, Facing::Left, Facing::Right] {
                 if self.walled(tx, ty, facing) {
                     continue;
@@ -563,7 +567,30 @@ impl MapGrid {
                 queue.push_back((nx, ny));
             }
         }
-        count
+        Reachable { width: self.width, seen }
+    }
+}
+
+/// The tiles a walk from one tile of a [`MapGrid`] could reach ([`MapGrid::reachable`]).
+#[derive(Debug, Clone)]
+pub struct Reachable {
+    width: u8,
+    seen: Vec<bool>,
+}
+
+impl Reachable {
+    /// Whether the walk reaches `(x, y)`.
+    pub fn contains(&self, x: u8, y: u8) -> bool {
+        x < self.width
+            && self
+                .seen
+                .get(usize::from(y) * usize::from(self.width) + usize::from(x))
+                .copied()
+                .unwrap_or(false)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &bool> {
+        self.seen.iter()
     }
 }
 

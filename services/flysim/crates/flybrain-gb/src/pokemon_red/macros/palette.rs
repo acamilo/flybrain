@@ -1422,14 +1422,47 @@ fn exit_tiers(state: &mut dyn MacroState, way: Way) -> Vec<Exit> {
 /// was in. Empty when there is no objective and when it is on this map.
 pub fn toward_objective(state: &mut dyn MacroState, candidates: &[Exit]) -> Vec<Exit> {
     let Some(objective) = objective_place(state) else { return Vec::new() };
-    let Some(player) = state.player() else { return Vec::new() };
-    let here = player.map;
+    let Some(from) = region_here(state) else { return Vec::new() };
+    let here = from.map;
     if here == objective.map {
         return Vec::new();
     }
-    let hop = geography::next_hop(geography::region_at(here, player.y), objective.map);
-    let aim = hop.unwrap_or(objective.map);
-    candidates.iter().copied().filter(|exit| exit.destination(here) == Some(aim)).collect()
+    match geography::next_step(from, objective.map) {
+        Some(hop) => {
+            candidates.iter().copied().filter(|exit| leads_to(state, exit, here, hop)).collect()
+        }
+        None => candidates
+            .iter()
+            .copied()
+            .filter(|exit| exit.destination(here) == Some(objective.map))
+            .collect(),
+    }
+}
+
+/// The piece of ground the fly is standing in: its map, and on a map whose ground is in pieces
+/// the piece its walk can reach the doors of (`docs/design/macros.md` sections 12.7 and 12.23).
+pub fn region_here(state: &mut dyn MacroState) -> Option<geography::Region> {
+    let player = state.player()?;
+    let grid = state.map_grid();
+    Some(geography::region_on(player.map, player.x, player.y, grid.as_deref()))
+}
+
+/// Whether `exit` takes the fly onto `hop`: the map on the other side, and on a map whose ground
+/// is in pieces, the piece it lands in. A warp names the destination's warp it arrives at, which
+/// is what tells Mt. Moon's three ladders down to B1F apart (section 12.23); an edge lands in the
+/// piece that lists the map it is stepped off. A landing the table cannot name is not a match.
+fn leads_to(state: &mut dyn MacroState, exit: &Exit, here: u8, hop: geography::Region) -> bool {
+    if exit.destination(here) != Some(hop.map) {
+        return false;
+    }
+    let landing = match exit.id {
+        ExitId::Warp(index) => state
+            .warps()
+            .get(usize::from(index))
+            .and_then(|warp| geography::arrival_by_warp(hop.map, warp.destination_warp)),
+        ExitId::Edge(_) => geography::arrival_by_edge(hop.map, here),
+    };
+    landing == Some(hop)
 }
 
 /// The people on this map still worth walking to, each with the key the ledgers name it by.
@@ -1768,9 +1801,10 @@ pub fn goals_toward(state: &mut dyn MacroState, target: u8) -> Vec<Aim> {
             })
             .collect()
     };
-    if let Some(hop) = geography::next_hop(geography::region_at(here, player.y), target) {
+    let hop = region_here(state).and_then(|from| geography::next_step(from, target));
+    if let Some(hop) = hop {
         let toward: Vec<Exit> =
-            exits.iter().copied().filter(|exit| exit.destination(here) == Some(hop)).collect();
+            exits.iter().copied().filter(|exit| leads_to(state, exit, here, hop)).collect();
         if !toward.is_empty() {
             return of(toward);
         }

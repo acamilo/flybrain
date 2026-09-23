@@ -189,11 +189,12 @@ fn pad(gb: &mut Emulator, adapter: &PokemonRedReward, label: &str) {
     println!("- scene `{scene:?}`, player {player:?}, map {}x{}", size.width, size.height);
     println!("- objective: {:?}", state.objective());
     if let Some(objective) = state.objective() {
+        let from = palette::region_here(state)
+            .unwrap_or(geography::Region::whole(player.map));
         println!(
-            "- `next_hop({:?}, {:#04x})` = {:?}, neighbours {:?}",
-            geography::region_at(player.map, player.y),
+            "- `next_step({from:?}, {:#04x})` = {:?}, neighbours {:?}",
             objective.map,
-            geography::next_hop(geography::region_at(player.map, player.y), objective.map),
+            geography::next_step(from, objective.map),
             geography::neighbours(player.map)
         );
     }
