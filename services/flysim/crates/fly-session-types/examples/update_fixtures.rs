@@ -52,7 +52,7 @@ pub fn example_composition() -> LegacyComposition {
                 byte_length: 1_048_576,
                 format: "gb-rom".to_owned(),
             },
-            adapter: "pokered-unique8-v6".to_owned(),
+            adapter: "pokered-unique8-v7".to_owned(),
             symbol_provenance: pokered.to_owned(),
             mode: "macros".to_owned(),
             macro_channels: decoder_vector("macros")["macroChannels"]
@@ -71,7 +71,7 @@ pub fn example_composition() -> LegacyComposition {
             audio_sample_rate: 48_000,
         },
         flysim_compatibility: format!(
-            "{}/pokered-unique8-v6/{}/{}/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:{pokered}/statefmt:199616-x86_64-unknown-linux-gnu",
+            "{}/pokered-unique8-v7/{}/{}/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:{pokered}/statefmt:199616-x86_64-unknown-linux-gnu",
             gameboy::KERNEL_VERSION,
             gameboy::FAFB_V783_FINGERPRINT,
             gameboy::PLASTICITY_VERSION,
