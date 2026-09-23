@@ -30,6 +30,10 @@ WatchdogSec=30
 User=fly
 EnvironmentFile=/etc/fly/fly.env
 Environment=FLY_FEED_BIND=127.0.0.1:7400
+# Used only with FLY_FEED_VIA=bus (fly.env; default direct): the embedded
+# feed router's socket and artifact store, on tmpfs. flyedge.service names
+# the same directory. docs/design/flybus.md, "Feed over the bus".
+Environment=FLY_BUS_DIR=/run/fly/bus
 Environment=FLY_CONTROL_BIND=127.0.0.1:7401
 Environment=FLY_METRICS_ADDR=0.0.0.0:9101
 Environment=FLY_STATE_HOT=/run/fly/state

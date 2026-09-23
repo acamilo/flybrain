@@ -11,6 +11,9 @@
 #
 # Output: OUT_DIR/flybrain-<version>.tar.gz, laid out as
 #   flysim               (the binary, mode 0755)
+#   fly-edge              (the feed-bus edge, mode 0755, when build-flysim.sh
+#                          left one beside FLYSIM_BIN; flyedge.service stays
+#                          inactive on a release without it)
 #   stage/...             (apps/stage's build output)
 #   bridge/...             (services/bridge + node_modules)
 #   data/fafb-v783/...     (the connectome, from the repo; FLY_DATASET points here)
@@ -72,6 +75,13 @@ mkdir -p "$release_dir"
 
 cp "$FLYSIM_BIN" "${release_dir}/flysim"
 chmod 0755 "${release_dir}/flysim"
+EDGE_BIN="$(dirname "$FLYSIM_BIN")/fly-edge"
+if [ -x "$EDGE_BIN" ]; then
+    cp "$EDGE_BIN" "${release_dir}/fly-edge"
+    chmod 0755 "${release_dir}/fly-edge"
+else
+    log "no fly-edge beside $FLYSIM_BIN; packaging without it (FLY_FEED_VIA=bus unavailable in this release)"
+fi
 cp -a "$STAGE_DIR" "${release_dir}/stage"
 cp -a "$BRIDGE_DIR" "${release_dir}/bridge"
 

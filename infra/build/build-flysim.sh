@@ -79,6 +79,12 @@ log "building in $crate_dir for target-cpu=haswell (the host is E5-2660 v3, Hasw
 (
     cd "$crate_dir"
     RUSTFLAGS="-C target-cpu=haswell" cargo build --release --target "$CARGO_TARGET" --bin flysim "${features_args[@]}"
+    # fly-edge (FLY_FEED_VIA=bus, docs/design/flybus.md): the feed WebSocket
+    # served from flysim's feed bus. Small, and no cargo features of its own;
+    # built every time so a release can switch a container onto the bus
+    # without a rebuild. It lands next to OUT_PATH, where package-release.sh
+    # looks for it.
+    RUSTFLAGS="-C target-cpu=haswell" cargo build --release --target "$CARGO_TARGET" --bin fly-edge
 )
 
 built="${crate_dir}/target/${CARGO_TARGET}/release/flysim"
@@ -106,4 +112,10 @@ fi
 cp "$built" "$OUT_PATH"
 chmod 0755 "$OUT_PATH"
 log "built $OUT_PATH ($(du -h "$OUT_PATH" | cut -f1))"
+edge_built="${crate_dir}/target/${CARGO_TARGET}/release/fly-edge"
+[ -x "$edge_built" ] || die "expected binary not found after build: $edge_built"
+edge_out="$(dirname "$OUT_PATH")/fly-edge"
+cp "$edge_built" "$edge_out"
+chmod 0755 "$edge_out"
+log "built $edge_out ($(du -h "$edge_out" | cut -f1))"
 log "next: infra/build/package-release.sh VERSION $OUT_PATH <stage-dir> <bridge-dir> <out-dir>"

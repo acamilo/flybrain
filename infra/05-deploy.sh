@@ -499,6 +499,15 @@ trap 'rm -f "$tmp_fly_env" "$tmp_flypush_env"' EXIT
     # "palette"/"plan" as "macros" with a warning, and refuses an unrecognised
     # value outright.
     echo "FLY_MACRO_MODE=${FLY_MACRO_MODE:-raw}"
+    # Who serves the feed WebSocket (docs/design/flybus.md, "Feed over the
+    # bus"). "direct" is the default and is flysim binding :7400 itself, as
+    # every release before this knob. "bus" makes flysim publish on its
+    # embedded feed bus and leave :7400 to flyedge.service, which this script
+    # never enables: see that unit's header for the switch. Written
+    # unconditionally, like FLY_MACRO_MODE, so one grep says which a box runs.
+    # Watchdog check 2 reads this line to know whose /metrics carries the
+    # feed counters (flysim's :9101, or flyedge's loopback :9102).
+    echo "FLY_FEED_VIA=${FLY_FEED_VIA:-direct}"
     # How long a macro leaves a target alone after a walk to it aborted
     # (macros.md section 12.1, the Viridian stall). Only written when it is set,
     # because the default lives in the crate and a box that has not tuned it

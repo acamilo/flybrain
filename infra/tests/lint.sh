@@ -430,6 +430,83 @@ fi
 rm -rf "$lint_tmp"
 
 # ---------------------------------------------------------------------------
+# 3b2. The feed bus edge (docs/design/flybus.md, "Feed over the bus").
+#
+# flyedge.service is off unless the operator switches a container to
+# FLY_FEED_VIA=bus by hand, and when it is on it must follow flysim, which
+# owns the router. What would break that is statically visible: the unit
+# ending up in fly.target or 07-enable's list, losing its ordering on
+# flysim, or the deploy no longer writing the default. Watchdog check 2's
+# choice of /metrics is driven for real against a fixture fly.env.
+# ---------------------------------------------------------------------------
+echo "--- flyedge.service: off by default, after and bound to flysim ---"
+EDGE_UNIT="$INFRA_DIR/units/flyedge.service"
+if [ ! -f "$EDGE_UNIT" ]; then
+    fail "units/flyedge.service is missing"
+else
+    grep -qE '^After=.*\bflysim\.service\b' "$EDGE_UNIT" \
+        && pass "flyedge.service orders itself After=flysim.service" \
+        || fail "flyedge.service must be After=flysim.service: flysim owns the feed router"
+    grep -qE '^Requires=.*\bflysim\.service\b' "$EDGE_UNIT" \
+        && pass "flyedge.service Requires=flysim.service" \
+        || fail "flyedge.service must Require flysim.service, so a stop or restart of flysim takes the edge with it"
+    grep -qE '^ExecStart=/opt/fly/current/fly-edge$' "$EDGE_UNIT" \
+        && pass "flyedge.service runs the release's fly-edge" \
+        || fail "flyedge.service ExecStart must be /opt/fly/current/fly-edge"
+    grep -qE '^ConditionPathExists=/opt/fly/current/fly-edge$' "$EDGE_UNIT" \
+        && pass "flyedge.service stays inactive on a release without fly-edge" \
+        || fail "flyedge.service needs ConditionPathExists=/opt/fly/current/fly-edge (a release before it has none)"
+    grep -qE '^Environment=FLY_EDGE_METRICS_ADDR=127\.0\.0\.1:' "$EDGE_UNIT" \
+        && pass "flyedge.service keeps its metrics on loopback" \
+        || fail "flyedge.service FLY_EDGE_METRICS_ADDR must be a 127.0.0.1 address"
+fi
+if grep -E '^(Wants|Requires)=' "$INFRA_DIR/units/fly.target" | grep -q 'flyedge'; then
+    fail "fly.target pulls flyedge.service in; it must stay off until the operator enables it"
+else
+    pass "fly.target does not pull flyedge.service in"
+fi
+if grep -E '^(ALWAYS_ON_UNITS|APP_UNITS)=' "$INFRA_DIR/07-enable.sh" "$INFRA_DIR/verify.sh" | grep -q 'flyedge'; then
+    fail "07-enable.sh or verify.sh lists flyedge.service as always-on"
+else
+    pass "07-enable.sh and verify.sh leave flyedge.service alone"
+fi
+grep -qF 'echo "FLY_FEED_VIA=${FLY_FEED_VIA:-direct}"' "$INFRA_DIR/05-deploy.sh" \
+    && pass "05-deploy.sh writes FLY_FEED_VIA with direct as the default" \
+    || fail "05-deploy.sh must write FLY_FEED_VIA=\${FLY_FEED_VIA:-direct} into fly.env"
+if grep -qE '^Environment=FLY_FEED_VIA' "$INFRA_DIR/units/flysim.service"; then
+    fail "flysim.service pins FLY_FEED_VIA; it belongs to fly.env so a box can be switched by deploy"
+else
+    pass "flysim.service leaves FLY_FEED_VIA to fly.env"
+fi
+
+echo "--- fly-watchdog check 2: the feed counters follow FLY_FEED_VIA ---"
+if ! tail -n1 "$INFRA_DIR/bin/fly-watchdog" | grep -qE '^main "\$@"$'; then
+    fail "fly-watchdog: expected the last line to be 'main \"\$@\"' — the check-2 fixture strips it"
+else
+    fe_fixture="$(mktemp -d "${TMPDIR:-/tmp}/fly-lint-edge.XXXXXX")"
+    sed '$d' "$INFRA_DIR/bin/fly-watchdog" > "$fe_fixture/wd.sh"
+    feed_url_case() {
+        local label="$1" env_line="$2" override="$3" want="$4" got
+        printf '%s\n' "$env_line" > "$fe_fixture/fly.env"
+        got="$(FLY_ENV_FILE="$fe_fixture/fly.env" FLY_FEED_METRICS_URL="$override" \
+            FLY_METRICS_URL=http://sim FLY_EDGE_METRICS_URL=http://edge \
+            WD_RUN_DIR="$fe_fixture/run" WD_STATE_DIR="$fe_fixture/state" \
+            TEXTFILE_DIR="$fe_fixture/textfile" \
+            bash -c "source '$fe_fixture/wd.sh'; feed_metrics_url" 2>&1 || true)"
+        if [ "$got" = "$want" ]; then
+            pass "check 2 feed metrics: $label -> $got"
+        else
+            fail "check 2 feed metrics: $label: got '$got', want '$want'"
+        fi
+    }
+    feed_url_case "direct" "FLY_FEED_VIA=direct" "" "http://sim"
+    feed_url_case "no FLY_FEED_VIA line (a fly.env before it)" "FLY_GAME=pokemon-red" "" "http://sim"
+    feed_url_case "bus" "FLY_FEED_VIA=bus" "" "http://edge"
+    feed_url_case "explicit override wins" "FLY_FEED_VIA=bus" "http://other" "http://other"
+    rm -rf "$fe_fixture"
+fi
+
+# ---------------------------------------------------------------------------
 # 3c. lib/common.sh cpuset_partition — the three-way cpuset split used by
 # 05-deploy.sh section 3b (flysim / page-capture / flycast). Run as its own
 # process (a tiny wrapper script), not sourced into this lint script,
