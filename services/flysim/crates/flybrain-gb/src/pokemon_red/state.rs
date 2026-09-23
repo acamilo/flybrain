@@ -1921,26 +1921,29 @@ impl GameState for PokeState<'_> {
     }
 }
 
-/// The cartridge tables on their defaults, and the exploration ledger wired through.
-///
 /// Whether a trainer who saw the player is between its "!" and the end of its battle (row 61).
 ///
+/// Two stretches of that window read as an overworld the fly owned, both measured in Viridian
+/// Forest: the "!" bubble, about sixty frames, drawn before `CheckFightingMapTrainers` sets
+/// `wJoyIgnore`; and five frames after the challenge text, because
 /// `DisplayEnemyTrainerTextAndStartBattle` (`home/trainers.asm`) clears `wJoyIgnore` before the
-/// challenge text and calls `StartTrainerBattle`, which writes `wCurOpponent`, only after that
-/// text's close-down has redrawn the map. Measured in Viridian Forest: five frames with the box
-/// gone, every bit [`controllable`] reads clear and `wCurOpponent` still zero, and then the
-/// battle. The macro seam read them as an overworld the fly owned, so the push-back a walk earned
-/// when the trainer took the joypad (row 58's held entry) was written on the first of them: the
-/// one free tile beside the trainer, in the only corridor to the forest's north gate, walled for
-/// the session.
+/// text and calls `StartTrainerBattle`, which writes `wCurOpponent`, only after the text's
+/// close-down has redrawn the map. About sixty-six frames per engagement, every bit
+/// [`controllable`] reads clear. The push-back a walk earned when the trainer took the joypad (row
+/// 58's held entry) was written on the first frame after the text: the one free tile beside the
+/// trainer, in the only corridor to the forest's north gate, walled for the session.
 ///
 /// **The macros' reading only.** [`controllable`] and [`super::scene::detect`] are shared with
-/// the reward adapter (the talk payout's "ready" test, the feed's scene), which this row does not
-/// change; [`PokeState`]'s own `scene` and `scripted` read this beside them.
+/// the reward adapter (the talk payout's "ready" test) and do not change; [`PokeState`]'s own
+/// `scene` and `scripted` read this beside them. In macros mode the feed's `game.scene` is the
+/// palette's, so it reads `unknown` on these frames, as the contract has it for a frame the
+/// cartridge is driving.
 pub fn trainer_engaged(memory: &mut dyn MemoryReader) -> bool {
     read(memory, ram::wStatusFlags7) & poke::TRAINER_BATTLE_STATUS7 != 0
 }
 
+/// The cartridge tables on their defaults, and the exploration ledger wired through.
+///
 /// `pokemon_red/macros/cartridge.rs` defaults every [`MacroState`] method and every default
 /// *narrows* what the palette offers, so the executor runs over live WRAM with no overrides at
 /// all and each one turned on later widens it without changing a signature. Two are still on
