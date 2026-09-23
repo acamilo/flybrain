@@ -18,12 +18,19 @@ use crate::macros::{
 
 use super::super::mapgrid::MapGrids;
 use super::super::state::PokeState;
-use super::cartridge::{Areas, Frontiers, MacroState, Pushed, Stood, Talked, Targets, Tile};
+use super::cartridge::{
+    Areas, Frontiers, LAST_MAP, MacroState, Pushed, Stood, Talked, Targets, Tile, outdoors,
+};
 use super::geography;
 use super::executor::{MacroAbort, MacroMachine, Refusal};
 use super::palette::{self, MacroId, Palette};
 use super::plan;
 use super::state::{GameState, Scene};
+
+/// The longest a warp's tear is honoured (row 58): the thirty-two frames measured at the Pewter Gym
+/// door, with room for a slower fade, and short enough that a false reading costs a second and a
+/// half of an empty pad rather than a stall.
+pub const TEAR_FRAMES: u16 = 90;
 
 /// The macro palette over Pokémon Red.
 #[derive(Debug, Clone)]
@@ -99,6 +106,19 @@ pub struct PokemonPalette {
     nearest: Option<(u8, u32)>,
     /// Whether the last `observe` was the frame that number fell on.
     nearer: bool,
+    /// The map of the last frame that was not a warp's tear, and how many tear frames have run
+    /// since (row 58, [`PokemonPalette::tear`], [`TEAR_FRAMES`]).
+    ///
+    /// Measured on the cartridge at the Pewter Gym's door: `wCurMap` changes to the new map
+    /// **thirty-two frames** before the map header, the coordinates and the warp table follow it,
+    /// while the screen fades. On those frames every reading in the seam describes the map the fly
+    /// just left under the new map's id -- the player "on map 54 at (16, 17)", which is Pewter
+    /// City's doormat -- and nothing sets the joypad bits `controllable` reads until the fade is
+    /// over, so the scene read `Overworld` and a pad was dealt. A walk started there plans over
+    /// the wrong map, ends when the cartridge takes the joypad at the end of the fade, and the
+    /// ledgers wrote what it had been aiming at against the new map's id.
+    settled: Option<u8>,
+    tear_frames: u16,
     /// The brain clock of the frame being decided, from [`MacroPalette::clock`].
     ///
     /// The blocked ledger is a *window*, so it needs the same clock the loop publishes rather
@@ -126,8 +146,44 @@ impl PokemonPalette {
             grids: MapGrids::default(),
             nearest: None,
             nearer: false,
+            settled: None,
+            tear_frames: 0,
             now_ms: 0.0,
         }
+    }
+
+    /// Whether this frame is a warp's tear (row 58): the map byte has changed since the last
+    /// settled frame, and the fly still stands on a warp of the *loaded* table that leads to the
+    /// map the byte now names. Updates the settled map on every frame that is not one.
+    ///
+    /// On a tear the warp table is still the map the fly just left, so the tile underfoot is the
+    /// door it walked through: Pewter City's (16, 17), whose destination is the gym, under the
+    /// gym's id; or a building's doormat, whose destination is `LAST_MAP`, under the id of the
+    /// town outside. Once the header loads, the table is the new map's and the tile underfoot is
+    /// the arrival warp, which leads back where the fly came from -- so the reading ends by itself.
+    /// Measured: thirty-two frames at the gym door each way.
+    ///
+    /// The map byte having changed is what keeps the teleport pads of Saffron Gym and Silph Co. --
+    /// the three maps in Red with a warp to themselves -- from reading as a tear: a pad moves the
+    /// fly without changing the map. Bounded by [`TEAR_FRAMES`] all the same, because an empty pad
+    /// that did not end would be a fly that waits for ever.
+    fn tear(&mut self, state: &mut dyn MacroState) -> bool {
+        let Some(player) = state.player() else { return false };
+        let changed = self.settled.is_some_and(|was| was != player.map);
+        let torn = changed
+            && self.tear_frames < TEAR_FRAMES
+            && state.warps().iter().any(|warp| {
+                (warp.x, warp.y) == (player.x, player.y)
+                    && (warp.destination_map == player.map
+                        || (warp.destination_map == LAST_MAP && outdoors(player.map)))
+            });
+        if torn {
+            self.tear_frames += 1;
+        } else {
+            self.tear_frames = 0;
+            self.settled = Some(player.map);
+        }
+        torn
     }
 
     /// Frames the running macro has spent, for a log line.
@@ -243,6 +299,10 @@ impl MacroPalette for PokemonPalette {
     }
 
     fn observe(&mut self, memory: &mut dyn MemoryReader, ledger: &dyn RunLedger) -> Observed {
+        let torn = {
+            let mut state = PokeState::new(memory);
+            self.tear(&mut state)
+        };
         let (scene, bindings, standing, stepping, approach) = {
             let Self {
                 machine,
@@ -265,7 +325,10 @@ impl MacroPalette for PokemonPalette {
             // `GameState::scene` is `pokemon_red::scene::detect` over the same reader, so the
             // palette and the scene the feed reports cannot disagree about which frame they are
             // for.
-            let scene = state.scene();
+            // A warp's tear is a warp in flight: the cartridge is driving and the seam's readings
+            // are the last map's under the new map's id, which is section 12.13's `Unknown` with
+            // nothing on screen -- an empty pad the fly waits out, for thirty-two frames (row 58).
+            let scene = if torn { Scene::Unknown } else { state.scene() };
             // Whether a conversation has ended, and how, is a question about the frames *after*
             // the `TALK` gave the buttons back, so the machine is given every frame rather than
             // only the ones it owns (`docs/design/macros.md` section 12.4).
@@ -279,7 +342,7 @@ impl MacroPalette for PokemonPalette {
             // master: while the cartridge is walking it -- a warp in flight, a ledge hop, a script
             // -- the coordinates and the loaded map header are from different frames, and a tile
             // recorded from that pair is a tile of nowhere.
-            let standing = (!state.scripted()).then(|| state.player()).flatten();
+            let standing = (!state.scripted() && !torn).then(|| state.player()).flatten();
             // And the tile the step in flight is landing on (row 54). Read from the same frame and
             // behind the same "the fly is its own master" gate as the ground itself.
             let stepping = standing.and_then(|_| state.stepping_onto());
@@ -523,6 +586,57 @@ mod tests {
         fn exit_visited(&self, exit: MapExit) -> bool {
             exit == self.0
         }
+    }
+
+    #[test]
+    fn a_warps_tear_deals_no_pad() {
+        // Row 58, measured at the Pewter Gym's door: `wCurMap` names the gym for thirty-two frames
+        // while the header, the coordinates and the warp table are still Pewter City's -- "map 54
+        // at (16, 17)", which is the town's doormat. A pad dealt there started a walk over the
+        // wrong map, and what it was aiming at went into the ledgers under the gym's id.
+        let mut wram = Wram::overworld();
+        wram.map(maps::PEWTER_CITY, 20, 18, 16, 18)
+            .warps(&[(16, 17, 0, maps::PEWTER_GYM), (29, 13, 0, maps::PEWTER_MUSEUM_1F)]);
+        let mut palette = PokemonPalette::new(7);
+        let settled = palette.observe(&mut wram, &NoLedger);
+        assert_eq!(settled.scene, SceneId::Overworld);
+
+        // The step onto the door lands and the map byte changes; nothing else has loaded.
+        wram.map(maps::PEWTER_GYM, 20, 18, 16, 17);
+        let torn = palette.observe(&mut wram, &NoLedger);
+        assert_eq!(torn.scene, SceneId::Unknown, "a warp in flight");
+        assert!(torn.bindings.is_empty(), "and nothing to press: {:?}", torn.bindings);
+        assert_eq!(palette.observe(&mut wram, &NoLedger).scene, SceneId::Unknown);
+
+        // The header loads: the gym's own size, its doormat, its own table.
+        wram.map(maps::PEWTER_GYM, 5, 7, 4, 13).warps(&[(4, 13, 2, 0xff), (5, 13, 2, 0xff)]);
+        assert_eq!(palette.observe(&mut wram, &NoLedger).scene, SceneId::Overworld);
+
+        // And out again: the doormat's `LAST_MAP` under the town's id is the same tear.
+        wram.map(maps::PEWTER_CITY, 5, 7, 4, 13);
+        assert_eq!(palette.observe(&mut wram, &NoLedger).scene, SceneId::Unknown);
+    }
+
+    #[test]
+    fn a_teleport_pad_is_not_a_tear() {
+        // Saffron Gym and two Silph Co. floors warp to themselves. Standing on a pad whose
+        // destination is the map the fly is on is an ordinary frame there, and an empty pad on it
+        // would be a fly that waits for ever: the map byte did not change, so it is not a tear.
+        let mut wram = Wram::overworld();
+        wram.map(0xb2, 10, 9, 1, 1).warps(&[(1, 1, 3, 0xb2), (5, 5, 0, 0xb2)]);
+        let mut palette = PokemonPalette::new(7);
+        for _ in 0..3 {
+            assert_eq!(palette.observe(&mut wram, &NoLedger).scene, SceneId::Overworld);
+        }
+        // And a tear that does not end is still bounded.
+        wram.map(0x02, 10, 9, 1, 1).warps(&[(1, 1, 0, 0x02)]);
+        let mut torn = 0;
+        for _ in 0..(TEAR_FRAMES + 10) {
+            if palette.observe(&mut wram, &NoLedger).scene == SceneId::Unknown {
+                torn += 1;
+            }
+        }
+        assert_eq!(torn, u32::from(TEAR_FRAMES), "at most {TEAR_FRAMES} frames");
     }
 
     #[test]
