@@ -2967,3 +2967,81 @@ survey and the three ROM tests, which is a deviation from the ethos check's lett
 - `flysim --print-compatibility`: byte-identical to the base on both bases this branch has had:
   648 bytes, `4929f340...9ebd9` on v0.5.5 (`7784a9d`), and 648 bytes, `8ce67b97...a8f68` on
   `4d82f7d` (v7). Decoder, reward catalog, adapter version and roles untouched.
+
+## 2026-09-23, row 61: the forest's south gate, in and out
+
+### What was live
+
+Map 50 (`VIRIDIAN_FOREST_SOUTH_GATE`, `$32`) and Route 2's south half, rung 9, v0.5.5, about 20:45
+to 21:05 UTC: `GO OBJECTIVE` into the gate (0.3 s), `GO OUT` back onto Route 2 (0.2 s), `GO WARP`
+back out of the forest, `GO OBJECTIVE blocked` in the forest, `GO ROUTE` refused now and then; no
+reward and about eight new tiles in twenty minutes. The checkpoint is the fly at (5, 1) in the
+gate, under the forest's doorway, objective Pewter City; `next_hop` answers the forest, correctly.
+
+### The survey: what walled the road
+
+The route survey from the checkpoint (`FLY_PROBE_CATCH=route`, uniform choice per hold,
+`FLY_PROBE_RNG=7`, 72,000 frames) walks the live ring and never leaves rung 9. Caught at the
+refusal (`FLY_PROBE_CATCH_FRAME`, `FLY_PROBE_WHOLE=1`): the forest's only road to the north gate
+is the corridor at x = 1-2 from row 22 up to row 0; the Bug Catcher of
+`EVENT_BEAT_VIRIDIAN_FOREST_TRAINER_2` stands on (2, 18) facing west, and **(1, 18) was in the
+pushed ledger**. It was written at frame 16,389: a `GO ITEM` walk stepped onto (1, 18), the trainer
+took the joypad, and his text closed onto five frames with no box, no script bit and
+`wCurOpponent` zero (`StartTrainerBattle` runs after `DisplayTextID`'s close-down). Row 58's held
+entry was decided on the first of them. The pushed ledger has no window, so the north gate had no
+road for the session; `GO OBJECTIVE` walked to the nearest reachable tile, (6, 1), a dead end, and
+was blocked, and the last tiers walked the fly back to the south gate and Route 2. Every base
+survey arm walls (1, 18); only a fly that has to come back up the corridor is trapped by it.
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 61 | the frames between a sighted trainer's challenge text and `StartTrainerBattle` read as the fly's overworld: a pad is dealt, ground recorded, and row 58's held push-back written, walling the tile the trainer fired on for the session | any trainer whose line of sight a walk crosses; Viridian Forest's (1, 18), the one free tile of the corridor to the north gate | `a_trainers_challenge_is_the_cartridges_until_its_battle_is_over`, `the_frames_between_a_trainers_text_and_its_battle_deal_no_pad_and_record_no_ground`, `a_trainers_challenge_does_not_wall_the_road_to_the_forests_north_gate` (ROM) | **fixed** in the macro seam: `state::trainer_engaged` reads `wStatusFlags7` bit 3 (`BIT_TRAINER_BATTLE`, set by `CheckFightingMapTrainers`, cleared at `.battleOccurred`); `PokeState`'s `scene` is `Unknown` on an overworld frame with it set and `scripted` is true. `controllable` and `scene::detect` unchanged. `docs/design/macros.md` 12.24 |
+| 61b | the south gate deals `GO OUT` (back to Route 2) beside the forest door the objective's road takes | the "a room has to be leavable" tier in a gate whose way on is a passage | -- | **left**: a way back is the fly's choice; with the corridor open no survey stays on it |
+
+### Before and after
+
+The route survey, 72,000 frames (20.1 brain minutes), base `main` vs branch:
+
+| driver | base | branch |
+| --- | --- | --- |
+| uniform, seed 7 (the live ring) | rung 9, 1,202 tiles, north gate never, (1, 18) walled | **BOULDER BADGE**, 1,647 tiles, north gate f20273, Pewter f23756 |
+| uniform, default seed | rung 10, 1,356 | rung 11, 1,476 |
+| `GO OBJECTIVE` preferred | rung 11, 1,529 | rung 12, 1,492 |
+| `GO OUT`, `GO OBJECTIVE` preferred | rung 11, 1,376 | rung 11, 1,446 |
+| uniform, seed 12345 | rung 11, 1,765 | identical |
+
+(1, 18) is walled on every base arm and on no branch arm. The ROM-gated run (the seed-7 driver,
+40,000 frames): base walled at frame 16,389, rung 9, **fails**; branch: north gate f20272, Route 2
+f21209, Pewter f23755, passes.
+
+The stub-readout trap hunt (30 brain minutes, service frame since FND-01; `main` `4d82f7d` vs
+branch): both arms rung 10, 362 distinct tiles, 147 macros all done, 11 of 113 windows flagged.
+**The stub does not walk the ring**: it passes the corridor northward and never comes back, so
+the only difference is 134 overworld frames the branch reads `Unknown`, the trainer gaps. The
+survey and the ROM test are the reproduction.
+
+### Other gates
+
+The north gate's `GO OUT` is toward Pewter (tier 2) and its forest door is withheld; the Route 2
+gate, Diglett's Cave's Route 2 house and the Route 22 gate are off the graph (every door `LAST_MAP`
+but Diglett's passage). The Route 22 gate is the one building with `LAST_MAP` on both sides of two
+different maps (its script sets `wLastMap` by row: under 4 is Route 23); `outdoor_of` cannot name
+both and will need a per-door answer when a rung routes through it. The trainer gap is not a gate
+fact: every sighted trainer has it.
+
+### Overlap
+
+Row 59 (`fix/loop-row59` `cf10ffd`, unmerged) found the same five frames on Route 3 and holds the
+push until thirty frames of overworld. From this checkpoint its commit alone also passes the ROM
+test; the two compose (flybrain-gb 429/0 and the ROM test with both). This row reads the fact at
+the seam, so the gap also deals no pad and records no ground.
+
+### Gates
+
+- `cargo test --release -p flybrain-gb` with `FLY_ROM`: 428 + 27 passed, 0 failed.
+- `cargo test --release -p flysim --no-fail-fast` with `FLY_ROM`, `FLY_DATASET` and the row-61
+  checkpoint: 185 passed, 0 failed (the integration service test passed this run).
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `npm test` 663 passed; `npm run typecheck` clean; `infra/tests/lint.sh` ALL CHECKS PASSED.
+- `flysim --print-compatibility`, raw and macros: 648 bytes, sha256 `8ce67b97...a8f68`, the same
+  as `main`. Decoder, reward catalog, adapter version and roles untouched.
