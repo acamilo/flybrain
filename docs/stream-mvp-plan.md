@@ -866,3 +866,15 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   disassembly. The trap hunt was not run at this load (recorded deviation). Also shipped: FND-01,
   one LegacyFrame for the service and every harness (no live behaviour change), FLY_TRACE and the
   sugar journal. Ethos check held.
+- 2026-09-24 (v0.6.2, loop review, auto): row 61, the Viridian Forest corridor. In the fresh run the
+  fly rang between the forest, its south gate and Route 2 (GO OBJECTIVE / GO OUT / GO ROUTE) for
+  twenty minutes at rung 9. A Bug Catcher stands on the forest's only corridor north; when he saw
+  the fly, the frames of his "!" bubble and the five frames between his text and the battle read as
+  the fly's own overworld, and a held push-back walled (1,18) for good, so GO OBJECTIVE had no road
+  north. The macros now read the cartridge's BIT_TRAINER_BATTLE (wStatusFlags7 bit 3, set at the
+  "!", cleared after every battle, a lost one too) and treat those frames as the cartridge's: no
+  pad, no ground recorded, no push decided. Row 59's 30-frame debounce already closed the five-frame
+  gap; this is the cartridge-fact layer under it. ROM test: base walls (1,18) and stays at rung 9;
+  branch reaches Pewter on frame 23,755, and offers no button on any of the 67 challenge frames
+  (67 of 67 before). Survey seed 7: rung 9 -> BOULDER BADGE. The trap hunt's stub cannot see this
+  trap; the ROM test and survey are the proof (recorded deviation). Ethos check held.
