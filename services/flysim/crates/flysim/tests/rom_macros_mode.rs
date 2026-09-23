@@ -3661,3 +3661,128 @@ fn the_fly_goes_into_mt_moon_from_the_live_route_4_checkpoint() {
     assert!(crossings < 25, "{crossings} crossings of Route 4's west doors: {:?}", run.started);
     assert!(in_mt_moon.is_some(), "the fly never went into Mt. Moon: {:?}", run.route);
 }
+
+fn row61_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_ROW61_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// Viridian Forest's south gate, from the checkpoint pulled during the ring.
+///
+/// **What was live** (2026-09-23, v0.5.5, rung 9 after the reset to milestone 1): for twenty
+/// minutes `GO OBJECTIVE` into the forest's south gate and `GO OUT` straight back onto Route 2,
+/// `GO WARP` back from the forest, `GO OBJECTIVE blocked` in the forest, no reward
+/// (`infra/docs/macros-traps.md` row 61). The forest's only road to its north gate is a two-wide
+/// corridor at x = 1-2 with a Bug Catcher standing on (2, 18) facing west. A walk up the corridor
+/// steps onto (1, 18), the trainer takes the joypad, and his text closes onto five frames the seam
+/// read as the fly's own overworld: the push-back the walk had earned was written there, (1, 18)
+/// was walled for the session, and every later walk to the north gate had no road.
+///
+/// The driver is the route survey's: the real palette, one uniform choice per hold, xorshift
+/// seeded 7 -- a harness choice, not the fly's. On the base it never reaches the north gate in
+/// 72,000 frames. The claims:
+///
+/// - **no tile of the forest is walled by a trainer's challenge**: (1, 18) never enters the pushed
+///   ledger;
+/// - **the fly goes through the north gate onto Route 2 and into Pewter City** inside the budget.
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb FLY_ACCEPT_ADAPTERS=pokered-unique8-v6 \
+///   FLY_ROW61_CHECKPOINT=.local/checkpoints/release-rank9-row61.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture forests_north_gate
+/// ```
+#[test]
+fn a_trainers_challenge_does_not_wall_the_road_to_the_forests_north_gate() {
+    use flybrain_gb::pokemon_red::macros::PokemonPalette;
+    use flybrain_gb::pokemon_red::macros::cartridge::{PushedLedger, Tile};
+    use flybrain_gb::pokemon_red::state;
+    use flybrain_gb::{MacroPalette, Started};
+    const FOREST: u8 = 0x33;
+    const NORTH_GATE: u8 = 0x2f;
+    const ROUTE_2: u8 = 0x0d;
+    const PEWTER: u8 = 0x02;
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = row61_checkpoint() else {
+        eprintln!("skipped: no FLY_ROW61_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert_eq!(run.map(), 0x32, "the checkpoint is the forest's south gate");
+
+    let budget = 40_000u32;
+    let hold_frames = 48u32;
+    let mut palette = PokemonPalette::new(SEED);
+    let mut rng = 7u32;
+    let mut running = false;
+    let mut since_decision = hold_frames;
+    let mut ms = run.ms;
+    let mut arrivals: Vec<(u32, u8)> = Vec::new();
+    let mut last = None;
+    let mut walled_at: Option<u32> = None;
+    for frame in 0..budget {
+        palette.clock(ms);
+        let observed = {
+            let ledger = AdapterLedger(&run.adapter);
+            palette.observe(&mut run.gb, &ledger)
+        };
+        let mut mask = 0u8;
+        {
+            let ledger = AdapterLedger(&run.adapter);
+            if running {
+                match palette.step(&mut run.gb, &ledger) {
+                    Some(held) => mask = held,
+                    None => running = false,
+                }
+            } else if since_decision >= hold_frames && !observed.bindings.is_empty() {
+                since_decision = 0;
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                let binding = &observed.bindings[rng as usize % observed.bindings.len()];
+                if let Started::Running(_) = palette.start(binding.slot, &mut run.gb, &ledger) {
+                    running = true;
+                    match palette.step(&mut run.gb, &ledger) {
+                        Some(held) => mask = held,
+                        None => running = false,
+                    }
+                }
+            }
+        }
+        let _ = palette.take_finished();
+        since_decision += 1;
+        run.gb.set_buttons(mask);
+        run.gb.run_frame().expect("a frame should complete");
+        ms += MS_PER_FRAME;
+        run.adapter.sample(&mut run.gb, ms);
+
+        if walled_at.is_none() && palette.fences().0.pushed(FOREST, Tile::new(1, 18)) {
+            walled_at = Some(frame);
+        }
+        if let Some(player) = state::player(&mut run.gb)
+            && last != Some(player.map)
+        {
+            last = Some(player.map);
+            arrivals.push((frame, player.map));
+        }
+    }
+    let first = |map: u8| arrivals.iter().find(|(_, at)| *at == map).map(|(frame, _)| *frame);
+    let north_gate = first(NORTH_GATE);
+    let route_2_north = north_gate
+        .and_then(|gate| arrivals.iter().find(|(frame, map)| *frame > gate && *map == ROUTE_2))
+        .map(|(frame, _)| *frame);
+    let pewter = first(PEWTER);
+    eprintln!(
+        "{:.1} brain minutes: (1, 18) walled at {walled_at:?}; north gate {north_gate:?}, Route 2 \
+         after it {route_2_north:?}, Pewter City {pewter:?}; pushed {:?}; rank {}; arrivals {}",
+        (ms - run.ms) / 60_000.0,
+        palette.fences().0,
+        run.adapter.progress().rank,
+        arrivals.len(),
+    );
+    assert_eq!(walled_at, None, "a trainer's challenge walled the forest's corridor");
+    assert!(north_gate.is_some(), "the fly never reached the forest's north gate: {arrivals:?}");
+    assert!(route_2_north.is_some(), "nor Route 2 through it: {arrivals:?}");
+    assert!(pewter.is_some(), "nor Pewter City: {arrivals:?}");
+}
