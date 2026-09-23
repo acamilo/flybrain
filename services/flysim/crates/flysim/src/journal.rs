@@ -79,7 +79,10 @@ pub struct SugarJournal {
 
 impl SugarJournal {
     pub fn new(hot_dir: &Path) -> Self {
-        Self { path: hot_dir.join(FILE_NAME), file: None }
+        Self {
+            path: hot_dir.join(FILE_NAME),
+            file: None,
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -90,7 +93,11 @@ impl SugarJournal {
     /// torn last line, which a reader skips.
     pub fn record(&mut self, entry: &Entry<'_>) {
         if self.file.is_none() {
-            match OpenOptions::new().create(true).append(true).open(&self.path) {
+            match OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+            {
                 Ok(file) => self.file = Some(file),
                 Err(error) => {
                     tracing::warn!(%error, path = %self.path.display(), "could not open the sugar journal");
@@ -128,7 +135,10 @@ mod tests {
     fn inputs_are_appended_with_their_frame_and_survive_a_reopen() {
         let dir = tempfile::tempdir().expect("a temp dir");
         let mut journal = SugarJournal::new(dir.path());
-        assert!(!journal.path().exists(), "nothing is written before an input");
+        assert!(
+            !journal.path().exists(),
+            "nothing is written before an input"
+        );
         let sugar = Entry {
             frame: 42,
             brain_ms: 703.0,
@@ -141,7 +151,12 @@ mod tests {
         journal.record(&sugar);
         drop(journal);
         let mut journal = SugarJournal::new(dir.path());
-        journal.record(&Entry { frame: 43, input: Input::Reward { value: 0.5 }, event_id: 8, ..sugar });
+        journal.record(&Entry {
+            frame: 43,
+            input: Input::Reward { value: 0.5 },
+            event_id: 8,
+            ..sugar
+        });
         // A torn tail from a crash is skipped, not fatal.
         std::fs::OpenOptions::new()
             .append(true)

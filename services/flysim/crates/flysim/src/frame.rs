@@ -34,12 +34,12 @@
 use anyhow::{Result, anyhow};
 use flybrain_core::agent::NeuralAgent;
 use flybrain_core::decoder::gameboy::to_button_mask;
+use flybrain_gb::RewardEvent;
 use flybrain_gb::adapter::{GameAdapter, ProgressSnapshot};
 use flybrain_gb::emulator::{Emulator, FRAMEBUFFER_LEN};
 use flybrain_gb::macros::AdapterLedger;
 use flybrain_gb::ratchet::{Ratchet, Snapshot};
 use flybrain_gb::recovery::{NeuralRecovery, recover_game};
-use flybrain_gb::RewardEvent;
 
 use crate::macros::{MacroEvent, MacroLayer, Silence};
 use crate::trace::FrameTrace;
@@ -238,14 +238,20 @@ impl LegacyFrame {
 
     /// A fresh start: one frame with no button down, then the brain's warm-up on it
     /// (`Environment.Initialize`, legacy-gameboy-v1 section 9). Returns that frame's audio.
-    pub fn initialize(&mut self, emulator: &mut Emulator, agent: &mut NeuralAgent) -> Result<Vec<u8>> {
+    pub fn initialize(
+        &mut self,
+        emulator: &mut Emulator,
+        agent: &mut NeuralAgent,
+    ) -> Result<Vec<u8>> {
         emulator
             .run_frame()
             .map_err(|error| anyhow!("running the first frame: {error}"))?;
         self.frame_buffer.copy_from_slice(emulator.framebuffer());
         self.frame_counter = 1;
         let audio = emulator.take_audio_u8();
-        agent.warmup(Some(&self.frame_buffer)).map_err(|error| anyhow!("{error}"))?;
+        agent
+            .warmup(Some(&self.frame_buffer))
+            .map_err(|error| anyhow!("{error}"))?;
         Ok(audio)
     }
 
@@ -255,24 +261,47 @@ impl LegacyFrame {
     /// The readout transient is left as a fresh process has it (`legacy-transient-reset`), which
     /// is what a restart of the service gives the fly. `import_state` of the agent is
     /// self-validating, so a refused checkpoint leaves the agent as it was.
-    pub fn restore(&mut self, parts: &mut Parts<'_>, checkpoint: &crate::store::Checkpoint) -> Result<()> {
+    pub fn restore(
+        &mut self,
+        parts: &mut Parts<'_>,
+        checkpoint: &crate::store::Checkpoint,
+    ) -> Result<()> {
         let runtime = &checkpoint.runtime;
         if runtime.framebuffer.len() != FRAMEBUFFER_LEN {
-            anyhow::bail!("checkpoint framebuffer is {} bytes", runtime.framebuffer.len());
+            anyhow::bail!(
+                "checkpoint framebuffer is {} bytes",
+                runtime.framebuffer.len()
+            );
         }
-        parts.agent.import_state(&checkpoint.agent).map_err(|error| anyhow!("{error}"))?;
-        parts.emulator.import_state(&runtime.emulator).map_err(|error| anyhow!("{error}"))?;
+        parts
+            .agent
+            .import_state(&checkpoint.agent)
+            .map_err(|error| anyhow!("{error}"))?;
+        parts
+            .emulator
+            .import_state(&runtime.emulator)
+            .map_err(|error| anyhow!("{error}"))?;
         if !runtime.reward.is_null() {
-            parts.adapter.import_state(&runtime.reward).map_err(|error| anyhow!("{error}"))?;
+            parts
+                .adapter
+                .import_state(&runtime.reward)
+                .map_err(|error| anyhow!("{error}"))?;
         }
         let snapshot = if runtime.ratchet_game.is_empty() {
             None
         } else {
-            Some(Snapshot { game: runtime.ratchet_game.clone(), frame: runtime.ratchet_frame.clone() })
+            Some(Snapshot {
+                game: runtime.ratchet_game.clone(),
+                frame: runtime.ratchet_frame.clone(),
+            })
         };
         parts
             .ratchet
-            .import(Some(runtime.ratchet), snapshot, parts.adapter.rank_ladder().len())
+            .import(
+                Some(runtime.ratchet),
+                snapshot,
+                parts.adapter.rank_ladder().len(),
+            )
             .map_err(|error| anyhow!("{error}"))?;
 
         self.remainder = checkpoint.agent.remainder;
@@ -280,7 +309,10 @@ impl LegacyFrame {
         self.buttons = runtime.buttons;
         self.frame_buffer.copy_from_slice(&runtime.framebuffer);
         let (width, height) = (parts.agent.frame.width, parts.agent.frame.height);
-        parts.agent.network.set_visual_frame(&self.frame_buffer, width, height);
+        parts
+            .agent
+            .network
+            .set_visual_frame(&self.frame_buffer, width, height);
         parts.emulator.set_buttons(self.buttons as u8);
         Ok(())
     }
@@ -325,11 +357,24 @@ impl LegacyFrame {
         let audio = self.advance(parts.emulator, parts.agent, observer)?;
         observer.after(FramePhase::Advanced, parts.agent);
 
-        let evaluated = self.evaluate(parts.emulator, parts.adapter, parts.macros.as_deref_mut(), ms);
+        let evaluated = self.evaluate(
+            parts.emulator,
+            parts.adapter,
+            parts.macros.as_deref_mut(),
+            ms,
+        );
         self.commit(parts.agent, &evaluated.rewards, ms);
         observer.after(FramePhase::Committed, parts.agent);
 
-        Ok(Transition { ticks, ms, bound, active, executed, audio, evaluated })
+        Ok(Transition {
+            ticks,
+            ms,
+            bound,
+            active,
+            executed,
+            audio,
+            evaluated,
+        })
     }
 
     /// The rest of phase B and phase C behind a stub readout, for the drivers that measure the
@@ -379,7 +424,12 @@ impl LegacyFrame {
 
     /// Phase A, the readout: decode the rates with the blocked direction and the bound channels,
     /// and restart the blocked window when the held channel changes.
-    pub fn decode(&mut self, agent: &mut NeuralAgent, boot: bool, bound: Option<&[String]>) -> Vec<String> {
+    pub fn decode(
+        &mut self,
+        agent: &mut NeuralAgent,
+        boot: bool,
+        bound: Option<&[String]>,
+    ) -> Vec<String> {
         let ms = agent.network.ms;
         let rates = agent.network.rates.clone();
         // The readout's blocked-direction cooldown (`docs/readout.md`): the direction the group
@@ -392,7 +442,9 @@ impl LegacyFrame {
             .then(|| agent.decoder.current())
             .flatten()
             .map(str::to_string);
-        let active = agent.decoder.decode_bound(&rates, ms, boot, blocked.as_deref(), bound);
+        let active = agent
+            .decoder
+            .decode_bound(&rates, ms, boot, blocked.as_deref(), bound);
         // A new winner starts its own window: it has not had a hold to move in yet.
         let held = agent.decoder.current().map(str::to_string);
         if held != self.held_channel {
@@ -423,9 +475,16 @@ impl LegacyFrame {
                 let ledger = AdapterLedger(adapter);
                 let decision = layer.decide(active, self.buttons, ms, emulator, &ledger);
                 self.buttons = decision.mask;
-                Executed { mask: decision.mask, events: decision.events, silence: decision.silence }
+                Executed {
+                    mask: decision.mask,
+                    events: decision.events,
+                    silence: decision.silence,
+                }
             }
-            None => Executed { mask: self.buttons, ..Executed::default() },
+            None => Executed {
+                mask: self.buttons,
+                ..Executed::default()
+            },
         };
         if let Some(trace) = self.trace.as_mut() {
             trace.decided(active);
@@ -496,14 +555,20 @@ impl LegacyFrame {
         if let Some(trace) = self.trace.as_mut() {
             trace.evaluated(&rewards, &abandoned, progress.rank);
         }
-        Evaluated { rewards, abandoned, progress }
+        Evaluated {
+            rewards,
+            abandoned,
+            progress,
+        }
     }
 
     /// Phase D: the frame just produced becomes the next ticks' visual drive, each reward event
     /// stimulates once, and the summed value reinforces once.
     pub fn commit(&mut self, agent: &mut NeuralAgent, rewards: &[RewardEvent], ms: f64) {
         let (width, height) = (agent.frame.width, agent.frame.height);
-        agent.network.set_visual_frame(&self.frame_buffer, width, height);
+        agent
+            .network
+            .set_visual_frame(&self.frame_buffer, width, height);
         let mut total = 0.0;
         for event in rewards {
             agent.network.stimulate(f64::from(event.stimulation_ms));
@@ -541,7 +606,10 @@ impl LegacyFrame {
         // rule as amended 2026-09-22): the macro layer answers "nearer the objective" with the map
         // graph it already walks (`docs/design/macros.md` section 12.15); in raw mode there is no
         // layer and no objective, and the answer is false.
-        let nearer = parts.macros.as_deref().is_some_and(MacroLayer::nearer_the_objective);
+        let nearer = parts
+            .macros
+            .as_deref()
+            .is_some_and(MacroLayer::nearer_the_objective);
         let trace = &mut self.trace;
         let mut saved = false;
         let recover = parts.ratchet.observe_with_progress(
@@ -563,14 +631,20 @@ impl LegacyFrame {
         );
         let rollback = if recover {
             // Two triggers, two stories on the ticker: a game over ended the run, a stall did not.
-            let trigger =
-                if parts.adapter.game_over() { RollbackTrigger::GameOver } else { RollbackTrigger::Stall };
+            let trigger = if parts.adapter.game_over() {
+                RollbackTrigger::GameOver
+            } else {
+                RollbackTrigger::Stall
+            };
             let events = self.rollback(parts)?;
             Some(Rollback { trigger, events })
         } else {
             None
         };
-        Ok(Boundary { captured: saved, rollback })
+        Ok(Boundary {
+            captured: saved,
+            rollback,
+        })
     }
 
     /// The ratchet's game-only rollback (`legacy-ratchet-rollback-v1`): the slot is restored, the

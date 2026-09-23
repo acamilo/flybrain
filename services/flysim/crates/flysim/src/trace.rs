@@ -170,12 +170,14 @@ impl FrameTrace {
 
     /// Sugar admitted at the top of the frame, before the brain ticks.
     pub fn sugar(&mut self, duration_ms: f64) {
-        self.admissions.push(json!({ "kind": "sugar", "durationMs": duration_ms }));
+        self.admissions
+            .push(json!({ "kind": "sugar", "durationMs": duration_ms }));
     }
 
     /// An operator reward pulse, applied at the top of the frame.
     pub fn reward_pulse(&mut self, value: f64) {
-        self.admissions.push(json!({ "kind": "reward", "value": value }));
+        self.admissions
+            .push(json!({ "kind": "reward", "value": value }));
     }
 
     /// A checkpoint capture at the current boundary: the open transition's, or the start's.
@@ -213,7 +215,9 @@ impl FrameTrace {
 
     /// Phase A's ticks, and the network they left behind.
     pub fn ticked(&mut self, ticks: u64, remainder_ms: f64, network: &LifNetwork) {
-        let Some(record) = self.open.as_mut() else { return };
+        let Some(record) = self.open.as_mut() else {
+            return;
+        };
         record.ticks = ticks;
         record.brain_ticks = network.ms as u64;
         record.remainder = remainder_ns(remainder_ms);
@@ -241,7 +245,9 @@ impl FrameTrace {
     pub fn executed(&mut self, mask: u32, events: &[MacroEvent]) {
         if let Some(record) = self.open.as_mut() {
             record.mask = mask;
-            record.macros.extend(events.iter().map(|event| macro_json("execute", event)));
+            record
+                .macros
+                .extend(events.iter().map(|event| macro_json("execute", event)));
         }
     }
 
@@ -250,7 +256,9 @@ impl FrameTrace {
     pub fn advanced(&mut self, framebuffer: &[u8], emulator: &Emulator) {
         if let Some(record) = self.open.as_mut() {
             record.framebuffer = sha256_hex(framebuffer);
-            let wram: Vec<u8> = WRAM.map(|address| emulator.read_uncached(address)).collect();
+            let wram: Vec<u8> = WRAM
+                .map(|address| emulator.read_uncached(address))
+                .collect();
             record.wram = sha256_hex(&wram);
         }
     }
@@ -265,7 +273,9 @@ impl FrameTrace {
                     "stimulationMs": event.stimulation_ms,
                 })
             }));
-            record.macros.extend(abandoned.iter().map(|event| macro_json("evaluate", event)));
+            record
+                .macros
+                .extend(abandoned.iter().map(|event| macro_json("evaluate", event)));
             record.rank = rank;
         }
     }
@@ -289,12 +299,16 @@ impl FrameTrace {
                 "slotId": SLOT,
                 "stateDigest": null,
             }));
-            record.macros.extend(events.iter().map(|event| macro_json("rollback", event)));
+            record
+                .macros
+                .extend(events.iter().map(|event| macro_json("rollback", event)));
         }
     }
 
     fn flush_open(&mut self) {
-        let Some(record) = self.open.take() else { return };
+        let Some(record) = self.open.take() else {
+            return;
+        };
         let line = json!({
             "behaviour": {
                 "step": record.step.to_string(),
@@ -348,11 +362,20 @@ mod tests {
             remainder += per_frame;
             remainder -= remainder.floor();
             let value = remainder_ns(remainder);
-            assert!(value.get("numerator").is_some(), "{remainder} was not exact: {value}");
+            assert!(
+                value.get("numerator").is_some(),
+                "{remainder} was not exact: {value}"
+            );
         }
-        assert_eq!(remainder_ns(0.0), json!({ "numerator": "0", "denominator": "1" }));
+        assert_eq!(
+            remainder_ns(0.0),
+            json!({ "numerator": "0", "denominator": "1" })
+        );
         // 0.5 ms is 500000 ns.
-        assert_eq!(remainder_ns(0.5), json!({ "numerator": "500000", "denominator": "1" }));
+        assert_eq!(
+            remainder_ns(0.5),
+            json!({ "numerator": "500000", "denominator": "1" })
+        );
         // One 2^-15 ms step is 15625/512 ns.
         assert_eq!(
             remainder_ns(1.0 / 32_768.0),
