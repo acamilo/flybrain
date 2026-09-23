@@ -1539,6 +1539,75 @@ Nothing is ranked, weighted or pressed for the fly: a button leaves the pad whil
 anything and comes back when it can (a new battle resets the stages). The decoder, the reward
 catalog, the adapter version, the roles and the compatibility string are untouched.
 
+### 12.24 The map graph is the disassembly's, piece by piece (2026-09-23, row 59)
+
+Opened pre-emptively: the row-58 review carried the route survey past the Boulder Badge and the
+fly walked Pewter City (39, 17) to Route 3 (0, 9) and back from about frame 68,000, `GO OBJECTIVE`
+done on Route 3 538 times and `GO ROUTE` done on Pewter 537. Reproduced from a rank-11 checkpoint
+the survey writes (`FLY_PROBE_SAVE_RANK=11`): 509 and 508, never on Route 4. The live fly got
+through Route 3 anyway and met the next half on v0.6.0 at 22:20 UTC: rank 12, MT. MOON, the
+objective Cerulean, on Route 4 per ten minutes `GO ROUTE` 215, `GO OBJECTIVE` 113, `GO OUT` 103,
+two new tiles, in and out of the Pokécenter and the cave mouth. Route 4 was one node with Cerulean
+off its east edge, which the mountain cuts off from the cave mouth's side. From the live
+checkpoint the route survey on `main` walks it 930 times in 72,000 frames.
+
+**The geography table disagreed with the headers.** Checked row by row against
+`data/maps/headers/*.asm` and `data/maps/objects/*.asm` at the pinned commit:
+
+- Route 4 is **north** of Route 3, not east (`Route3.asm`: `connection north, Route4`); Route 3's
+  top edge is the road to Mt. Moon's Pokécenter. Mt. Moon's doors are both **on Route 4**:
+  (18, 5) into the first floor and (24, 5) into B1F, whose (27, 3) is the way out. Route 3 has no
+  warps. So Route 3's north edge named no map, and nothing on Route 3 was the way to the rung.
+- Route 14 / 15 and Route 24 / 25 had the right neighbour in the wrong column (west and east,
+  not south and north). Route 24's east edge is Nugget Bridge's far end, rung 16's road.
+
+**Four maps are pieces the player cannot walk between** (12.7's rule, measured by flooding every
+tile of every map on the graph from the blocks, blockset, collision list, tile-pair walls and
+ledges): Route 2 as before; **Route 4**, cut by the mountain into the cave mouth's side and
+Cerulean's side; **Mt. Moon B1F**, four chambers of two ladders each; **B2F**, one large piece and
+two small ones. The one road through is 1F (5, 5), B1F (21, 17), B2F (5, 7), B1F (27, 3); the
+other two ladders on 1F lead to dead ends.
+
+A split row is now any number of pieces, each with its doors (the warp index and tile) and what is
+one step from it, a whole map or another map's piece. Three rules keep it honest:
+
+- **Which piece the fly is in** is what its walk can reach on the decoded grid (section 15): the
+  piece whose doors it reaches, when exactly one piece's are. The grid has no ledges, so where it
+  reaches none (Route 4 below the ledges) the nearest door answers. Flooded over every tile of
+  the four maps' ground in the disassembly, the rule names the right piece for all of them.
+- **Which piece a door lands in** is the cartridge's own answer: a warp names the destination
+  warp it arrives at (`wWarpEntries` byte 2), and each piece lists its warps. An edge lands in
+  the piece that lists the map it is stepped off.
+- **The hop is a piece**, and an exit is toward the objective only if it lands in that piece. On
+  1F three ladders go down to B1F and one of them is the road.
+
+**A connection nobody can walk across is not a road.** Four header connections have no tile where
+both sides are land: Pallet Town / Route 21, Cinnabar / Route 20, Route 20 / 19 (sea) and Route 22 /
+23 (the League's fence). They keep their name and offer no exit and no hop. Without this the road
+from Pallet Town to Cerulean was by sea, and a fly that whited out in Mt. Moon, which the survey's
+did, walked into Pallet's shore every two seconds.
+
+**One seam frame, found on the way.** Route 3's first trainer closes his challenge onto five frames
+of plain overworld before `StartTrainerBattle` decides the battle (`home/trainers.asm`: it runs
+after `DisplayTextID`'s close-down). Row 58's pending push-back was decided on the first of them
+and walled (11, 6), the one gap between Route 3's west end and the rest of the road, for the
+session. A push-back is now a refusal only once the overworld has been the fly's for thirty frames
+running; a battle inside them drops it.
+
+From the badge, the route survey reaches Route 4 at frame 70,356 and Mt. Moon at 70,707 (rung 12),
+no pushed tile; after whiting out in the cave it walks the land road back from Pallet Town. The
+ROM test on the stub rotation reaches Mt. Moon in 56.7 brain minutes with 4 Pewter / Route 3
+crossings; the base makes 3,391 in 80.4 and never stands on Route 4. From the live 2026-09-22
+rank-11 checkpoint the branch reaches Mt. Moon too, where the base ends fenced on Route 3. From
+the live Route 4 checkpoint the branch is in the cave on frame 279 and stays on the road; on the
+stub rotation Route 4's west doors are crossed 13 times in twenty brain minutes (whiteouts and
+walks back included) against 56 on `main`.
+
+Nothing is ranked and nothing presses for the fly: a table of maps says what the headers say, a
+split map has the pieces its ground has, and a frame that was the cartridge's is not read as the
+fly's. The decoder, the reward catalog, the adapter version, the roles and the compatibility
+string are untouched.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")

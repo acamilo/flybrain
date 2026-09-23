@@ -1440,7 +1440,7 @@ pub fn toward_objective(state: &mut dyn MacroState, candidates: &[Exit]) -> Vec<
 }
 
 /// The piece of ground the fly is standing in: its map, and on a map whose ground is in pieces
-/// the piece its walk can reach the doors of (`docs/design/macros.md` sections 12.7 and 12.23).
+/// the piece its walk can reach the doors of (`docs/design/macros.md` sections 12.7 and 12.24).
 pub fn region_here(state: &mut dyn MacroState) -> Option<geography::Region> {
     let player = state.player()?;
     let grid = state.map_grid();
@@ -1449,7 +1449,7 @@ pub fn region_here(state: &mut dyn MacroState) -> Option<geography::Region> {
 
 /// Whether `exit` takes the fly onto `hop`: the map on the other side, and on a map whose ground
 /// is in pieces, the piece it lands in. A warp names the destination's warp it arrives at, which
-/// is what tells Mt. Moon's three ladders down to B1F apart (section 12.23); an edge lands in the
+/// is what tells Mt. Moon's three ladders down to B1F apart (section 12.24); an edge lands in the
 /// piece that lists the map it is stepped off. A landing the table cannot name is not a match.
 fn leads_to(state: &mut dyn MacroState, exit: &Exit, here: u8, hop: geography::Region) -> bool {
     if exit.destination(here) != Some(hop.map) {
