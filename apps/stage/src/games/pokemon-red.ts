@@ -79,11 +79,8 @@ export const pokemonRed: GameConfig = {
   },
 
   // Ticker rows are noun phrases, so a row reads as a log line rather than as narration.
-  // `explore` carries four adapter rules since pokered-unique8-v7 -- new ground, an exit, a
-  // conversation indoors, an item picked up (docs/rewards-learning.md) -- so its copy names
-  // what all four are rather than the first of them.
   rewardCopy: {
-    explore: { label: 'new find', tier: 'quiet', dedupeMs: 20_000, collapsedNoun: 'new finds' },
+    explore: { label: 'new place', tier: 'quiet', dedupeMs: 20_000, collapsedNoun: 'new places' },
     area: { label: 'new area', tier: 'notable', dedupeMs: 20_000, collapsedNoun: 'new areas' },
     wildwin: { label: 'wild win', tier: 'quiet', dedupeMs: 20_000, collapsedNoun: 'wild wins' },
     trainer: { label: 'trainer beaten', tier: 'notable', dedupeMs: 0 },
