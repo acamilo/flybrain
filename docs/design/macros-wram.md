@@ -893,3 +893,41 @@ point of reading the figure; a border drawn somewhere the cursor is not parked i
 box; and a menu of more than two options is not this menu. What the pad makes of a readable prompt
 is `pokemon_red::macros::palette`'s business (`docs/design/macros.md` 12.12 and 12.20), not this
 accessor's.
+
+## 12. The people off the screen, and a battle decided (2026-09-23, `docs/design/macros.md` 12.22)
+
+Two readings row 58 added, both out of bytes the seam already had or a byte bracketed by two it had.
+
+### `state::offscreen_npcs`
+
+`CheckSpriteAvailability` (`engine/overworld/movement.asm`) writes `$ff` into
+`SPRITESTATEDATA1_IMAGEINDEX` (offset 2) for a sprite that is a toggleable object switched off, that
+is outside its window, or that stands on a text box's tiles. The window, for a sprite whose
+`SPRITESTATEDATA2_MOVEMENTBYTE1` (offset 6) is `WALK` (`$fe`) or `STAY` (`$ff`), compares the
+sprite's biased `MAPY` / `MAPX` (offsets 4 and 5) with `wYCoord` / `wXCoord`: drawn when equal, or
+when the sprite's is greater by at most `SCREEN_HEIGHT / 2 - 1` (8) rows and
+`SCREEN_WIDTH / 2 - 1` (9) columns. A scripted mover (movement byte below `WALK`) skips the test.
+
+So a `$ff` sprite of the loaded map whose coordinates fall **outside** the window, and whose
+movement byte is `WALK` or above, is reported with those coordinates: the cartridge would hide it
+for being off the screen whatever else were true, and a sprite it is not updating does not move.
+Everything else `$ff` is not reported. Measured from the row-58 checkpoint at the Pewter Gym's
+doormat: BROCK at (4, 1) and the Jr. Trainer at (3, 6) reported, the guide at (7, 10) drawn.
+
+What it cannot tell is a toggleable object switched off from one out of sight, because both are
+`$ff` outside the window. Its one reader is the rung's own list of people; the ladder's person
+places are Oak's lab and the gyms, and only the lab and Viridian Gym carry toggleable people
+(`data/maps/toggleable_objects.asm`).
+
+### `poke::CUR_OPPONENT`, `wCurOpponent`
+
+Written when a battle is decided (`home/trainers.asm` for a trainer, the encounter check for a wild
+one), cleared by `EndOfBattle` in the same block that clears `wIsInBattle`. Not in the generated
+table: `ram/wram.asm` at the pinned commit declares `wIsInBattle:: db`,
+`wPartyGainExpFlags:: flag_array PARTY_LENGTH` (one byte), `wCurOpponent:: db`,
+`wBattleType:: db`, `wDamageMultipliers:: db`, `wGymLeaderNo:: db`, `wTrainerNo:: db`, and the
+table's `wIsInBattle` (`$d057`), `wBattleType` (`$d05a`) and `wTrainerNo` (`$d05d`) are exactly
+where that layout puts them, so the byte is `wBattleType - 1` = `$d059`, asserted against both
+neighbours in `scene/tests.rs`. Measured on the cartridge in the Pewter Gym: `$00` in the
+overworld, `$cd` (`OPP_JR_TRAINER_M`) from the last box of the trainer's challenge through the
+219-frame transition and the battle. `controllable` reads it as zero.

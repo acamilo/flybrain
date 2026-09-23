@@ -1445,6 +1445,66 @@ Nothing presses for the fly and nothing is ranked: one button leaves a pad it co
 one wall moves to the tile that earned it, and one walk goes where it can. The decoder, the reward catalog, the adapter
 version, the roles and the compatibility string are untouched.
 
+### 12.22 The rung's people are in the room when the screen does not show them (2026-09-23, row 58)
+
+Live on v0.5.3, rank 10, for twenty-five minutes: `GO OBJECTIVE` into the Pewter Gym, `GO OUT`
+straight back out, with `GO ITEM`, `GO FRONTIER`, `YES` and `NO` mixed in. Per ten brain minutes
+about 93 `GO OUT`, 47 `GO OBJECTIVE`, 200 starts in all, every one `done`, **no reward event of any
+kind**, the exploration count frozen at 1,892. Check 10 saw ten distinct names and said nothing.
+Surveyed from the live checkpoint with the route probe (`FLY_PROBE_CATCH=route`,
+`FLY_PROBE_CATCH_MAP=54`), which reads the room on the fly's Nth arrival.
+
+- **The objective saw the room through the screen.** `objective_targets` read `npcs`, which is
+  what the cartridge *draws*, and `CheckSpriteAvailability` writes `$ff` into the image index of
+  every sprite outside a window of the player's coordinate. From the doormat at (4, 13) that window
+  holds the guide at (7, 10) and nobody else: BROCK at (4, 1) and the Jr. Trainer at (3, 6) are not
+  drawn. With the guide talked to (12.20), the rung's list was empty, so `GO OBJECTIVE` had nothing
+  to aim at inside and 12.5's rule -- the ways out are withheld while the rung's person is in the
+  room -- let `GO OUT` onto the pad. Outside, `GO OBJECTIVE` aimed at the gym's door. The pair
+  undoes itself in about a second, and nothing on either side of the door earns anything.
+- **So the rung reads the people the cartridge hides only for being off the screen.** The window
+  is a function of `wYCoord`, `wXCoord` and the sprite's own biased coordinates, all already read,
+  so a sprite whose `$ff` falls outside it is one the cartridge would hide for that reason whatever
+  else were true, and a sprite the cartridge is not updating does not move
+  (`state::offscreen_npcs`). A `$ff` *inside* the window, or on a scripted mover, is not the
+  screen's and is not reported. Only the rung reads the list: a sprite outside the window may also
+  be a toggleable object switched off, which reads the same, so `GO NPC`, `TALK` and objects keep
+  what is drawn.
+- **Facing any of the rung's people is the arrival.** 12.5 left out only the one ahead, which was
+  enough for one target; a gym names three, and in front of BROCK `GO OBJECTIVE` still had the
+  trainer to walk to. A fly facing a person the rung is waiting on has nothing left for a walk to
+  do, and `TALK` is the press.
+
+Three frames the seam read as the fly's own were the cartridge's, and each wrote a ledger entry that
+emptied the room again once the first fix let the fly into it:
+
+- **A warp's tear.** `wCurMap` changes thirty-two frames before the header, the coordinates and the
+  warp table follow it, while the screen fades, and no joypad bit is set until the fade is over.
+  The seam read "map 54 at (16, 17)" -- Pewter City's doormat under the gym's id -- as an overworld
+  and dealt it a pad; a walk started there planned over the wrong map, and what it aimed at went
+  into the blocked ledger under the gym's id (live: `GO OUT` started and finished in 0.05 s). The
+  driver now reads a tear as the map byte having changed while the fly still stands on a warp of
+  the loaded table that leads to the map the byte names, deals it as `Unknown` with an empty pad,
+  and records no ground from it. Teleport pads -- Saffron Gym, two Silph Co. floors -- do not change
+  the map byte, so they are never a tear; a tear is bounded at ninety frames all the same.
+- **A battle's transition.** Between a trainer's challenge closing and the battle screen there are
+  219 frames with every joypad and script bit clear. The pad was dealt, a walk toward BROCK pressed
+  into the animation and gave up after three refused steps -- BROCK blocked for ten brain minutes --
+  and the Jr. Trainer's conversation read as over, so the trainer the fly then lost to was
+  "talked to" for the session. `wCurOpponent` is set when a battle is decided and cleared by
+  `EndOfBattle` with `wIsInBattle`; it is not in the generated table and is derived as the byte
+  between two that are, both neighbours checked in a test (`macros-wram.md` section 12), and
+  `controllable` reads it.
+- **A trainer walking up.** 12.4 reads a macro the cartridge ended by taking the joypad as a
+  refusal and wrote the target blocked and the tile pushed at once. A trainer who sees the fly
+  takes the joypad the same way. The entries now wait until the cartridge gives the joypad back:
+  in the overworld it was a refusal and is written as before; a battle teaches the ledgers nothing.
+
+Nothing is ranked, nothing presses for the fly, and no button is added to any pad: `GO OBJECTIVE`
+has a person to walk to where it had none, `GO OUT` is withheld by 12.5's own rule, and three
+frames that were never the fly's deal nothing. The decoder, the reward catalog, the adapter
+version, the roles and the compatibility string are untouched.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")
