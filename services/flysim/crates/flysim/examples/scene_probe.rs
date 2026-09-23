@@ -189,11 +189,12 @@ fn pad(gb: &mut Emulator, adapter: &PokemonRedReward, label: &str) {
     println!("- scene `{scene:?}`, player {player:?}, map {}x{}", size.width, size.height);
     println!("- objective: {:?}", state.objective());
     if let Some(objective) = state.objective() {
+        let from = palette::region_here(state)
+            .unwrap_or(geography::Region::whole(player.map));
         println!(
-            "- `next_hop({:?}, {:#04x})` = {:?}, neighbours {:?}",
-            geography::region_at(player.map, player.y),
+            "- `next_step({from:?}, {:#04x})` = {:?}, neighbours {:?}",
             objective.map,
-            geography::next_hop(geography::region_at(player.map, player.y), objective.map),
+            geography::next_step(from, objective.map),
             geography::neighbours(player.map)
         );
     }
@@ -1346,7 +1347,12 @@ fn dialog_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64
 /// (comma-separated names) presses those buttons whenever they are dealt.
 ///
 /// [`PokemonPalette`]: flybrain_gb::pokemon_red::macros::PokemonPalette
-fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64) {
+fn route_survey(
+    gb: &mut Emulator,
+    adapter: &mut PokemonRedReward,
+    ms: &mut f64,
+    checkpoint: &flysim::store::Checkpoint,
+) {
     use flybrain_gb::MacroPalette;
     use flybrain_gb::pokemon_red::macros::cartridge::{FACINGS, MacroState, TalkTarget, TargetKey};
     use flybrain_gb::pokemon_red::macros::path::Way;
@@ -1380,6 +1386,9 @@ fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64)
     let mut entries = 0usize;
     let mut arrived_at = 0usize;
     let mut last_map: Option<u8> = None;
+    let save_rank: Option<u32> =
+        std::env::var("FLY_PROBE_SAVE_RANK").ok().and_then(|value| value.parse().ok());
+    let mut saved = false;
 
     // `FLY_PROBE_HOLD=right:96,up:32` holds raw directions first and prints where the fly is
     // every eight frames: what the cartridge does with a press, before any macro is asked.
@@ -1508,6 +1517,28 @@ fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64)
         gb.run_frame().expect("a frame should complete");
         *ms += MS_PER_FRAME;
         adapter.sample(gb, *ms);
+        // `FLY_PROBE_SAVE_RANK=11` with `FLY_PROBE_SAVE` writes the first frame at or past that
+        // rung where the fly has the buttons in the overworld and no macro is running: a state the
+        // stream could be restored into next (row 59, after the badge), carried forward by the
+        // survey from the source checkpoint. The session ledgers are not in it, as they are in no
+        // checkpoint.
+        if let Some(want) = save_rank
+            && !saved
+            && adapter.progress().rank >= want
+            && !running
+            && matches!(observed.scene, flybrain_gb::SceneId::Overworld)
+            && state::controllable(gb)
+            && let Some(path) = std::env::var_os("FLY_PROBE_SAVE")
+        {
+            saved = true;
+            let bytes = save_state(checkpoint, gb, adapter, frame, &path);
+            println!(
+                "f{frame:<6} {:?} saved rank {} to `{}` ({bytes} bytes)",
+                state::player(gb).map(|p| (p.map, p.x, p.y)),
+                adapter.progress().rank,
+                std::path::Path::new(&path).display()
+            );
+        }
         if single_refusals >= catch_after {
             caught_at = Some(frame);
             break;
@@ -1673,6 +1704,28 @@ fn separator_table(classes: &BTreeMap<(bool, bool, bool), u64>) -> String {
     out
 }
 
+/// This state as a `FLYSIM01` checkpoint: the agent half is the source checkpoint's, unchanged --
+/// the release box's own run carried forward by the stub, not a synthesised save -- and `.local/`
+/// is not tracked, exactly as every other checkpoint in this workspace. Returns the size written.
+fn save_state(
+    checkpoint: &flysim::store::Checkpoint,
+    gb: &mut Emulator,
+    adapter: &PokemonRedReward,
+    frame: usize,
+    path: &std::ffi::OsStr,
+) -> usize {
+    let mut runtime = checkpoint.runtime.clone();
+    runtime.emulator = gb.export_state().expect("the emulator should export");
+    runtime.reward = adapter.export_state();
+    runtime.framebuffer = gb.framebuffer().to_vec();
+    runtime.emulator_frame = frame as u64;
+    let bytes =
+        flysim::store::encode(&checkpoint.agent, &runtime).expect("the envelope should encode");
+    flysim::store::write_atomic(std::path::Path::new(path), &bytes)
+        .expect("the checkpoint should be writable");
+    bytes.len()
+}
+
 fn main() {
     let Some(path) = std::env::var_os("FLY_ROM") else {
         println!("FLY_ROM is not set, so there is nothing to probe.");
@@ -1764,7 +1817,7 @@ fn main() {
     // Row 57's pad survey: earn the session's ledgers from the checkpoint with the real palette,
     // and read the frame the pad comes down to one refusing button on.
     if std::env::var("FLY_PROBE_CATCH").is_ok_and(|value| value == "route") {
-        route_survey(&mut gb, &mut adapter, &mut ms);
+        route_survey(&mut gb, &mut adapter, &mut ms, &checkpoint);
         return;
     }
 
@@ -1877,19 +1930,10 @@ fn main() {
                 // release box's own run carried forward by the stub, not a synthesised save -- and
                 // `.local/` is not tracked, exactly as every other checkpoint in this workspace.
                 if let Some(save) = std::env::var_os("FLY_PROBE_SAVE") {
-                    let mut runtime = checkpoint.runtime.clone();
-                    runtime.emulator = gb.export_state().expect("the emulator should export");
-                    runtime.reward = adapter.export_state();
-                    runtime.framebuffer = gb.framebuffer().to_vec();
-                    runtime.emulator_frame = frame as u64;
-                    let bytes = flysim::store::encode(&checkpoint.agent, &runtime)
-                        .expect("the envelope should encode");
-                    flysim::store::write_atomic(std::path::Path::new(&save), &bytes)
-                        .expect("the checkpoint should be writable");
+                    let bytes = save_state(&checkpoint, &mut gb, &adapter, frame, &save);
                     println!(
-                        "\nWrote this state to `{}` ({} bytes).",
-                        std::path::Path::new(&save).display(),
-                        bytes.len()
+                        "\nWrote this state to `{}` ({bytes} bytes).",
+                        std::path::Path::new(&save).display()
                     );
                 }
                 // The survey method on the one question the fix turns on: **what does the

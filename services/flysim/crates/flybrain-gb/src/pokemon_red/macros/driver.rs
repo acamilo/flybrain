@@ -349,10 +349,9 @@ impl MacroPalette for PokemonPalette {
             // How far the objective is, over the same map graph `GO OBJECTIVE` walks (section
             // 12.15). Read from the same frame and the same state everything else is, and only
             // where the fly is its own master, for the same reason the ground is.
-            let approach = standing.and_then(|player| {
+            let approach = standing.and_then(|_| {
                 let objective = palette::objective_place(&mut state)?;
-                let hops =
-                    geography::hops(geography::region_at(player.map, player.y), objective.map)?;
+                let hops = geography::hops(palette::region_here(&mut state)?, objective.map)?;
                 Some((objective.map, hops))
             });
             *cached = Some(palette);

@@ -2851,3 +2851,119 @@ of the brain, which is the deviation.
   648 bytes, sha256 `4929f340...9ebd9` on v0.5.5 (`7784a9d`), and 648 bytes, `8ce67b97...a8f68`
   on `main` after the engagement rewards (adapter v7). Decoder, reward catalog, adapter version
   and roles untouched.
+
+- `flysim --print-compatibility`: **648 bytes, sha256 `4929f340...9ebd9`**, byte-identical to the
+  base. Decoder, reward catalog, adapter version and roles untouched.
+
+## 2026-09-23, row 59: the road to Mt. Moon, and Route 4 in two
+
+### What was coming, and what came
+
+Opened pre-emptively. The row-58 review carried the route survey past the Boulder Badge (v0.5.5's fix):
+from about frame 68,000, Pewter City (39, 17) and Route 3 (0, 9) in a ring, `GO OBJECTIVE` done
+on Route 3 538 times, `GO ROUTE` done on Pewter 537. Route 3's pad was `GO ROUTE` alone, because
+`GO OBJECTIVE` had nothing on Route 3 to aim at. The live fly was due there with the badge.
+
+It got through Route 3 and met the other half on v0.6.0 at 22:20 UTC: rank 12 (MT. MOON), map 15,
+per ten minutes `GO ROUTE` 215, `GO OBJECTIVE` 113, `GO OUT` 103, five distinct macros, two new
+tiles; the coordinator restarted flysim. The live checkpoint from inside the ring is v7. From it the
+route survey on `main` (`4d82f7d`, 72,000 frames) walks between Route 4 and the Pokécenter (map
+68): 930 map changes, `GO OBJECTIVE` done on Route 4 465 and `GO ROUTE` done on the Pokécenter
+462 with `GO OBJECTIVE` preferred; with a uniform choice 706 changes, `GO ROUTE` 350,
+`GO OBJECTIVE` 183, `GO OUT` 170, the live shape. That is 59c.
+
+### Reproduction
+
+`examples/scene_probe.rs` gains `FLY_PROBE_SAVE_RANK`: the route survey writes the first safe
+overworld frame at a rung as a checkpoint. From the row-58 checkpoint, `FLY_PROBE_CATCH=route
+FLY_PROBE_PREFER="GO OBJECTIVE,TALK" FLY_PROBE_FRAMES=120000`, the survey is byte-identical to the
+review's and writes rank 11 on frame 19,620, in the gym beside BROCK
+(`.local/checkpoints/survey-rank11-row59.checkpoint`, untracked). From that checkpoint, with empty
+ledgers, the base walks the ring again: `GO OBJECTIVE` done on Route 3 509, `GO ROUTE` done on
+Pewter 508, never on Route 4.
+
+### The audit: every row of the map graph against the disassembly
+
+`geography.rs` against `data/maps/headers/*.asm` and `data/maps/objects/*.asm` at `0cd19d3`, all
+outdoor rows and every `LINKS` pair; then every map on the graph flooded tile by tile (blocks,
+blockset, collision list, `TilePairCollisionsLand`, `LedgeTiles`, lower-left quadrant as section
+15 reads it) for pieces, and every connection for a strip that lands on land.
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 59 | Route 3 / Route 4 in the wrong columns (`[-,-,PEWTER,ROUTE_4]` / `[-,-,ROUTE_3,CERULEAN]`; the headers say Route 4 is **north** of Route 3), and Mt. Moon 1F linked to **Route 3**, which has no warps; B1F's exit to Route 4 missing | any objective past Pewter: Route 3's north edge named no map, so it was nobody's hop | `the_rows_the_disassembly_corrected_say_what_its_headers_say`, `the_road_to_mt_moon_is_not_a_ring_at_the_pewter_end_from_the_badge_checkpoint` (ROM) | **fixed**: rows as `Route3.asm` / `Route4.asm`; `(MT_MOON_1F, ROUTE_4)`, `(MT_MOON_B1F, ROUTE_4)` per `Route4.asm`'s warps (18, 5) and (24, 5) and B1F's (27, 3) |
+| 59b | Route 14 / 15 and Route 24 / 25 in the wrong columns (south/north for west/east) | Nugget Bridge's far end (rung 16) named no map; Route 14's west edge likewise | the same unit test | **fixed**: `Route14.asm`, `Route15.asm`, `Route24.asm`, `Route25.asm` |
+| 59c | Route 4 is one node, though Mt. Moon cuts it in two: the cave mouth's side (Pokécenter (11, 5), 1F (18, 5), Route 3) and Cerulean's side (B1F's exit (24, 5), Cerulean) | every hop across Route 4 | `route_4s_sides_are_told_apart_by_the_doors_where_the_ground_cannot`, `route_4s_doors_and_sides_are_the_cartridges_from_the_badge_checkpoint` (ROM) | **fixed**: a `SPLIT` row |
+| 59d | Mt. Moon B1F and B2F are one node each, though B1F is four chambers of two ladders and B2F three pieces; 1F has three ladders to B1F and only (5, 5) is the road, so a map-level hop sends the fly up dead ends and back | rung 13 (Cerulean) from the first floor | `the_road_from_pewter_to_cerulean_is_through_mt_moon_one_chamber_at_a_time`, `a_door_or_an_edge_lands_in_the_piece_it_opens_onto` | **fixed**: `SPLIT` rows; a piece lists its warps by index, a warp lands in the piece its destination warp is in (`wWarpEntries` byte 2), and the hop is a piece. The fly's own piece is what its walk reaches on the decoded grid, the nearest door where the grid (no ledges) reaches none; flooded over all four maps' ground, exact for every tile |
+| 59e | four header connections have no tile where both sides are land -- Pallet / Route 21, Cinnabar / Route 20, Route 20 / 19 (sea), Route 22 / 23 (the League's fence) -- and the graph routed along them: from Pallet the road to Cerulean was by sea | whiting out in Mt. Moon, which the survey's fly did: `GO ROUTE` walked into Pallet's shore every 108 frames | `a_connection_nobody_can_walk_across_is_named_and_is_not_a_road` | **fixed**: `NO_CROSSING`: named, no exit, no hop. Route 22 / 23 go back into the table from the same list |
+| 59f | a trainer's challenge closes onto five frames of plain overworld before `StartTrainerBattle` decides the battle; row 58's pending push-back was written on the first of them | Route 3's first trainer: (11, 6), the one gap between the road's west end and the rest of it, walled for the session | `a_challenge_closing_onto_a_few_frames_of_overworld_is_still_a_challenge` | **fixed**: a push-back is a refusal only after thirty frames running of the fly's overworld; a battle inside them drops it |
+
+Measured and not the same kind, so left: Cerulean's south and east (Route 5, Route 9, the trashed
+house's back door) are reached from the town only through the trashed house, which is off the
+graph, and back over a ledge -- rung 17's road, with the Saffron gates and the Underground Path
+behind it. Routes 5-8, 10-12, 15, 16, 18 and 23 are pieces joined by gate buildings off the graph,
+and Rock Tunnel 1F is four pieces (rung 20). And many edges have walkable tiles past the strip
+that lands on land: a walk aimed at
+one is blocked and rests the whole edge for the window. On the road through rung 16 these are
+Route 3's (62, 0) and (63, 0), Route 4's (6, 17) and Cerulean's (0, 13) and (25, 0), all beside the
+landing tiles a walk from the road reaches first.
+
+### Before and after
+
+Route survey from the rank-11 checkpoint, 120,000 frames, `GO OBJECTIVE` and `TALK` preferred:
+
+| measure | base `7784a9d` | branch |
+| --- | ---: | ---: |
+| `GO OBJECTIVE` done on Route 3 | **509** | 9 |
+| `GO ROUTE` done on Pewter | **508** | 0 |
+| Route 4 / Mt. Moon first | never / never | frame 70,356 / 70,707 |
+| rung at the end | 11 | **12, MT. MOON** |
+| pushed tiles at the end | (11, 6), (14, 6), (14, 9) on Route 3 | none |
+
+From the live Route 4 checkpoint, 72,000 frames, rebased on `main` `4d82f7d` (v7):
+
+| measure | base `4d82f7d` | branch |
+| --- | ---: | ---: |
+| map changes, `GO OBJECTIVE` preferred / uniform | **930 / 706** | 29 / 50 |
+| `GO OBJECTIVE` done on Route 4, preferred / uniform | **465 / 183** | 3 / 2 |
+| `GO ROUTE` done on the Pokécenter, preferred / uniform | **462 / 350** | 0 / 0 |
+| into Mt. Moon, preferred / uniform | frame 541 / 826, and back out | frame 279 / 1,910 |
+| rung at the end | 12 | 12 |
+
+`the_fly_goes_into_mt_moon_from_the_live_route_4_checkpoint`, twenty brain minutes on the stub
+rotation: the base crosses Route 4's west doors 56 times, 18 through the Pokécenter's and 38
+through the cave's (fails); the branch 13, over three whiteouts and walks back (passes), in the
+cave on frame 278.
+
+The same survey from the live rank-11 checkpoint of 2026-09-22 (Pewter, the badge won):
+the base stays on Route 3 with five pushed tiles fencing it, rank 11; the branch reaches Route 4 at
+frame 118,621 and Mt. Moon at 118,972, rank 12, nothing pushed.
+
+The ROM-gated run, `the_road_to_mt_moon_is_not_a_ring_at_the_pewter_end_from_the_badge_checkpoint`,
+on the stub rotation: the base crosses between Pewter City and Route 3 **3,391** times in 80.4 brain
+minutes and never stands on Route 4 (fails); the branch crosses 4 times, whites out twice on the
+way, and is on Route 4 at frame 202,734 and at Mt. Moon's door at 203,232, 56.7 brain minutes
+(passes). `route_4s_doors_and_sides_are_the_cartridges_from_the_badge_checkpoint` reads Route 4's
+warp table off the cartridge -- (11, 5) to `$44`, (18, 5) to `$3b`, (24, 5) to `$3c`, the table's
+doors in its order -- and the decoded grid puts the fly, arrived from Route 3 at (9, 17), on the cave
+mouth's side.
+
+**No trap hunt numbers.** Two 30-brain-minute stub arms were started from the badge checkpoint on
+v0.5.5 with the box at load 35-40, had written nothing after two hours, and were stopped when the
+live fly reached Route 4 and this row became the live priority; FND-01 has since changed the
+hunt's frame, so hunts across the rebase would not compare (`9301e39`). The proof is the route
+survey and the three ROM tests, which is a deviation from the ethos check's letter, recorded.
+
+### Gates
+
+- `cargo test --workspace --no-fail-fast` in release with `FLY_ROM`, `FLY_DATASET` and
+  `FLY_BADGE_CHECKPOINT`: 1,285 passed, 1 failed --
+  `flysim::integration::the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_killed`,
+  the known load-sensitive test (feed at 11.28 Hz with the box at load 35-40); the base fails it
+  too at the same load (the boot-time `total` assertion).
+- `cargo clippy --workspace --all-targets`: **0 warnings**.
+- `npm test` 663 passed; `npm run typecheck` clean.
+- `infra/tests/lint.sh`: ALL CHECKS PASSED, the de-PII guard included.
+- `flysim --print-compatibility`: byte-identical to the base on both bases this branch has had:
+  648 bytes, `4929f340...9ebd9` on v0.5.5 (`7784a9d`), and 648 bytes, `8ce67b97...a8f68` on
+  `4d82f7d` (v7). Decoder, reward catalog, adapter version and roles untouched.

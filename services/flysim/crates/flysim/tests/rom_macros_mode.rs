@@ -3452,3 +3452,212 @@ fn tail_whip_at_its_limit_is_not_dealt_and_a_route_one_battle_is_won() {
     );
     assert!(won > 0, "no wild battle was won in {budget} frames: {battles:?}");
 }
+
+const ROUTE_4: u32 = 0x0f;
+const MT_MOON_1F: u32 = 0x3b;
+
+/// A rung-11 checkpoint just after the Boulder Badge, or `None` to skip.
+///
+/// Row 59's is the route survey's own: `examples/scene_probe.rs` driven from the row-58 checkpoint
+/// with `FLY_PROBE_CATCH=route FLY_PROBE_PREFER="GO OBJECTIVE,TALK"` until rung 11, written by
+/// `FLY_PROBE_SAVE_RANK=11` on the first safe overworld frame -- in the gym, beside BROCK.
+fn badge_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_BADGE_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// From the badge: the fly takes the road to Mt. Moon instead of walking the Pewter end of Route 3.
+///
+/// **What the row-58 review measured** (the route survey carried past the badge, 2026-09-23):
+/// from about frame 68,000, Pewter City (39, 17) and Route 3 (0, 9) in a ring, `GO OBJECTIVE`
+/// done on Route 3 538 times and `GO ROUTE` done on Pewter 537. The live fly was due to reach
+/// the same state as soon as it earned the badge.
+///
+/// **What was wrong** (`infra/docs/macros-traps.md` row 59), two things stacked:
+///
+/// - the map graph had Route 4 east of Route 3 and a Mt. Moon door on Route 3. The headers put
+///   Route 4 north of Route 3 and both of Mt. Moon's doors on Route 4, so Route 3's north edge,
+///   the one road to the mountain, named no map and was nobody's first hop; and Route 4's two
+///   sides, which the mountain cuts apart, were one node;
+/// - Route 3's first trainer closed his challenge onto five frames of plain overworld before the
+///   battle was decided, and the walk he interrupted was written as a refusal on the first of
+///   them: (11, 6), the one gap between the road's west end and the rest of it, walled for the
+///   session.
+///
+/// The claims, none of them about which button the fly presses:
+///
+/// - the fly is on **Route 4** and at **Mt. Moon's door** (map `0x3b`) inside the budget;
+/// - Pewter City and Route 3 are **not a ring**: under forty crossings between them, against
+///   over a thousand on the base.
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_BADGE_CHECKPOINT=.local/checkpoints/survey-rank11-row59.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture the_road_to_mt_moon
+/// ```
+#[test]
+fn the_road_to_mt_moon_is_not_a_ring_at_the_pewter_end_from_the_badge_checkpoint() {
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = badge_checkpoint() else {
+        eprintln!("skipped: no FLY_BADGE_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert!(run.adapter.progress().rank >= 11, "the checkpoint is past the badge");
+
+    let mut crossings = 0u32;
+    let mut on_route_4: Option<u32> = None;
+    let mut at_mt_moon: Option<u32> = None;
+    let mut previous = run.map();
+    for frame in 0..288_000u32 {
+        run.frame();
+        let map = run.map();
+        if map != previous {
+            if (previous == PEWTER_CITY && map == ROUTE_3) || (previous == ROUTE_3 && map == PEWTER_CITY) {
+                crossings += 1;
+            }
+            previous = map;
+        }
+        if on_route_4.is_none() && map == ROUTE_4 {
+            on_route_4 = Some(frame);
+        }
+        if at_mt_moon.is_none() && map == MT_MOON_1F {
+            at_mt_moon = Some(frame);
+            break;
+        }
+    }
+    let progress = run.adapter.progress();
+    eprintln!(
+        "{:.1} brain minutes: Route 4 at {on_route_4:?}, Mt. Moon at {at_mt_moon:?}, Pewter / Route 3 \
+         crossings {crossings}, rank {} ({}), route {:?}, macros {:?}",
+        run.ms / 60_000.0,
+        progress.rank,
+        progress.rank_label,
+        run.route,
+        run.started
+    );
+    assert!(crossings < 40, "{crossings} crossings between Pewter City and Route 3: {:?}", run.started);
+    assert!(on_route_4.is_some(), "the fly never reached Route 4: {:?}", run.route);
+    assert!(at_mt_moon.is_some(), "the fly never reached Mt. Moon's door: {:?}", run.route);
+}
+
+/// Route 4's two sides, read off the cartridge: the warp table the geography's pieces are keyed
+/// by, and the piece the fly is standing in on arrival from Route 3.
+///
+/// The table's door indices and tiles are the disassembly's (`data/maps/objects/Route4.asm`); this
+/// is the same three warps read from `wWarpEntries` on the loaded map, and the piece named by the
+/// decoded grid ([`geography::region_on`]) rather than by the doors.
+#[test]
+fn route_4s_doors_and_sides_are_the_cartridges_from_the_badge_checkpoint() {
+    use flybrain_gb::pokemon_red::macros::geography::{self, Region};
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = badge_checkpoint() else {
+        eprintln!("skipped: no FLY_BADGE_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    let mut read = None;
+    for _ in 0..216_000u32 {
+        run.frame();
+        if run.map() != ROUTE_4 {
+            continue;
+        }
+        let Some(player) = flybrain_gb::pokemon_red::state::player(&mut run.gb) else { continue };
+        let Ok(grid) = flybrain_gb::pokemon_red::state::map_grid(&mut run.gb) else { continue };
+        if u32::from(player.map) != ROUTE_4 || grid.map() != player.map {
+            continue;
+        }
+        let warps = flybrain_gb::pokemon_red::state::warps(&mut run.gb);
+        read = Some((player, warps, geography::region_on(player.map, player.x, player.y, Some(&grid))));
+        break;
+    }
+    let Some((player, warps, region)) = read else {
+        panic!("the fly never stood on Route 4 with its grid decoded: {:?}", run.route);
+    };
+    eprintln!("on Route 4 at ({}, {}), piece {region:?}, warps {warps:?}", player.x, player.y);
+    let doors: Vec<(u8, u8, u8)> =
+        warps.iter().map(|warp| (warp.x, warp.y, warp.destination_map)).collect();
+    assert_eq!(
+        doors,
+        vec![(11, 5, 0x44), (18, 5, 0x3b), (24, 5, 0x3c)],
+        "the Pokécenter, the cave mouth and B1F's exit, in the table's order"
+    );
+    assert_eq!(region, Region::piece(0x0f, 0), "arrived from Route 3, on the cave mouth's side");
+}
+
+const MT_MOON_POKECENTER: u32 = 0x44;
+
+/// The live checkpoint from inside row 59's ring (Route 4, rank 12 MT. MOON), or `None` to skip.
+fn mt_moon_live_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_MT_MOON_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// From the live checkpoint taken inside the ring: the fly goes into Mt. Moon instead of in and
+/// out of the Pokécenter beside it.
+///
+/// **What was live** (2026-09-23 22:20 UTC, v0.6.0, rank 12 MT. MOON, the objective Cerulean City):
+/// on Route 4, per ten minutes `GO ROUTE` 215, `GO OBJECTIVE` 113, `GO OUT` 103, five distinct
+/// macros and two new tiles. Route 4 was one node on the map graph with Cerulean off its east
+/// edge, which Mt. Moon cuts off from the cave mouth's side, so the objective aimed at ground no
+/// walk could reach and the Pokécenter door was the way out that was left. The route survey from
+/// this checkpoint on `main` walks Route 4 and the Pokécenter 930 times in 72,000 frames.
+///
+/// The claims, none of them about which button the fly presses, over twenty brain minutes on the
+/// stub rotation: the fly is **inside Mt. Moon** (map `0x3b`), and Route 4's west side and its two
+/// doors, the Pokécenter and the cave mouth, are **not a ring**: under twenty-five crossings in all.
+/// The base makes 56 (18 through the Pokécenter's door, 38 through the cave's); the rotation walks
+/// into the cave on the base too, and back out, and in, because from 1F the graph's Cerulean was
+/// Route 4's east edge beside it.
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_MT_MOON_CHECKPOINT=.local/checkpoints/release-rank12-route4.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture the_fly_goes_into_mt_moon
+/// ```
+#[test]
+fn the_fly_goes_into_mt_moon_from_the_live_route_4_checkpoint() {
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = mt_moon_live_checkpoint() else {
+        eprintln!("skipped: no FLY_MT_MOON_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert!(run.adapter.progress().rank >= 12, "the checkpoint is the rung the ring was on");
+
+    let mut crossings = 0u32;
+    let mut in_mt_moon: Option<u32> = None;
+    let mut on_route_4 = 0u32;
+    let mut previous = run.map();
+    for frame in 0..72_000u32 {
+        run.frame();
+        let map = run.map();
+        if map != previous {
+            let door = |other: u32| other == MT_MOON_POKECENTER || other == MT_MOON_1F;
+            if (previous == ROUTE_4 && door(map)) || (door(previous) && map == ROUTE_4) {
+                crossings += 1;
+            }
+            previous = map;
+        }
+        if in_mt_moon.is_none() && map == MT_MOON_1F {
+            in_mt_moon = Some(frame);
+        }
+        if map == ROUTE_4 {
+            on_route_4 += 1;
+        }
+    }
+    eprintln!(
+        "{:.1} brain minutes: Mt. Moon at {in_mt_moon:?}, crossings of Route 4's west doors {crossings}, \
+         frames on Route 4 {on_route_4}, rank {}, route {:?}, macros {:?}",
+        run.ms / 60_000.0,
+        run.adapter.progress().rank,
+        run.route,
+        run.started
+    );
+    assert!(crossings < 25, "{crossings} crossings of Route 4's west doors: {:?}", run.started);
+    assert!(in_mt_moon.is_some(), "the fly never went into Mt. Moon: {:?}", run.route);
+}
