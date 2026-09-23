@@ -716,6 +716,13 @@ impl MacroMachine {
             // all" -- and the route search is the real one, so a bound macro can refuse `no route`
             // once per hold for ever while the candidate list never changes. Recording what it
             // could not reach is what empties the list and takes the button off the pad.
+            // Row 57: a refusal that teaches the blocked ledger nothing new -- every goal it could
+            // not reach is already resting there -- is one the dealer will deal again unchanged,
+            // because only a last resort deals goals the ledger is resting. That refusal is the
+            // one remembered where the fly stands. A refusal that writes a new exclusion changes
+            // the next deal by itself and is not held against the tile: the next deal may be the
+            // last resort, whose own walk can go where this one could not.
+            let taught = unreachable.iter().any(|key| !state.blocked(*key));
             if let Some(map) = state.player().map(|player| player.map) {
                 self.blocked.extend(unreachable.into_iter().map(|key| (map, key)));
                 // And for the frontier, the same fact one level up: every tile of this map the
@@ -726,7 +733,9 @@ impl MacroMachine {
                     self.exhausted = Some(map);
                 }
             }
-            refused_here(self);
+            if !taught {
+                refused_here(self);
+            }
             return refuse(self, Refusal::NoRoute);
         };
         // The map the target was chosen on, so an entry cannot be read back on another map.

@@ -4979,6 +4979,32 @@ fn a_last_resort_that_cannot_reach_the_objectives_door_takes_a_way_out_it_can_re
         "south, toward the way out on this side of the fence: {:?}",
         world.player
     );
+
+    // The order the real brain pressed them in, measured on the seeded pocket: `GO ROUTE` first,
+    // while the door is still the second tier's answer rather than the last resort's. That refusal
+    // teaches the ledger the door, so it is not held against the tile -- the next deal is the last
+    // resort, and its walk goes where the first could not.
+    let mut world = fenced_in_pewter();
+    world.connections = Connections { north: false, south: true, east: false, west: false };
+    world.seen_maps.insert(maps::ROUTE_2);
+    world.targets.record_blocked(world.map, south);
+    world.exhausted.insert(world.map);
+    world.objective = Some(Objective {
+        map: maps::PEWTER_GYM,
+        tile: None,
+        warp: None,
+        edge: None,
+        target: Some(PlaceKind::Person),
+    });
+    assert_eq!(
+        run(&mut world, MacroKind::GoRoute).map_err(|refused| refused.reason),
+        Err(Refusal::NoRoute),
+        "the door, through the second tier, beyond the fence"
+    );
+    assert!(on_the_pad(&mut world, MacroKind::GoRoute), "a refusal that taught the ledger is not held");
+    let started_at = world.player;
+    assert!(run(&mut world, MacroKind::GoRoute).is_ok(), "the last resort walks where it can");
+    assert!(world.player.y > started_at.y, "{:?}", world.player);
 }
 
 #[test]
