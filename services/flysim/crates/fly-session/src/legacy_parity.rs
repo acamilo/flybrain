@@ -291,7 +291,8 @@ fn context(boot: bool, bound: &[&str], location: Option<(u32, u32, u32)>) -> Rea
 
 /// The macros-mode toy scenario: boot and play, a still location long enough for the blocked
 /// rule, a battle (no location), sugar overlapping a pulse, reward events on a schedule with a
-/// zero-value one, a rollback, a restore into a fresh worker and play after both.
+/// zero-value one, a rollback into a world that then stands still past a blocked window, a
+/// restore into a fresh worker and play after both.
 pub fn toy_macros_script(frames: usize) -> LegacyScript {
     let channels: Vec<String> = toy::MACRO_CHANNELS
         .iter()
@@ -310,6 +311,8 @@ pub fn toy_macros_script(frames: usize) -> LegacyScript {
             0..20 => None,
             20..90 => Some((1, 5, 5)),
             90..96 => None,
+            // The rollback's restored world, standing still past one blocked window.
+            121..185 => Some((2, 3, 4)),
             _ => Some((1, 5 + (k / 30) as u32, 5)),
         }
     };
