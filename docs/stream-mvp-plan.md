@@ -815,3 +815,20 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   `stalled` and `zero-progress`, still never acting. The GO OBJECTIVE / GO OUT ring at the gym
   door is row 58. Ethos check held. While it cooked the operator's new unstick rule kept the
   stream moving with flysim restarts (loop-review.md).
+- 2026-09-23 (v0.5.5, loop review, auto): row 58, the Pewter Gym door. GO OBJECTIVE walked in,
+  GO OUT walked out, for hours, with no reward; restarts bought twenty to forty minutes each.
+  Mechanism: the objective's people were read from the sprites the cartridge draws, and from the
+  doormat Brock and the Jr. Trainer are off screen, so with the guide talked the rung had nobody
+  and the gym dealt its ways out. Three moments the game holds the joypad (a warp's first frames,
+  a trainer's challenge before the battle screen, a trainer walking up) wrote the fly's ledgers.
+  Fix: the objective reads off-screen people by the cartridge's own availability rule; facing any
+  of them is arrival; a warp's tear deals an empty pad (at most 90 frames); `controllable` reads
+  `wCurOpponent`; ledger writes wait for the joypad to come back and drop if a battle starts.
+  ROM test: base 40 arrivals, 38 straight back out; branch reaches Brock. Route survey from the
+  live checkpoint, 33 brain minutes: GO OUT 1,118 -> 0, rung 10 -> 11, BOULDER BADGE. The trap
+  hunt's stub readout never walks the ring on either arm (flagged 17 -> 23, all one-tile windows
+  in the gym's dialogs and battles; tiles 329 -> 437), so the proof is the ROM test and the
+  survey: the ethos check held in spirit, recorded as a deviation from the hunt's letter. Check
+  10 gains `unrewarded` (100+ decisions, no reward, no new ground, two probes), still never
+  acting. Also shipped: EDGE-01, the feed over flybus behind FLY_FEED_VIA, off (`direct`)
+  everywhere. Next: row 59, Route 3's neighbours and Mt. Moon's doors in the geography table.
