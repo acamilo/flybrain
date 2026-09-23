@@ -46,6 +46,9 @@ use flysim::config::Config;
 use flysim::macros::macro_layer;
 use flysim::snapshot::MacroMode;
 
+#[path = "support/ledgers.rs"]
+mod ledgers;
+
 const MS_PER_FRAME: f64 = 1000.0 / 59.7275;
 const BURST_MS: f64 = 100.0;
 const HOLDS_PER_SLOT: usize = 3;
@@ -1337,94 +1340,6 @@ fn dialog_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64
     println!("\n{}", separator_table(&classes));
 }
 
-/// Rebuild a live session's ledgers from the environment, because a restore starts them empty.
-///
-/// `FLY_PROBE_SEED_PUSHED="x,y;x,y"` walls tiles of the loaded map the way a scripted push-back
-/// does; `FLY_PROBE_SEED_EXHAUSTED=1` marks its frontier unreachable (section 12.14);
-/// `FLY_PROBE_SEED_TALKED=1` writes every person and sign on it into the talked ledger;
-/// `FLY_PROBE_SEED_BLOCKED="warp2;east;south"` rests those exits for the window. The tile underfoot is
-/// always recorded as stood on.
-fn seed_ledgers(
-    macros: &mut flybrain_gb::pokemon_red::macros::PokemonPalette,
-    gb: &mut Emulator,
-    adapter: &PokemonRedReward,
-    ms: f64,
-) {
-    use flybrain_gb::MacroPalette;
-    use flybrain_gb::pokemon_red::macros::cartridge::{Edge, ExitId, MacroState, TargetKey};
-    use flybrain_gb::pokemon_red::macros::{Tile, path};
-
-    let Some(player) = state::player(gb) else { return };
-    let map = player.map;
-    macros.clock(ms);
-    let (things, covered): (Vec<_>, Vec<Tile>) = {
-        let ledger = AdapterLedger(adapter);
-        macros.inspect(gb, &ledger, |state: &mut dyn MacroState| {
-            let mut all = path::person_targets(state);
-            all.extend(path::interactable_targets(state));
-            let mut covered = Vec::new();
-            if let Some(size) = state.map_size() {
-                for y in 0..size.height {
-                    for x in 0..size.width {
-                        // `all` seeds every tile: the live fact "no new ground for hours",
-                        // which is the one thing that would have cleared the frontier mark.
-                        let all = std::env::var("FLY_PROBE_SEED_STOOD").is_ok_and(|v| v == "all");
-                        if all || state.tile_visited(x, y) {
-                            covered.push(Tile::new(x, y));
-                        }
-                    }
-                }
-            }
-            (all, covered)
-        })
-    };
-    let (talked, targets, stood, pushed, frontiers) = macros.ledgers_mut();
-    targets.clock(ms);
-    // The tile underfoot is ground the live session had stood on, or its first observe here
-    // would read it as new ground and clear the frontier mark being rebuilt.
-    stood.record(map, Tile::new(player.x, player.y));
-    // `FLY_PROBE_SEED_STOOD=1`: every tile of this map the adapter's lifetime ledger has, as a
-    // session that had walked the town for an hour would have them.
-    if std::env::var("FLY_PROBE_SEED_STOOD").is_ok_and(|value| value == "1" || value == "all") {
-        for tile in &covered {
-            stood.record(map, *tile);
-        }
-    }
-    if let Ok(tiles) = std::env::var("FLY_PROBE_SEED_PUSHED") {
-        for pair in tiles.split(';').filter(|pair| !pair.is_empty()) {
-            let mut xy = pair.split(',').map(|n| n.trim().parse::<u8>().expect("x,y"));
-            let (x, y) = (xy.next().expect("x"), xy.next().expect("y"));
-            pushed.record(map, Tile::new(x, y));
-        }
-    }
-    if std::env::var("FLY_PROBE_SEED_EXHAUSTED").is_ok_and(|value| value == "1") {
-        frontiers.record(map);
-    }
-    if std::env::var("FLY_PROBE_SEED_TALKED").is_ok_and(|value| value == "1") {
-        for (_, target) in &things {
-            talked.record(map, *target);
-        }
-    }
-    if let Ok(keys) = std::env::var("FLY_PROBE_SEED_BLOCKED") {
-        for key in keys.split(';').filter(|key| !key.is_empty()) {
-            let id = match key {
-                "north" => ExitId::Edge(Edge::North),
-                "south" => ExitId::Edge(Edge::South),
-                "east" => ExitId::Edge(Edge::East),
-                "west" => ExitId::Edge(Edge::West),
-                warp => ExitId::Warp(warp.trim_start_matches("warp").parse().expect("warpN")),
-            };
-            targets.record_blocked(map, TargetKey::Exit(id));
-        }
-    }
-    println!(
-        "\n- seeded: pushed {:?}, frontier marks {:?}, talked {} things",
-        pushed,
-        frontiers,
-        talked.len()
-    );
-}
-
 /// `FLY_PROBE_CATCH=route`. The live trap was map 2, scene `overworld`, a pad of `GO ROUTE` alone,
 /// refused about 740 times per ten brain minutes for hours with no button pressed. The ledgers
 /// that dealt that pad are session state and a restore starts them empty, so this *earns* them:
@@ -1434,7 +1349,7 @@ fn seed_ledgers(
 /// the frame the way the macros do -- ledgers included -- and says which list emptied why, and
 /// whether the route search can reach any of the one button's goals.
 ///
-/// `FLY_PROBE_FRAMES` bounds the drive; `FLY_PROBE_SEED` changes the choices; `FLY_PROBE_PREFER`
+/// `FLY_PROBE_FRAMES` bounds the drive; `FLY_PROBE_RNG` changes the choices; `FLY_PROBE_PREFER`
 /// (comma-separated names) presses those buttons whenever they are dealt.
 ///
 /// [`PokemonPalette`]: flybrain_gb::pokemon_red::macros::PokemonPalette
@@ -1445,7 +1360,7 @@ fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64)
     use flybrain_gb::pokemon_red::macros::{PokemonPalette, palette, path};
 
     let budget = env_usize("FLY_PROBE_FRAMES", 240_000);
-    let mut rng = env_usize("FLY_PROBE_SEED", 20_260_923) as u32 | 1;
+    let mut rng = env_usize("FLY_PROBE_RNG", 20_260_923) as u32 | 1;
     let hold_frames = 48usize;
     let trace_frames = env_usize("FLY_PROBE_TRACE_FRAMES", 0);
     // `FLY_PROBE_CATCH_AFTER=0` reads the frame at once, before any choice.
@@ -1454,7 +1369,9 @@ fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64)
         .map(|value| value.split(',').map(|name| name.trim().to_string()).collect())
         .unwrap_or_default();
     let mut macros = PokemonPalette::new(SEED);
-    seed_ledgers(&mut macros, gb, adapter, *ms);
+    if let Some(seeded) = ledgers::seed(&mut macros, gb, adapter, *ms, "FLY_PROBE_SEED") {
+        println!("\n- seeded: {seeded}");
+    }
     let mut running = false;
     let mut since_decision = hold_frames;
     let mut last_pad = String::new();

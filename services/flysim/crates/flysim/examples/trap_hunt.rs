@@ -35,6 +35,7 @@
 //! | `FLY_MACRO_BRAIN` | `FLY_DATASET`, else `data/fafb-v783` | the connectome |
 //! | `FLY_TRAP_THREADS` | 4 | sweep threads |
 //! | `FLY_TRAP_SEED` | 20260917 | seeds the palette |
+//! | `FLY_TRAP_SEED_*` | unset | rebuilds session ledgers a restore starts empty: `PUSHED`, `EXHAUSTED`, `TALKED`, `BLOCKED`, `STOOD` (`examples/support/ledgers.rs`, row 57) |
 //!
 //! The frame order is `simloop.rs`'s, as `examples/palette_bench.rs` expresses it, so what this
 //! measures is the loop that ships rather than a second implementation of it. Without a
@@ -57,6 +58,9 @@ use flybrain_gb::{AdapterLedger, DEFAULT_AUDIO_FRAMES, DEFAULT_AUDIO_FREQUENCY, 
 use flysim::config::Config;
 use flysim::macros::{MacroLayer, macro_layer};
 use flysim::snapshot::MacroMode;
+
+#[path = "support/ledgers.rs"]
+mod ledgers;
 
 /// One brain minute in milliseconds.
 const MINUTE_MS: f64 = 60_000.0;
@@ -186,6 +190,13 @@ struct Trace {
     recoveries: u64,
     rungs: Vec<(u32, &'static str, f64)>,
     outcomes: BTreeMap<&'static str, u64>,
+    /// What `FLY_TRAP_SEED_*` rebuilt, when anything (row 57).
+    seeded: Option<String>,
+    /// `refused` outcomes by macro, and the run of one macro refused with the fly on one tile:
+    /// row 57's pad was one button refused 740 times running.
+    refusals: BTreeMap<&'static str, u64>,
+    refusal_run: (Option<(&'static str, Option<(u32, u32, u32)>)>, u64),
+    longest_refusal_run: (u64, &'static str),
     /// Frames spent in each scene, so a window full of macros can be read back to the scene that
     /// dealt them.
     scenes: BTreeMap<&'static str, u64>,
@@ -352,6 +363,22 @@ fn run(
     config.loop_.game = "pokemon-red".to_string();
     config.macros.mode = mode;
     let mut macros: Option<MacroLayer> = macro_layer(&config, hold_ms, seed);
+    let mut seeded_note: Option<String> = None;
+    // Row 57: a trap dealt by session ledgers does not come back from a checkpoint, because a
+    // restore starts them empty. `FLY_TRAP_SEED_*` rebuilds them on the real palette, so both arms
+    // of a hunt start inside the state the live session was in.
+    if let Some(flavour) = config.macros.mode.palette_mode() {
+        let mut palette =
+            flybrain_gb::pokemon_red::macros::PokemonPalette::with_mode(seed, flavour);
+        let ms = agent.network.ms;
+        if let Some(seeded) =
+            ledgers::seed(&mut palette, &mut emulator, &adapter, ms, "FLY_TRAP_SEED")
+        {
+            eprintln!("seeded the session ledgers: {seeded}");
+            seeded_note = Some(seeded);
+            macros = Some(MacroLayer::new(Box::new(palette), hold_ms));
+        }
+    }
 
     let began_ms = agent.network.ms;
     let until = began_ms + minutes * MINUTE_MS;
@@ -394,6 +421,10 @@ fn run(
         battle_starts: BTreeMap::new(),
         battle_pads: BTreeMap::new(),
         wall_seconds: 0.0,
+        seeded: seeded_note,
+        refusals: BTreeMap::new(),
+        refusal_run: (None, 0),
+        longest_refusal_run: (0, ""),
     };
 
     if let Some(layer) = macros.as_mut() {
@@ -483,6 +514,18 @@ fn run(
                     }
                     Some(outcome) => {
                         *trace.outcomes.entry(outcome.as_str()).or_insert(0) += 1;
+                        if outcome.as_str() == "refused" {
+                            *trace.refusals.entry(event.name).or_insert(0) += 1;
+                            let key = Some((event.name, location));
+                            trace.refusal_run = if trace.refusal_run.0 == key {
+                                (key, trace.refusal_run.1 + 1)
+                            } else {
+                                (key, 1)
+                            };
+                            if trace.refusal_run.1 > trace.longest_refusal_run.0 {
+                                trace.longest_refusal_run = (trace.refusal_run.1, event.name);
+                            }
+                        }
                         if let Some(run) = running.take() {
                             let net = match (run.from, location) {
                                 (Some((map, x, y)), Some((at, ax, ay))) if map == at => {
@@ -847,6 +890,9 @@ fn main() {
         trace.wall_seconds,
         Path::new(&checkpoint_path).display()
     );
+    if let Some(seeded) = &trace.seeded {
+        println!("Session ledgers rebuilt before the first frame (`FLY_TRAP_SEED_*`): {seeded}.\n");
+    }
     println!("| measure | value |");
     println!("| --- | ---: |");
     println!("| rung reached | {} |", trace.rungs.iter().map(|(rank, ..)| *rank).max().unwrap_or(0));
@@ -855,6 +901,15 @@ fn main() {
     println!("| macros started | {} |", trace.starts.len());
     for (outcome, count) in &trace.outcomes {
         println!("| {outcome} | {count} |");
+    }
+    if !trace.refusals.is_empty() {
+        let by: Vec<String> =
+            trace.refusals.iter().map(|(name, count)| format!("`{name}` {count}")).collect();
+        println!("| refused, by macro | {} |", by.join(", "));
+        println!(
+            "| longest run of one macro refused on one tile | {} (`{}`) |",
+            trace.longest_refusal_run.0, trace.longest_refusal_run.1
+        );
     }
     println!("| recoveries | {} |", trace.recoveries);
     println!("| windows examined | {windows} |");
