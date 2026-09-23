@@ -1355,9 +1355,9 @@ fn dialog_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64
 /// [`PokemonPalette`]: flybrain_gb::pokemon_red::macros::PokemonPalette
 fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64) {
     use flybrain_gb::MacroPalette;
-    use flybrain_gb::pokemon_red::macros::cartridge::{MacroState, TargetKey};
+    use flybrain_gb::pokemon_red::macros::cartridge::{FACINGS, MacroState, TalkTarget, TargetKey};
     use flybrain_gb::pokemon_red::macros::path::Way;
-    use flybrain_gb::pokemon_red::macros::{PokemonPalette, palette, path};
+    use flybrain_gb::pokemon_red::macros::{PokemonPalette, Tile, palette, path};
 
     let budget = env_usize("FLY_PROBE_FRAMES", 240_000);
     let mut rng = env_usize("FLY_PROBE_RNG", 20_260_923) as u32 | 1;
@@ -1379,6 +1379,14 @@ fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64)
     let mut outcomes: BTreeMap<String, u64> = BTreeMap::new();
     let mut single_refusals = 0u32;
     let mut caught_at: Option<usize> = None;
+    // `FLY_PROBE_CATCH_MAP=54` with `FLY_PROBE_CATCH_ENTRIES=4` reads the frame the fly is given
+    // the buttons back on its fourth arrival on map 54 (row 58: the pad in and out of one door).
+    let catch_map: Option<u8> =
+        std::env::var("FLY_PROBE_CATCH_MAP").ok().and_then(|value| value.parse().ok());
+    let catch_entries = env_usize("FLY_PROBE_CATCH_ENTRIES", 4);
+    let mut entries = 0usize;
+    let mut arrived_at = 0usize;
+    let mut last_map: Option<u8> = None;
 
     // `FLY_PROBE_HOLD=right:96,up:32` holds raw directions first and prints where the fly is
     // every eight frames: what the cartridge does with a press, before any macro is asked.
@@ -1476,7 +1484,12 @@ fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64)
             }
         }
         if let Some((name, outcome)) = macros.take_finished() {
-            *outcomes.entry(format!("{name} {outcome:?}")).or_default() += 1;
+            *outcomes
+                .entry(format!(
+                    "{name} {outcome:?} on {:?}",
+                    state::player(gb).map(|p| p.map)
+                ))
+                .or_default() += 1;
             if !matches!(outcome, flybrain_gb::Outcome::Done) {
                 println!(
                     "f{frame:<6} {:?} {name} {outcome:?}",
@@ -1487,11 +1500,12 @@ fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64)
         since_decision += 1;
         if frame < trace_frames {
             println!(
-                "  t{frame:<5} {:?} mask {mask:#04x} running {:?} marks {:?} stood {}",
+                "  t{frame:<5} {:?} mask {mask:#04x} running {:?} marks {:?} stood {} | {}",
                 state::player(gb).map(|p| (p.map, p.x, p.y, p.facing)),
                 macros.running(),
                 macros.fences().1,
-                macros.stood()
+                macros.stood(),
+                scene::why_unknown(gb)
             );
         }
         gb.set_buttons(mask);
@@ -1502,8 +1516,32 @@ fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64)
             caught_at = Some(frame);
             break;
         }
+        if let (Some(want), Some(player)) = (catch_map, player) {
+            if player.map == want && last_map != Some(want) {
+                entries += 1;
+                arrived_at = frame;
+            }
+            last_map = Some(player.map);
+            // Forty frames in: the first frames on a new map byte still carry the old map's
+            // warps (the tear 12.16 names), and a reading there says nothing about the room.
+            if player.map == want
+                && entries >= catch_entries
+                && frame >= arrived_at + 40
+                && !running
+                && matches!(observed.scene, flybrain_gb::SceneId::Overworld)
+                && !observed.bindings.is_empty()
+            {
+                caught_at = Some(frame);
+                break;
+            }
+        }
     }
     println!("```\n");
+    let progress = adapter.progress();
+    println!(
+        "- at the end: rank {} ({}), badges {}, unique tiles {}",
+        progress.rank, progress.rank_label, progress.counter, progress.unique_locations
+    );
     println!("- refusals: {refusals:?}");
     println!("- outcomes: {outcomes:?}");
     let Some(frame) = caught_at else {
@@ -1512,8 +1550,13 @@ fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64)
         return;
     };
     println!(
-        "\n## Caught on frame {frame} ({:.1} brain minutes): one button, refused twenty holds running\n",
-        frame as f64 * MS_PER_FRAME / 60_000.0
+        "\n## Caught on frame {frame} ({:.1} brain minutes): {}\n",
+        frame as f64 * MS_PER_FRAME / 60_000.0,
+        if single_refusals >= catch_after {
+            "one button, refused twenty holds running".to_string()
+        } else {
+            format!("arrival {entries} on map {catch_map:?}")
+        }
     );
     let (pushed, frontiers) = macros.fences();
     println!("- pushed tiles (no window): {pushed:?}");
@@ -1525,6 +1568,18 @@ fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64)
         println!("- objective: {:?}", state.objective());
         println!("- `objective_goals`: {:?}", palette::objective_goals(state));
         println!("- `objective_targets`: {:?}", palette::objective_targets(state));
+        let drawn = path::person_targets(state);
+        for (tile, target) in drawn.iter().copied().chain(path::offscreen_person_targets(state)) {
+            println!(
+                "  - person {target:?} at ({:2},{:2}) {}: talked {}, blocked {}, reached {}",
+                tile.x,
+                tile.y,
+                if drawn.contains(&(tile, target)) { "drawn" } else { "off the screen" },
+                state.talked(target),
+                state.blocked(TargetKey::Thing(target)),
+                state.reached(TargetKey::Thing(target))
+            );
+        }
         println!("- `untalked_people`: {:?}", palette::untalked_people(state));
         println!("- `untalked_objects`: {:?}", palette::untalked_objects(state));
         println!("- `facing_untalked`: {}", palette::facing_untalked(state));
@@ -1549,16 +1604,44 @@ fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64)
                 reach
             );
         }
-        println!("\n### The fly's own neighbourhood (pushed = `P`, player = `@`)\n\n```");
-        for y in player.y.saturating_sub(3)..=player.y.saturating_add(3) {
-            let row: String = (player.x.saturating_sub(6)..=player.x.saturating_add(6))
+        // A room small enough to print whole is printed whole, with its people on it (row 58:
+        // the gym's leader is twelve rows from the door).
+        let size = state.map_size().expect("a loaded map");
+        let whole = size.width <= 24 && size.height <= 24;
+        let people: Vec<(Tile, TalkTarget)> = path::person_targets(state)
+            .into_iter()
+            .chain(path::offscreen_person_targets(state))
+            .collect();
+        let (rows, columns) = if whole {
+            (0..=size.height - 1, 0..=size.width - 1)
+        } else {
+            (
+                player.y.saturating_sub(3)..=player.y.saturating_add(3),
+                player.x.saturating_sub(6)..=player.x.saturating_add(6),
+            )
+        };
+        let grid = state.map_grid();
+        println!(
+            "\n### The fly's {} (pushed = `P`, player = `@`, a person = `N`; grid {})\n\n```",
+            if whole { "whole map" } else { "own neighbourhood" },
+            grid.is_some()
+        );
+        for y in rows {
+            let row: String = columns
+                .clone()
                 .map(|x| {
+                    let walk = match grid.as_deref() {
+                        Some(grid) => grid.walkable(x, y),
+                        None => state.walkable(x, y),
+                    };
                     if x == player.x && y == player.y {
                         '@'
+                    } else if people.iter().any(|(tile, _)| *tile == Tile::new(x, y)) {
+                        'N'
                     } else if state.pushed_tile(x, y) {
                         'P'
                     } else {
-                        match state.walkable(x, y) {
+                        match walk {
                             flybrain_gb::pokemon_red::macros::state::Walkable::Yes => '.',
                             flybrain_gb::pokemon_red::macros::state::Walkable::No => '#',
                             flybrain_gb::pokemon_red::macros::state::Walkable::Unknown => '?',
@@ -1566,9 +1649,14 @@ fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64)
                     }
                 })
                 .collect();
-            println!("y{y:2} x{:2}..  {row}", player.x.saturating_sub(6));
+            println!("y{y:2} x{:2}..  {row}", if whole { 0 } else { player.x.saturating_sub(6) });
         }
         println!("```");
+        for (tile, target) in &people {
+            let aims: Vec<Tile> = FACINGS.iter().filter_map(|facing| tile.step(*facing)).collect();
+            let reach = path::route(state, &aims).map(|route| route.goal);
+            println!("- a route to {target:?} at ({:2},{:2}): {reach:?}", tile.x, tile.y);
+        }
     });
 }
 

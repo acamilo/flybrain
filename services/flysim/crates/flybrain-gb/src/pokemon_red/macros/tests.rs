@@ -18,7 +18,7 @@ use crate::adapter::PlaceKind;
 use crate::emulator::buttons;
 
 use super::cartridge::{
-    BLOCKED_MINUTES_DEFAULT, CHEAPEST_PURCHASE, Edge, ExitId, FACINGS, MacroState, Objective,
+    BLOCKED_MINUTES_DEFAULT, CHEAPEST_PURCHASE, Edge, ExitId, FACINGS, LAST_MAP, MacroState, Objective,
     TalkTarget, TargetKey, TargetLedger, Targets, Tile, battle_entry, button, item, price,
 };
 use super::geography::Amenity;
@@ -89,6 +89,8 @@ struct World {
     warps: Vec<Warp>,
     connections: Connections,
     npcs: Vec<Npc>,
+    /// Sprites the cartridge is not drawing only because they are off the screen (row 58).
+    offscreen: Vec<Npc>,
     signs: Vec<Sign>,
 
     list: List,
@@ -223,6 +225,7 @@ impl World {
             warps: Vec::new(),
             connections: Connections::default(),
             npcs: Vec::new(),
+            offscreen: Vec::new(),
             signs: Vec::new(),
             list: List::None,
             cursor: 0,
@@ -636,6 +639,10 @@ impl GameState for World {
         self.npcs.clone()
     }
 
+    fn offscreen_npcs(&mut self) -> Vec<Npc> {
+        self.offscreen.clone()
+    }
+
     fn signs(&mut self) -> Vec<Sign> {
         self.signs.clone()
     }
@@ -811,6 +818,13 @@ fn drive(
     // The loop's own bookkeeping, so a test sees what the next decision would see: whatever the
     // finish earned goes into the session's ledgers, which is `PokemonPalette::record_talk`'s job
     // in the sim loop and this line's here.
+    settle(machine, world);
+    Ok(machine.outcome().expect("a finished macro has an outcome").1)
+}
+
+/// `PokemonPalette::record_talk`, over the fixture: whatever the machine has earned goes into the
+/// session's ledgers.
+fn settle(machine: &mut MacroMachine, world: &mut World) {
     while let Some((map, target)) = machine.take_blocked() {
         world.targets.record_blocked(map, target);
     }
@@ -823,11 +837,25 @@ fn drive(
     if let Some((map, target)) = machine.take_reached() {
         world.targets.record_reached(map, target);
     }
+    while let Some((map, tile)) = machine.take_pushed() {
+        assert_eq!(map, world.map);
+        world.pushes.insert(tile);
+    }
     if let Some((map, target)) = machine.take_talked() {
         assert_eq!(map, world.map);
         world.talked.insert(target);
     }
-    Ok(machine.outcome().expect("a finished macro has an outcome").1)
+}
+
+/// The cartridge gives the joypad back in the overworld: one frame of it, observed, and whatever
+/// it decided taken into the ledgers (row 58).
+fn hand_back(machine: &mut MacroMachine, world: &mut World) {
+    world.scene = Scene::Overworld;
+    world.scripted = false;
+    world.scripted_at = None;
+    world.switch = None;
+    machine.observe_frame(world);
+    settle(machine, world);
 }
 
 /// A palette of exactly one button, for a script whose macro no scene binds any more.
@@ -3510,7 +3538,11 @@ fn a_walk_the_cartridge_pushes_back_excludes_what_it_was_walking_to() {
     let north = TargetKey::Exit(ExitId::Edge(Edge::North));
 
     assert!(on_the_pad(&mut world, MacroKind::GoRoute));
-    assert_eq!(run(&mut world, MacroKind::GoRoute), Ok(MacroAbort::Done));
+    let mut machine = MacroMachine::new(0x1234_5678);
+    assert_eq!(run_with(&mut machine, &mut world, MacroKind::GoRoute), Ok(MacroAbort::Done));
+    // The gate's text is still up: the cartridge has not given the joypad back (row 58).
+    assert!(!world.targets.blocked(world.map, north), "nothing decided inside the script");
+    hand_back(&mut machine, &mut world);
     assert!(
         world.targets.blocked(world.map, north),
         "the road the cartridge refused is excluded for the window"
@@ -5023,10 +5055,13 @@ fn an_escorted_walk_walls_the_tile_it_reached_not_the_one_it_set_out_from() {
 
     let mut machine = MacroMachine::new(1);
     let _ = run_with(&mut machine, &mut world, MacroKind::GoRoute);
-    let (map, tile) = machine.take_pushed().expect("the script moved the fly: a push-back");
-    assert_eq!(map, maps::PEWTER_CITY);
-    assert_ne!(tile, Tile::new(3, 6), "not the tile the walk set out from");
-    assert_eq!(tile, world.player, "the tile the walk had reached when the script took over");
+    // Row 58: written when the cartridge gives the joypad back in the overworld.
+    let reached = world.player;
+    hand_back(&mut machine, &mut world);
+    let pushed: Vec<Tile> = world.pushes.iter().copied().collect();
+    assert_eq!(pushed.len(), 1, "the script moved the fly: a push-back");
+    assert_ne!(pushed[0], Tile::new(3, 6), "not the tile the walk set out from");
+    assert_eq!(pushed[0], reached, "the tile the walk had reached when the script took over");
 }
 
 /// The push-back writes the ledger, and it writes the *tile* rather than the target.
@@ -5042,10 +5077,13 @@ fn a_scripted_push_back_records_the_tile_it_happened_on() {
 
     let mut machine = MacroMachine::new(1);
     let _ = run_with(&mut machine, &mut world, MacroKind::Talk);
-    let pushed = machine.take_pushed();
+    assert!(world.pushes.is_empty(), "nothing is decided while the cartridge holds the joypad");
+    // Row 58: the ledger is written when the cartridge gives the joypad back in the overworld,
+    // which is what tells the gate's walk back from a trainer's walk up.
+    hand_back(&mut machine, &mut world);
     assert_eq!(
-        pushed,
-        Some((world.map, Tile::new(3, 3))),
+        world.pushes.iter().copied().collect::<Vec<_>>(),
+        vec![Tile::new(3, 3)],
         "the tile the macro was standing on, not the person it was facing"
     );
 }
@@ -5197,4 +5235,124 @@ fn a_completed_heal_writes_the_nurse_into_the_talked_ledger() {
     center.scene = Scene::Overworld;
     assert_eq!(center.player, Tile::new(3, 3));
     assert!(!precondition(MacroKind::Talk, &mut center));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Row 58: the gym door, in and out
+// ---------------------------------------------------------------------------------------------
+
+/// The Pewter Gym as the fly finds it on its doormat: the guide on screen and talked to, the
+/// leader and the Jr. Trainer up the room and not drawn.
+fn pewter_gym_doormat() -> World {
+    let mut world = World::room().at(4, 13);
+    world.map = maps::PEWTER_GYM;
+    world.size = MapSize { width: 10, height: 14 };
+    world.facing = Facing::Up;
+    world.warps = vec![
+        Warp { x: 4, y: 13, destination_warp: 3, destination_map: LAST_MAP },
+        Warp { x: 5, y: 13, destination_warp: 3, destination_map: LAST_MAP },
+    ];
+    world.npcs = vec![Npc { slot: 3, picture: 1, x: 7, y: 10, facing: Facing::Down }];
+    world.offscreen = vec![
+        Npc { slot: 1, picture: 2, x: 4, y: 1, facing: Facing::Down },
+        Npc { slot: 2, picture: 3, x: 3, y: 6, facing: Facing::Right },
+    ];
+    world.talked.insert(TalkTarget::Sprite(3));
+    // Pewter's errands are paid, as they were live: the objective is the rung's own place.
+    world.areas.insert((Amenity::Mart, maps::PEWTER_CITY));
+    world.areas.insert((Amenity::Center, maps::PEWTER_CITY));
+    world.objective = Some(Objective {
+        map: world.map,
+        tile: None,
+        warp: None,
+        edge: None,
+        target: Some(PlaceKind::Person),
+    });
+    world
+}
+
+#[test]
+fn the_rungs_people_are_in_the_room_when_the_screen_does_not_show_them() {
+    // Row 58, live for twenty-five minutes: `GO OBJECTIVE` into the Pewter Gym, `GO OUT` straight
+    // back out, ~200 macro starts per ten brain minutes and no reward at all. From the doormat the
+    // cartridge draws only the guide, who had been talked to, so the rung's own list was empty:
+    // `GO OBJECTIVE` had nothing to aim at and `GO OUT` -- whose candidates 12.5 withholds only
+    // while the rung's person is in the room -- was the pad. BROCK was twelve rows up.
+    let mut world = pewter_gym_doormat();
+    let targets = super::palette::objective_targets(&mut world);
+    assert!(
+        targets.contains(&(Tile::new(4, 1), TalkTarget::Sprite(1))),
+        "the leader is one of the rung's people: {targets:?}"
+    );
+    assert!(on_the_pad(&mut world, MacroKind::GoObjective), "there is someone to walk to");
+    assert!(!on_the_pad(&mut world, MacroKind::GoOut), "and the room is not left while he is in it");
+
+    // What the base saw, for the record: the drawn sprites alone leave nothing.
+    world.offscreen.clear();
+    assert!(super::palette::objective_targets(&mut world).is_empty());
+    assert!(!on_the_pad(&mut world, MacroKind::GoObjective));
+    assert!(on_the_pad(&mut world, MacroKind::GoOut), "the undo pair's inside half");
+}
+
+#[test]
+fn only_the_rung_reads_people_off_the_screen() {
+    // A sprite outside the window may be a toggleable object the cartridge has switched off, and
+    // the two read alike from here (`state::offscreen_npcs`). The rung's list is the one reader:
+    // `GO NPC`, `TALK` and the objects are what they were.
+    let mut world = pewter_gym_doormat();
+    world.objective = None;
+    assert!(super::palette::untalked_people(&mut world).is_empty(), "`GO NPC` sees what is drawn");
+    world.objective = Some(Objective {
+        map: world.map,
+        tile: None,
+        warp: None,
+        edge: None,
+        target: Some(PlaceKind::Object),
+    });
+    assert!(
+        super::palette::objective_targets(&mut world).is_empty(),
+        "an item ball out of sight and one picked up read alike, so objects are not guessed at"
+    );
+}
+
+#[test]
+fn facing_one_of_the_rungs_people_is_the_arrival() {
+    // A gym names three people and 12.5's "leave out the one ahead" was written for one: in front
+    // of the leader, `GO OBJECTIVE` still had the Jr. Trainer to walk to, and at the trainer it had
+    // the leader. The walk is done when any of them is ahead, and `TALK` is the press.
+    let mut world = pewter_gym_doormat().at(4, 2);
+    world.facing = Facing::Up;
+    world.npcs = vec![Npc { slot: 1, picture: 2, x: 4, y: 1, facing: Facing::Down }];
+    world.offscreen = vec![Npc { slot: 2, picture: 3, x: 3, y: 6, facing: Facing::Right }];
+    assert!(on_the_pad(&mut world, MacroKind::Talk));
+    assert!(!on_the_pad(&mut world, MacroKind::GoObjective), "no walk left while facing him");
+
+    world.facing = Facing::Left;
+    assert!(on_the_pad(&mut world, MacroKind::GoObjective), "turned away, the walk is back");
+}
+
+#[test]
+fn a_trainer_walking_up_teaches_the_ledgers_nothing() {
+    // The other half of the gym. A walk toward the leader crossed the Jr. Trainer's line of sight;
+    // the trainer's "!" and walk up took the joypad, which 12.4 reads as the cartridge refusing
+    // the step, so BROCK went into the blocked ledger for ten brain minutes and the tile into the
+    // pushed one for the session. What the cartridge does when it gives the joypad back is what
+    // tells a refusal from a challenge.
+    let mut world = World::room().at(3, 3);
+    world.map = 0x00;
+    world.connections = Connections { north: true, south: false, east: false, west: false };
+    world.switch = Some((4, Scene::Dialog));
+    world.scripted_at = Some(4);
+    let north = TargetKey::Exit(ExitId::Edge(Edge::North));
+    let mut machine = MacroMachine::new(0x1234_5678);
+    assert_eq!(run_with(&mut machine, &mut world, MacroKind::GoRoute), Ok(MacroAbort::Done));
+
+    // The challenge closes into a battle.
+    world.scene = Scene::Battle { own_turn: false, forced_switch: false };
+    machine.observe_frame(&mut world);
+    settle(&mut machine, &mut world);
+    // And the battle ends back in the overworld: nothing was refused.
+    hand_back(&mut machine, &mut world);
+    assert!(!world.targets.blocked(world.map, north), "a challenge is not the road refusing");
+    assert!(world.pushes.is_empty(), "and the ground is as walkable as it was");
 }

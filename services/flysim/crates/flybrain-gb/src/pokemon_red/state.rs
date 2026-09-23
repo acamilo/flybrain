@@ -132,6 +132,19 @@ pub mod poke {
     /// deliberately *not* here: standing on a doormat is an ordinary overworld state, and it is the
     /// one `docs/design/room-escape.md` cares most about.
     pub const SCRIPTED_MOVEMENT: u8 = 0xc0;
+    /// `wCurOpponent` (row 58): the species of a wild opponent or `OPP_ID_OFFSET` plus a
+    /// trainer's class, written when a battle is *decided* -- `home/trainers.asm` for a trainer,
+    /// the encounter check for a wild one -- and cleared by `EndOfBattle` together with
+    /// `wIsInBattle`. Not in the generated table, so it is derived rather than pinned:
+    /// `ram/wram.asm` at the pinned commit declares `wIsInBattle:: db`,
+    /// `wPartyGainExpFlags:: flag_array PARTY_LENGTH` (one byte), `wCurOpponent:: db`,
+    /// `wBattleType:: db`, `wDamageMultipliers:: db`, `wGymLeaderNo:: db`, `wTrainerNo:: db` in
+    /// that order, and the table's `wIsInBattle` (`$d057`), `wBattleType` (`$d05a`) and
+    /// `wTrainerNo` (`$d05d`) sit exactly where that layout puts them, so the byte between is
+    /// `wBattleType - 1` with both neighbours checked. Measured on the cartridge in the Pewter Gym:
+    /// zero in the overworld, non-zero from the frame a trainer's challenge closes to the end of
+    /// the battle, including the 219 frames of the battle transition in between.
+    pub const CUR_OPPONENT: u16 = super::ram::wBattleType - 1;
 
     /// `constants/battle_constants.asm`: the non-volatile status byte.
     pub const SLP_MASK: u8 = 0b111;
@@ -184,6 +197,19 @@ pub mod poke {
     pub const SPRITE_BYTES: u16 = 16;
     /// `MACRO object_event` stores map coordinates plus four.
     pub const SPRITE_COORD_BIAS: u8 = 4;
+    /// `constants/map_object_constants.asm`: `SPRITESTATEDATA1_IMAGEINDEX`, and the `$ff` that
+    /// `CheckSpriteAvailability` writes there for a sprite it will not draw.
+    pub const SPRITE_IMAGE_INDEX: u16 = 2;
+    pub const SPRITE_NOT_DRAWN: u8 = 0xff;
+    /// `SPRITESTATEDATA2_MOVEMENTBYTE1`, and `WALK` (`$fe`): a movement byte below it is a
+    /// scripted mover, which `CheckSpriteAvailability` never hides for being off the screen.
+    pub const SPRITE_MOVEMENT_BYTE: u16 = 6;
+    pub const MOVEMENT_WALK: u8 = 0xfe;
+    /// `CheckSpriteAvailability`'s window, in map tiles past the player's own coordinate:
+    /// `SCREEN_HEIGHT / 2 - 1` rows and `SCREEN_WIDTH / 2 - 1` columns, compared against the
+    /// sprite's *biased* coordinate.
+    pub const DRAWN_ROWS: u8 = 8;
+    pub const DRAWN_COLUMNS: u8 = 9;
 
     /// `constants/map_data_constants.asm`: `wCurMapConnections` bits.
     pub const CONNECTION_EAST: u8 = 1;
@@ -280,12 +306,22 @@ pub fn started(memory: &mut dyn MemoryReader) -> bool {
 }
 
 /// Whether the player's buttons reach the player: no ignored joypad, no simulated input, no
-/// scripted movement, no warp in flight, not mid-ledge-hop.
+/// scripted movement, no warp in flight, not mid-ledge-hop, no battle decided and not yet begun.
 ///
 /// The masks are the reward adapter's own scripted gate, minus the door bits — see
 /// [`poke::SCRIPTED_MOVEMENT`].
+///
+/// **A battle decided is the cartridge's** (row 58). Between a trainer's challenge closing and the
+/// battle screen, the battle transition runs for 219 frames with every joypad and script bit
+/// clear, so the seam read an overworld the fly could walk in: the pad was dealt, a walk toward
+/// the gym leader pressed into an animation, gave up after three refused steps, and put the
+/// leader into the blocked ledger for ten brain minutes -- and the Jr. Trainer's conversation read
+/// as over, so the trainer the fly was about to lose to went into the talked ledger for the
+/// session. [`poke::CUR_OPPONENT`] is set on the frame the battle is decided and cleared with the
+/// battle's own end.
 pub fn controllable(memory: &mut dyn MemoryReader) -> bool {
-    read(memory, ram::wJoyIgnore) == 0
+    read(memory, poke::CUR_OPPONENT) == 0
+        && read(memory, ram::wJoyIgnore) == 0
         && read(memory, ram::wSimulatedJoypadStatesIndex) == 0
         && read(memory, ram::wStatusFlags5) & poke::SCRIPTED_STATUS5 == 0
         && read(memory, ram::wStatusFlags6) & poke::SCRIPTED_STATUS6 == 0
@@ -1045,6 +1081,78 @@ pub fn npcs(memory: &mut dyn MemoryReader) -> Vec<Npc> {
     npcs
 }
 
+/// The people and objects of the current map the cartridge is not drawing **only because they are
+/// off the screen** (row 58).
+///
+/// [`npcs`] reports what is drawn, and the Pewter Gym showed what that costs: from the gym's
+/// doormat at (4, 13) BROCK at (4, 1) and the Jr. Trainer at (3, 6) are both outside the window, so
+/// the macros saw one person in the room -- the guide, already talked to -- and concluded the
+/// room held nothing the ladder wanted.
+///
+/// `CheckSpriteAvailability` (`engine/overworld/movement.asm`) writes `$ff` into a sprite's image
+/// index for three reasons: it is a toggleable object switched off, it is outside the window, or the
+/// tile under it is a text box's (a tile id past the map tileset). The window is a pure function of
+/// bytes this crate already reads -- `wYCoord`, `wXCoord` and the sprite's own biased `MAPY` /
+/// `MAPX` -- so a sprite the cartridge hides and whose coordinates lie **outside** that window is
+/// one it would hide for that reason whatever else were true, and its coordinates are still the
+/// map's: a sprite the cartridge is not updating does not move. A sprite hidden **inside** the
+/// window is hidden for another reason and is not reported. A scripted mover (movement byte below
+/// `WALK`) skips the window test altogether, so its `$ff` is never the screen's and it is never
+/// reported either.
+///
+/// What this cannot tell is the first reason from the second for a sprite outside the window: a
+/// toggleable object that is off reads the same as one that is merely far away. That is named, not
+/// guessed: [`crate::pokemon_red::macros::palette::objective_targets`] is the one reader, and the
+/// ladder's places that name a person are Oak's lab and the gyms, of which only the lab and Viridian
+/// Gym carry toggleable people (`data/maps/toggleable_objects.asm`).
+pub fn offscreen_npcs(memory: &mut dyn MemoryReader) -> Vec<Npc> {
+    let Some(size) = map_size(memory) else { return Vec::new() };
+    let player_y = read(memory, ram::wYCoord);
+    let player_x = read(memory, ram::wXCoord);
+    if player_x >= size.width || player_y >= size.height {
+        return Vec::new();
+    }
+    // `CheckSpriteAvailability`, one axis: `cp b / jr z, skip / jr nc, invisible / add n / cp b /
+    // jr c, invisible` against the biased coordinate `b`.
+    let drawn = |own: u8, sprite: u8, reach: u8| {
+        sprite == own || (own < sprite && u16::from(sprite) <= u16::from(own) + u16::from(reach))
+    };
+    let count = read(memory, ram::wNumSprites).min(poke::SPRITE_SLOTS - 1);
+    let mut out = Vec::new();
+    for slot in 1..=count {
+        let data1 = ram::wSpriteStateData1 + u16::from(slot) * poke::SPRITE_BYTES;
+        let data2 = ram::wSpriteStateData2 + u16::from(slot) * poke::SPRITE_BYTES;
+        let picture = read(memory, data1);
+        if picture == 0 || read(memory, data1 + poke::SPRITE_IMAGE_INDEX) != poke::SPRITE_NOT_DRAWN
+        {
+            continue;
+        }
+        if read(memory, data2 + poke::SPRITE_MOVEMENT_BYTE) < poke::MOVEMENT_WALK {
+            continue;
+        }
+        let y = read(memory, data2 + 4);
+        let x = read(memory, data2 + 5);
+        if y < poke::SPRITE_COORD_BIAS || x < poke::SPRITE_COORD_BIAS {
+            continue;
+        }
+        let (map_x, map_y) = (x - poke::SPRITE_COORD_BIAS, y - poke::SPRITE_COORD_BIAS);
+        if map_x >= size.width || map_y >= size.height {
+            continue;
+        }
+        if drawn(player_y, y, poke::DRAWN_ROWS) && drawn(player_x, x, poke::DRAWN_COLUMNS) {
+            continue;
+        }
+        out.push(Npc {
+            slot,
+            picture,
+            x: map_x,
+            y: map_y,
+            facing: facing_from(read(memory, data1 + 9)),
+        });
+    }
+    out
+}
+
 /// The current tileset's list of passable tile ids, terminator included.
 ///
 /// `CheckTilePassable` walks the list at `wTilesetCollisionPtr` — a little-endian pointer into the
@@ -1623,6 +1731,10 @@ impl GameState for PokeState<'_> {
 
     fn npcs(&mut self) -> Vec<Npc> {
         npcs(self.memory)
+    }
+
+    fn offscreen_npcs(&mut self) -> Vec<Npc> {
+        offscreen_npcs(self.memory)
     }
 
     fn signs(&mut self) -> Vec<Sign> {

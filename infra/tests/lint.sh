@@ -1199,10 +1199,51 @@ LPCAT
         fail "check 10: the zero-progress case gave first=${lp_first} then suspected=$(lp_metric fly_loop_suspected), journal: $(cat "$lp_fixture/journal.log")"
     fi
 
+    # (7) Row 58: the gym door, in and out. GO OBJECTIVE / GO OUT diluted by
+    # eight other names, every macro `done`, no reward event, no new ground --
+    # neither the four-name sequence rule, dominance nor zero-progress fires.
+    # Two probes of it flag; the same window with one reward in it does not.
+    lp_reset
+    lp_cycle 20 "GO OBJECTIVE" "GO OUT" "GO OUT" "GO ITEM" "GO OBJECTIVE" "GO OUT" \
+        "GO FRONTIER" "YES" "NO" "GO ROUTE" "NEXT" "TALK" "GO SHOP" \
+        | lp_outcomes "$lp_fixture/events.jsonl" "done"
+    lp_status "$lp_fixture/status.json" 1892
+    lp_pass
+    lp_pass
+    lp_first="$(lp_metric fly_loop_suspected)"
+    lp_pass
+    if [ "$lp_first" = "0" ] && [ "$(lp_metric fly_loop_suspected)" = "1" ] \
+       && [ "$(lp_metric fly_loop_rewards)" = "0" ] \
+       && [ "$(lp_metric fly_loop_distinct_macros)" = "10" ] \
+       && grep -q 'loop suspected (unrewarded): 260 decisions and no reward event' "$lp_fixture/journal.log"; then
+        pass "check 10: an undo pair diluted by eight other names, all done, no reward over two probes flags as unrewarded"
+    else
+        fail "check 10: the row-58 log gave first=${lp_first} then suspected=$(lp_metric fly_loop_suspected) rewards=$(lp_metric fly_loop_rewards) distinct=$(lp_metric fly_loop_distinct_macros), journal: $(cat "$lp_fixture/journal.log")"
+    fi
+    if lp_report="$(jq -e -r '[.reason, (.window.decisions|tostring), (.window.rewards|tostring), .action] | join(" ")' "$lp_fixture/run/loop.json" 2>/dev/null)" \
+       && [ "$lp_report" = "unrewarded 260 0 none" ]; then
+        pass "check 10: loop.json carries the reward events in the window"
+    else
+        fail "check 10: loop.json read back as '${lp_report:-UNREADABLE}' — expected 'unrewarded 260 0 none'"
+    fi
+    lp_reset
+    { cat "$lp_fixture/events.jsonl"
+      printf '{"id":999998,"wallMs":1758000999998,"brainMs":150000,"kind":"reward","label":"WILD KO 54:1:1","value":0.1,"rewardKind":"wildwin"}\n'; } \
+        > "$lp_fixture/events-rewarded.jsonl"
+    mv -f "$lp_fixture/events-rewarded.jsonl" "$lp_fixture/events.jsonl"
+    lp_pass
+    lp_pass
+    lp_pass
+    if [ "$(lp_metric fly_loop_suspected)" = "0" ] && [ "$(lp_metric fly_loop_rewards)" = "1" ]; then
+        pass "check 10: the same busy window with one reward in it does not flag"
+    else
+        fail "check 10: a rewarded busy window gave suspected=$(lp_metric fly_loop_suspected) rewards=$(lp_metric fly_loop_rewards)"
+    fi
+
     # The ethos, asserted rather than reviewed: over every case above, check 10
     # restarted nothing. It reports; a human or a review agent decides.
     if [ ! -s "$lp_fixture/systemctl.log" ]; then
-        pass "check 10: never acts — no unit was restarted across any of the six cases"
+        pass "check 10: never acts — no unit was restarted across any of the eight cases"
     else
         fail "check 10 ACTED, which it must never do: $(cat "$lp_fixture/systemctl.log")"
     fi

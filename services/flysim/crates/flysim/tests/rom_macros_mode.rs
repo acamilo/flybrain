@@ -3182,3 +3182,111 @@ fn the_pewter_east_pad_is_never_one_dead_button_from_the_rung_ten_checkpoint() {
     // ten brain minutes in.
     assert!(minutes < 1.0, "the fly waited {minutes:.2} brain minutes for a window to lapse");
 }
+
+/// The row-58 checkpoint (Pewter City, outside the gym, taken during the loop), or `None` to skip.
+fn door_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_DOOR_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// From Pewter City, the checkpoint taken while the fly was walking in and out of the gym's door.
+///
+/// **What was live** (2026-09-23, rank 10 PEWTER CITY, v0.5.3): for twenty-five minutes
+/// `GO OBJECTIVE` into the Pewter Gym and `GO OUT` straight back out, with `GO ITEM`,
+/// `GO FRONTIER`, `YES` and `NO` mixed in -- about 93 `GO OUT` and 47 `GO OBJECTIVE` per ten brain
+/// minutes, every one `done`, and not one reward event. The watchdog saw ten distinct names.
+///
+/// **What the survey found** (`infra/docs/macros-traps.md` row 58): from the gym's doormat the
+/// cartridge draws only the guide, already talked to, and hides BROCK and the Jr. Trainer for being
+/// off the screen -- so the rung's list of people was empty, `GO OBJECTIVE` had nothing to aim at
+/// inside and `GO OUT` was the pad; outside, `GO OBJECTIVE` aimed at the door. And three frames
+/// the seam read as the fly's own were the cartridge's: a warp's tear, a battle's transition, and
+/// a trainer walking up -- each of which wrote an entry that kept the room empty.
+///
+/// The claims, none of them about which button the fly presses:
+///
+/// - **the gym is not a door in and a door out**: at most three arrivals end in the fly walking
+///   straight back out inside ten seconds, against one every few seconds on the base;
+/// - **the fly goes up the room**: it stands at row 6 or above on map 54, where the Jr. Trainer
+///   is, which it never does on the base.
+///
+/// Rung 11 is printed and not asserted: which button the fly presses at the leader is the fly's.
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_DOOR_CHECKPOINT=.local/checkpoints/release-rank10-row58.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture the_gym
+/// ```
+#[test]
+fn the_gym_is_not_a_door_in_and_a_door_out_from_the_rung_ten_checkpoint() {
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = door_checkpoint() else {
+        eprintln!("skipped: no FLY_DOOR_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert_eq!(run.map(), PEWTER_CITY, "the checkpoint is the town outside the gym's door");
+
+    let mut arrivals = 0u32;
+    let mut bounces = 0u32;
+    let mut arrived_at: Option<u32> = None;
+    let mut highest_row: Option<u8> = None;
+    let mut frames_in_gym = 0u32;
+    let mut badge = None;
+    let mut previous = run.map();
+    for frame in 0..108_000u32 {
+        run.frame();
+        let map = run.map();
+        if map != previous {
+            if map == PEWTER_GYM {
+                arrivals += 1;
+                arrived_at = Some(frame);
+            } else if previous == PEWTER_GYM {
+                if arrived_at.is_some_and(|at| frame - at < 600) {
+                    bounces += 1;
+                }
+                arrived_at = None;
+            }
+            previous = map;
+        }
+        if map == PEWTER_GYM {
+            frames_in_gym += 1;
+            if let Some(player) = flybrain_gb::pokemon_red::state::player(&mut run.gb)
+                && u32::from(player.map) == PEWTER_GYM
+            {
+                highest_row = Some(highest_row.map_or(player.y, |row| row.min(player.y)));
+            }
+        }
+        if badge.is_none() && run.adapter.progress().rank >= 11 {
+            badge = Some(frame);
+        }
+    }
+    let progress = run.adapter.progress();
+    eprintln!(
+        "{:.1} brain minutes: gym arrivals {arrivals}, straight back out {bounces}, frames in the \
+         gym {frames_in_gym}, highest row reached {highest_row:?}, macros {:?}, rank {} ({})",
+        run.ms / 60_000.0,
+        run.started,
+        progress.rank,
+        progress.rank_label
+    );
+    match badge {
+        Some(frame) => eprintln!(
+            "rung 11 at frame {frame} ({:.2} brain minutes)",
+            f64::from(frame) * MS_PER_FRAME / 60_000.0
+        ),
+        None => eprintln!("rung 11 not reached inside the budget"),
+    }
+    assert!(arrivals > 0, "the fly never went through the gym's door: {:?}", run.route);
+    assert!(
+        bounces <= 3,
+        "{bounces} of {arrivals} arrivals walked straight back out: {:?}",
+        run.started
+    );
+    assert!(
+        highest_row.is_some_and(|row| row <= 6),
+        "the fly never went up the room past the doormat rows: highest row {highest_row:?}"
+    );
+}

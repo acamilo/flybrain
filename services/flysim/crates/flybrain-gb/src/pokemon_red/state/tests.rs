@@ -1040,3 +1040,30 @@ fn a_state_with_no_cache_still_answers_and_a_state_with_no_cartridge_answers_non
     // Which is the frame the window predicate is for.
     assert_eq!(state.walkable(3, 6), Walkable::No);
 }
+
+#[test]
+fn a_sprite_the_cartridge_hides_off_the_screen_is_still_on_the_map() {
+    // Row 58, the Pewter Gym from its doormat at (4, 13). The cartridge draws the guide; BROCK at
+    // (4, 1) and the Jr. Trainer at (3, 6) are outside `CheckSpriteAvailability`'s window, so it
+    // writes `$ff` into their image index and `npcs` -- which reports what is drawn -- skips them.
+    const STAY: u8 = 0xff;
+    let mut wram = Wram::overworld();
+    wram.map(0x36, 5, 7, 4, 13)
+        .npc(3, 0x2b, 7, 10, 0x00)
+        .npc_undrawn(1, 0x1f, 4, 1, STAY)
+        .npc_undrawn(2, 0x0e, 3, 6, STAY)
+        // Undrawn *inside* the window: switched off, or under a text box -- not the screen's doing.
+        .npc_undrawn(4, 0x05, 5, 11, STAY)
+        // Undrawn outside it, but a scripted mover, which the window test never hides.
+        .npc_undrawn(5, 0x05, 8, 1, 0x00);
+    let drawn: Vec<u8> = npcs(&mut wram).iter().map(|npc| npc.slot).collect();
+    assert_eq!(drawn, vec![3]);
+    let off: Vec<(u8, u8, u8)> =
+        offscreen_npcs(&mut wram).iter().map(|npc| (npc.slot, npc.x, npc.y)).collect();
+    assert_eq!(off, vec![(1, 4, 1), (2, 3, 6)], "the leader and the trainer, where they stand");
+
+    // Walk up the room and the trainer is inside the window: a `$ff` there is not the screen's.
+    wram.map(0x36, 5, 7, 4, 8);
+    let off: Vec<u8> = offscreen_npcs(&mut wram).iter().map(|npc| npc.slot).collect();
+    assert_eq!(off, vec![1], "only the leader is still off the screen from (4, 8)");
+}

@@ -2655,3 +2655,107 @@ the fly is no longer held in the pocket.
 - `infra/tests/lint.sh`: ALL CHECKS PASSED, the two new check-10 cases and the de-PII guard included.
 - `flysim --print-compatibility`: **648 bytes, sha256 `4929f340...9ebd9`** -- byte-identical to the
   base `d5d9249`. Decoder, reward catalog, adapter version and roles untouched.
+
+## 2026-09-23, row 58: the gym's door, in and out
+
+### What was live
+
+Map 2 (Pewter City) and map 54 (Pewter Gym), rank 10, v0.5.3, for twenty-five minutes: `GO OBJECTIVE`
+`done` into the gym, `GO OUT` `done` straight back out, `GO ITEM` / `GO FRONTIER` / `YES` / `NO`
+mixed in. Per ten brain minutes about 93 `GO OUT`, 47 `GO OBJECTIVE`, 200 starts, 0-5 refused or
+blocked, **no reward event of any kind**, `uniqueLocations` frozen at 1,892. `GO OUT` often started
+and finished inside 0.05-0.17 s. Check 10 saw ten distinct names and never flagged.
+
+### The survey: the room on the Nth arrival
+
+`FLY_PROBE_CATCH=route` drives the real palette from the checkpoint; `FLY_PROBE_CATCH_MAP=54`
+stops it forty frames into the fly's Nth arrival on the gym and dumps the room with every person's
+ledger entries. From the bare checkpoint, preferring `GO OBJECTIVE`, the base walks the pair
+itself inside seven brain minutes: **`GO OUT` 1,118, `GO OBJECTIVE` 583 in 33 brain minutes**, the
+gym pad `["GO OUT"]`, and on the doormat:
+
+- `objective_targets` empty, `person_targets` = the guide at (7, 10), talked;
+- BROCK at (4, 1) and the Jr. Trainer at (3, 6) **absent**: `CheckSpriteAvailability` had written
+  `$ff` into their image index because they are outside the window of (4, 13);
+- pushed tiles `(54, (16, 17))` and `(2, (5, 13))` -- Pewter's gym door and the gym's doormat,
+  recorded under the *other* map's id.
+
+### Why nothing inside the gym was offered, and why the door was
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 58 | the rung's list of people is read from the sprites the cartridge draws, so a person off the screen is not in the room; with the one drawn person talked to, `GO OBJECTIVE` has nothing inside, 12.5 lets `GO OUT` onto the pad, and outside `GO OBJECTIVE` aims at the door | any rung earned by a person who is more than four rows or five columns from where the fly arrives; the Pewter Gym from its doormat | `the_rungs_people_are_in_the_room_when_the_screen_does_not_show_them`, `only_the_rung_reads_people_off_the_screen`, `a_sprite_the_cartridge_hides_off_the_screen_is_still_on_the_map`, `the_gym_is_not_a_door_in_and_a_door_out_from_the_rung_ten_checkpoint` (ROM) | **fixed**: `state::offscreen_npcs` reports a `$ff` sprite whose coordinates fall outside `CheckSpriteAvailability`'s own window (movement byte `WALK` or above), and only the rung's list reads it. `docs/design/macros.md` 12.22, `macros-wram.md` section 12 |
+| 58b | in front of one of the rung's people, `GO OBJECTIVE` still walks to another | a room with more than one of them: the gym's leader and trainer | `facing_one_of_the_rungs_people_is_the_arrival` | **fixed**: facing any of them is the arrival, and `TALK` is the press |
+| 58c | a warp's tear -- `wCurMap` changed, header, coordinates and warp table not yet -- reads as a controllable overworld for thirty-two frames; a pad is dealt, a walk plans over the wrong map, and its target and tile go into the ledgers under the new map's id | every warp; live, `GO OUT` started and finished in 0.05 s | `a_warps_tear_deals_no_pad`, `a_teleport_pad_is_not_a_tear` | **fixed** in the driver: the map byte changed and the fly still stands on a loaded warp into the map the byte names (a doormat's `LAST_MAP` under a town's id included) is `Unknown` with an empty pad, bounded at ninety frames. Teleport pads never change the map byte |
+| 58d | the 219 frames of a battle transition read as a controllable overworld: a walk toward the leader presses into the animation and blocks him for ten brain minutes, and the trainer's conversation reads as over, so a trainer the fly then loses to is "talked to" for the session | every trainer battle, and every wild one | `a_battle_decided_and_not_yet_begun_is_the_cartridges` | **fixed**: `controllable` reads `wCurOpponent`, set when a battle is decided and cleared by `EndOfBattle`; derived as `wBattleType - 1`, both neighbours asserted |
+| 58e | a trainer walking up to the fly is read as the cartridge refusing the step (12.4): the target is blocked and the tile pushed on the spot | every trainer's line of sight a walk crosses | `a_trainer_walking_up_teaches_the_ledgers_nothing`, `a_scripted_push_back_records_the_tile_it_happened_on`, `a_walk_the_cartridge_pushes_back_excludes_what_it_was_walking_to` | **fixed**: the entries wait for the cartridge to give the joypad back; the overworld is a refusal, written as before, and a battle writes nothing |
+| 58f | check 10 cannot see an undo pair diluted by other names | ten distinct names, every macro `done`, 211 decisions in ten brain minutes | `lint.sh` check 10 cases 7 and 8 | **fixed**: `unrewarded`, 100+ decisions and no reward event on two probes with no new ground. Against the live row-58 log it flags; the rules before it did not |
+
+### Before and after
+
+The route survey, same checkpoint, 120,000 frames (33 brain minutes), base `main` at `174dc7e`
+(row 57 merged) against this branch:
+
+| measure | base | branch, `GO OBJECTIVE` preferred | branch, `TALK` preferred |
+| --- | ---: | ---: | ---: |
+| `GO OUT` done | **1,118** | **0** | **0** |
+| `GO OBJECTIVE` done on the gym | **583** (all maps) | **4** | **4** |
+| rung at the end | 10 | **11, BOULDER BADGE** | **11, BOULDER BADGE** |
+| pushed tiles under the wrong map's id | `(54, (16, 17))`, `(2, (5, 13))` and four more doormats | none | none |
+
+The ROM-gated run, `the_gym_is_not_a_door_in_and_a_door_out_from_the_rung_ten_checkpoint`, 30.1
+brain minutes on the stub rotation: the base goes through the door once, is back out in 309
+frames and never above row 11 (fails); the branch goes through four times, walks straight back out
+once, spends 30,879 frames in the gym and stands on row 2 beside BROCK (passes). Row 56's
+`the_fly_leaves_the_pewter_gym_guides_ring_from_the_rung_ten_checkpoint` now reaches rung 11 at
+8.45 brain minutes, which it never did; row 57's pocket test passes, and its part one no longer
+walls `(54, (16, 17))`, the tear's tile.
+
+The trap hunt, 30 brain minutes each from the same checkpoint and seed, the stub rotation
+(`FLY_TRAP_STUB=1`; the brain is stepped and the readout replaced), base `174dc7e` against this
+branch:
+
+| measure | base | branch |
+| --- | ---: | ---: |
+| distinct (map, tile) | 329 | **437** |
+| windows flagged | 17 | 23 |
+| macros started / done | 139 / 137 | 131 / 129 |
+| `GO OUT` done | 3 | 0 |
+| frames between battle turns | 51,328 | 53,336 |
+| rung reached | 10 | 10 |
+
+**The stub does not walk the ring on either arm** -- it spends half of both runs in battles and
+goes through the gym's door once -- so the hunt says little about this row either way, and the
+flagged-window count rises (17 -> 23) on battle time, the same judgement as rows 50 and 56. The
+route survey above is the reproduction; the hunt is reported, not smoothed.
+
+### Residuals, named rather than worked around
+
+- **After the badge, a new pair at the Pewter/Route 3 edge.** With the rung earned, the objective
+  is Mt. Moon (map 59), and on Route 3 `GO OBJECTIVE` has nothing to aim at: `geography` carries
+  Route 3's neighbour as Route 4 to the **east** and a Mt. Moon door **on Route 3**, while the
+  disassembly (`data/maps/headers/Route3.asm`, `objects/Route4.asm`) and the cartridge
+  (`wCurMapConnections` north and west, row 54b) say Route 4 is **north** and Mt. Moon's doors
+  are **on Route 4**, whose ground is in two pieces like Route 2's. The survey that prefers
+  `GO OBJECTIVE` walks `GO OBJECTIVE` east into Route 3 and `GO ROUTE` back west 538 times from
+  21 brain minutes. It is row 54b's residual and it needs a `SPLIT` row for Route 4; the next
+  brief. Check 10's new `unrewarded` rule sees it.
+- **A toggleable object switched off reads as present from outside the window.** Only the rung's
+  own list reads the off-screen people; among the ladder's person places, only Oak's lab (behind
+  this run) and Viridian Gym carry toggleable people.
+- **The tear is read stateful and bounded**: an arrival onto a warp into the map it arrived on,
+  under a map byte that changed, is a tear for at most ninety frames.
+- **The real-brain hunt was not run to the end on this branch**: two 30-minute arms were started
+  and stopped at a quarter done when row 57 merged and the branch was rebased; the box was loaded
+  at twelve. The stub arms above are the hunt.
+
+### Gates
+
+- `cargo test --workspace` with `FLY_ROM` and `FLY_DATASET`: 1,267 passed, 1 failed --
+  `flysim::integration::the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_killed`,
+  the known boot-time failure, identical on the base.
+- `cargo clippy --all-targets`: **0 warnings**.
+- `npm test` 663 passed; `npm run typecheck` clean.
+- `infra/tests/lint.sh`: ALL CHECKS PASSED, check 10's two new cases and the de-PII guard included.
+- `flysim --print-compatibility`: **648 bytes, sha256 `4929f340...9ebd9`**, byte-identical to the
+  base. Decoder, reward catalog, adapter version and roles untouched.

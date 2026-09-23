@@ -602,11 +602,14 @@ pct exec <ctid> -- cat /run/fly/wd/loop.json | jq .
 | `fly_loop_refused` | macro presses refused in the window: a bound button pressed, nothing run |
 | `fly_loop_blocked` | macros that ended `blocked` or `timeout` in the window |
 | `fly_loop_done` | macros that ended `done` in the window |
+| `fly_loop_rewards` | reward events in the window |
 
 The flag needs **both** halves: at most 3 distinct macro names with the block repeating 20+
 times, one macro at 95%+ of the window's decisions, 90%+ of 20+ decisions ending refused,
 blocked or timed out (`stalled`), or decisions with no `done` among them on two probes in a row
-(`zero-progress`) — **and** no growth in the exploration count. A decision is a `start` or a
+(`zero-progress`), or 100+ decisions with no reward event among them on two probes in a row
+(`unrewarded`, row 58: `GO OBJECTIVE` in and `GO OUT` out of one door, diluted by eight other
+names, every macro `done`) — **and** no growth in the exploration count. A decision is a `start` or a
 `refused`: a refused press starts nothing, which is why counting starts alone read row 57's
 pad (`GO ROUTE refused` ~740 times in ten brain minutes, `macros-traps.md`) as one start and
 one name. A

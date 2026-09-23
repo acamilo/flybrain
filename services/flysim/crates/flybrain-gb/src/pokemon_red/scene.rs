@@ -105,7 +105,7 @@ pub fn why_unknown(memory: &mut dyn MemoryReader) -> String {
     format!(
         "started={} map={:?} party={} battle={} type={} font={:#04x} textbox={:#04x} \
          list={:#04x} cursor=({},{},{},{},{:#04x}) prompt={} joy={} sim={} flags5={:#04x} \
-         flags6={:#04x} move={:#04x} \
+         flags6={:#04x} move={:#04x} opp={:#04x} \
          corners=({:#04x},{:#04x},{:#04x},{:#04x})",
         state::started(memory),
         state::map_size(memory).map(|size| (size.width, size.height)),
@@ -126,6 +126,7 @@ pub fn why_unknown(memory: &mut dyn MemoryReader) -> String {
         memory.read8(ram::wStatusFlags5),
         memory.read8(ram::wStatusFlags6),
         memory.read8(ram::wMovementFlags),
+        memory.read8(state::poke::CUR_OPPONENT),
         box_corners[0],
         box_corners[1],
         box_corners[2],

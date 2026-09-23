@@ -1687,9 +1687,18 @@ pub fn objective_goals(state: &mut dyn MacroState) -> Vec<Aim> {
         if objective.target.is_some() {
             let ahead = Tile::new(player.x, player.y).step(player.facing);
             let here_tile = Tile::new(player.x, player.y);
-            let mut ranked: Vec<(u32, Tile, TalkTarget)> = objective_targets(state)
+            let targets = objective_targets(state);
+            // **Facing any of them is the arrival** (row 58). With one target this was already
+            // true -- the thing ahead is left out and nothing else is left -- but a gym has three
+            // people the ladder names, and standing in front of the leader left the Jr. Trainer
+            // to walk to: `GO OBJECTIVE` walked to him, then back to the leader, and `TALK` was
+            // the one press it never made room for. A fly facing a person the rung is waiting on
+            // has nothing left for a walk to do.
+            if targets.iter().any(|(tile, _)| Some(*tile) == ahead) {
+                return Vec::new();
+            }
+            let mut ranked: Vec<(u32, Tile, TalkTarget)> = targets
                 .into_iter()
-                .filter(|(tile, _)| Some(*tile) != ahead)
                 .map(|(tile, target)| (tile.distance(here_tile), tile, target))
                 .collect();
             ranked.sort_unstable();
@@ -1795,7 +1804,18 @@ pub fn objective_targets(state: &mut dyn MacroState) -> Vec<(Tile, TalkTarget)> 
         return Vec::new();
     }
     let targets = match kind {
-        PlaceKind::Person => path::person_targets(state),
+        // Row 58: the room's people, drawn or not. From the Pewter Gym's doormat the only person
+        // on screen is the guide, and with him talked to this list was empty -- so `GO OUT` was a
+        // candidate and `GO OBJECTIVE` had nothing to aim at, while BROCK stood twelve tiles up the
+        // room, outside the window the cartridge draws. The whole map's grid is what the walk
+        // plans over (section 15), so a person off the screen is somewhere a walk can go.
+        PlaceKind::Person => {
+            let mut all = path::person_targets(state);
+            all.extend(path::offscreen_person_targets(state));
+            all
+        }
+        // Not objects: every item ball in the game is a toggleable object, so a ball the run has
+        // picked up and one out of sight read alike from outside the window.
         PlaceKind::Object => path::interactable_targets(state),
     };
     targets
