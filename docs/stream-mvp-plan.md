@@ -832,3 +832,21 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   10 gains `unrewarded` (100+ decisions, no reward, no new ground, two probes), still never
   acting. Also shipped: EDGE-01, the feed over flybus behind FLY_FEED_VIA, off (`direct`)
   everywhere. Next: row 59, Route 3's neighbours and Mt. Moon's doors in the geography table.
+- 2026-09-23 (the operator's reset): the live run restarted from milestone 1, the bedroom, with the
+  brain as it was then (65 brain seconds), to watch the macros in the early game. The v5 archive
+  migrated to v6. It reached rung 9, Viridian Forest, 31 minutes later.
+- 2026-09-23 (v0.6.0, the operator's decision, plus loop review row 60): the fly is paid for
+  engaging inside buildings and not for leaving them. New catalog kinds `talk` (+0.10, the first
+  conversation the fly opens with each person or sign on an indoor map, once per key for the run)
+  and `item` (+0.15, each item ball or hidden item, once); `boundary` pays nothing for an indoor
+  exit. Indoor is the cartridge's own tables (not CheckIfInOutsideMap's outdoor tilesets and not a
+  bike tileset). Both publish on `explore`; the ticker still reads "new place" (the operator kept
+  the wording). Adapter `pokered-unique8-v7`; a deploy with FLY_ACCEPT_ADAPTERS=pokered-unique8-v6
+  migrates the run and seeds every item the game already shows taken without paying it. Row 60:
+  from the fresh run, TAIL WHIP (MOVE 2) was dealt beside TACKLE after the cartridge had begun
+  refusing it ("Nothing happened!": the stage at -6 or the stat at 1), and the brain's MOVE 2
+  preference drew battles out until Squirtle fainted. A move the cartridge would refuse -- read
+  from its move table and the target's stages, status, types, Mist and substitute -- is not dealt
+  beside one that works, as a move out of PP is not. ROM test: 2,657 of 2,657 own-turn frames dealt
+  the refused move before, 0 of 568 after; battles won 0 -> 3 of 12 -> 14. The real-brain hunt did
+  not finish at this load; recorded as a deviation. Ethos check held.
