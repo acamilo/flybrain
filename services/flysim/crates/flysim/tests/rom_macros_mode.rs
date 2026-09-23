@@ -318,6 +318,14 @@ struct Run {
     talk_on_pad_by_map: std::collections::BTreeSet<u32>,
     /// `TALK` starts by map, for the record beside it.
     talk_starts_by_map: std::collections::BTreeMap<u32, u32>,
+    /// How many times a readable YES/NO prompt was answered, by the map and the thing the fly was
+    /// facing when it answered: the bound row 56 is about.
+    ///
+    /// Row 41 counted `YES` starts per map, which cannot tell one conversation from another, and
+    /// the Pewter Gym stall was 64 `YES` and 62 `NO` in ten brain minutes at one person. Keyed by
+    /// what the prompt belongs to, because "this prompt has been answered before" is a fact about
+    /// the person asking rather than about the room.
+    answers_by_person: std::collections::BTreeMap<(u32, String), u32>,
     /// `GO FRONTIER` starts by map, for the museum (section 12.14).
     frontier_by_map: std::collections::BTreeMap<u32, u32>,
     /// Where the macro that is running started, for the net-tiles measure below.
@@ -444,6 +452,7 @@ impl Run {
             unknown_pads_with_no_box: 0,
             talk_on_pad_by_map: std::collections::BTreeSet::new(),
             talk_starts_by_map: std::collections::BTreeMap::new(),
+            answers_by_person: std::collections::BTreeMap::new(),
             frontier_by_map: std::collections::BTreeMap::new(),
             started_at: None,
             net_zero_streak: 0,
@@ -561,6 +570,7 @@ impl Run {
             unknown_pads_with_no_box: 0,
             talk_on_pad_by_map: std::collections::BTreeSet::new(),
             talk_starts_by_map: std::collections::BTreeMap::new(),
+            answers_by_person: std::collections::BTreeMap::new(),
             frontier_by_map: std::collections::BTreeMap::new(),
             started_at: None,
             net_zero_streak: 0,
@@ -717,6 +727,15 @@ impl Run {
     /// (section 12.12).
     fn yes_no_prompt(&mut self) -> bool {
         flybrain_gb::pokemon_red::state::yes_no_prompt(&mut self.gb)
+    }
+
+    /// What the fly is facing, as `TALK`'s own precondition reads it: the key a prompt belongs to.
+    fn facing(&mut self) -> Option<String> {
+        let ledger = AdapterLedger(&self.adapter);
+        let mut state =
+            flybrain_gb::pokemon_red::state::PokeState::with_ledger(&mut self.gb, &ledger);
+        flybrain_gb::pokemon_red::macros::palette::facing_target(&mut state)
+            .map(|target| format!("{target:?}"))
     }
 
     /// Whether the fly faces a Pokemon Center nurse with a party that does not need her.
@@ -932,6 +951,14 @@ impl Run {
             if name == "TALK" {
                 let map = self.map();
                 *self.talk_starts_by_map.entry(map).or_insert(0) += 1;
+            }
+            // Row 56: an answer to a box this crate can *read* as a choice, charged to whoever is
+            // asking. An answer to a plain text box is not one of these -- it is the B or the A
+            // that advances a conversation, which is what those buttons are for.
+            if (name == "YES" || name == "NO") && self.yes_no_prompt() {
+                let map = self.map();
+                let who = self.facing().unwrap_or_else(|| "nobody".to_string());
+                *self.answers_by_person.entry((map, who)).or_insert(0) += 1;
             }
             let (x, y) = self.tile();
             self.started_at = Some((self.map(), x, y));
@@ -2750,4 +2777,147 @@ fn the_fly_reaches_the_pewter_gym_from_the_rung_ten_checkpoint() {
         run.worst_net_zero_streak,
         run.worst_net_zero_chain
     );
+}
+
+/// The rung-10 Pewter Gym checkpoint, or `None` to skip.
+fn gym_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_GYM_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// From inside the Pewter Gym: the fly gets out of the guide's conversation and wins the badge.
+///
+/// **What was live** (2026-09-23, rank 10 PEWTER CITY): map 54, scene `dialog`, thirty-plus
+/// brain minutes with the explore and wild-win counters frozen, **747 macro starts in ten brain
+/// minutes**, `YES` 64 / `NO` 62 / `NEXT` 59 / `TALK` 6, and **no walk macro dealt at all**. The
+/// watchdog did not flag it: four distinct macros is exactly its threshold.
+///
+/// **What the survey found** (`infra/docs/macros-traps.md` row 56, and `examples/scene_probe.rs`'s
+/// `FLY_PROBE_CATCH=dialog`): the gym guide's conversation is a **ring of fifty-two presses** that
+/// ends in the overworld for a frame and reopens on the next A, exactly as row 41's nurse does --
+/// and two things kept the fly in it.
+///
+/// - His YES/NO box ("Let me take you to the top!") is drawn at **(14, 7)-(19, 11)**, not the
+///   (11, 6)-(19, 11) row 41 pinned, so `yes_no_prompt` read `false` on all 260 surveyed frames
+///   while the box was drawn on ten. The pad was `NEXT, YES, NO` on a box that was a choice, and
+///   the reopened-prompt exclusion never armed.
+/// - Every `NO` un-armed the pending `TALK`, and about a third of the fifty-two presses are `NO`,
+///   so the guide never entered the talked ledger and `TALK` was on the overworld pad every hold.
+///   Answering `NO` at his prompt changes nothing either: the survey's `b` arm gets "It's a free
+///   service! Let's get happening!" and the same tutorial.
+///
+/// The claims, none of them about which button the fly presses:
+///
+/// - **no readable prompt is answered more than four times for one person**, against 126 answers
+///   at one person in ten brain minutes live;
+/// - `NEXT` is on **no** pad while a readable prompt is open (12.10 in a dialog);
+/// - the fly **leaves map 54**, on a bounded number of macros, and the gym's dialog stops being
+///   the whole run.
+///
+/// **What this does not claim, and says so rather than smoothing it**: the fly does *not* reach
+/// rung 11 inside the budget, and it does not on either arm of the trap hunt either. What it does
+/// instead is play -- 441 distinct tiles against 83, 49,877 frames of battle against 29,530,
+/// `GO OBJECTIVE` 37 walks at a mean reach of 9.4 tiles against 19 at 5.0. Going back through the
+/// gym's door to fight Brock is a question about `GO OBJECTIVE`'s aim and the errand order ahead of
+/// the rung, which is row 54's ground and not this row's; the rung reached is printed here and
+/// asserted by nobody.
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_GYM_CHECKPOINT=.local/checkpoints/release-rank10-gym.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture
+/// ```
+#[test]
+fn the_fly_leaves_the_pewter_gym_guides_ring_from_the_rung_ten_checkpoint() {
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = gym_checkpoint() else {
+        eprintln!("skipped: no FLY_GYM_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    let from = run.map();
+    assert_eq!(from, PEWTER_GYM, "the checkpoint is the room the stream stalled in");
+
+    let mut left = None;
+    let mut badge = None;
+    for frame in 0..240_000u32 {
+        run.frame();
+        if left.is_none() && run.map() != from {
+            left = Some(frame);
+        }
+        if badge.is_none() && run.adapter.progress().rank >= 11 {
+            badge = Some(frame);
+        }
+    }
+    let progress = run.adapter.progress();
+    eprintln!(
+        "from map {from:#04x} in {:.1} brain minutes: route {:?}, macros {:?}, dialog frames {} \
+         (prompt on {}), answers by person {:?}, TALK starts {:?}, rank {} ({}), badges {}",
+        run.ms / 60_000.0,
+        run.route,
+        run.started,
+        run.dialog_frames,
+        run.prompt_frames,
+        run.answers_by_person,
+        run.talk_starts_by_map,
+        progress.rank,
+        progress.rank_label,
+        run.gb.read_wram(flybrain_gb::pokemon_red::symbols::ram::wObtainedBadges).count_ones()
+    );
+    eprintln!("macros spent in the gym: {:?}", run.started_on_the_first_map);
+    eprintln!(
+        "`GO OBJECTIVE` on the pad on maps {:?}; `GO FRONTIER` by map {:?}",
+        run.objective_on_pad, run.frontier_by_map
+    );
+
+    // 12.10 in a dialog: an A press at a two-option menu confirms the option the cursor is on,
+    // which is what `YES` is. Row 56 is the frames on which that rule could not be applied.
+    assert!(
+        !run.next_on_a_prompt,
+        "`NEXT` was on the pad at a YES/NO box, where an A press is `YES`"
+    );
+
+    // The bound row 56 is about: one person, one session. Live it was 126 at the guide in ten
+    // brain minutes. Four leaves room for the fly to answer a prompt it meets more than once
+    // without leaving room for a ring.
+    let worst = run.answers_by_person.iter().max_by_key(|(_, count)| **count);
+    if let Some((who, count)) = worst {
+        eprintln!("the most-answered prompt: {who:?} answered {count} times");
+        assert!(
+            *count <= 4,
+            "one person's prompt was answered {count} times: {:?}",
+            run.answers_by_person
+        );
+    }
+
+    let Some(left) = left else {
+        panic!("the fly never left map {from:#04x}: {:?}", run.started)
+    };
+    eprintln!(
+        "it left map {from:#04x} on frame {left} ({:.2} brain minutes), on {} macros",
+        f64::from(left) * MS_PER_FRAME / 60_000.0,
+        run.macros_on_the_first_map
+    );
+    // One lap of the ring is fifty-two presses and the fly is entitled to walk one. What it may
+    // not do is walk it again and again: the live run was 747 macro starts in ten brain minutes.
+    assert!(
+        run.macros_on_the_first_map < 60,
+        "leaving the gym cost {} macros: {:?}",
+        run.macros_on_the_first_map,
+        run.started_on_the_first_map
+    );
+
+    // Reported, not asserted: the rung is row 54's ground, not this row's.
+    match badge {
+        Some(frame) => eprintln!(
+            "rung 11 at frame {frame} ({:.2} brain minutes)",
+            f64::from(frame) * MS_PER_FRAME / 60_000.0
+        ),
+        None => eprintln!(
+            "rung 11 not reached inside the budget: rank {} ({})",
+            progress.rank, progress.rank_label
+        ),
+    }
 }
