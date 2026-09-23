@@ -4166,15 +4166,16 @@ fn an_edge_the_table_cannot_name_stops_being_somewhere_new_once_it_is_stood_on()
     // 3's connections as north and west while `geography`'s row carried west and east, so the
     // north edge's destination was unnameable -- and an unnameable destination counted as
     // *unvisited*, which made those tiles first-tier for `GO ROUTE` on every hold for ever. Row 59
-    // corrected the row itself; the rule still holds for the one header line the table leaves
-    // out on purpose, Route 22's north edge (`geography::CONNECTIONS`).
+    // corrected the row itself, and since then every header connection has a row; the rule is
+    // pinned on `$0B`, the one outdoor id with no header of its own (`UNUSED_MAP_0B`), whose
+    // edges the table cannot name.
     let mut world = World::room();
-    world.map = maps::ROUTE_22;
+    world.map = 0x0b;
     world.size = MapSize { width: 8, height: 8 };
     world.player = Tile::new(4, 4);
-    world.connections = Connections { north: true, south: false, east: true, west: false };
-    // East is Viridian City, which the table does name and the run has stood on.
-    world.seen_maps.insert(maps::VIRIDIAN_CITY);
+    world.connections = Connections { north: true, south: false, east: false, west: true };
+    // West the run has already stood on.
+    world.visited.insert(ExitId::Edge(Edge::West));
 
     let north: Vec<ExitId> = ways(&mut world, Way::Route).iter().map(|exit| exit.id).collect();
     assert!(

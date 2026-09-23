@@ -49,8 +49,9 @@ const EAST: usize = 3;
 /// commit (row 59). Four pairs had the right neighbour in the wrong column, and a wrong column is
 /// a wrong map on the other side of an edge: `ROUTE_3` / `ROUTE_4` (Route 4 is north of Route 3,
 /// not east, and Route 3's top edge is the road to Mt. Moon's Pokécenter), `ROUTE_14` /
-/// `ROUTE_15` and `ROUTE_24` / `ROUTE_25` (west and east, not south and north). One header line
-/// is left out on purpose: `ROUTE_22`'s `connection north, Route23`, below.
+/// `ROUTE_15` and `ROUTE_24` / `ROUTE_25` (west and east, not south and north), and `ROUTE_22` /
+/// `ROUTE_23`, which the table had left out. A connection nobody can walk across is still the
+/// header's, and [`NO_CROSSING`] says which.
 const CONNECTIONS: &[(u8, [u8; 4])] = &[
     (maps::PALLET_TOWN, [maps::ROUTE_1, maps::ROUTE_21, NONE, NONE]),
     (maps::VIRIDIAN_CITY, [maps::ROUTE_2, maps::ROUTE_1, maps::ROUTE_22, NONE]),
@@ -84,15 +85,39 @@ const CONNECTIONS: &[(u8, [u8; 4])] = &[
     (maps::ROUTE_19, [maps::FUCHSIA_CITY, NONE, maps::ROUTE_20, NONE]),
     (maps::ROUTE_20, [NONE, NONE, maps::CINNABAR_ISLAND, maps::ROUTE_19]),
     (maps::ROUTE_21, [maps::PALLET_TOWN, maps::CINNABAR_ISLAND, NONE, NONE]),
-    // Route 22's header says `connection north, Route23`, and no tile of that strip is walkable on
-    // either side: the road north is the League gate, a building the graph has no row for. An
-    // edge in the table is a road `next_hop` will route along, so this one stays out, and Indigo
-    // Plateau is on the graph but not reachable from the south.
-    (maps::ROUTE_22, [NONE, NONE, NONE, maps::VIRIDIAN_CITY]),
-    (maps::ROUTE_23, [maps::INDIGO_PLATEAU, NONE, NONE, NONE]),
+    (maps::ROUTE_22, [maps::ROUTE_23, NONE, NONE, maps::VIRIDIAN_CITY]),
+    (maps::ROUTE_23, [maps::INDIGO_PLATEAU, maps::ROUTE_22, NONE, NONE]),
     (maps::ROUTE_24, [NONE, maps::CERULEAN_CITY, NONE, maps::ROUTE_25]),
     (maps::ROUTE_25, [NONE, NONE, maps::ROUTE_24, NONE]),
 ];
+
+/// Connections in the headers that no step on foot crosses, from both sides.
+///
+/// Row 59, measured from the disassembly: for every connection, the tiles of this map's edge that
+/// are walkable *and* land on a walkable tile of the other map's strip (the header's offset, the
+/// other map's blocks and collision list). These eight have none. Pallet Town's south edge has
+/// two walkable tiles and Route 21 is water under both; Cinnabar's east edge and Route 20's two
+/// ends are sea; Route 22's north edge is the League's fence, and the road is its gate, a building
+/// the graph has no row for. The map on the other side is still named ([`connected`]), and a
+/// surfer's road is for a later row; on foot none of them is a way out
+/// ([`super::path::exits`] offers no exit on them) or a road ([`neighbours`] leaves them out).
+/// Without this the road from Pallet Town to Cerulean was by sea, and a fly that whited out in
+/// Mt. Moon walked into Pallet's shore once every two seconds.
+const NO_CROSSING: &[(u8, Edge)] = &[
+    (maps::PALLET_TOWN, Edge::South),
+    (maps::ROUTE_21, Edge::North),
+    (maps::CINNABAR_ISLAND, Edge::East),
+    (maps::ROUTE_20, Edge::West),
+    (maps::ROUTE_20, Edge::East),
+    (maps::ROUTE_19, Edge::West),
+    (maps::ROUTE_22, Edge::North),
+    (maps::ROUTE_23, Edge::South),
+];
+
+/// Whether a step off `map`'s `edge` can land on the other map on foot ([`NO_CROSSING`]).
+pub fn crossable(map: u8, edge: Edge) -> bool {
+    !NO_CROSSING.contains(&(map, edge))
+}
 
 /// Doors and floor changes, as undirected pairs of maps.
 ///
@@ -450,11 +475,20 @@ pub fn outdoor_of(interior: u8) -> Option<u8> {
     neighbours(interior).into_iter().find(|map| super::cartridge::outdoors(*map))
 }
 
-/// Every map one step from `map`, doors and edges together, deduplicated and in id order.
+/// Every map one step on foot from `map`, doors and edges together, deduplicated and in id order.
+///
+/// A connection with no crossing ([`NO_CROSSING`]) is not a step on foot and is left out.
 pub fn neighbours(map: u8) -> Vec<u8> {
+    const EDGES: [Edge; 4] = [Edge::North, Edge::South, Edge::West, Edge::East];
     let mut out: Vec<u8> = Vec::new();
     if let Some(row) = CONNECTIONS.iter().find(|(id, _)| *id == map) {
-        out.extend(row.1.iter().copied().filter(|id| *id != NONE));
+        out.extend(
+            row.1
+                .iter()
+                .zip(EDGES)
+                .filter(|(id, edge)| **id != NONE && crossable(map, *edge))
+                .map(|(id, _)| *id),
+        );
     }
     for (a, b) in LINKS {
         if *a == map {
@@ -466,7 +500,7 @@ pub fn neighbours(map: u8) -> Vec<u8> {
     }
     // Symmetric closure: a row that names a neighbour is a connection whichever side lists it.
     for (id, row) in CONNECTIONS {
-        if row.contains(&map) {
+        if row.iter().zip(EDGES).any(|(other, edge)| *other == map && crossable(*id, edge)) {
             out.push(*id);
         }
     }
@@ -698,6 +732,34 @@ mod tests {
             vec![maps::PEWTER_CITY, maps::ROUTE_4],
             "Route 3 is a road between two maps and nothing else"
         );
+    }
+
+    #[test]
+    fn a_connection_nobody_can_walk_across_is_named_and_is_not_a_road() {
+        // Row 59: Pallet Town's shore. The header connects it to Route 21, which is water.
+        assert_eq!(connected(maps::PALLET_TOWN, Edge::South), Some(maps::ROUTE_21));
+        assert!(!crossable(maps::PALLET_TOWN, Edge::South));
+        assert!(!neighbours(maps::PALLET_TOWN).contains(&maps::ROUTE_21));
+        assert!(!neighbours(maps::ROUTE_21).contains(&maps::PALLET_TOWN));
+        // So the road from Pallet Town to Cerulean is the long one on land: north, through the
+        // forest, Pewter and Mt. Moon, and not by sea through Cinnabar and Fuchsia.
+        assert_eq!(next_hop(Region::whole(maps::PALLET_TOWN), maps::CERULEAN_CITY), Some(maps::ROUTE_1));
+        assert_eq!(hops(Region::whole(maps::PALLET_TOWN), maps::CERULEAN_CITY), Some(16));
+        // Every entry is one of the header's own connections, and both sides are listed.
+        for (map, edge) in NO_CROSSING {
+            let other = connected(*map, *edge).expect("a no-crossing entry is a header connection");
+            let back = match edge {
+                Edge::North => Edge::South,
+                Edge::South => Edge::North,
+                Edge::West => Edge::East,
+                Edge::East => Edge::West,
+            };
+            assert!(!crossable(other, back), "{other:#04x} lists {map:#04x} as crossable");
+        }
+        // Indigo Plateau is on the graph and, until a row gives the League gate, not on foot
+        // from the south.
+        assert_eq!(connected(maps::ROUTE_22, Edge::North), Some(maps::ROUTE_23));
+        assert_eq!(next_hop(Region::whole(maps::VIRIDIAN_CITY), maps::INDIGO_PLATEAU), None);
     }
 
     #[test]

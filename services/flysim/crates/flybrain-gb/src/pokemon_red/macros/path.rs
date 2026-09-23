@@ -430,7 +430,9 @@ pub fn exits(state: &mut dyn MacroState) -> Vec<Exit> {
             Edge::East => connections.east,
             Edge::West => connections.west,
         };
-        if !connected {
+        // A connection the headers name and no step on foot crosses -- Pallet Town's shore --
+        // is not a way out (`geography::NO_CROSSING`, row 59).
+        if !connected || !geography::crossable(player.map, edge) {
             continue;
         }
         // A step off the edge of an outdoor map is the next area; off an interior one -- which
