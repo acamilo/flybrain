@@ -541,6 +541,16 @@ struct PendingTalk {
     at: Tile,
 }
 
+/// What a macro the cartridge ended by taking the joypad earned, held until the cartridge gives
+/// the joypad back ([`MacroMachine::pending_push`], row 58).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingPush {
+    /// The tile the fly was driven off, for the pushed ledger (row 37).
+    tile: Option<(u8, Tile)>,
+    /// The target the macro was aimed at, for the blocked ledger (section 12.4).
+    target: Option<(u8, TargetKey)>,
+}
+
 /// A walk the frame cap cut short, as the next start needs it.
 ///
 /// Keyed by the target rather than by the macro, because that is what a resumed walk *is*: the
@@ -589,7 +599,7 @@ pub struct MacroMachine {
     /// and the blocked ledger could only say it about the target the walk was aimed at. Recorded
     /// from the frame the push is seen, because by the time the next macro starts the fly has been
     /// walked somewhere else.
-    pushed_tile: Option<(u8, Tile)>,
+    pushed_tile: Vec<(u8, Tile)>,
     /// A refusal the route search or the precondition made, and where the fly stood for it --
     /// `(map, slot, tile)`, waiting to be taken into the session's ledger
     /// ([`super::cartridge::Targets::record_refused`], row 57 of `infra/docs/macros-traps.md`).
@@ -637,6 +647,21 @@ pub struct MacroMachine {
     /// the next press will not undo. One hold of frames is the window, because that is how long
     /// the fly has to choose again; anything later and something else happened in between.
     pending_answer: Option<PendingAnswer>,
+    /// A macro the cartridge ended by taking the joypad, whose ledger entries wait for the
+    /// cartridge to give it back (row 58).
+    ///
+    /// Section 12.4 and row 37 read "the cartridge took the joypad" as the cartridge *refusing*
+    /// the step -- the Viridian gate's "This is private property!" and the walk back -- and wrote
+    /// the target into the blocked ledger and the tile into the pushed one on the spot. A trainer
+    /// who sees the fly takes the joypad the same way: the "!", the walk up, the challenge. In the
+    /// Pewter Gym that cost BROCK: the fly walked toward him past the Jr. Trainer's line of sight,
+    /// the trainer's walk ended the macro, BROCK went into the blocked ledger for ten brain
+    /// minutes and the tile the walk set out from into the pushed one for the session -- and a fly
+    /// that lost the battle and walked back found the leader excluded and the way out on the pad.
+    /// What the cartridge does when it gives the joypad back is what says which it was: back in
+    /// the overworld is a refusal and is written as one; a battle is a battle, and nothing about
+    /// the target or the ground is learned from it.
+    pending_push: Vec<PendingPush>,
     /// A finished `TALK`'s target, waiting to be taken into the session's talked ledger.
     ///
     /// The machine records rather than keeps: the ledger is the driver's
@@ -664,12 +689,13 @@ impl MacroMachine {
             blocked: Vec::new(),
             reached: None,
             exhausted: None,
-            pushed_tile: None,
+            pushed_tile: Vec::new(),
             refused_at: None,
             timed_out: None,
             resume: VecDeque::new(),
             pending_talk: None,
             pending_answer: None,
+            pending_push: Vec::new(),
             talked: None,
             rng: if seed == 0 { 1 } else { seed },
         }
@@ -903,8 +929,11 @@ impl MacroMachine {
     }
 
     /// The tile a scripted push-back earned, taken rather than read (row 37).
+    ///
+    /// Call it until it answers `None`: the entries a script held back are written together when
+    /// it gives the joypad back (row 58).
     pub fn take_pushed(&mut self) -> Option<(u8, Tile)> {
-        self.pushed_tile.take()
+        if self.pushed_tile.is_empty() { None } else { Some(self.pushed_tile.remove(0)) }
     }
 
     /// Where the last `no route` or `precondition` refusal happened, taken rather than read
@@ -936,7 +965,7 @@ impl MacroMachine {
         self.reached = None;
         // A rollback is not the map pushing the fly anywhere, and it is not the frontier being
         // out of reach either: the fly is about to be somewhere else entirely.
-        self.pushed_tile = None;
+        self.pushed_tile.clear();
         self.exhausted = None;
         self.refused_at = None;
         self.timed_out = None;
@@ -948,6 +977,8 @@ impl MacroMachine {
         self.pending_talk = None;
         // Nor is it a prompt reopening: the frames the answer was made in are being thrown away.
         self.pending_answer = None;
+        // Nor the cartridge refusing a step: the frames it happened in are being thrown away too.
+        self.pending_push.clear();
     }
 
     /// Whether the fly is standing somewhere other than where the running macro began.
@@ -976,6 +1007,7 @@ impl MacroMachine {
     /// - the fly answered `NO` — not talked, and that one is decided in [`MacroMachine::finish`].
     pub fn observe_frame(&mut self, state: &mut dyn MacroState) {
         self.observe_answer(state);
+        self.observe_push(state);
         let Some(pending) = self.pending_talk else { return };
         if state.scripted() {
             self.pending_talk = None;
@@ -999,6 +1031,34 @@ impl MacroMachine {
             if !self.declined_out_of(pending.map) {
                 self.talked = Some((pending.map, pending.target));
             }
+        }
+    }
+
+    /// One frame after the cartridge took the joypad from a macro: decide what it was (row 58).
+    ///
+    /// Back in the overworld with the buttons the fly's again: a refusal, written exactly as
+    /// section 12.4 and row 37 always wrote it. A battle: a trainer's challenge, and it teaches the
+    /// ledgers nothing. Anything else -- the text, the walk, the frames between -- is still the
+    /// cartridge's, and the decision waits.
+    fn observe_push(&mut self, state: &mut dyn MacroState) {
+        if self.pending_push.is_empty() {
+            return;
+        }
+        match class(state.scene()) {
+            Class::Battle | Class::ForcedSwitch => self.pending_push.clear(),
+            Class::Overworld => {
+                // Every macro the script ended while it held the joypad -- the walk it interrupted
+                // and any press made into its text -- in the order they ended.
+                for pending in std::mem::take(&mut self.pending_push) {
+                    if let Some(tile) = pending.tile {
+                        self.pushed_tile.push(tile);
+                    }
+                    if let Some(target) = pending.target {
+                        self.blocked.push(target);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1127,14 +1187,18 @@ impl MacroMachine {
                 // entrance -- with no window, in the middle of the town. A dozen of those fenced
                 // the fly into a pocket no walk could leave. The tile a walk last stood the fly on
                 // is its own record of where the cartridge took over.
-                if let Some(player) = at {
+                //
+                // Held until the cartridge gives the joypad back, which is what says whether this
+                // was a refusal or a trainer walking up (row 58, [`MacroMachine::observe_push`]).
+                let tile = at.map(|player| {
                     let current = Tile::new(player.x, player.y);
                     let tile = match active.plan.front() {
                         Some(Step::Walk(walk)) => walk.expect.unwrap_or(current),
                         _ => active.from.unwrap_or(current),
                     };
-                    self.pushed_tile = Some((player.map, tile));
-                }
+                    (player.map, tile)
+                });
+                self.pending_push.push(PendingPush { tile, target: None });
             }
             let (closer, stalled) = walk_flags(&active);
             // A walk the cap cut short keeps its route for the next hold; any other ending means
@@ -1181,8 +1245,15 @@ impl MacroMachine {
                     // target's own fact, not the world's, so it is excluded for the window like
                     // any other refusal. Without it the gate was walked into once per hold for
                     // ever, because every macro that hit it ended `Done`.
-                    if pushed && let Some(entry) = active.target {
-                        self.blocked.push(entry);
+                    //
+                    // Held with the tile above, and for the same reason: a trainer's walk up to the
+                    // fly takes the joypad exactly as the gate's walk back does, and only what the
+                    // cartridge does next tells them apart (row 58).
+                    if pushed
+                        && let Some(entry) = active.target
+                        && let Some(pending) = self.pending_push.last_mut()
+                    {
+                        pending.target = Some(entry);
                     }
                     // A `GO FRONTIER` whose press faced new ground it could not stand on: `Done`,
                     // because facing it is what the arrival promises, and excluded, because the

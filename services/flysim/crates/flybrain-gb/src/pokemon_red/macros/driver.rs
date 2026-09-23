@@ -273,7 +273,7 @@ impl PokemonPalette {
         }
         // A tile the cartridge drove the fly off: no window, because the map is like that until
         // the event that unlocks it, and nothing here knows which event that is (row 37).
-        if let Some((map, tile)) = self.machine.take_pushed() {
+        while let Some((map, tile)) = self.machine.take_pushed() {
             self.pushed.record(map, tile);
         }
         // A refusal from where the fly is standing: that button is not dealt again from this tile
@@ -518,7 +518,7 @@ impl MacroPalette for PokemonPalette {
         let _ = self.machine.take_reached();
         // A rollback is not the map pushing the fly anywhere, nor its frontier going out of
         // reach: the fly is about to be standing somewhere else.
-        let _ = self.machine.take_pushed();
+        while self.machine.take_pushed().is_some() {}
         let _ = self.machine.take_exhausted();
         let _ = self.machine.take_refused();
         // The cached palette was dealt for a frame that is being thrown away. Dropping it makes
