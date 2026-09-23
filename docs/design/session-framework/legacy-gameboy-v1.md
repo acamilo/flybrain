@@ -408,10 +408,13 @@ export at `Ready(k)`, whether that export is periodic, a milestone archive or th
 save. So a checkpoint whose ratchet ledger names `best = r` always carries the slot saved for
 rung `r`. This is a **declared difference** from the legacy loop, which archives a milestone
 before capturing the ratchet snapshot. A legacy milestone archive holds `best = r-1` and the
-rung `r-1` snapshot; a ported one holds `best = r` and the rung `r` snapshot. After
-`fly-reset-to-milestone` onto a ported archive, a stall rollback therefore returns to the
-milestone boundary itself rather than to the previous rung's save, and the attempt counter
-starts at the new rung. The operator's confirmation of this difference is requested with the
+rung `r-1` snapshot; a ported one holds `best = r` and the rung `r` snapshot. In practice the
+two converge: after `fly-reset-to-milestone` onto a legacy archive, the ratchet captures rung
+`r` again on the first safe frame (the rung is above the recorded best) and resets the attempt
+counter. The difference is only where the rung `r` slot sits -- on the exact frame of the climb
+(ported) or on the first safe frame after the reset (legacy) -- and it is visible only if the
+fly stalls or hits game over before any safe frame, when legacy falls back to rung `r-1`'s save
+and the ported loop to rung `r`'s (amended 2026-09-23, review round 2). The operator's confirmation of this difference is requested with the
 CUT-01 shadow run. The rule is machine-checked in the step trace: `TraceBehaviour.boundaryActions`
 records the saves and the rollback in order, `TraceOperational.captures` records each capture
 with the number of boundary actions before it, and a `TransitionTrace` in which a capture
