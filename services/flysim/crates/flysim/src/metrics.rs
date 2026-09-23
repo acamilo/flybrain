@@ -81,7 +81,7 @@ impl Metrics {
 }
 
 /// One metric line plus its help and type headers.
-fn metric(out: &mut String, name: &str, kind: &str, help: &str, value: impl std::fmt::Display) {
+pub fn metric(out: &mut String, name: &str, kind: &str, help: &str, value: impl std::fmt::Display) {
     use std::fmt::Write as _;
     let _ = writeln!(out, "# HELP {name} {help}");
     let _ = writeln!(out, "# TYPE {name} {kind}");

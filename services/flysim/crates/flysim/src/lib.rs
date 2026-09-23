@@ -59,6 +59,15 @@ impl AppState {
     pub fn snapshot(&self) -> Arc<Snapshot> {
         Arc::clone(&self.snapshots.borrow())
     }
+
+    /// What the feed server needs, when flysim serves the feed itself.
+    pub fn feed(&self) -> feed::FeedState {
+        feed::FeedState {
+            snapshots: self.snapshots.clone(),
+            metrics: Arc::clone(&self.shared.metrics),
+            idle_period: self.shared.config.publish_periods().1,
+        }
+    }
 }
 
 /// Run the service until a signal or a fatal simulation error.
@@ -107,7 +116,7 @@ pub fn run(config: Config) -> Result<()> {
     tracing::info!(feed = %feed_addr, control = %control_addr, metrics = ?metrics_addr, "listening");
 
     {
-        let state = state.clone();
+        let state = state.feed();
         runtime.spawn(async move {
             if let Err(error) = axum::serve(feed_listener, feed::router(state)).await {
                 tracing::error!(%error, "the feed listener stopped");

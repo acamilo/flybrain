@@ -149,7 +149,7 @@ pub struct DecoderChannelStatus {
 #[derive(Debug)]
 pub struct Shared {
     pub config: Config,
-    pub metrics: Metrics,
+    pub metrics: Arc<Metrics>,
     pub events: EventRing,
     /// `Date.now()` at the top of the most recent loop iteration. `GET /healthz` is 200 while
     /// this is less than two seconds old, which is true while paused as well: a paused loop is
@@ -173,7 +173,7 @@ impl Shared {
     pub fn new(config: Config, events: EventRing) -> Self {
         Self {
             config,
-            metrics: Metrics::default(),
+            metrics: Arc::default(),
             events,
             heartbeat_ms: AtomicU64::new(0),
             versions: OnceLock::new(),

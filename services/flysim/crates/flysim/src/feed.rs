@@ -9,8 +9,14 @@
 //! - 30 snapshots a second while running, 2 while paused or booting (header only);
 //! - drop-oldest, never queue: the sim publishes into a `watch` slot, so a slow client misses
 //!   snapshots instead of slowing the loop down. Those misses are counted.
+//!
+//! The server only needs a [`FeedState`]: a watch slot of snapshots, the counters and the idle
+//! cadence. flysim builds one from its own state when it serves the feed itself
+//! (`FLY_FEED_VIA=direct`), and `fly-edge` builds one from the snapshots it takes off the bus
+//! (`FLY_FEED_VIA=bus`), so both paths run this same code and write the same bytes.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -19,9 +25,22 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use serde::Deserialize;
+use tokio::sync::watch;
 
+use crate::metrics::Metrics;
 use crate::snapshot::{AttachmentKind, FeedStatus, PROTOCOL, Snapshot, Wants};
-use crate::{AppState, metrics::Metrics};
+
+/// Everything the feed server reads.
+#[derive(Clone)]
+pub struct FeedState {
+    /// The newest snapshot. Dropping its sender ends every client's stream.
+    pub snapshots: watch::Receiver<Arc<Snapshot>>,
+    /// `frames_sent`, `feed_clients` and `feed_dropped` are the ones this module moves.
+    pub metrics: Arc<Metrics>,
+    /// The protocol's idle cadence: how long a paused or booting stream waits before it
+    /// repeats the current header (`config.publish_periods().1`).
+    pub idle_period: Duration,
+}
 
 /// The one JSON text message a client sends on connect.
 #[derive(Debug, Clone, Deserialize)]
@@ -37,7 +56,7 @@ pub struct ClientHello {
 /// Close code for a protocol violation, as the reference server uses.
 const CLOSE_PROTOCOL_ERROR: u16 = 1002;
 
-pub fn router(state: AppState) -> Router {
+pub fn router(state: FeedState) -> Router {
     Router::new()
         .route("/feed", any(upgrade))
         .fallback(not_found)
@@ -48,11 +67,11 @@ async fn not_found() -> Response {
     (StatusCode::NOT_FOUND, "not found").into_response()
 }
 
-async fn upgrade(upgrade: WebSocketUpgrade, State(state): State<AppState>) -> Response {
+async fn upgrade(upgrade: WebSocketUpgrade, State(state): State<FeedState>) -> Response {
     upgrade.on_upgrade(move |socket| serve_client(socket, state))
 }
 
-async fn serve_client(mut socket: WebSocket, state: AppState) {
+async fn serve_client(mut socket: WebSocket, state: FeedState) {
     let Some(hello) = read_hello(&mut socket).await else {
         return;
     };
@@ -64,9 +83,9 @@ async fn serve_client(mut socket: WebSocket, state: AppState) {
         spikes = wants.spikes,
         "feed client connected"
     );
-    state.shared.metrics.client_joined();
+    state.metrics.client_joined();
     let result = pump(&mut socket, &state, wants).await;
-    state.shared.metrics.client_left();
+    state.metrics.client_left();
     match result {
         Ok(()) => tracing::info!("feed client disconnected"),
         Err(error) => tracing::info!(%error, "feed client dropped"),
@@ -117,9 +136,9 @@ async fn read_hello(socket: &mut WebSocket) -> Option<ClientHello> {
     None
 }
 
-async fn pump(socket: &mut WebSocket, state: &AppState, wants: Wants) -> Result<(), axum::Error> {
+async fn pump(socket: &mut WebSocket, state: &FeedState, wants: Wants) -> Result<(), axum::Error> {
     let mut receiver = state.snapshots.clone();
-    let (_, idle_period) = state.shared.config.publish_periods();
+    let idle_period = state.idle_period;
     let mut last_seq = 0u64;
 
     // The current snapshot first, so a client that connects while paused or booting sees the
@@ -161,18 +180,18 @@ async fn pump(socket: &mut WebSocket, state: &AppState, wants: Wants) -> Result<
 
 async fn send(
     socket: &mut WebSocket,
-    state: &AppState,
+    state: &FeedState,
     snapshot: &Arc<Snapshot>,
     wants: Wants,
     last_seq: &mut u64,
 ) -> Result<(), axum::Error> {
     let seq = snapshot.header.seq;
     if seq > *last_seq + 1 && *last_seq != 0 {
-        Metrics::add(&state.shared.metrics.feed_dropped, seq - *last_seq - 1);
+        Metrics::add(&state.metrics.feed_dropped, seq - *last_seq - 1);
     }
     *last_seq = seq;
     socket.send(Message::Binary(snapshot.encode(wants).into())).await?;
-    Metrics::incr(&state.shared.metrics.frames_sent);
+    Metrics::incr(&state.metrics.frames_sent);
     Ok(())
 }
 
