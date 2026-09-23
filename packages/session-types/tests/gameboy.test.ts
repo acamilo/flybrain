@@ -144,3 +144,33 @@ test('a rollback request and the extension methods check what they must', () => 
   validateAgentRollbackResultAgainstScope(result, newEpoch);
   assert.throws(() => validateAgentRollbackResultAgainstScope(result, { ...newEpoch, step: '4100' }));
 });
+
+test('the decoderConfigDigest vectors are what the TypeScript oracle preset computes', async () => {
+  const { gameboyDecoderConfig } = await import('@flybrain/brain');
+  const file = fixtures.load('gameboy-decoder-config.json') as Record<string, any>;
+  const cases = file.cases as Record<string, any>[];
+  assert.deepEqual(
+    cases.map((item) => item.name),
+    ['raw', 'macros'],
+  );
+  for (const item of cases) {
+    const form = gameboy.decoderConfigForm(gameboyDecoderConfig(item.macroChannels as string[]));
+    assert.deepEqual(form, item.form, `${item.name}: the oracle's form is the Rust twin's`);
+    assert.equal(canonicalize(form), item.canonical, `${item.name}: canonical bytes`);
+    assert.equal(
+      gameboy.decoderConfigDigest(gameboyDecoderConfig(item.macroChannels as string[])),
+      item.digest,
+      `${item.name}: digest`,
+    );
+  }
+  const reversed = [...(cases[1]!.macroChannels as string[])].reverse();
+  assert.notEqual(
+    gameboy.decoderConfigDigest(gameboyDecoderConfig(reversed)),
+    cases[1]!.digest,
+    'channel order is identity',
+  );
+  // The example composition declares the real macros-mode digest and channel set.
+  const example = legacy().composition.example;
+  assert.equal(example.decoderConfigDigest, cases[1]!.digest);
+  assert.deepEqual(example.executor.macroChannels, cases[1]!.macroChannels);
+});

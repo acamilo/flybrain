@@ -1,6 +1,6 @@
 {
   "description": "The legacy Game Boy composition (legacy-gameboy-v1): registered payload schemas with their SchemaRef digests, the one legacy profile document and its AssetRef, the frame clock, and an example composition declaration with its digest.",
-  "extensionSetDigest": "7bb9578d89b0a35a2914e699aad86d35ac8859d9ad4367632bd1fdfbd3e942ef",
+  "extensionSetDigest": "a35823ecf607a218b0c9f9e7ec86585d355cb311f8d7a3ada8aa793e1c9fe47c",
   "extensionSet": {
     "contract": "fly-session-types/legacy-gameboy",
     "version": 1,
@@ -187,7 +187,7 @@
             "name": "decoderConfigDigest",
             "kind": "Digest",
             "required": true,
-            "constraint": "SHA-256 of the canonical JSON of the effective DecoderConfig (TypeScript shape)"
+            "constraint": "SHA-256 of the canonical gameboy-decoder-config-v1 form of the effective decoder configuration"
           },
           {
             "name": "environment",
@@ -497,12 +497,39 @@
         "mode": "macros",
         "macroChannels": [
           "macro_go_objective",
+          "macro_go_out",
+          "macro_go_warp",
+          "macro_go_route",
+          "macro_go_item",
+          "macro_go_npc",
+          "macro_go_frontier",
+          "macro_go_shop",
+          "macro_go_heal",
           "macro_talk",
+          "macro_menu",
           "macro_next",
-          "macro_move_1"
+          "macro_yes",
+          "macro_no",
+          "macro_close",
+          "macro_confirm",
+          "macro_back",
+          "macro_move_1",
+          "macro_move_2",
+          "macro_move_3",
+          "macro_move_4",
+          "macro_switch",
+          "macro_item",
+          "macro_throw_ball",
+          "macro_run",
+          "macro_buy_potion",
+          "macro_buy_ball",
+          "macro_buy_antidote",
+          "macro_buy_repel",
+          "macro_heal",
+          "macro_leave"
         ]
       },
-      "decoderConfigDigest": "5c3f2f084bef674fed492b82e5e0951e993c856ae98f5453d180cd06143dc854",
+      "decoderConfigDigest": "82b6601f0390b742a67eca44ef935b49e16a73315db70f5644f1cbd21f7c8a52",
       "environment": {
         "extensions": [
           "gameboy-slots-v1"
@@ -535,7 +562,7 @@
       "checkpointFormatOfRecord": "FLYSIM01",
       "flysimCompatibility": "lif-1ms-f64-v2/pokered-unique8-v6/75ba5d3536a2862fdb9f4ef1a76b96fe099a7201ac737f0cf53fe4c5ad4183f3:1657ba7716494c9db95a13b1527bc129226363f99b395774de1f76ff28571f0e:63b1acb26272edccdcfacf3c2ff58069e0cefaa84451429c989258bafaeae1d5:f567d7f07227e71c0df2ab4e6510f3a3f79e51b675095792e16d216d74b7b5b7:ece0b5e76d1884dd2f3ff6e0362bc284febe205ac1ce07fdab5009942ddffb62:b8c33144d4cec31c3ac4b6091ef1f4207f567c4f710f7c13fd2dc47c44c2b634:dbbafc044cd50aad7b792615988ff6d9991c846cc3d8b2eafc86b7c357b5eefc/fly-kc-mbon-rstdp-v2/binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b/statefmt:199616-x86_64-unknown-linux-gnu"
     },
-    "digest": "f0142c7f09a1319453b472cdddbc1855062af5733f89d1fbc0b82c0adb52b0c7",
+    "digest": "77d8a88ff7fea51eb29b1ae75fc9cf8c17c184e6a1e5a585e86399f41fd9c9b0",
     "recipeLines": [
       "fly-session/composition-v1",
       "session=<sessionId>",

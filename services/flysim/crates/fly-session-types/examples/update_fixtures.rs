@@ -34,10 +34,12 @@ pub fn derived() -> Vec<(String, String)> {
     ]
 }
 
-/// An example legacy composition. The ROM and decoder digests are placeholders -- the real
-/// ones are computed by the composition that runs, and no ROM identity belongs in a fixture --
-/// and the macro channels are a short excerpt of the Pokemon Red set. The compatibility
-/// string is today's, byte for byte, because its segments must agree with the declaration.
+/// An example legacy composition. The ROM digest is a placeholder -- the real one is computed
+/// by the composition that runs, and no ROM identity belongs in a fixture. The macro channels and
+/// the decoder digest are the real macros-mode vector of `gameboy-decoder-config.json`, which
+/// `flysim`'s `legacy_profile_identity` test computes from `gameboy_decoder_config_with_macros`
+/// and the TypeScript test from the oracle preset. The compatibility string is today's, byte for
+/// byte, because its segments must agree with the declaration.
 pub fn example_composition() -> LegacyComposition {
     let pokered = "0cd19d3b877b7dc66d12c7050bed9a7f38154d4b";
     LegacyComposition {
@@ -53,12 +55,17 @@ pub fn example_composition() -> LegacyComposition {
             adapter: "pokered-unique8-v6".to_owned(),
             symbol_provenance: pokered.to_owned(),
             mode: "macros".to_owned(),
-            macro_channels: ["macro_go_objective", "macro_talk", "macro_next", "macro_move_1"]
+            macro_channels: decoder_vector("macros")["macroChannels"]
+                .as_array()
+                .expect("macroChannels")
                 .iter()
-                .map(|c| (*c).to_owned())
+                .map(|c| c.as_str().expect("channel").to_owned())
                 .collect(),
         },
-        decoder_config_digest: canonical::sha256_hex(b"placeholder: the effective DecoderConfig"),
+        decoder_config_digest: decoder_vector("macros")["digest"]
+            .as_str()
+            .expect("digest")
+            .to_owned(),
         environment: gameboy::EnvironmentDeclaration {
             slots: vec!["best".to_owned()],
             audio_sample_rate: 48_000,
@@ -70,6 +77,17 @@ pub fn example_composition() -> LegacyComposition {
             gameboy::PLASTICITY_VERSION,
         ),
     }
+}
+
+/// One case of the (flysim-written) decoder-config vectors.
+fn decoder_vector(name: &str) -> Value {
+    let file = fixtures::load("gameboy-decoder-config.json").expect("gameboy-decoder-config.json");
+    fixtures::cases(&file)
+        .expect("cases")
+        .iter()
+        .find(|c| c["name"] == Value::String(name.to_owned()))
+        .unwrap_or_else(|| panic!("decoder vector {name}"))
+        .clone()
 }
 
 /// The legacy Game Boy extension set, the profile document and its AssetRef, the clock

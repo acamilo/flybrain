@@ -486,3 +486,75 @@ export function compositionDeclarationDigest(composition: LegacyGameboyCompositi
   if (!isDigest(digest)) fail('digest');
   return digest;
 }
+
+// The decoder configuration digest ------------------------------------------------------------
+
+/** The name of the canonical decoder-configuration form (legacy-gameboy-v1 section 12). */
+export const DECODER_CONFIG_FORM = 'gameboy-decoder-config-v1';
+
+interface GroupLike {
+  channels: Record<string, string>;
+  decisionMs: number;
+  holdMs: number;
+  hysteresis: number;
+  fatigueGain: number;
+  fatigueDecay: number;
+  blockedFatigue: number;
+  blockedMs: number;
+}
+
+/** Structurally the oracle's `DecoderConfig` (`packages/brain/src/readout/decoder.ts`). */
+export interface DecoderConfigLike {
+  exclusive?: GroupLike;
+  macros?: GroupLike;
+  pulses: {
+    channel: string;
+    role: string;
+    holdMs: number;
+    cooldownMs: number;
+    threshold: number;
+    boot?: { cooldownMs: number; threshold: number };
+    throttleGroup?: string;
+  }[];
+  clearLockoutMs: number;
+}
+
+function groupForm(group: GroupLike | undefined): unknown {
+  if (!group) return null;
+  return {
+    // Channel order breaks argmax ties, so it is part of the identity: an array, not a map,
+    // because canonical JSON sorts object keys.
+    channels: Object.entries(group.channels).map(([channel, role]) => ({ channel, role })),
+    decisionMs: group.decisionMs,
+    holdMs: group.holdMs,
+    hysteresis: group.hysteresis,
+    fatigueGain: group.fatigueGain,
+    fatigueDecay: group.fatigueDecay,
+    blockedFatigue: group.blockedFatigue,
+    blockedMs: group.blockedMs,
+  };
+}
+
+/** The canonical form `decoderConfigDigest` is taken over. */
+export function decoderConfigForm(config: DecoderConfigLike): unknown {
+  return {
+    form: DECODER_CONFIG_FORM,
+    exclusive: groupForm(config.exclusive),
+    macros: groupForm(config.macros),
+    pulses: config.pulses.map((pulse) => ({
+      channel: pulse.channel,
+      role: pulse.role,
+      holdMs: pulse.holdMs,
+      cooldownMs: pulse.cooldownMs,
+      threshold: pulse.threshold,
+      boot: pulse.boot ? { cooldownMs: pulse.boot.cooldownMs, threshold: pulse.boot.threshold } : null,
+      throttleGroup: pulse.throttleGroup ?? null,
+    })),
+    clearLockoutMs: config.clearLockoutMs,
+  };
+}
+
+/** `LegacyGameboyComposition.decoderConfigDigest`: SHA-256 of the canonical form. */
+export function decoderConfigDigest(config: DecoderConfigLike): Digest {
+  return digestOf(decoderConfigForm(config));
+}

@@ -82,6 +82,7 @@ once and holds both languages to it.
 | `schema-set.json`, `contract-digest.json` | The canonical schema set and its digest |
 | `seed-vectors.json` | `seed-derivation-v1` test vectors |
 | `checkpoint-envelope.json` | One `FLYSESS1` envelope, its layout and the corruptions a reader refuses |
+| `gameboy-decoder-config.json` | The `decoderConfigDigest` vectors; written and checked by `flysim`'s `legacy_profile_identity` test (`FLY_UPDATE_FIXTURES=1` rewrites), reproduced by `@flybrain/session-types` from the oracle preset |
 | `gameboy-legacy.json` | The legacy Game Boy extension set and digest, every registered `SchemaRef`, the legacy profile and its `AssetRef`, the frame clock, an example composition and its digest |
 
 The derived files (`schema-set.json`, `contract-digest.json`, the `canonical`/`digest` fields

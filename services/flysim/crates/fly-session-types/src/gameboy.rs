@@ -328,7 +328,7 @@ pub const DECLARATIONS: &[TypeSchema] = &[
             req(
                 "decoderConfigDigest",
                 "Digest",
-                "SHA-256 of the canonical JSON of the effective DecoderConfig (TypeScript shape)",
+                "SHA-256 of the canonical gameboy-decoder-config-v1 form of the effective decoder configuration",
             ),
             req(
                 "environment",
