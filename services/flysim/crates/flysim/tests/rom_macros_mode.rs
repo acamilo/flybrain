@@ -3586,3 +3586,78 @@ fn route_4s_doors_and_sides_are_the_cartridges_from_the_badge_checkpoint() {
     );
     assert_eq!(region, Region::piece(0x0f, 0), "arrived from Route 3, on the cave mouth's side");
 }
+
+const MT_MOON_POKECENTER: u32 = 0x44;
+
+/// The live checkpoint from inside row 59's ring (Route 4, rank 12 MT. MOON), or `None` to skip.
+fn mt_moon_live_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_MT_MOON_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// From the live checkpoint taken inside the ring: the fly goes into Mt. Moon instead of in and
+/// out of the Pokécenter beside it.
+///
+/// **What was live** (2026-09-23 22:20 UTC, v0.6.0, rank 12 MT. MOON, the objective Cerulean City):
+/// on Route 4, per ten minutes `GO ROUTE` 215, `GO OBJECTIVE` 113, `GO OUT` 103, five distinct
+/// macros and two new tiles. Route 4 was one node on the map graph with Cerulean off its east
+/// edge, which Mt. Moon cuts off from the cave mouth's side, so the objective aimed at ground no
+/// walk could reach and the Pokécenter door was the way out that was left. The route survey from
+/// this checkpoint on `main` walks Route 4 and the Pokécenter 930 times in 72,000 frames.
+///
+/// The claims, none of them about which button the fly presses, over twenty brain minutes on the
+/// stub rotation: the fly is **inside Mt. Moon** (map `0x3b`), and Route 4's west side and its two
+/// doors, the Pokécenter and the cave mouth, are **not a ring**: under twenty-five crossings in all.
+/// The base makes 56 (18 through the Pokécenter's door, 38 through the cave's); the rotation walks
+/// into the cave on the base too, and back out, and in, because from 1F the graph's Cerulean was
+/// Route 4's east edge beside it.
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_MT_MOON_CHECKPOINT=.local/checkpoints/release-rank12-route4.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture the_fly_goes_into_mt_moon
+/// ```
+#[test]
+fn the_fly_goes_into_mt_moon_from_the_live_route_4_checkpoint() {
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = mt_moon_live_checkpoint() else {
+        eprintln!("skipped: no FLY_MT_MOON_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert!(run.adapter.progress().rank >= 12, "the checkpoint is the rung the ring was on");
+
+    let mut crossings = 0u32;
+    let mut in_mt_moon: Option<u32> = None;
+    let mut on_route_4 = 0u32;
+    let mut previous = run.map();
+    for frame in 0..72_000u32 {
+        run.frame();
+        let map = run.map();
+        if map != previous {
+            let door = |other: u32| other == MT_MOON_POKECENTER || other == MT_MOON_1F;
+            if (previous == ROUTE_4 && door(map)) || (door(previous) && map == ROUTE_4) {
+                crossings += 1;
+            }
+            previous = map;
+        }
+        if in_mt_moon.is_none() && map == MT_MOON_1F {
+            in_mt_moon = Some(frame);
+        }
+        if map == ROUTE_4 {
+            on_route_4 += 1;
+        }
+    }
+    eprintln!(
+        "{:.1} brain minutes: Mt. Moon at {in_mt_moon:?}, crossings of Route 4's west doors {crossings}, \
+         frames on Route 4 {on_route_4}, rank {}, route {:?}, macros {:?}",
+        run.ms / 60_000.0,
+        run.adapter.progress().rank,
+        run.route,
+        run.started
+    );
+    assert!(crossings < 25, "{crossings} crossings of Route 4's west doors: {:?}", run.started);
+    assert!(in_mt_moon.is_some(), "the fly never went into Mt. Moon: {:?}", run.route);
+}
