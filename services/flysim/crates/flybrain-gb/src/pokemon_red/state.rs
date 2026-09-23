@@ -680,6 +680,34 @@ pub fn dialog_border(memory: &mut dyn MemoryReader) -> (bool, bool) {
     (box_drawn(memory, 0, 12, 19, 17), border_drawn(memory, 0, 12, 19, 17))
 }
 
+/// Every complete [`border_drawn`] rectangle on screen, as `(left, top, right, bottom)`.
+///
+/// A diagnostic, beside [`dialog_border`], and the reading row 56 turns on. The dialogue box and
+/// the two-option box are both read at *pinned* coordinates, because that is where the scripts
+/// that draw them put them — so a prompt Red drew somewhere else is invisible to
+/// [`yes_no_prompt`], and "invisible" and "not there" are the same answer from inside the seam.
+/// This asks the screen instead: which rectangles on this frame are whole `TextBoxBorder`
+/// figures. Every rectangle at least three by three is tried, which is 130,000 reads of a
+/// memoized buffer and is a survey tool rather than a per-frame accessor.
+pub fn drawn_boxes(memory: &mut dyn MemoryReader) -> Vec<(u16, u16, u16, u16)> {
+    let mut found = Vec::new();
+    for top in 0..poke::SCREEN_HEIGHT {
+        for left in 0..poke::SCREEN_WIDTH {
+            if screen_tile(memory, left, top) != poke::frame::TOP_LEFT {
+                continue;
+            }
+            for bottom in (top + 2)..poke::SCREEN_HEIGHT {
+                for right in (left + 2)..poke::SCREEN_WIDTH {
+                    if border_drawn(memory, left, top, right, bottom) {
+                        found.push((left, top, right, bottom));
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
 pub fn dialog_corners(memory: &mut dyn MemoryReader) -> [u8; 4] {
     [
         screen_tile(memory, 0, 12),
