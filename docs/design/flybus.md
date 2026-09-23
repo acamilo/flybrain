@@ -106,7 +106,10 @@ default and is the behaviour that predates the bus. With `bus`:
 - `fly_frames_sent_total` and `fly_feed_clients` move to the edge with the clients; it exports
   them under the same names on `FLY_EDGE_METRICS_ADDR` (`127.0.0.1:9102` in
   `infra/units/flyedge.service`), and watchdog check 2 follows `FLY_FEED_VIA` in `fly.env` to
-  them. flysim's own copies read 0 in bus mode; `/status` is otherwise unchanged.
+  them. flysim's own copies read 0 in bus mode; `/status` is otherwise unchanged. The edge also
+  exports `fly_edge_bus_connected`, `fly_edge_bus_lost_total`, `fly_edge_bind_failures_total`
+  (the bus answered but :7400 was taken, most likely by a flysim still in direct mode) and
+  `fly_edge_decode_failures_total`.
 - Nothing about the fly changes: the readout, the reward catalog, the adapter version and the
   compatibility string are byte-identical in both modes (`--print-compatibility`).
 
@@ -120,7 +123,8 @@ bytes** of artifacts, about 3.7 MB/s at 30 Hz. `flysim::feedbus::limits()`:
 
 | Limit | Value | Why |
 | --- | --- | --- |
-| `max_clients` | 8 | flysim's publisher, the edge, and room for a recorder or a probe |
+| `max_clients` | 8 | connections, pending handshakes included: the in-process publisher and the edge's one socket seat |
+| `max_subscriptions_per_client` | 4 | the edge needs 1; this is what bounds the worst case |
 | `max_latest_in_flight` | 2 | the default; the edge asks for 1 |
 | `max_artifact_bytes` | 4 MiB | ten seconds of audio that piled up behind a late publish |
 | `max_store_bytes` | 32 MiB | tmpfs, so RAM; ten times the worst case below |
@@ -130,11 +134,16 @@ bytes** of artifacts, about 3.7 MB/s at 30 Hz. `flysim::feedbus::limits()`:
 
 A `latest` subscriber that never consumes pins at most its queued slot plus its in-flight
 credits (3 snapshots); the topic pins one retained value; the publisher holds one snapshot of
-staging plus the sealed copy while sealing. Seven stuck subscribers are therefore 24 snapshots,
-about 3 MB, and publication never waits on any of them (a latest subscriber is never a
-reason to refuse a publication, bus-v1 section 9). Measured in
-`crates/fly-edge/tests/stall.rs`: a subscriber that hoards every delivery holds the store at
-4 snapshots (489,468 bytes) while 179 of 179 snapshots are published, with pacer lag 0.
+staging plus the sealed copy while sealing. Only one client can subscribe at all: the publisher
+is in process, and `edge.sock` is launcher-bound to `fly-edge`, which the router admits once at
+a time (a second connection is refused as already connected). The worst case is therefore that
+one client holding all 4 subscriptions it may open, none consuming: 4 x 3 + 1 + 2 = **15
+snapshots, about 1.8 MB**, and publication never waits on any of them (a latest subscriber is
+never a reason to refuse a publication, bus-v1 section 9). `crates/fly-edge/tests/stall.rs`
+measures exactly that seat: four hoarding subscriptions, a fifth refused, a second connection
+refused, pacer lag 0, no publication refused. The 15 is an upper bound; the measured store
+was 472,061 bytes (under 4 snapshots), because fan-out adds roots and never copies, so four
+subscriptions stuck on the same publications pin the same artifacts.
 
 ### Amendment 2026-09-23: feed store lifecycle
 
@@ -152,7 +161,30 @@ reason to refuse a publication, bus-v1 section 9). Measured in
   500 ms, binding :7400 again only when the first snapshot of the new router arrives. To the
   stage that is exactly a flysim restart in direct mode: refused, then back.
 - **Default.** `flyedge.service` is in no target and `07-enable.sh` does not enable it;
-  `05-deploy.sh` writes `FLY_FEED_VIA=direct` unless the env file says otherwise. The switch
-  and the way back are in the unit's header.
+  `05-deploy.sh` writes `FLY_FEED_VIA=direct` unless the env file says otherwise, and refuses
+  anything but `direct` or `bus` (any case, written lowercased). The switch and the way back
+  are in the unit's header. The edge gets a cpuset drop-in on the page's CPUs with the other
+  units, so once enabled it never runs on flysim's.
+- **Paths.** `feed.bus_dir` must be absolute and non-empty (checked in both modes), since
+  flysim and the edge each resolve it.
 - **Migration order** is unchanged: the feed first; control only after the bus has carried
   the feed in production for a full session.
+
+### Known limits (review round 1, 2026-09-23)
+
+Accepted for now and written down rather than fixed:
+
+- **Feed counters off the container.** In bus mode flysim's `:9101` reports
+  `fly_feed_clients` and `fly_frames_sent_total` as 0, and the edge's copies are on loopback
+  `:9102` only. The watchdog follows `FLY_FEED_VIA`; anything that scrapes `:9101` from off
+  the container (the metrics dashboard) goes blind to the feed until it also scrapes the edge.
+- **Store quota is per router, not per client.** Any client on `edge.sock` may allocate
+  artifacts up to the store cap; a hostile process running as the same user could fill the
+  store and make flysim's publications fail. The loop is unaffected (a refusal is counted, never
+  waited on), but the feed would stall. Same-user processes are inside the trust boundary
+  (crate README, "Limitations").
+- **Rollback while in bus mode.** Rolling back to a release without `fly-edge` while `fly.env`
+  still says `bus` leaves no one on :7400, and check 2 then reads the edge's absent `:9102` and
+  escalates. Switch back to `direct` first (the unit header's way back), then roll back.
+- **Old fixtures.** `cold-open`, `steady` and `big-moment` predate `game.scene` and cannot be a
+  Rust `FeedHeader`, so fixture parity covers `macros`, `shop`, `center` and `bigpad`.
