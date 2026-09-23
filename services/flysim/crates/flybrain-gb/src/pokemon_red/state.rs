@@ -132,6 +132,19 @@ pub mod poke {
     /// deliberately *not* here: standing on a doormat is an ordinary overworld state, and it is the
     /// one `docs/design/room-escape.md` cares most about.
     pub const SCRIPTED_MOVEMENT: u8 = 0xc0;
+    /// `wCurOpponent` (row 58): the species of a wild opponent or `OPP_ID_OFFSET` plus a
+    /// trainer's class, written when a battle is *decided* -- `home/trainers.asm` for a trainer,
+    /// the encounter check for a wild one -- and cleared by `EndOfBattle` together with
+    /// `wIsInBattle`. Not in the generated table, so it is derived rather than pinned:
+    /// `ram/wram.asm` at the pinned commit declares `wIsInBattle:: db`,
+    /// `wPartyGainExpFlags:: flag_array PARTY_LENGTH` (one byte), `wCurOpponent:: db`,
+    /// `wBattleType:: db`, `wDamageMultipliers:: db`, `wGymLeaderNo:: db`, `wTrainerNo:: db` in
+    /// that order, and the table's `wIsInBattle` (`$d057`), `wBattleType` (`$d05a`) and
+    /// `wTrainerNo` (`$d05d`) sit exactly where that layout puts them, so the byte between is
+    /// `wBattleType - 1` with both neighbours checked. Measured on the cartridge in the Pewter Gym:
+    /// zero in the overworld, non-zero from the frame a trainer's challenge closes to the end of
+    /// the battle, including the 219 frames of the battle transition in between.
+    pub const CUR_OPPONENT: u16 = super::ram::wBattleType - 1;
 
     /// `constants/battle_constants.asm`: the non-volatile status byte.
     pub const SLP_MASK: u8 = 0b111;
@@ -293,12 +306,22 @@ pub fn started(memory: &mut dyn MemoryReader) -> bool {
 }
 
 /// Whether the player's buttons reach the player: no ignored joypad, no simulated input, no
-/// scripted movement, no warp in flight, not mid-ledge-hop.
+/// scripted movement, no warp in flight, not mid-ledge-hop, no battle decided and not yet begun.
 ///
 /// The masks are the reward adapter's own scripted gate, minus the door bits — see
 /// [`poke::SCRIPTED_MOVEMENT`].
+///
+/// **A battle decided is the cartridge's** (row 58). Between a trainer's challenge closing and the
+/// battle screen, the battle transition runs for 219 frames with every joypad and script bit
+/// clear, so the seam read an overworld the fly could walk in: the pad was dealt, a walk toward
+/// the gym leader pressed into an animation, gave up after three refused steps, and put the
+/// leader into the blocked ledger for ten brain minutes -- and the Jr. Trainer's conversation read
+/// as over, so the trainer the fly was about to lose to went into the talked ledger for the
+/// session. [`poke::CUR_OPPONENT`] is set on the frame the battle is decided and cleared with the
+/// battle's own end.
 pub fn controllable(memory: &mut dyn MemoryReader) -> bool {
-    read(memory, ram::wJoyIgnore) == 0
+    read(memory, poke::CUR_OPPONENT) == 0
+        && read(memory, ram::wJoyIgnore) == 0
         && read(memory, ram::wSimulatedJoypadStatesIndex) == 0
         && read(memory, ram::wStatusFlags5) & poke::SCRIPTED_STATUS5 == 0
         && read(memory, ram::wStatusFlags6) & poke::SCRIPTED_STATUS6 == 0

@@ -410,3 +410,18 @@ fn the_start_menus_box_is_read_the_same_way() {
         .cursor(2, 11, 0, 7, poke::pad::DOWN | poke::pad::UP | poke::pad::START);
     assert_eq!(detect(&mut corners), Scene::Unknown, "four corners are not the start menu");
 }
+
+#[test]
+fn a_battle_decided_and_not_yet_begun_is_the_cartridges() {
+    // Row 58. Between a trainer's challenge closing and the battle screen the transition runs for
+    // 219 frames with every joypad and script bit clear; `wCurOpponent` is what says a battle has
+    // been decided. The byte is derived, not generated: it sits between two generated ones.
+    assert_eq!(poke::CUR_OPPONENT, ram::wIsInBattle + 2, "after wIsInBattle and one flag byte");
+    assert_eq!(poke::CUR_OPPONENT, ram::wTrainerNo - 4, "and four before wTrainerNo");
+    let mut wram = Wram::overworld();
+    assert_eq!(detect(&mut wram), Scene::Overworld);
+    wram.set(poke::CUR_OPPONENT, 0xcd);
+    assert_eq!(detect(&mut wram), Scene::Unknown, "OPP_JR_TRAINER_M, decided");
+    wram.set(poke::CUR_OPPONENT, 0x00);
+    assert_eq!(detect(&mut wram), Scene::Overworld, "and `EndOfBattle` clears it");
+}
