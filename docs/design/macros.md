@@ -1626,19 +1626,27 @@ blocked` in the forest, no reward. Reproduced with the route survey from the liv
   nearest reachable tile, a dead end at (6, 1), and was blocked; `GO WARP`'s last tier took the
   south gate, whose `GO OUT` is Route 2, whose `GO OBJECTIVE` is the gate.
 - **The fact is `wStatusFlags7` bit 3, `BIT_TRAINER_BATTLE`**: set by `CheckFightingMapTrainers`
-  on the "!", cleared at `.battleOccurred` after every battle (before the blackout check). An
-  overworld frame with it set is `Unknown` in the macros' own scene, with no text box, so the pad
-  is empty, no ground is recorded and no held entry is decided on it. A trainer talked to by the
-  fly never sets it; its `wCurOpponent` is written inside the text.
+  on the "!", cleared at `.battleOccurred` after every battle (before the blackout check). It
+  covers more than the five frames: the "!" bubble runs about sixty frames before `wJoyIgnore` is
+  set, and they read as the fly's overworld too -- about sixty-six free-looking frames per
+  engagement, measured. An overworld frame with the bit set is `Unknown` in the macros' own
+  scene, with no text box, so the pad is empty, no ground is recorded and no held entry is
+  decided on it. A trainer talked to by the fly never sets it; its `wCurOpponent` is written
+  inside the text.
+- **On main the five frames are already row 59's** (12.24: a held push-back is written only after
+  thirty frames of overworld), and that alone keeps (1, 18) clear. This row is the cartridge-fact
+  layer under it: the pad is empty through the bubble as well, no ground is recorded, and it does
+  not depend on the gap staying under thirty frames.
 - **The macros' reading only.** `controllable` and `scene::detect` are shared with the reward
-  adapter and the feed and do not change; `PokeState`'s `scene` and `scripted` read the bit
-  beside them.
+  adapter and do not change; `PokeState`'s `scene` and `scripted` read the bit beside them. In
+  macros mode the feed's `game.scene` is the palette's, so it reads `unknown` on those frames,
+  which is what the contract says of a frame the cartridge is driving.
 - **The gates were modelled right.** Both forest gates are on the graph and `next_hop` answers
   the forest from the south gate and Route 2 from the north one. The south gate's `GO OUT` is the
   "a room has to be leavable" tier, a way back that is the fly's choice: with the corridor open,
   the survey seed that walked into the gate twelve times still earned the badge, on both arms.
 
-Nothing is ranked or pressed for the fly: five frames that were never the fly's deal nothing. The
+Nothing is ranked or pressed for the fly: frames that were never the fly's deal nothing. The
 decoder, the reward catalog, the adapter version, the roles and the compatibility string are
 untouched.
 

@@ -2988,14 +2988,15 @@ is the corridor at x = 1-2 from row 22 up to row 0; the Bug Catcher of
 pushed ledger**. It was written at frame 16,389: a `GO ITEM` walk stepped onto (1, 18), the trainer
 took the joypad, and his text closed onto five frames with no box, no script bit and
 `wCurOpponent` zero (`StartTrainerBattle` runs after `DisplayTextID`'s close-down). Row 58's held
-entry was decided on the first of them. The pushed ledger has no window, so the north gate had no
+entry was decided on the first of them. The "!" bubble before it, about sixty frames before
+`wJoyIgnore` is set, reads the same way: about sixty-six free-looking frames per engagement. The pushed ledger has no window, so the north gate had no
 road for the session; `GO OBJECTIVE` walked to the nearest reachable tile, (6, 1), a dead end, and
 was blocked, and the last tiers walked the fly back to the south gate and Route 2. Every base
 survey arm walls (1, 18); only a fly that has to come back up the corridor is trapped by it.
 
 | # | trap | trigger | test | fix, or why it is left |
 | --- | --- | --- | --- | --- |
-| 61 | the frames between a sighted trainer's challenge text and `StartTrainerBattle` read as the fly's overworld: a pad is dealt, ground recorded, and row 58's held push-back written, walling the tile the trainer fired on for the session | any trainer whose line of sight a walk crosses; Viridian Forest's (1, 18), the one free tile of the corridor to the north gate | `a_trainers_challenge_is_the_cartridges_until_its_battle_is_over`, `the_frames_between_a_trainers_text_and_its_battle_deal_no_pad_and_record_no_ground`, `a_trainers_challenge_does_not_wall_the_road_to_the_forests_north_gate` (ROM) | **fixed** in the macro seam: `state::trainer_engaged` reads `wStatusFlags7` bit 3 (`BIT_TRAINER_BATTLE`, set by `CheckFightingMapTrainers`, cleared at `.battleOccurred`); `PokeState`'s `scene` is `Unknown` on an overworld frame with it set and `scripted` is true. `controllable` and `scene::detect` unchanged. `docs/design/macros.md` 12.24 |
+| 61 | the "!" bubble and the frames between a sighted trainer's challenge text and `StartTrainerBattle` (about 66 per engagement) read as the fly's overworld: a pad is dealt, ground recorded, and row 58's held push-back written, walling the tile the trainer fired on for the session | any trainer whose line of sight a walk crosses; Viridian Forest's (1, 18), the one free tile of the corridor to the north gate | `a_trainers_challenge_is_the_cartridges_until_its_battle_is_over`, `the_frames_between_a_trainers_text_and_its_battle_deal_no_pad_and_record_no_ground`, `a_trainers_challenge_does_not_wall_the_road_to_the_forests_north_gate` (ROM) | **fixed** in the macro seam: `state::trainer_engaged` reads `wStatusFlags7` bit 3 (`BIT_TRAINER_BATTLE`, set by `CheckFightingMapTrainers`, cleared at `.battleOccurred`); `PokeState`'s `scene` is `Unknown` on an overworld frame with it set and `scripted` is true. `controllable` and `scene::detect` unchanged; in macros mode `game.scene` reads `unknown` on those frames. `docs/design/macros.md` 12.25 |
 | 61b | the south gate deals `GO OUT` (back to Route 2) beside the forest door the objective's road takes | the "a room has to be leavable" tier in a gate whose way on is a passage | -- | **left**: a way back is the fly's choice; with the corridor open no survey stays on it |
 
 ### Before and after
@@ -3031,16 +3032,21 @@ fact: every sighted trainer has it.
 
 ### Overlap
 
-Row 59 (`fix/loop-row59` `cf10ffd`, unmerged) found the same five frames on Route 3 and holds the
-push until thirty frames of overworld. From this checkpoint its commit alone also passes the ROM
-test; the two compose (flybrain-gb 429/0 and the ROM test with both). This row reads the fact at
-the seam, so the gap also deals no pad and records no ground.
+Row 59 (59f, merged in v0.6.1) found the same five frames on Route 3 and holds the push until
+thirty frames of overworld; on main that alone keeps (1, 18) clear. This row is the cartridge-fact
+layer under it: the pad is empty through the bubble too, no ground is recorded, and it does not
+depend on the gap staying under thirty frames. The ROM test asserts no pad on an overworld frame
+with the bit set, which row 59 alone does not meet.
 
 ### Gates
 
-- `cargo test --release -p flybrain-gb` with `FLY_ROM`: 428 + 27 passed, 0 failed.
-- `cargo test --release -p flysim --no-fail-fast` with `FLY_ROM`, `FLY_DATASET` and the row-61
-  checkpoint: 185 passed, 0 failed (the integration service test passed this run).
+On `main` `510727c` (v0.6.1, row 59 merged):
+
+- `cargo test --release -p flybrain-gb` with `FLY_ROM`: 461 passed, 0 failed.
+- `rom_macros_mode` with the row-61 and row-59 checkpoints: row 61's test and row 59's three pass.
+  Row 61's test on the branch with `trainer_engaged` neutered (main's behaviour, row 59's settle
+  alone): the wall stays clear, and a pad is dealt on 67 of 67 challenge frames -- **fails**; on
+  the branch 0 of 67 -- passes.
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean.
 - `npm test` 663 passed; `npm run typecheck` clean; `infra/tests/lint.sh` ALL CHECKS PASSED.
 - `flysim --print-compatibility`, raw and macros: 648 bytes, sha256 `8ce67b97...a8f68`, the same
