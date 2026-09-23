@@ -321,7 +321,7 @@ mod tests {
             wall_ms: 1_700_000_000_000,
             rom_sha256: "ab".repeat(32),
             emulator_frame: 12_345,
-            compatibility: "kernel/pokered-unique8-v6/fingerprint".to_string(),
+            compatibility: "kernel/pokered-unique8-v7/fingerprint".to_string(),
             speed: 1.0,
             buttons: 0,
             rank_since_ms: 4_242.0,

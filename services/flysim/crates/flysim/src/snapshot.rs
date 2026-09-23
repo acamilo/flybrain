@@ -242,7 +242,7 @@ pub struct FeedMacroOutcome {
 
 /// Reward categories the feed reports counts for. The adapter's own interned kinds
 /// (`milestone`, `exploration`, `map`, `species`, `trainer`, `battle`, `badge`, `boundary`,
-/// `catch`) map onto these.
+/// `catch`, `talk`, `item`) map onto these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RewardKind {
@@ -291,6 +291,15 @@ impl RewardKind {
             // for it on the same frame, so the `pokedex` counter already moves. Mapping `catch`
             // there as well would count one event twice.
             "catch" => Self::Wildwin,
+            // `talk` and `item` (the operator, 2026-09-23) are the fly finding what is in a place:
+            // a person or a sign it opened, an item it picked up. That is the family `explore`
+            // already counts -- new ground, a door found -- at the same quiet scale (0.05 to
+            // 0.15), so both publish there and the feed's closed kind set does not move. Not
+            // `area`, which counts maps and is a notable row; not `story`, which is the plot;
+            // not `wildwin`, which is a battle. The Pokémon Red ticker's copy for `explore` says
+            // "new find" so that the row is true of all four (`apps/stage/src/games/pokemon-red.ts`).
+            "talk" => Self::Explore,
+            "item" => Self::Explore,
             // The platformer.
             "band" => Self::Explore,
             "coin" => Self::Wildwin,
@@ -749,6 +758,8 @@ mod tests {
         assert_eq!(RewardKind::from_adapter("nonsense"), None);
         assert_eq!(RewardKind::from_adapter("boundary"), Some(RewardKind::Explore));
         assert_eq!(RewardKind::from_adapter("catch"), Some(RewardKind::Wildwin));
+        assert_eq!(RewardKind::from_adapter("talk"), Some(RewardKind::Explore));
+        assert_eq!(RewardKind::from_adapter("item"), Some(RewardKind::Explore));
     }
 
     #[test]

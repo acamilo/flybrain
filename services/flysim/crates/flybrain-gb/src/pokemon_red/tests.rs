@@ -865,8 +865,8 @@ fn the_recent_ticker_keeps_the_newest_eight_events_newest_first() {
 #[test]
 fn the_adapter_reports_its_identity_and_pinned_rom() {
     let reward = PokemonRedReward::new();
-    assert_eq!(reward.id(), "pokered-unique8-v6");
-    assert_eq!(reward.migrates_from(), ["pokered-unique8-v5"]);
+    assert_eq!(reward.id(), "pokered-unique8-v7");
+    assert_eq!(reward.migrates_from(), ["pokered-unique8-v6"]);
     assert!(reward.rom_allowed(SUPPORTED_ROM));
     assert!(!reward.rom_allowed(
         "5ca7ba01642a3b27b0cc0b5349b52792795b62d3ed977e98a09390659af96b7b"
@@ -1355,4 +1355,542 @@ fn a_rung_earned_out_of_order_does_not_skip_the_ones_under_it() {
     f.memory.set(ram::wCurMap, maps::VIRIDIAN_FOREST);
     f.visit(3, 3);
     assert_eq!(f.reward.rank(), 9);
+}
+
+// --- Engagement rewards (the operator, 2026-09-23) -----------------------------------------------
+
+/// `constants/tileset_constants.asm`: a gym, a house, a mart, the forest and a cave.
+const GYM: u8 = 7;
+const HOUSE: u8 = 8;
+const MART: u8 = 2;
+const FOREST: u8 = 3;
+const CAVERN: u8 = 17;
+
+/// `wSpriteStateData1`'s facing byte: `SPRITE_FACING_DOWN`, `_UP`, `_LEFT`, `_RIGHT`.
+const FACING_DOWN: u8 = 0x00;
+const FACING_UP: u8 = 0x04;
+const FACING_LEFT: u8 = 0x08;
+
+impl Fixture {
+    /// Stand on `map`, drawn with `tileset`, with no counter tiles in the tileset header.
+    fn on_map(&mut self, map: u8, tileset: u8) {
+        self.memory.set(ram::wCurMap, map);
+        self.memory.set(ram::wCurMapTileset, tileset);
+        for index in 0..3 {
+            self.memory.set(ram::wTilesetTalkingOverTiles + index, 0xff);
+        }
+    }
+
+    /// A visible sprite in `slot` at map tile `(x, y)`, stored plus four as `object_event` emits
+    /// it, with `extra` in its `wMapSpriteExtraData` entry.
+    fn sprite(&mut self, slot: u8, x: u8, y: u8, extra: (u8, u8)) {
+        let count = self.memory.bytes[ram::wNumSprites as usize].max(slot);
+        self.memory.set(ram::wNumSprites, count);
+        let data1 = ram::wSpriteStateData1 + u16::from(slot) * 16;
+        let data2 = ram::wSpriteStateData2 + u16::from(slot) * 16;
+        self.memory.set(data1, 1);
+        self.memory.set(data1 + 2, 0);
+        self.memory.set(data2 + 4, y + 4);
+        self.memory.set(data2 + 5, x + 4);
+        let entry = ram::wMapSpriteExtraData + (u16::from(slot) - 1) * 2;
+        self.memory.set(entry, extra.0);
+        self.memory.set(entry + 1, extra.1);
+    }
+
+    fn face(&mut self, facing: u8) {
+        self.memory.set(ram::wSpriteStateData1 + 9, facing);
+    }
+
+    /// `DisplayTextIDInit`'s `TextBoxBorder` at screen (0, 12)-(19, 17), the box every text id
+    /// but the start menu's is drawn in; or the map's own tiles again once it is gone.
+    fn dialogue_box(&mut self, drawn: bool) {
+        use super::state::poke::frame;
+        let at = |x: u16, y: u16| ram::wTileMap + y * 20 + x;
+        for y in 12..=17u16 {
+            for x in 0..20u16 {
+                let tile = if !drawn {
+                    0
+                } else {
+                    match (x, y) {
+                        (0, 12) => frame::TOP_LEFT,
+                        (19, 12) => frame::TOP_RIGHT,
+                        (0, 17) => frame::BOTTOM_LEFT,
+                        (19, 17) => frame::BOTTOM_RIGHT,
+                        (_, 12) | (_, 17) => frame::HORIZONTAL,
+                        (0, _) | (19, _) => frame::VERTICAL,
+                        _ => 0x7f,
+                    }
+                };
+                self.memory.set(at(x, y), tile);
+            }
+        }
+    }
+
+    /// The box opening: the font bit, the border, and -- `delay` samples later, the way the
+    /// cartridge loads the font's tiles first -- `DisplayTextID`'s argument.
+    fn open_box(&mut self, argument: u8, delay: usize) -> Vec<RewardEvent> {
+        self.memory.set(ram::wFontLoaded, 1);
+        self.dialogue_box(true);
+        let mut events = Vec::new();
+        for _ in 0..delay {
+            events.extend(self.sample());
+        }
+        self.memory.set(ram::wSpriteIndex, argument);
+        events.extend(self.sample());
+        events
+    }
+
+    fn close_box(&mut self) -> Vec<RewardEvent> {
+        self.memory.set(ram::wFontLoaded, 0);
+        self.dialogue_box(false);
+        self.sample()
+    }
+
+    /// One conversation as the cartridge draws it: a sample with the box closed (the frame the A
+    /// press was read on), `DisplayTextIDInit` setting the font bit and `DisplayTextID` copying
+    /// `argument` into `wSpriteIndex`, a few frames of text, and `CloseTextDisplay`.
+    fn talk(&mut self, argument: u8) -> Vec<RewardEvent> {
+        let mut events = self.sample();
+        events.extend(self.open_box(argument, 20));
+        events.extend(self.sample());
+        events.extend(self.close_box());
+        events
+    }
+
+    fn talk_events(&mut self, argument: u8) -> Vec<RewardEvent> {
+        self.talk(argument).into_iter().filter(|event| event.kind == kind::TALK).collect()
+    }
+
+    /// `wToggleableObjectList` for this map: `(sprite slot, global index)` pairs and `$ff`.
+    fn toggle_list(&mut self, entries: &[(u8, u8)]) {
+        for (index, (slot, global)) in entries.iter().enumerate() {
+            self.memory.set(ram::wToggleableObjectList + index as u16 * 2, *slot);
+            self.memory.set(ram::wToggleableObjectList + index as u16 * 2 + 1, *global);
+        }
+        self.memory.set(ram::wToggleableObjectList + entries.len() as u16 * 2, 0xff);
+    }
+
+    fn set_bit(&mut self, base: u16, index: u16, on: bool) {
+        let address = base + index / 8;
+        let mask = 1 << (index % 8);
+        let byte = self.memory.bytes[address as usize];
+        self.memory.set(address, if on { byte | mask } else { byte & !mask });
+    }
+
+    fn item_events(&mut self) -> Vec<RewardEvent> {
+        self.sample().into_iter().filter(|event| event.kind == kind::ITEM).collect()
+    }
+}
+
+#[test]
+fn indoors_is_the_cartridges_building_tilesets_and_nothing_else() {
+    // CheckIfInOutsideMap's outside (OVERWORLD, PLATEAU) and BikeRidingTilesets (OVERWORLD,
+    // FOREST, UNDERGROUND, SHIP_PORT, CAVERN) are the two tables; indoor is neither.
+    let outdoor = [0, 3, 11, 14, 17, 23];
+    for tileset in 0..24u8 {
+        assert_eq!(engage::indoor(tileset), !outdoor.contains(&tileset), "tileset {tileset}");
+    }
+    assert!(!engage::indoor(24), "a tileset past the table is not a building");
+    assert!(!engage::indoor(0xff));
+}
+
+#[test]
+fn a_conversation_the_fly_opens_indoors_pays_once_when_its_box_closes() {
+    let mut f = Fixture::booted();
+    f.on_map(maps::PEWTER_GYM, GYM);
+    f.visit(5, 5);
+    f.sprite(1, 5, 4, (0, 0));
+    f.face(FACING_UP);
+
+    // Nothing on the frames the box is open: the payout waits for it to close.
+    let mut events = f.sample();
+    events.extend(f.open_box(1, 20));
+    assert_eq!(count_of_kind(&events, kind::TALK), 0, "not while the box is open");
+    let events = f.close_box();
+    assert_eq!(kinds(&events), ["talk"]);
+    assert_eq!(events[0].value, 0.10);
+    assert_eq!(events[0].stimulation_ms, 100);
+    assert_eq!(labels(&events), [format!("TALKED TO #1 IN AREA {}", maps::PEWTER_GYM)]);
+
+    // Talking to the same person again, as often as the fly likes, is not a farm.
+    for _ in 0..5 {
+        assert!(f.talk_events(1).is_empty(), "one payout per (map, object) for the ledger's life");
+    }
+
+    // A second person on the same map is a second key.
+    f.sprite(2, 4, 5, (0, 0));
+    f.face(FACING_LEFT);
+    assert_eq!(kinds(&f.talk_events(2)), ["talk"]);
+
+    // A sign is a text id past the sprite slots, on the tile the player faces.
+    f.memory.set(ram::wNumSigns, 1);
+    f.memory.set(ram::wSignCoords, 6);
+    f.memory.set(ram::wSignCoords + 1, 5);
+    f.memory.set(ram::wSignTextIDs, 7);
+    f.face(FACING_DOWN);
+    let sign = f.talk_events(7);
+    assert_eq!(labels(&sign), [format!("READ SIGN #7 IN AREA {}", maps::PEWTER_GYM)]);
+    assert!(f.talk_events(7).is_empty());
+    assert_eq!(f.reward.statistics().counts[kind::TALK], 3);
+}
+
+#[test]
+fn the_same_slot_on_another_indoor_map_is_another_conversation() {
+    let mut f = Fixture::booted();
+    f.on_map(maps::PEWTER_GYM, GYM);
+    f.visit(5, 5);
+    f.sprite(1, 5, 4, (0, 0));
+    f.face(FACING_UP);
+    assert_eq!(kinds(&f.talk_events(1)), ["talk"]);
+    f.on_map(maps::OAKS_LAB, HOUSE);
+    f.visit(5, 5);
+    assert_eq!(kinds(&f.talk_events(1)), ["talk"]);
+}
+
+#[test]
+fn talking_outdoors_in_a_forest_or_in_a_cave_pays_nothing() {
+    for (map, tileset) in [
+        (maps::PEWTER_CITY, 0),
+        (maps::VIRIDIAN_FOREST, FOREST),
+        (maps::MT_MOON_1F, CAVERN),
+    ] {
+        let mut f = Fixture::booted();
+        f.on_map(map, tileset);
+        f.visit(5, 5);
+        f.sprite(1, 5, 4, (0, 0));
+        f.face(FACING_UP);
+        assert!(f.talk_events(1).is_empty(), "map {map}, tileset {tileset}");
+    }
+}
+
+#[test]
+fn text_the_fly_did_not_open_pays_nothing() {
+    let mut f = Fixture::booted();
+    f.on_map(maps::PEWTER_GYM, GYM);
+    f.visit(5, 5);
+    f.sprite(1, 5, 4, (0, 0));
+    f.face(FACING_UP);
+
+    // A script that took the joypad before it drew the box: a trainer walking up, a guard.
+    f.memory.set(ram::wJoyIgnore, 0xff);
+    assert!(f.talk_events(1).is_empty(), "the joypad was the cartridge's");
+    f.memory.set(ram::wJoyIgnore, 0);
+
+    // Simulated input, and scripted movement.
+    f.memory.set(ram::wSimulatedJoypadStatesIndex, 3);
+    assert!(f.talk_events(1).is_empty(), "the buttons were simulated");
+    f.memory.set(ram::wSimulatedJoypadStatesIndex, 0);
+    f.memory.set(ram::wStatusFlags5, 0x80);
+    assert!(f.talk_events(1).is_empty(), "the movement was scripted");
+    f.memory.set(ram::wStatusFlags5, 0);
+
+    // A trigger tile: the box opens on the frame a step ends, with the walk counter still
+    // running on the sample before it -- the overworld never reads A mid-step.
+    f.memory.set(ram::wWalkCounter, 1);
+    assert!(f.talk_events(1).is_empty(), "a step onto a trigger tile is not a press");
+    f.memory.set(ram::wWalkCounter, 0);
+
+    // Text about someone the fly is not facing: a script naming a sprite across the room.
+    f.sprite(2, 9, 9, (0, 0));
+    assert!(f.talk_events(2).is_empty(), "not the thing in front");
+    // A text id that is no sign in front of the fly.
+    assert!(f.talk_events(9).is_empty(), "no sign there");
+    // The start menu is text id 0.
+    assert!(f.talk_events(0).is_empty(), "the start menu is not a conversation");
+
+    // A script that opens the box with the joypad taken and hands it back mid-conversation:
+    // the frames after it are the fly's, but the box did not open on one of them.
+    f.memory.set(ram::wJoyIgnore, 0xff);
+    f.sample();
+    f.open_box(1, 0);
+    f.memory.set(ram::wJoyIgnore, 0);
+    f.sample();
+    f.sample();
+    assert_eq!(count_of_kind(&f.close_box(), kind::TALK), 0, "no open edge after a ready frame");
+
+    // START in front of someone: the menu's box is not the dialogue box, and `wSpriteIndex`
+    // still names the last person spoken to for the frames before the menu's own id arrives.
+    f.memory.set(ram::wSpriteIndex, 1);
+    f.sample();
+    f.memory.set(ram::wFontLoaded, 1);
+    for _ in 0..20 {
+        f.sample();
+    }
+    f.memory.set(ram::wSpriteIndex, 0);
+    f.sample();
+    f.memory.set(ram::wFontLoaded, 0);
+    assert_eq!(count_of_kind(&f.sample(), kind::TALK), 0, "the start menu is not a conversation");
+
+    // The argument never arrives inside the window: nothing is guessed.
+    f.memory.set(ram::wSpriteIndex, 0);
+    f.sample();
+    f.open_box(1, 60);
+    assert_eq!(count_of_kind(&f.close_box(), kind::TALK), 0, "a second of frames, then no more");
+
+    // None of that was recorded: the person is still worth one conversation.
+    assert_eq!(kinds(&f.talk_events(1)), ["talk"]);
+}
+
+#[test]
+fn a_conversation_that_ends_somewhere_else_pays_nothing() {
+    let mut f = Fixture::booted();
+    f.on_map(maps::PEWTER_GYM, GYM);
+    f.visit(5, 5);
+    f.sprite(1, 5, 4, (0, 0));
+    f.face(FACING_UP);
+    f.sample();
+    f.open_box(1, 20);
+    // The script warped the fly out while the box was up.
+    f.on_map(maps::PEWTER_CITY, 0);
+    assert_eq!(count_of_kind(&f.close_box(), kind::TALK), 0);
+
+    // A rollback mid-conversation, likewise: the watch is transient.
+    f.on_map(maps::PEWTER_GYM, GYM);
+    f.sample();
+    f.open_box(1, 20);
+    f.reward.clear_transient();
+    assert_eq!(count_of_kind(&f.close_box(), kind::TALK), 0);
+}
+
+#[test]
+fn an_item_ball_is_an_item_not_a_conversation() {
+    let mut f = Fixture::booted();
+    f.on_map(maps::OAKS_LAB, HOUSE);
+    f.visit(5, 5);
+    f.sprite(1, 5, 4, (0x14, 0));
+    f.face(FACING_UP);
+    assert!(f.talk_events(1).is_empty());
+    // A trainer is a person: `(class, number)`, and numbers start at one.
+    f.sprite(2, 4, 5, (0xcb, 2));
+    f.face(FACING_LEFT);
+    assert_eq!(kinds(&f.talk_events(2)), ["talk"]);
+}
+
+#[test]
+fn a_clerk_across_a_counter_is_in_reach_only_where_the_tileset_has_counters() {
+    let mut f = Fixture::booted();
+    f.on_map(maps::VIRIDIAN_MART, MART);
+    f.visit(5, 5);
+    f.sprite(1, 5, 3, (0, 0));
+    f.face(FACING_UP);
+    assert!(f.talk_events(1).is_empty(), "two tiles away with no counter tiles in the header");
+    f.memory.set(ram::wTilesetTalkingOverTiles, 0x18);
+    assert_eq!(kinds(&f.talk_events(1)), ["talk"], "IsSpriteOrSignInFrontOfPlayer's long range");
+}
+
+#[test]
+fn a_rollback_or_a_restore_cannot_replay_a_conversation() {
+    let mut f = Fixture::booted();
+    f.on_map(maps::PEWTER_GYM, GYM);
+    f.visit(5, 5);
+    f.sprite(1, 5, 4, (0, 0));
+    f.face(FACING_UP);
+    assert_eq!(kinds(&f.talk_events(1)), ["talk"]);
+
+    f.reward.clear_transient();
+    let state = f.reward.export_state();
+    assert!(
+        state["seen"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(format!("talk:{}:sprite:1", maps::PEWTER_GYM))),
+        "the ledger is the checkpointed `seen` set, not the macros' session ledger"
+    );
+    let mut restored = PokemonRedReward::new();
+    restored.import_state(&state).unwrap();
+    f.reward = restored;
+    f.visit(5, 5);
+    assert!(f.talk_events(1).is_empty());
+    assert_eq!(f.reward.statistics().counts[kind::TALK], 1);
+}
+
+#[test]
+fn an_item_ball_pays_once_when_its_bit_rises_and_never_again() {
+    let mut f = Fixture::booted();
+    f.on_map(maps::VIRIDIAN_FOREST, FOREST);
+    f.sprite(3, 5, 4, (0x14, 0)); // a Potion
+    f.toggle_list(&[(3, 0x2a)]);
+    f.visit(5, 5);
+
+    // PickUpItem: GiveItem, then HideObject sets the ball's global bit.
+    f.set_bit(ram::wToggleableObjectFlags, 0x2a, true);
+    let events = f.item_events();
+    assert_eq!(labels(&events), ["FOUND ITEM #20"]);
+    assert_eq!(events[0].value, 0.15);
+    assert_eq!(events[0].stimulation_ms, 120);
+    assert!(f.item_events().is_empty(), "a bit that stays set pays once");
+
+    // A rollback to a slot where the ball is still there, and the fly takes it again.
+    f.reward.clear_transient();
+    f.set_bit(ram::wToggleableObjectFlags, 0x2a, false);
+    f.sample();
+    f.set_bit(ram::wToggleableObjectFlags, 0x2a, true);
+    assert!(f.item_events().is_empty(), "once per item for the run");
+    assert_eq!(f.reward.statistics().counts[kind::ITEM], 1);
+}
+
+#[test]
+fn only_an_item_balls_bit_pays_and_only_after_a_pickup() {
+    let mut f = Fixture::booted();
+    f.on_map(maps::PEWTER_CITY, 0);
+    f.sprite(1, 2, 2, (0, 0)); // a person a script hides
+    f.sprite(2, 3, 3, (0xcb, 1)); // a trainer
+    f.sprite(4, 6, 6, (0x14, 0)); // a ball
+    f.toggle_list(&[(1, 0x03), (2, 0x04), (4, 0x05)]);
+    f.visit(5, 5);
+    f.set_bit(ram::wToggleableObjectFlags, 0x03, true);
+    f.set_bit(ram::wToggleableObjectFlags, 0x04, true);
+    assert!(f.item_events().is_empty(), "a hidden person or trainer is not an item");
+    // A bag too full to take the ball leaves the bit clear, and nothing pays.
+    assert!(f.item_events().is_empty());
+    f.set_bit(ram::wToggleableObjectFlags, 0x05, true);
+    assert_eq!(kinds(&f.item_events()), ["item"]);
+}
+
+#[test]
+fn a_hidden_item_pays_once_per_index() {
+    let mut f = Fixture::booted();
+    f.on_map(maps::PEWTER_GYM, GYM);
+    f.visit(5, 5);
+    f.set_bit(ram::wObtainedHiddenItemsFlags, 17, true);
+    assert_eq!(labels(&f.item_events()), ["FOUND A HIDDEN ITEM"]);
+    assert!(f.item_events().is_empty());
+    f.set_bit(ram::wObtainedHiddenItemsFlags, 18, true);
+    assert_eq!(kinds(&f.item_events()), ["item"]);
+    f.reward.clear_transient();
+    f.set_bit(ram::wObtainedHiddenItemsFlags, 17, false);
+    f.sample();
+    f.set_bit(ram::wObtainedHiddenItemsFlags, 17, true);
+    assert!(f.item_events().is_empty(), "a rollback cannot replay a hidden item");
+}
+
+#[test]
+fn items_already_taken_are_seeded_and_the_two_script_shown_balls_are_not() {
+    let mut f = Fixture::new();
+    f.memory.set(ram::wCurMap, maps::REDS_HOUSE_2F);
+    f.set_bit(ram::wToggleableObjectFlags, 0x10, true);
+    f.set_bit(ram::wToggleableObjectFlags, 0x87, true);
+    f.set_bit(ram::wToggleableObjectFlags, 0x88, true);
+    f.set_bit(ram::wObtainedHiddenItemsFlags, 4, true);
+    assert!(f.item_events().is_empty(), "the seed pays nothing");
+    let seen = f.reward.export_state()["seen"].clone();
+    let seen: Vec<&str> = seen.as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    for key in ["item:16", "hidden:4", "items:seeded"] {
+        assert!(seen.contains(&key), "{key}");
+    }
+    assert!(!seen.contains(&"item:135") && !seen.contains(&"item:136"));
+
+    // Giovanni beaten: the script shows the Silph Scope's ball (its bit clears), and the fly
+    // takes it.
+    f.on_map(0x8a, 22);
+    f.sprite(9, 25, 2, (0x48, 0));
+    f.toggle_list(&[(9, 0x87)]);
+    f.sample();
+    f.set_bit(ram::wToggleableObjectFlags, 0x87, false);
+    f.sample();
+    f.set_bit(ram::wToggleableObjectFlags, 0x87, true);
+    assert_eq!(kinds(&f.item_events()), ["item"]);
+}
+
+#[test]
+fn boundary_pays_nothing_indoors_but_still_records_the_exit() {
+    let mut f = Fixture::booted();
+    f.on_map(maps::REDS_HOUSE_1F, 1);
+    f.warps(&[(4, 4)]);
+    assert!(boundary_values(&f.visit(3, 4)).is_empty(), "no payout beside an indoor door");
+    assert!(boundary_values(&f.visit(4, 4)).is_empty(), "nor on it");
+    assert!(
+        f.reward.exit_visited(MapExit::Warp { map: maps::REDS_HOUSE_1F, x: 4, y: 4 }),
+        "the ledger still knows the door, so the macros see what they always saw"
+    );
+    assert_eq!(f.reward.statistics().counts[kind::BOUNDARY], 0);
+
+    // Outdoors, in the forest and in a cave, exits pay exactly what they did.
+    let outdoors =
+        [(maps::PALLET_TOWN, 0), (maps::VIRIDIAN_FOREST, FOREST), (maps::MT_MOON_1F, CAVERN)];
+    for (map, tileset) in outdoors {
+        f.on_map(map, tileset);
+        assert_eq!(boundary_values(&f.visit(3, 4)), [0.05], "map {map}");
+        assert_eq!(boundary_values(&f.visit(4, 4)), [0.10], "map {map}");
+    }
+}
+
+#[test]
+fn a_v6_state_restores_under_v7_with_empty_talk_and_seeded_item_ledgers() {
+    // A v6 run: some play, a pickup the v6 adapter did not pay for, and a v6 export -- which is
+    // a v7 export without any of the keys v7 writes.
+    let mut f = Fixture::booted();
+    f.on_map(maps::VIRIDIAN_FOREST, FOREST);
+    f.sprite(3, 5, 4, (0x14, 0));
+    f.toggle_list(&[(3, 0x2a)]);
+    f.visit(5, 5);
+    f.catch(0xb0, Some(3));
+    let mut v6 = f.reward.export_state();
+    let seen: Vec<Value> = v6["seen"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|key| {
+            let key = key.as_str().unwrap();
+            !(key.starts_with("talk:") || key.starts_with("item") || key.starts_with("hidden:"))
+        })
+        .cloned()
+        .collect();
+    v6["seen"] = json!(seen);
+    v6["counts"].as_object_mut().unwrap().remove("talk");
+    v6["counts"].as_object_mut().unwrap().remove("item");
+    assert_eq!(v6["version"], json!(STATE_VERSION), "v6 and v7 share a schema version");
+
+    // Under v6 the fly took the ball.
+    f.set_bit(ram::wToggleableObjectFlags, 0x2a, true);
+    f.set_bit(ram::wObtainedHiddenItemsFlags, 9, true);
+
+    let mut restored = PokemonRedReward::new();
+    restored.import_state(&v6).unwrap();
+    assert_eq!(restored.statistics().counts[kind::TALK], 0);
+    assert_eq!(restored.statistics().counts[kind::ITEM], 0);
+    assert_eq!(restored.statistics().counts[kind::CATCH], 1, "nothing else moves");
+    f.reward = restored;
+    assert!(f.sample().is_empty(), "no retroactive payout for anything taken under v6");
+
+    // A rollback to a v6-era slot where the ball is still on the ground: taking it again is
+    // the same pickup, and it does not pay.
+    f.reward.clear_transient();
+    f.set_bit(ram::wToggleableObjectFlags, 0x2a, false);
+    f.set_bit(ram::wObtainedHiddenItemsFlags, 9, false);
+    f.sample();
+    f.set_bit(ram::wToggleableObjectFlags, 0x2a, true);
+    f.set_bit(ram::wObtainedHiddenItemsFlags, 9, true);
+    assert!(f.item_events().is_empty());
+
+    // The talk ledger starts empty: the first conversation under v7 pays.
+    f.on_map(maps::PEWTER_GYM, GYM);
+    f.visit(5, 5);
+    f.sprite(1, 5, 4, (0, 0));
+    f.face(FACING_UP);
+    assert_eq!(kinds(&f.talk_events(1)), ["talk"]);
+}
+
+#[test]
+fn a_warp_is_classified_by_the_header_still_loaded_while_the_map_id_has_moved_on() {
+    // `WarpFound2` writes the destination into `wCurMap` and then plays the map-change sound for
+    // thirty-odd frames before `EnterMap` loads the new header (`tests/rom_engage.rs` measured
+    // it at Route 2's gate door). On those frames the tileset and the warp table are still the
+    // map the fly is leaving, and the exit it is standing on is that map's.
+    let mut f = Fixture::booted();
+    f.on_map(maps::ROUTE_2, 0);
+    f.warps(&[(3, 11)]);
+    f.visit(3, 10);
+    // Town -> building: the id is the gate's, the header is still Route 2's, and Route 2's
+    // door is an outdoor exit, so its on-exit half pays as it always did.
+    f.memory.set(ram::wCurMap, 0x2f);
+    assert_eq!(boundary_values(&f.visit(3, 11)), [0.10]);
+
+    // Building -> town: the id is Pewter's, the header still the museum's, whose door is an
+    // indoor exit and pays nothing.
+    f.on_map(0x34, 10);
+    f.warps(&[(10, 7)]);
+    f.visit(10, 6);
+    f.memory.set(ram::wCurMap, maps::PEWTER_CITY);
+    assert!(boundary_values(&f.visit(10, 7)).is_empty());
 }

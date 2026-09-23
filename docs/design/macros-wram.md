@@ -133,6 +133,28 @@ a trade and a Pokémon withdrawn from the PC. Reading a catch off it would need 
 tell those apart. The cartridge's own flag needs none, which is why the row above is the one the
 adapter reads.
 
+### The engagement rewards' reads (2026-09-23)
+
+**New 2026-09-23** (`talk` and `item`, `docs/rewards-learning.md`, "Engagement rewards"). All six
+were resolved by `services/flysim/tools/resolve_wram.py` from `ram/wram.asm` at the pinned commit
+and are bracketed by addresses `symbols.rs` already carried; two of the brackets needed the tool
+to count `NUM_STATS` and `NUM_CITY_MAPS`, which the decomp defines as `const_value` over an
+enumeration.
+
+| what | symbol | address | notes | verified |
+| --- | --- | --- | --- | --- |
+| the text's subject | `wSpriteIndex` | `$cf13` | `DisplayTextID` copies its argument here: a sprite slot up to `wNumSprites`, else a text id. It arrives **about twenty frames after** `wFontLoaded` bit 0 rises, because `DisplayTextIDInit` loads the font's tiles first; until then it still holds the previous text's subject. | survey (`tests/rom_engage.rs`: the Viridian Forest north gate, the old man at slot 2, font bit on frame 820 and the argument on frame 840) |
+| mid-step | `wWalkCounter` | `$cfc5` | non-zero for the frames of a step; the overworld only reads A at zero. Right after `wFontLoaded` in `ram/wram.asm`. | ROM, trace |
+| an item ball's item | `wMapSpriteExtraData` | `$d504` | two bytes per sprite slot (slot 1 first): `(item id, 0)` for an `ITEM` `object_event`, `(trainer class, trainer number)` for a `TRAINER` one, zeroes otherwise -- `LoadMapHeader`'s `.itemBallSprite` / `.trainerSprite` / `.regularSprite` | survey (the forest's Antidote ball read `(11, 0)`) |
+| taken or hidden, per object | `wToggleableObjectFlags` | `$d5a6` | `flag_array $100`, one bit per global toggleable index (`constants/toggle_constants.asm`); `PickUpItem`'s `HideObject` sets an item ball's bit after `GiveItem` succeeded | survey (the forest's Antidote ball's bit rose on the pickup frame) |
+| this map's toggleables | `wToggleableObjectList` | `$d5ce` | up to sixteen `(sprite slot, global index)` pairs, `$ff`-terminated, written by `MarkTownVisitedAndLoadToggleableObjects` | survey |
+| hidden items found | `wObtainedHiddenItemsFlags` | `$d6f0` | `flag_array MAX_HIDDEN_ITEMS` (112); `FoundHiddenItemText` sets the bit after `GiveItem` succeeded, and nothing else writes it | ROM (disassembly), trace |
+
+Not used, and why: `hJoyPressed`/`hJoyHeld` would say "A was pressed" directly, but they are HRAM,
+which neither `gen_symbols.py` nor `resolve_wram.py` resolves, and a hand-written address is the one
+thing those tools exist to refuse. "The fly had the joypad and was standing still on the frame
+before the box opened, and the box is about the thing it faces" is the same fact read out of WRAM.
+
 ### Battle menu and cursor, own turn against forced switch
 
 `HandleMenuInput` is shared by every menu in the game, so which menu is up is read from where it

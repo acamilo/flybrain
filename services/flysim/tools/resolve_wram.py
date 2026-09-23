@@ -57,6 +57,22 @@ WANTED = {
     # this one caught", and the only signal that needs no second rule to tell a
     # catch apart from a gift, a trade or an evolution.
     'wCapturedMonSpecies': 'the species a ball just caught, 0 for none',
+    # The engagement rewards (`docs/rewards-learning.md`, the operator 2026-09-23).
+    # DisplayTextID stores its argument here -- a sprite slot, or a sign's text id --
+    # before it looks the text up, so it names what a conversation is with.
+    'wSpriteIndex': "DisplayTextID's argument, a sprite slot or a text id",
+    # Non-zero for the frames of a step; the overworld only reads an A press at zero.
+    'wWalkCounter': 'frames left in the step the player is taking',
+    # Two bytes per sprite slot: (item id, 0) for an ITEM-flagged object_event,
+    # (trainer class, trainer number) for a TRAINER one, zeroes otherwise.
+    'wMapSpriteExtraData': 'per sprite slot: item id, or trainer class and number',
+    # One bit per global toggleable object; PickUpItem's HideObject sets an item
+    # ball's bit once GiveItem has succeeded.
+    'wToggleableObjectFlags': 'global hidden bits of every toggleable object',
+    # The current map's (sprite slot, global toggleable index) pairs, $ff-terminated.
+    'wToggleableObjectList': "this map's toggleable sprites and their global indices",
+    # One bit per hidden item, set by FoundHiddenItemText once GiveItem succeeded.
+    'wObtainedHiddenItemsFlags': 'hidden items already found',
 }
 
 
@@ -76,7 +92,31 @@ WANTED = {
 COUNTED = {
     'NUM_HMS': ('constants/item_constants.asm', r'^\s*add_hm\s+\w+'),
     'NUM_TMS': ('constants/item_constants.asm', r'^\s*add_tm\s+\w+'),
+    # The engagement rewards need two more, for the same reason: each is an
+    # `EQU const_value` over an enumeration, and each is the size of a declaration
+    # the cursor has to cross. `ds NUM_STATS` sits between wFontLoaded and
+    # wTrainerClass, the bracket of wWalkCounter; `flag_array NUM_CITY_MAPS` sits
+    # between wNumHoFTeams and wStatusFlags5, the bracket of the toggleable-object
+    # and hidden-item flags. Both are counted only up to the line that defines
+    # them, which is where `const_value` is read.
+    'NUM_STATS': (
+        'constants/battle_constants.asm', r'^\s*const\s+STAT_\w+', r'^DEF NUM_STATS\b'
+    ),
+    'NUM_CITY_MAPS': (
+        'constants/map_constants.asm', r'^\s*map_const\s+\w+', r'^DEF NUM_CITY_MAPS\b'
+    ),
 }
+
+
+def count_in(root: Path, path: str, pattern: str, stop: str | None = None) -> int:
+    """Lines of `path` matching `pattern`, up to the first line matching `stop`."""
+    text = (root / path).read_text()
+    if stop is not None:
+        match = re.search(stop, text, re.M)
+        if match is None:
+            raise SystemExit(f'{path}: no line matches {stop}')
+        text = text[: match.start()]
+    return len(re.findall(pattern, text, re.M))
 
 
 def pinned(text: str) -> dict[str, int]:
@@ -95,10 +135,7 @@ def constants(root: Path) -> dict[str, int]:
     BLOCK_WIDTH`). A name whose expression never becomes evaluable is simply left
     out, which kills the cursor at any declaration that uses it.
     """
-    counted = {
-        name: len(re.findall(pattern, (root / path).read_text(), re.M))
-        for name, (path, pattern) in COUNTED.items()
-    }
+    counted = {name: count_in(root, *spec) for name, spec in COUNTED.items()}
     pending: dict[str, str] = {}
     sources = sorted((root / 'constants').glob('*.asm')) + sorted(
         (root / 'constants').glob('*.inc')

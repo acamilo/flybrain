@@ -1,6 +1,6 @@
 # Rewards and learning
 
-The live reward catalog of the Pokémon Red adapter, `pokered-unique8-v6`. The code of record is
+The live reward catalog of the Pokémon Red adapter, `pokered-unique8-v7`. The code of record is
 `services/flysim/crates/flybrain-gb/src/pokemon_red/` (`catalog.rs` holds the values, `mod.rs` the
 gates and the rules); this page says what each rule pays for and why it is allowed to. The
 prototype's own `docs/rewards-learning.md` in `fly-plays-pokemon` is where the first seven rules
@@ -23,8 +23,10 @@ change what the fly can do.
 | `trainer` | `trainer` | +0.5 | 200 ms | Each named `EVENT_BEAT_*` flag once, except the flags classified as story milestones |
 | `battle` | `wildwin` | +0.1, +0.05, +0.0333 | 100 ms | At most three observed wild KOs per `(map, species, level)` |
 | `badge` | `badge` | +3 | 400 ms | Each newly set badge bit |
-| `boundary` | `explore` | +0.05, +0.10 | 100 ms | First tile adjacent to one of the map's exits, and the exit tile itself; once per `(map, exit)` for the lifetime of the ledger |
+| `boundary` | `explore` | +0.05, +0.10 | 100 ms | First tile adjacent to one of the map's exits, and the exit tile itself; once per `(map, exit)` for the lifetime of the ledger. **Nothing on an indoor map** (since v7): the exit is still recorded, and pays 0 |
 | `catch` | `wildwin` | +0.30, +0.10 | 150 ms | A wild Pokémon kept by a ball: +0.30 for a species this run had never owned, +0.10 for a repeat; at most three payouts per species for the lifetime of the ledger |
+| `talk` | `explore` | +0.10 | 100 ms | A conversation the fly opened with a person or a sign **indoors**, paid when its box closes; once per `(map, sprite slot or sign text id)` for the lifetime of the ledger |
+| `item` | `explore` | +0.15 | 120 ms | An item ball or a hidden item picked up, on any map; once per item for the lifetime of the ledger |
 
 Every value is positive: there are no loss or blackout penalties, and `catalog::rule("blackout")`
 is `None` by test. The values in one frame sum into `R`, and the network reinforces once with
@@ -42,6 +44,18 @@ kind, not on the catalog kind (`apps/stage/src/games/pokemon-red.ts`), so the ro
 currently reads "wild win". The event's own label, `CAUGHT #<species>`, is what reaches the event
 log, `/status` and the checkpoint. Changing the ticker copy means opening the feed's closed kind
 set, which this rule deliberately did not do.
+
+`talk` and `item` publish on `explore`, for the same reason `boundary` does: each is the fly
+finding what is in a place -- new ground, a door, a person or sign it opened, an item it picked up
+-- at the same quiet scale (0.05 to 0.15). Not `area`, which counts maps and is a notable row; not
+`story`, which is the plot; not `wildwin`, which is a battle. No feed kind was added, so
+`docs/feed-protocol.md` and the stage's switch statements did not move. What did move is the one
+word that would have been untrue: the Pokémon Red ticker's `explore` row said "new place", which is
+not what a conversation or an item is, and now says **"new find"** ("3 new finds" collapsed), which
+is true of all four. The event labels -- `TALKED TO #<slot> IN AREA <map>`, `READ SIGN #<id> IN
+AREA <map>`, `FOUND ITEM #<item>`, `FOUND A HIDDEN ITEM` -- reach the event log, `/status` and the
+checkpoint. Both also reset the stage's stall meter, which counts `explore`: engaging with a
+building is progress in the sense the operator asked for.
 
 ## Catch rewards
 
@@ -82,6 +96,86 @@ well below a badge (3.0). A catch of a new species pays 0.80 across two kinds, w
 a story flag and a badge -- deliberately, because it is the one event that is both a discovery and
 a thing the fly had to do on purpose.
 
+## Engagement rewards
+
+The operator's decision of 2026-09-23, recorded with the port decisions: reward the fly for
+engaging *inside* buildings and stop paying it for leaving them. It was chosen over a pad rule and
+over weighting the choice, and it is a catalog change -- an operator decision, like the catch
+reward -- not a loop-review fix (`docs/loop-review.md`). It answers a shape the loop reviews kept
+finding in Pewter: `GO OBJECTIVE` into a building and `GO OUT` straight back, paid for the door on
+the way out and for nothing inside.
+
+**Indoors** is two of the cartridge's own tables, and nothing hand-classified
+(`pokemon_red/engage.rs`, `indoor`). `CheckIfInOutsideMap` (`home/overworld.asm`) is the game's
+outdoor test -- tileset `OVERWORLD` or `PLATEAU` -- and `WarpFound2` labels its other branch
+`.indoorMaps`; on its own that would call Viridian Forest and every cave indoors, and their exits
+are how the fly gets anywhere. `BikeRidingTilesets` (`data/tilesets/bike_riding_tilesets.asm`) is
+the list of places the bicycle may be ridden -- `OVERWORLD`, `FOREST`, `UNDERGROUND`, `SHIP_PORT`,
+`CAVERN` -- and the bike is the one thing the cartridge refuses inside a building by rule. A map is
+indoors when its `wCurMapTileset` is in neither: every house, mart, Pokémon Center, gym, gate, lab
+and museum, the S.S. Anne, Silph Co., the Pokémon Tower, the Mansion, the Rocket Hideout and the
+Indigo Plateau's rooms. Not the forest, a cave, the Underground Path or Vermilion's dock.
+
+**`talk`, +0.10.** Paid on the sample the text box closes, for a conversation that
+
+1. *the fly opened*: on the last sample before the font bit (`wFontLoaded` bit 0) rose, the fly had
+   the joypad -- no `wJoyIgnore`, no simulated input, no scripted movement -- was standing still
+   (`wWalkCounter` zero, the only state the overworld reads A in) and stood where it stands now. A
+   script's text opens with the joypad taken, or on the frame a step onto a trigger tile ends;
+2. *is with the thing in front of it*: `DisplayTextID` copies its argument into `wSpriteIndex` --
+   a sprite slot up to `wNumSprites`, or a text id -- and the sprite must stand on the tile the
+   player faces (or one further, across a counter, on a tileset that has counter tiles, which is
+   `IsSpriteOrSignInFrontOfPlayer`'s own long reach), or the text id must be the sign's on that
+   tile. The byte arrives about **twenty frames after** the font bit (measured on the cartridge:
+   `DisplayTextIDInit` loads the font's tiles first) and until then still names the previous
+   text's subject, so it is read once it has changed or 45 samples have passed, and only while the
+   bottom dialogue box is drawn -- the start menu draws its own box elsewhere. An item ball is a
+   sprite but not a person, and pays `item`;
+3. *opened indoors*, on the map the box opened on;
+4. *finished*: the box closed on the same map. A conversation that ends in a warp, a rollback or a
+   restore pays nothing.
+
+The ledger is the adapter's lifetime `seen` set, keyed `talk:<map>:sprite:<slot>` or
+`talk:<map>:sign:<text id>` -- the same "map and object index" the macros' `talked` ledger uses,
+but **not** that ledger: the macros' ledger is session state and is thrown away on a restore; this
+one is checkpointed and survives a rollback, so talking to the same person again, after a restore
+or not, pays nothing. The trainer the fly speaks to before a battle is a person and pays once; the
+nurse, a clerk and a sign each pay once per map.
+
+**`item`, +0.15.** Read from the cartridge's own "this one has been taken" bits, on any map.
+An item ball is one of the map's toggleable sprites (`wToggleableObjectList`, sprite slot and
+global index) whose `wMapSpriteExtraData` is `(item id, 0)` -- the shape `LoadMapHeader` writes for
+an `ITEM` `object_event` and for nothing else (a trainer's is `(class, number)` with numbers from
+1, a person's two zeroes); `PickUpItem` sets its global bit in `wToggleableObjectFlags` through
+`HideObject`, and only after `GiveItem` succeeded, so a full bag pays nothing. A hidden item is a
+bit of `wObtainedHiddenItemsFlags`, set by `FoundHiddenItemText` after `GiveItem` and by nothing
+else; hidden *coins* have their own bitset and are not items. Either pays when its bit rises
+between two playable samples, keyed `item:<global index>` or `hidden:<index>`, once for the life
+of the ledger. A gift item from a script (the Old Amber, a TM from a person) is not an item ball:
+the conversation pays `talk`, and the item nothing.
+
+**The seed.** The first playable sample that finds the key `items:seeded` absent -- a fresh
+adapter, or a `v6` ledger restored under `v7` -- writes a key for every bit the game already shows
+as taken and pays for none of them, so a rollback to a slot from before a `v6`-era pickup cannot
+pay for taking it again. The two item balls a script *reveals* are left out of the seed, because
+their bits are set from a new game until Giovanni's defeat clears them: the Rocket Hideout's Silph
+Scope and Lift Key (`$87`, `$88`), the only `ITEM` entries `data/maps/toggleable_objects.asm` starts
+`OFF`.
+
+**`boundary` indoors.** Every exit on an indoor map is still written to the ledger, so
+`exit_visited` answers exactly what it did and the macros see no change, but nothing is paid. A
+town's doors, a route's edges, the forest's gates and a cave's ladders pay as before. One
+consequence, measured on the cartridge (`tests/rom_engage.rs`): for the thirty-odd frames of
+`PlayMapChangeSound` the cartridge has written the destination into `wCurMap` while the tileset and
+the warp table are still the map being left, so the exit the fly is standing on is classified by
+the map it belongs to. Walking into a building through a town door still pays that door's on-exit
+half, 0.10, once, keyed under the building's id as it always was; walking out pays nothing.
+
+**The scale.** A building's worth of engagement -- a few people, a sign, perhaps a ball -- is
+0.3 to 0.6: more than the 0.15 its door paid for being left, less than a new Pokédex entry per
+person, far below a badge. Everything is once per thing for the lifetime of the ledger, so no
+building can be farmed.
+
 ## Gates
 
 Semantic rewards are enabled for exactly one cartridge, the SHA-256 in `SUPPORTED_ROM`. Any other
@@ -109,6 +203,10 @@ id, and the exits within one tile of where the fly is standing. Loading existing
 therefore replays none of it.
 
 ## Boundary rewards
+
+Since `pokered-unique8-v7` everything below holds **outdoors** -- towns, routes, the forest,
+caves -- and on an indoor map the same keys are written and nothing is paid ("Engagement rewards"
+above has the definition of indoors and the one transition frame worth knowing about).
 
 `docs/design/room-escape.md` section 2. The rule pays 0.05 the first time the fly stands on a tile
 orthogonally adjacent to one of the current map's exits, and 0.10 the first time it stands on the
@@ -177,7 +275,15 @@ body picks the macro; the descending neurons press the buttons.**
 
 ## Honesty
 
-The catalog now includes catches. The honesty panel's copy is not data-driven from the catalog --
+The catalog now includes conversations and items (v7). Paying for a conversation is the closest
+the catalog has come to paying for a *button*: A is what opens one. It is still a reward, not a
+press. Nothing in the adapter presses A, chooses when, or tells the fly who is there; the payout is
+read out of WRAM after a conversation the fly's own buttons -- or the macro the mushroom body chose
+-- opened and finished, and it is once per person or sign for the life of the run, so the thing
+that is learned is "the people in a building are worth a visit", not "press A". It is also why the
+rule demands evidence that the fly opened the box: text a script started pays nothing.
+
+The catalog also includes catches. The honesty panel's copy is not data-driven from the catalog --
 `apps/stage/src/lib/schedule.ts`'s rotating card is four written lines and lists no kinds -- so
 there was nothing to regenerate and the copy is unchanged. The sentences below are where the
 argument lives.
