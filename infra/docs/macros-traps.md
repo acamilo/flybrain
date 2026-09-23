@@ -2365,3 +2365,169 @@ appending in the same place: `docs/design/macros.md` (row 50 keeps 12.18, row 55
 **12.19**), this file (both rows, both residual pairs and both arm sections kept) and
 `examples/scene_probe.rs` (both survey modes kept, `accept` and `shop`). Every source file
 auto-merged.
+
+## 2026-09-23, row 56: the box the seam could not see, and a `NO` fifty presses deep
+
+### What was live
+
+Rank 10 (PEWTER CITY, next the BOULDER BADGE), the fly inside the **Pewter Gym**, map 54, scene
+`dialog`, **thirty-plus brain minutes of zero progress** with the explore and wild-win counters
+frozen. **747 macro starts in ten brain minutes**, mix `YES` 64 / `NO` 62 / `NEXT` 59 / `TALK` 6
+over the last 40 KB of events, the labels running
+`NO, TALK, NO, YES, YES, NEXT, NO, YES, NO, YES, NEXT, YES, YES, NEXT, NO, NEXT, NO, YES, YES, NO,
+NEXT` with `YES` completing back to back and **no walk macro dealt at all**. The watchdog did not
+flag it: four distinct macros is exactly check 10's threshold.
+
+At the checkpoint the fly stands at (7, 11) facing **Up** at sprite slot 3, picture `$24` -- the
+gym guide, the only sprite the ten-by-nine window can see; Brock is off screen at the top of a
+10x14 room. Two warps at (4, 13) and (5, 13), the town outside. `objective` is map 54 with a
+**Person** on it, which is rung 11, and `objective_goals` is the gym's own two doors, because the
+Pewter Pokémon Center is an unpaid errand and an errand goes ahead of the rung (row 54).
+
+### The survey: the conversation, one raw pulse at a time
+
+A new probe mode, `FLY_PROBE_CATCH=dialog` in `examples/scene_probe.rs`. It walks the conversation
+one pulse at a time and prints, per frame, what the seam makes of it -- scene, `open`, `waiting`,
+`yes_no_prompt`, the cursor bytes, `wTextBoxID` -- beside **every complete `TextBoxBorder` the
+cartridge actually drew** (`state::drawn_boxes`, which tries every rectangle rather than one), with
+the pad the palette deals for that frame. `FLY_PROBE_ANSWER` picks the button a frame with a box on
+it is answered with, so both arms of the choice can be walked.
+
+The ring, elided to the states that matter (260 presses, `#n` is the pulse):
+
+```
+#17  Dialog waiting=true yesno=false cursor=(8,15,0,1,0x03) textbox=0x01 boxes=[(0,12)-(19,17)]  | Let me
+#19  Dialog waiting=true yesno=false cursor=(8,15,0,1,0x03) textbox=0x14 boxes=[(14,7)-(19,11) (0,12)-(19,17)]  | Let me take you | to the top!
+#21  Dialog waiting=true yesno=false cursor=(8,15,1,1,0x03) textbox=0x01 boxes=[(0,12)-(19,17)]  | It. a free | service! Let.
+...  the type-matchup tutorial, thirty more boxes
+#194 Dialog ...  | matches could be | made easier!
+#195 Overworld  open=false  pad=["GO OBJECTIVE", "GO OUT", "GO FRONTIER", "GO HEAL", "TALK"]
+#196 Dialog ...  | Hiya! I can tell | you have what it ...  and the whole thing again
+```
+
+Five things that settles.
+
+1. **It is row 41's ring one town over.** Fifty-two presses, the box closes for a frame, and the
+   next A press at the guide opens it again. Nothing in it changes the world.
+2. **The YES/NO box is drawn at (14, 7)-(19, 11)**, not the (11, 6)-(19, 11) row 41 pinned, with
+   the shared cursor at row 8 column **15** rather than column 12. `yes_no_prompt` answered `false`
+   on **all 260 frames** while the box was drawn on **10**.
+3. **So the pad was `NEXT, YES, NO` on a frame that was a choice** -- printed on the line, hold by
+   hold. `NEXT` and `YES` are one A press with two channel names, which is 12.10's forbidden pair,
+   and the reopened-prompt exclusion of 12.12 never armed, because it judges only an answer to a
+   prompt this crate can read. The whole of 12.12 was inert in that gym.
+4. **Answering `NO` at his prompt changes nothing either.** The `b` arm gets "It's a free service!
+   Let's get happening!" and the same tutorial, the same length, the same ending. So the brief's
+   first reading -- a prompt that re-offers itself for ever -- is **out**: the prompt appears once
+   per lap, on two frames of fifty-two, and what repeats is the conversation.
+5. **The cursor bytes are stale on all 260 frames** (`wTopMenuItemY` 8, `wTopMenuItemX` 15,
+   `wMaxMenuItem` 1, `wMenuWatchedKeys` `$03`) while the box is drawn on ten, exactly as at the
+   nurse's counter. Both halves of the reading are still needed; what changes is that the figure is
+   found rather than pinned.
+
+The same probe on the rung-10 **Pokémon Center** checkpoint, 140 presses, as the regression check:
+the box at (11, 6)-(19, 11) on 4 frames, `yes_no_prompt` true on those 4 and false on the other
+136, her pad `["NO"]` throughout -- 12.12 intact.
+
+| checkpoint | a box drawn above the dialogue box | `wTextBoxID` = `$14` | `yes_no_prompt` (after) | frames |
+| --- | --- | --- | --- | ---: |
+| Pewter Gym | false | false | false | 250 |
+| Pewter Gym | **true** | **true** | **true** | 10 |
+| Pokémon Center | false | false | false | 136 |
+| Pokémon Center | **true** | **true** | **true** | 4 |
+
+Three readings, 400 frames, exact agreement. `wTextBoxID` is **recorded and not used**: it would be
+tighter still, but no survey here covers Red's other two-option menus and a reading this crate has
+not verified does not go in.
+
+### Why `TALK` fired twenty-five times and retired nothing
+
+`TALK`'s ledger entry is armed when the macro finishes and written when the box closes
+(`MacroMachine::observe_frame`). Between those two moments sit the fifty-one other presses of the
+ring -- and **every `NO` among them un-armed it**, by 12.4's rule that "the fly said no, so whatever
+it said no to is still on offer". A `NO`'s B press advances a plain text box exactly as `NEXT`'s A
+does; about a third of the ring's presses are `NO`; so the guide never entered the talked ledger,
+`TALK` stayed on the overworld pad, and it was the ring's own door. Twenty-five laps in twenty brain
+minutes.
+
+Which of the two a `NO` was is decided where it can be seen: **by whether the box closes on it.**
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 56 | a YES/NO box drawn anywhere but the Pokémon Center's corner reads as plain text, so the dialog pad deals `NEXT` beside `YES` -- two names for one A press -- and none of section 12.12 applies | any two-option menu Red's script puts somewhere else; measured at the Pewter Gym guide, whose box is at (14, 7)-(19, 11): 260 surveyed frames, box drawn on 10, `yes_no_prompt` false on all 260 | `a_yes_no_prompt_is_the_box_drawn_around_the_cursor_wherever_red_draws_it`, and the prompt/`NEXT` claims in `the_fly_leaves_the_pewter_gym_guides_ring_from_the_rung_ten_checkpoint` (ROM-gated) | **fixed**: the border is **found** around the cursor the game parked rather than pinned. `DisplayTwoOptionMenu` writes the cursor into the box's first interior column, so the left edge is one column to its left in both surveyed boxes; the top obeys no such rule (a caption line in one, none in the other) and is looked up; the figure is then read whole. `docs/design/macros-wram.md` section 11 |
+| 56b | a `NO` pressed fifty boxes deep into a conversation un-arms the pending `TALK`, so a person whose conversation is longer than one box is never retired and `TALK` is the door back into the ring | any conversation with more than one box in which the fly's roll lands on `NO`; at the gym guide, 25 laps in twenty brain minutes | `a_no_pressed_inside_a_conversation_is_not_a_declined_offer`, `a_fly_that_declines_an_offer_has_not_talked_to_anything` | **fixed**: the decision moves to the frame the box closes, which is where the talked entry is written anyway. A declining `NO` still standing there -- `pending_answer`, armed only by an answer to a readable prompt and alive for one hold -- is a `NO` the box closed *on*, and the offer stands; anything else is a conversation walked through to its end |
+
+### The trap hunt, before and after
+
+Same seed, same checkpoint, twenty brain minutes each; base `main` at `2de2dce` against this branch.
+
+| measure | before | after |
+| --- | ---: | ---: |
+| distinct (map, tile) | **83** | **441** |
+| windows flagged | 68 / 73 | 69 / 73 |
+| macros started | 1,356 | 1,182 |
+| `YES` / `NO` / `NEXT` on map `0x36` | **227 / 212 / 198** (637 presses at one conversation) | **21 / 21 / 17** (59) |
+| `TALK` starts | **25** | **2** |
+| frames in scene `dialog` | **32,496 of 71,673** | **2,849** |
+| frames in scene `overworld` | 8,571 | **17,425** |
+| frames in scene `battle` | 29,530 | **49,877** (longest 13,089) |
+| `GO OBJECTIVE` starts | 19, mean reach 5.0 | **37**, mean reach 9.4, max net 27 |
+| `GO FRONTIER` / `GO OUT` / `GO ITEM` | 18 / 15 / 8 | 35 / 19 / 15 |
+| the run ends | in scene `dialog` on map 54, `prompt=false`, `cursor=(8,15,0,1,0x03)` | in scene `overworld` |
+| rung reached | 10 | 10 |
+| wall clock | 1,070 s | 1,262 s |
+
+**The before arm is the live loop with the real brain in it**: 637 of the run's presses are the
+guide's conversation, the fly ends the run still standing in it, and the last line of the dump is
+the guide's own stale cursor with `prompt=false` beside it -- the trap, printed. **The after arm
+covers 5.3 times the ground** and spends four per cent of its frames in a text box instead of
+forty-five.
+
+**The flagged-window count does not fall (68 → 69), and this says so rather than smoothing it.**
+After the fix 49,877 of the 71,673 frames are battles the fly is actually fighting, with a single
+13,089-frame one, and the hunt's rule -- fewer than four distinct tiles in two brain minutes --
+flags a fighting fly exactly as hard as a stuck one. That is `docs/design/macros.md` section 15's
+own measurement and the fourth branch in a row to run into it. The merge is Fable's call.
+
+### The ROM-gated run, from the live checkpoint
+
+`the_fly_leaves_the_pewter_gym_guides_ring_from_the_rung_ten_checkpoint`, 240,000 frames
+(67.0 brain minutes), the stub rotation:
+
+- the fly **leaves map 54 on frame 1,337** -- 0.37 brain minutes -- against never in twenty;
+- **27 macros spent in the gym**: `NEXT` 9, `YES` 9, `NO` 8, `GO OBJECTIVE` 1. One lap of the ring
+  and out;
+- **`TALK` starts by map `{2: 12, 58: 1}`** -- twelve different townspeople, and **none** back at
+  the guide;
+- **the most-answered prompt is answered once.** `answers_by_person` over the whole run is
+  `{(2, Sprite(4)): 1, (52, nobody): 1, (54, Sprite(3)): 1}`, against a bound of four and 439
+  answers at one person in the before arm;
+- `NEXT` on **no** pad while a readable prompt is open, over 85 prompt frames.
+
+### Residuals, named rather than worked around
+
+- **Neither arm reaches rung 11, and the ROM test reports the rung rather than asserting it.** In
+  the ROM run the fly leaves the gym and then walks Pewter City and its buildings -- route
+  `[54, 2, 58, 2, 58, 2, 58, 2, 57, 2, 55, 2, 55, 2, 52, 2, 56, 2, 56, 2, 56, 2]`, `GO FRONTIER`
+  501 of its 507 starts on map 2 -- and never goes back through the gym door. `GO OBJECTIVE` **is**
+  on the pad on maps `{2, 52, 54, 55, 56, 57, 58}`, so the road exists; what is not measured here is
+  why it is chosen five times in sixty-seven brain minutes while the town's frontier is chosen five
+  hundred. The objective's target is a *person* the fly has never faced and its first hop is a door
+  the reached ledger retires once it has been through, which is row 12.5's ground and row 54's, not
+  this row's. **It is the next brief.**
+- **The watchdog cannot see this loop.** Check 10 flags on fewer than four distinct macros in the
+  window and this row is exactly four (`YES`, `NO`, `NEXT`, `TALK`); its dominance rule needs one
+  macro at 95% and the mix here is three ways even. Raising the threshold is a systems change with
+  its own false-positive cost and it is not made here.
+- **`wTextBoxID` = `TWO_OPTION_MENU` agrees with the new reading on all 400 surveyed frames** and is
+  not in the accessor, for want of a survey of Red's other two-option menus.
+- **The hunt's tile rule still cannot tell a long battle from a stall** -- fourth branch running.
+
+### Gates
+
+- `cargo test --workspace` with `FLY_ROM` and `FLY_DATASET` set: see the report.
+- `cargo clippy --all-targets`: **0 warnings**.
+- `infra/tests/lint.sh`: ALL CHECKS PASSED, de-PII guard included.
+- `flysim --print-compatibility`: **648 bytes, sha256 `4929f340...9ebd9`** -- byte-identical to this
+  branch's base `2de2dce`. Decoder, reward catalog, adapter version and roles untouched.
+
