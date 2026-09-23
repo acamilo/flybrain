@@ -28,6 +28,7 @@ pub mod eventlog;
 pub mod feed;
 pub mod feedbus;
 pub mod frame;
+pub mod journal;
 pub mod macros;
 pub mod metrics;
 pub mod pacing;

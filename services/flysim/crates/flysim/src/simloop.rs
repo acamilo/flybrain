@@ -45,6 +45,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use crate::chat::{ChatLimiter, ChatRefusal, ChatRing, DenyList, RejectReason};
 use crate::config::Config;
 use crate::eventlog::{EventLog, EventRing, NewEvent, now_wall_ms, utc_day};
+use crate::journal::{Input, SugarJournal};
 use crate::frame::{FrameObserver, FramePhase, LegacyFrame, Parts, RollbackTrigger};
 use crate::macros::{MacroEvent, MacroLayer, macro_layer};
 use crate::metrics::Metrics;
@@ -375,6 +376,9 @@ pub struct Sim {
     sugar_last_by: Option<String>,
     sugar_today: u64,
     sugar_day: String,
+    /// Every admitted sugar and operator pulse, frame-stamped, in the hot directory
+    /// (`crate::journal`): what a shadow run replays. Not checkpointed.
+    journal: SugarJournal,
 
     /// The chat path. None of it is wired to the agent, the emulator or plasticity.
     chat_ring: ChatRing,
@@ -577,6 +581,7 @@ impl Sim {
             sugar_last_by: None,
             sugar_today: 0,
             sugar_day: utc_day(now_wall_ms()),
+            journal: SugarJournal::new(&config.paths.hot_dir),
             chat_ring: ChatRing::new(config.chat.ring),
             chat_limits: ChatLimiter::default(),
             deny_list: if config.chat.enabled {
@@ -1093,6 +1098,15 @@ impl Sim {
         let event = self.emit(NewEvent::new(FeedEventKind::Sugar, sugar_label(by))
             .by(by)
             .value(duration));
+        self.journal.record(&crate::journal::Entry {
+            frame: self.frame.frame_counter,
+            brain_ms: self.agent.network.ms,
+            input: Input::Sugar { duration_ms: duration },
+            by,
+            source,
+            event_id: event.id,
+            wall_ms: event.wall_ms,
+        });
         tracing::info!(by, source, duration_ms = duration, "sugar accepted");
         Ok(event.id)
     }
@@ -1106,12 +1120,21 @@ impl Sim {
             trace.reward_pulse(value);
         }
         tracing::info!(by, source, value, "reward pulse applied");
-        self.emit(
+        let event = self.emit(
             NewEvent::new(FeedEventKind::Reward, format!("{by} sent a reward pulse ({value})"))
                 .by(by)
                 .value(value),
-        )
-        .id
+        );
+        self.journal.record(&crate::journal::Entry {
+            frame: self.frame.frame_counter,
+            brain_ms: ms,
+            input: Input::Reward { value },
+            by,
+            source,
+            event_id: event.id,
+            wall_ms: event.wall_ms,
+        });
+        event.id
     }
 
     /// `POST /chat`: the on-screen chat path, enforced here rather than trusted from the bridge.
