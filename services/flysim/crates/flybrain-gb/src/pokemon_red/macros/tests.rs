@@ -729,6 +729,10 @@ impl MacroState for World {
         self.targets.reached(self.map, target)
     }
 
+    fn refused_here(&mut self, slot: u8) -> bool {
+        self.targets.refused(self.map, slot, self.player)
+    }
+
     fn objective(&mut self) -> Option<Objective> {
         self.objective
     }
@@ -785,6 +789,9 @@ fn drive(
         }
         if let Some(map) = machine.take_exhausted() {
             world.exhausted.insert(map);
+        }
+        if let Some((map, slot, tile)) = machine.take_refused() {
+            world.targets.record_refused(map, slot, tile);
         }
         return Err(refused);
     }
@@ -4871,6 +4878,155 @@ fn a_tile_the_cartridge_pushes_the_fly_off_is_not_a_tile_to_walk_to() {
         super::palette::frontier_aims(&mut frontier).is_empty(),
         "neither the bordering tiles nor the far fallback offers a scripted tile"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Row 57: a last resort refused from here is not dealt again from here
+// ---------------------------------------------------------------------------------------------
+
+/// Pewter City as the live pad found it: the fly fenced into a corner of the town, the
+/// frontier marked, every person and sign accounted for, the errands paid -- and the only way
+/// out anything aims at, the gym's door, on the far side of the fence.
+fn fenced_in_pewter() -> World {
+    let mut world = World::room().at(3, 3);
+    world.map = maps::PEWTER_CITY;
+    world.size = MapSize { width: 20, height: 12 };
+    // The fence: a wall the height of the map, with the fly on the near side of it.
+    for y in 0..12 {
+        world.walls.insert(Tile::new(10, y));
+    }
+    world.warps = vec![Warp { x: 15, y: 3, destination_warp: 0, destination_map: maps::PEWTER_GYM }];
+    world.seen_maps.insert(maps::PEWTER_GYM);
+    world.objective = Some(Objective {
+        map: maps::PEWTER_GYM,
+        tile: None,
+        warp: None,
+        edge: None,
+        target: Some(PlaceKind::Person),
+    });
+    world.areas.insert((Amenity::Mart, maps::PEWTER_CITY));
+    world.areas.insert((Amenity::Center, maps::PEWTER_CITY));
+    world.exhausted.insert(maps::PEWTER_CITY);
+    world
+}
+
+#[test]
+fn a_way_out_refused_from_here_is_not_dealt_again_from_here() {
+    // Row 57, live on rung 10 for two hours: the pad was `GO ROUTE` alone, `refused` every 800
+    // brain ms, nothing pressed. `ways`'s last resort deliberately ignores the blocked ledger, so
+    // the `no route` refusal -- which writes what it could not reach to that ledger -- could not
+    // take the button off the pad, and the same refusal re-stamped the gym door every hold, which
+    // kept `GO OBJECTIVE`'s only goal excluded for ever.
+    let mut world = fenced_in_pewter();
+    let door = TargetKey::Exit(ExitId::Warp(0));
+    let names = |world: &mut World| -> Vec<&'static str> {
+        let scene = world.scene();
+        plan::plan_for(scene, world).slots.iter().flatten().map(|spec| spec.name).collect()
+    };
+    assert_eq!(names(&mut world), ["GO OBJECTIVE", "GO ROUTE"], "the door, two ways");
+
+    assert_eq!(
+        run(&mut world, MacroKind::GoObjective).map_err(|refused| refused.reason),
+        Err(Refusal::NoRoute)
+    );
+    assert!(world.targets.blocked(world.map, door), "the door is excluded for the window");
+    assert_eq!(names(&mut world), ["GO ROUTE"], "and the last resort still deals it");
+    assert_eq!(
+        run(&mut world, MacroKind::GoRoute).map_err(|refused| refused.reason),
+        Err(Refusal::NoRoute),
+        "the route search agrees with the fence"
+    );
+
+    // The trap: before row 57 the same button was dealt again, from the same tile, on the next
+    // hold, for ever.
+    assert!(
+        names(&mut world).is_empty(),
+        "a button refused from this tile is not dealt again from it: {:?}",
+        names(&mut world)
+    );
+
+    // It is a fact about *here*, not a retirement: standing anywhere else deals it again ...
+    world.player = Tile::new(3, 4);
+    assert_eq!(names(&mut world), ["GO ROUTE"]);
+    // ... and so does the window closing on the same tile.
+    world.player = Tile::new(3, 3);
+    assert!(names(&mut world).is_empty());
+    world.targets.clock(BLOCKED_MINUTES_DEFAULT * 60_000.0 + 1.0);
+    assert!(names(&mut world).contains(&"GO ROUTE"), "{:?}", names(&mut world));
+}
+
+#[test]
+fn a_last_resort_that_cannot_reach_the_objectives_door_takes_a_way_out_it_can_reach() {
+    // Row 57's pocket had a way out: the road east, three tiles from the fly and resting in the
+    // blocked window. The last resort ignores that window but *narrows* to the ways toward the
+    // objective, and the only one was the gym's door on the far side of the fence -- so the
+    // route search refused, and the reachable road was never tried. The narrowing is a
+    // preference; when the route search cannot honour it, the rest of the last resort is the
+    // walk's to take, nearest reachable first.
+    let mut world = fenced_in_pewter();
+    world.connections = Connections { north: false, south: true, east: false, west: false };
+    world.seen_maps.insert(maps::ROUTE_2);
+    let south = TargetKey::Exit(ExitId::Edge(Edge::South));
+    world.targets.record_blocked(world.map, south);
+    world.targets.record_blocked(world.map, TargetKey::Exit(ExitId::Warp(0)));
+    assert!(on_the_pad(&mut world, MacroKind::GoRoute), "the last resort deals it");
+
+    let started_at = world.player;
+    let outcome = run(&mut world, MacroKind::GoRoute);
+    assert!(outcome.is_ok(), "the road it can reach is walked, not refused: {outcome:?}");
+    assert!(
+        world.player.y > started_at.y,
+        "south, toward the way out on this side of the fence: {:?}",
+        world.player
+    );
+
+    // The order the real brain pressed them in, measured on the seeded pocket: `GO ROUTE` first,
+    // while the door is still the second tier's answer rather than the last resort's. That refusal
+    // teaches the ledger the door, so it is not held against the tile -- the next deal is the last
+    // resort, and its walk goes where the first could not.
+    let mut world = fenced_in_pewter();
+    world.connections = Connections { north: false, south: true, east: false, west: false };
+    world.seen_maps.insert(maps::ROUTE_2);
+    world.targets.record_blocked(world.map, south);
+    world.exhausted.insert(world.map);
+    world.objective = Some(Objective {
+        map: maps::PEWTER_GYM,
+        tile: None,
+        warp: None,
+        edge: None,
+        target: Some(PlaceKind::Person),
+    });
+    assert_eq!(
+        run(&mut world, MacroKind::GoRoute).map_err(|refused| refused.reason),
+        Err(Refusal::NoRoute),
+        "the door, through the second tier, beyond the fence"
+    );
+    assert!(on_the_pad(&mut world, MacroKind::GoRoute), "a refusal that taught the ledger is not held");
+    let started_at = world.player;
+    assert!(run(&mut world, MacroKind::GoRoute).is_ok(), "the last resort walks where it can");
+    assert!(world.player.y > started_at.y, "{:?}", world.player);
+}
+
+#[test]
+fn an_escorted_walk_walls_the_tile_it_reached_not_the_one_it_set_out_from() {
+    // Row 57's other half. Pewter City's youngster takes the joypad on four tiles by the road
+    // east and walks the fly to the gym. A `GO ROUTE` that set out from the town's south entrance
+    // and reached one of those tiles wrote the *south entrance* into the pushed ledger -- a wall
+    // with no window, twenty-six tiles from where the script fired -- and a dozen of those fenced
+    // the fly into a pocket. The tile the walk had reached is where the cartridge took over.
+    let mut world = World::room().at(3, 6);
+    world.map = maps::PEWTER_CITY;
+    world.connections = Connections { north: true, south: false, east: false, west: false };
+    // Three tiles walked north, then the script: the scene changes with the game driving the fly.
+    world.scripted_at = Some(52);
+    world.switch = Some((52, Scene::Dialog));
+
+    let mut machine = MacroMachine::new(1);
+    let _ = run_with(&mut machine, &mut world, MacroKind::GoRoute);
+    let (map, tile) = machine.take_pushed().expect("the script moved the fly: a push-back");
+    assert_eq!(map, maps::PEWTER_CITY);
+    assert_ne!(tile, Tile::new(3, 6), "not the tile the walk set out from");
+    assert_eq!(tile, world.player, "the tile the walk had reached when the script took over");
 }
 
 /// The push-back writes the ledger, and it writes the *tile* rather than the target.

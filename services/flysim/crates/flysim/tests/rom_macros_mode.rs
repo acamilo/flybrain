@@ -2921,3 +2921,264 @@ fn the_fly_leaves_the_pewter_gym_guides_ring_from_the_rung_ten_checkpoint() {
         ),
     }
 }
+
+fn pewter_east_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_PEWTER_EAST_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// The real palette over the real cartridge, driven one uniform choice per hold -- the brain's
+/// hold, not a ranking -- so a test can seed the session ledgers a restore starts empty.
+struct Palette57 {
+    gb: Emulator,
+    adapter: PokemonRedReward,
+    macros: flybrain_gb::pokemon_red::macros::PokemonPalette,
+    ms: f64,
+    rng: u32,
+}
+
+impl Palette57 {
+    const HOLD_FRAMES: u32 = 48;
+
+    fn new(rom: &[u8], checkpoint: &flysim::store::Checkpoint, from_rollback: bool) -> Self {
+        let mut gb = Emulator::new(rom, DEFAULT_AUDIO_FREQUENCY, DEFAULT_AUDIO_FRAMES)
+            .expect("binjgb should accept the cartridge");
+        let state = if from_rollback {
+            &checkpoint.runtime.ratchet_game
+        } else {
+            &checkpoint.runtime.emulator
+        };
+        gb.import_state(state).expect("the checkpoint's emulator state");
+        let mut adapter = PokemonRedReward::new();
+        adapter.import_state(&checkpoint.runtime.reward).expect("the checkpoint's reward ledger");
+        Self {
+            gb,
+            adapter,
+            macros: flybrain_gb::pokemon_red::macros::PokemonPalette::new(SEED),
+            ms: 0.0,
+            rng: 0x5eed_0057,
+        }
+    }
+
+    fn player(&mut self) -> (u8, u8, u8) {
+        let player = flybrain_gb::pokemon_red::state::player(&mut self.gb).expect("a loaded map");
+        (player.map, player.x, player.y)
+    }
+
+    /// One frame: observe, then step the running macro or start one of the pad's buttons.
+    /// Returns the pad and what a start did, when one was tried this frame.
+    fn frame(
+        &mut self,
+        running: &mut bool,
+        since: &mut u32,
+        want: Option<flybrain_gb::pokemon_red::macros::MacroKind>,
+    ) -> (Vec<&'static str>, Option<flybrain_gb::Started>) {
+        use flybrain_gb::MacroPalette;
+        self.macros.clock(self.ms);
+        let observed = self.macros.observe(&mut self.gb, &AdapterLedger(&self.adapter));
+        let pad: Vec<&'static str> = observed.bindings.iter().map(|b| b.name).collect();
+        let mut mask = 0u8;
+        let mut tried = None;
+        if *running {
+            match self.macros.step(&mut self.gb, &AdapterLedger(&self.adapter)) {
+                Some(held) => mask = held,
+                None => *running = false,
+            }
+        } else if *since >= Self::HOLD_FRAMES && !observed.bindings.is_empty() {
+            *since = 0;
+            let slot = match want.and_then(|kind| {
+                observed.bindings.iter().find(|b| b.slot == kind.slot()).map(|b| b.slot)
+            }) {
+                Some(slot) => slot,
+                None => {
+                    self.rng ^= self.rng << 13;
+                    self.rng ^= self.rng >> 17;
+                    self.rng ^= self.rng << 5;
+                    observed.bindings[self.rng as usize % observed.bindings.len()].slot
+                }
+            };
+            let started = self.macros.start(slot, &mut self.gb, &AdapterLedger(&self.adapter));
+            if let flybrain_gb::Started::Running(_) = started {
+                *running = true;
+                match self.macros.step(&mut self.gb, &AdapterLedger(&self.adapter)) {
+                    Some(held) => mask = held,
+                    None => *running = false,
+                }
+            }
+            tried = Some(started);
+        }
+        let _ = self.macros.take_finished();
+        *since += 1;
+        self.gb.set_buttons(mask);
+        self.gb.run_frame().expect("a frame should complete");
+        self.ms += MS_PER_FRAME;
+        self.adapter.sample(&mut self.gb, self.ms);
+        (pad, tried)
+    }
+}
+
+/// From the live rung-10 checkpoint in Pewter City: the pad is never one dead button.
+///
+/// **What was live** (2026-09-23, v0.5.3, `infra/docs/macros-traps.md` row 57): map 2, scene
+/// `overworld`, the pad `GO ROUTE` and nothing else, `GO ROUTE refused` about 740 times per ten
+/// brain minutes for more than two hours, `GO ROUTE start` / `blocked` once per ten brain minutes,
+/// no button pressed, the exploration count frozen. The watchdog read one start and one name.
+///
+/// **The mechanism, measured with `examples/scene_probe.rs`'s `FLY_PROBE_CATCH=route`:**
+///
+/// 1. Pewter City's youngster takes the joypad on four tiles by the road east and walks the fly to
+///    the gym. `GO ROUTE` aims east (Route 3 is the one connection the run has not crossed), so it
+///    is escorted every time -- and the pushed ledger, which has no window, walled the tile each
+///    escorted walk **set out from**: one walk from the south entrance walled the south entrance,
+///    twenty-six tiles from the script. Walks start wherever the last one ended, so the walls
+///    accumulate until the fly stands in a pocket no route leaves.
+/// 2. In the pocket every walk refuses `no route`. `GO FRONTIER`'s refusal marks the map
+///    exhausted (12.14, no window, cleared only by new ground); `GO OBJECTIVE`'s only goal is the
+///    gym's door, now excluded for the window.
+/// 3. With nothing else on the map, `ways`'s **last resort** deals `GO ROUTE` at that door, and a
+///    last resort ignores the blocked ledger by design -- so its `no route` refusal, which writes
+///    the door to that ledger, cannot take the button off the pad, and re-stamps the door's window
+///    every hold, so `GO OBJECTIVE` never returns. Once per window the road east lapses, `GO ROUTE`
+///    walks it, and the road is excluded again.
+///
+/// The session ledgers are what dealt that pad and a restore starts them empty, so part two seeds
+/// the pocket: the tiles every walk has stood on, the map's frontier mark, every sign and person
+/// talked to, the road east resting, and three pushed tiles sealing the strip by the road from the
+/// town. That is a reconstruction of state the checkpoint cannot carry, said as one. In it the last
+/// resort's preferred way out, the gym's door, is beyond the fence, while the road east is three
+/// tiles away and resting in its window: `start` now takes the way it can reach.
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_PEWTER_EAST_CHECKPOINT=.local/checkpoints/release-rank10-pewter-east.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- pewter_east --nocapture
+/// ```
+#[test]
+fn the_pewter_east_pad_is_never_one_dead_button_from_the_rung_ten_checkpoint() {
+    use flybrain_gb::pokemon_red::macros::cartridge::{Edge, ExitId, PushedLedger, TargetKey};
+    use flybrain_gb::pokemon_red::macros::{MacroKind, Tile};
+
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = pewter_east_checkpoint() else {
+        eprintln!("skipped: no FLY_PEWTER_EAST_CHECKPOINT");
+        return;
+    };
+    let pewter = PEWTER_CITY as u8;
+    // `PewterCityPlayerLeavingEastCoords`.
+    let escort = [Tile::new(35, 17), Tile::new(36, 17), Tile::new(37, 18), Tile::new(37, 19)];
+
+    // Part one: an escorted walk walls where the script took over, not where the walk began.
+    // From the ratchet's snapshot -- where a "Stuck" rollback puts the fly, the town's south
+    // entrance -- `GO ROUTE` whenever it is dealt, `NEXT` through the youngster's text.
+    let mut run = Palette57::new(&rom, &checkpoint, true);
+    let start = run.player();
+    assert_eq!(start.0, pewter, "the rollback snapshot is in Pewter City: {start:?}");
+    let (mut running, mut since) = (false, Palette57::HOLD_FRAMES);
+    let mut escorted = false;
+    for _ in 0..4_000 {
+        let want = if escorted { MacroKind::Next } else { MacroKind::GoRoute };
+        let (pad, _) = run.frame(&mut running, &mut since, Some(want));
+        escorted |= pad.contains(&"NEXT");
+        if escorted && !run.macros.fences().0.is_empty() && !running && pad.contains(&"GO ROUTE") {
+            break;
+        }
+    }
+    assert!(escorted, "the walk east met the youngster");
+    let pushed = run.macros.fences().0;
+    eprintln!("part one: from {start:?}, pushed {pushed:?}");
+    assert!(!pushed.is_empty(), "the escort is a push-back and is recorded");
+    assert!(
+        !pushed.pushed(pewter, Tile::new(start.1, start.2)),
+        "the tile the walk set out from is not walled: {pushed:?}"
+    );
+    assert!(
+        escort.iter().any(|tile| pushed.pushed(pewter, *tile)),
+        "the tile the script fired on is: {pushed:?}"
+    );
+
+    // Part two: the pocket, rebuilt, and twelve brain minutes in it.
+    let mut run = Palette57::new(&rom, &checkpoint, false);
+    let here = run.player();
+    assert_eq!(here, (pewter, 36, 18), "the live checkpoint stands by the road east");
+    {
+        use flybrain_gb::MacroPalette;
+        run.macros.clock(0.0);
+        let (_, targets, stood, pushed, frontiers) = run.macros.ledgers_mut();
+        targets.clock(0.0);
+        for y in 0..36 {
+            for x in 0..40 {
+                stood.record(pewter, Tile::new(x, y));
+            }
+        }
+        frontiers.record(pewter);
+        for tile in [Tile::new(33, 16), Tile::new(33, 17), Tile::new(33, 18)] {
+            pushed.record(pewter, tile);
+        }
+        targets.record_blocked(pewter, TargetKey::Exit(ExitId::Edge(Edge::East)));
+    }
+    // Every sign and person on the map, talked to.
+    let things = run.macros.inspect(
+        &mut run.gb,
+        &AdapterLedger(&run.adapter),
+        |state: &mut dyn flybrain_gb::pokemon_red::macros::MacroState| {
+            let mut all = flybrain_gb::pokemon_red::macros::path::person_targets(state);
+            all.extend(flybrain_gb::pokemon_red::macros::path::interactable_targets(state));
+            all
+        },
+    );
+    for (_, target) in things {
+        run.macros.ledgers_mut().0.record(pewter, target);
+    }
+
+    let (mut running, mut since) = (false, Palette57::HOLD_FRAMES);
+    let mut refusals = 0u32;
+    let mut in_the_pocket = 0u32;
+    let mut run_of_refusals = 0u32;
+    let mut longest = 0u32;
+    let mut last_refused: Option<(&'static str, (u8, u8, u8))> = None;
+    let mut left: Option<u32> = None;
+    let mut first_pad: Option<Vec<&'static str>> = None;
+    let budget = (12.0 * 60_000.0 / MS_PER_FRAME) as u32;
+    for frame in 0..budget {
+        let at = run.player();
+        let (pad, tried) = run.frame(&mut running, &mut since, None);
+        first_pad.get_or_insert(pad.clone());
+        if let Some(flybrain_gb::Started::Refused { name: Some(name), reason }) = tried {
+            refusals += 1;
+            if at.0 == pewter && at.1 >= 34 {
+                in_the_pocket += 1;
+            }
+            let key = (name, at);
+            run_of_refusals = if last_refused == Some(key) { run_of_refusals + 1 } else { 1 };
+            last_refused = Some(key);
+            longest = longest.max(run_of_refusals);
+            eprintln!("frame {frame}: {name} refused ({reason}) at {at:?}, pad {pad:?}");
+        } else if tried.is_some() {
+            last_refused = None;
+            run_of_refusals = 0;
+        }
+        let now = run.player();
+        if left.is_none() && (now.0 != pewter || now.1 < 33) {
+            left = Some(frame);
+        }
+    }
+    eprintln!(
+        "part two: first pad {first_pad:?}, {refusals} refusals ({in_the_pocket} in the pocket), \
+         longest run on one tile {longest}, left the pocket at {left:?}"
+    );
+    // The live pad: `GO ROUTE` refused every hold, 740 times in ten brain minutes.
+    assert!(
+        longest <= 1,
+        "a button was refused {longest} holds running on one tile: the pad kept dealing it"
+    );
+    assert!(in_the_pocket <= 2, "{in_the_pocket} refusals in the pocket");
+    let Some(left) = left else { panic!("the fly never left the pocket in twelve brain minutes") };
+    let minutes = f64::from(left) * MS_PER_FRAME / 60_000.0;
+    eprintln!("left the pocket on frame {left} ({minutes:.2} brain minutes)");
+    // The road east is three tiles away and resting in its window; the last resort preferred the
+    // gym's door beyond the fence. On the base the fly leaves only when the road's window lapses,
+    // ten brain minutes in.
+    assert!(minutes < 1.0, "the fly waited {minutes:.2} brain minutes for a window to lapse");
+}

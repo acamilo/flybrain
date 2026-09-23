@@ -46,6 +46,9 @@ use flysim::config::Config;
 use flysim::macros::macro_layer;
 use flysim::snapshot::MacroMode;
 
+#[path = "support/ledgers.rs"]
+mod ledgers;
+
 const MS_PER_FRAME: f64 = 1000.0 / 59.7275;
 const BURST_MS: f64 = 100.0;
 const HOLDS_PER_SLOT: usize = 3;
@@ -1337,6 +1340,238 @@ fn dialog_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64
     println!("\n{}", separator_table(&classes));
 }
 
+/// `FLY_PROBE_CATCH=route`. The live trap was map 2, scene `overworld`, a pad of `GO ROUTE` alone,
+/// refused about 740 times per ten brain minutes for hours with no button pressed. The ledgers
+/// that dealt that pad are session state and a restore starts them empty, so this *earns* them:
+/// it drives the real [`PokemonPalette`] from the checkpoint, choosing uniformly among whatever the
+/// scene binds once per hold (the brain's hold, not a ranking), and prints every pad it deals and
+/// every refusal with its reason. When the pad is down to one button that keeps refusing, it reads
+/// the frame the way the macros do -- ledgers included -- and says which list emptied why, and
+/// whether the route search can reach any of the one button's goals.
+///
+/// `FLY_PROBE_FRAMES` bounds the drive; `FLY_PROBE_RNG` changes the choices; `FLY_PROBE_PREFER`
+/// (comma-separated names) presses those buttons whenever they are dealt.
+///
+/// [`PokemonPalette`]: flybrain_gb::pokemon_red::macros::PokemonPalette
+fn route_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64) {
+    use flybrain_gb::MacroPalette;
+    use flybrain_gb::pokemon_red::macros::cartridge::{MacroState, TargetKey};
+    use flybrain_gb::pokemon_red::macros::path::Way;
+    use flybrain_gb::pokemon_red::macros::{PokemonPalette, palette, path};
+
+    let budget = env_usize("FLY_PROBE_FRAMES", 240_000);
+    let mut rng = env_usize("FLY_PROBE_RNG", 20_260_923) as u32 | 1;
+    let hold_frames = 48usize;
+    let trace_frames = env_usize("FLY_PROBE_TRACE_FRAMES", 0);
+    // `FLY_PROBE_CATCH_AFTER=0` reads the frame at once, before any choice.
+    let catch_after = env_usize("FLY_PROBE_CATCH_AFTER", 20) as u32;
+    let prefer: Vec<String> = std::env::var("FLY_PROBE_PREFER")
+        .map(|value| value.split(',').map(|name| name.trim().to_string()).collect())
+        .unwrap_or_default();
+    let mut macros = PokemonPalette::new(SEED);
+    if let Some(seeded) = ledgers::seed(&mut macros, gb, adapter, *ms, "FLY_PROBE_SEED") {
+        println!("\n- seeded: {seeded}");
+    }
+    let mut running = false;
+    let mut since_decision = hold_frames;
+    let mut last_pad = String::new();
+    let mut refusals: BTreeMap<String, u64> = BTreeMap::new();
+    let mut outcomes: BTreeMap<String, u64> = BTreeMap::new();
+    let mut single_refusals = 0u32;
+    let mut caught_at: Option<usize> = None;
+
+    // `FLY_PROBE_HOLD=right:96,up:32` holds raw directions first and prints where the fly is
+    // every eight frames: what the cartridge does with a press, before any macro is asked.
+    if let Ok(holds) = std::env::var("FLY_PROBE_HOLD") {
+        println!("\n## Raw holds before the drive\n\n```");
+        for hold in holds.split(',') {
+            let (name, frames) = hold.split_once(':').unwrap_or((hold, "32"));
+            let mask = match name {
+                "right" => flybrain_gb::buttons::RIGHT,
+                "left" => flybrain_gb::buttons::LEFT,
+                "up" => flybrain_gb::buttons::UP,
+                "down" => flybrain_gb::buttons::DOWN,
+                "a" => flybrain_gb::buttons::A,
+                "b" => flybrain_gb::buttons::B,
+                _ => 0,
+            };
+            for index in 0..frames.parse::<usize>().unwrap_or(32) {
+                gb.set_buttons(mask);
+                gb.run_frame().expect("a frame should complete");
+                *ms += MS_PER_FRAME;
+                adapter.sample(gb, *ms);
+                if index % 8 == 7 {
+                    println!(
+                        "{name:>5} +{index:<3} {:?} scene {:?} sim={} flags5={:#04x} joyignore={:#04x}",
+                        state::player(gb).map(|p| (p.map, p.x, p.y, p.facing)),
+                        scene::detect(gb),
+                        gb.read8(ram::wSimulatedJoypadStatesIndex),
+                        gb.read8(ram::wStatusFlags5),
+                        gb.read8(ram::wJoyIgnore),
+                    );
+                }
+            }
+        }
+        println!("```");
+    }
+    println!("\n## The drive: the real palette, one uniform choice per hold\n\n```");
+    for frame in 0..budget {
+        macros.clock(*ms);
+        let observed = {
+            let ledger = AdapterLedger(&*adapter);
+            macros.observe(gb, &ledger)
+        };
+        let names: Vec<&str> = observed.bindings.iter().map(|binding| binding.name).collect();
+        let player = state::player(gb);
+        let pad = format!("{:?} {names:?}", observed.scene);
+        if pad != last_pad {
+            println!("f{frame:<6} {:?} pad {pad}", player.map(|p| (p.map, p.x, p.y)));
+            last_pad = pad;
+        }
+        let mut mask = 0u8;
+        if running {
+            let ledger = AdapterLedger(&*adapter);
+            match macros.step(gb, &ledger) {
+                Some(held) => mask = held,
+                None => running = false,
+            }
+        } else if since_decision >= hold_frames && !observed.bindings.is_empty() {
+            since_decision = 0;
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            // `FLY_PROBE_PREFER` names buttons to press whenever they are dealt, first one first:
+            // the live brain's measured favourites, so the survey can earn the ledgers the live
+            // session earned. A survey's driver, never the fly's: nothing in the crate reads it.
+            let preferred = prefer
+                .iter()
+                .find_map(|want| observed.bindings.iter().find(|binding| binding.name == want));
+            let binding = preferred
+                .unwrap_or(&observed.bindings[rng as usize % observed.bindings.len()]);
+            let ledger = AdapterLedger(&*adapter);
+            match macros.start(binding.slot, gb, &ledger) {
+                flybrain_gb::Started::Running(_) => {
+                    running = true;
+                    if let Some(held) = macros.step(gb, &ledger) {
+                        mask = held;
+                    } else {
+                        running = false;
+                    }
+                }
+                flybrain_gb::Started::Refused { name, reason } => {
+                    let key = format!("{} {reason}", name.unwrap_or("-"));
+                    *refusals.entry(key.clone()).or_default() += 1;
+                    if names.len() == 1 && name.is_some() {
+                        single_refusals += 1;
+                    } else {
+                        single_refusals = 0;
+                    }
+                    if refusals[&key] <= 3 || single_refusals == 1 {
+                        println!(
+                            "f{frame:<6} {:?} refused {key} (pad {names:?})",
+                            player.map(|p| (p.map, p.x, p.y))
+                        );
+                    }
+                }
+            }
+        }
+        if let Some((name, outcome)) = macros.take_finished() {
+            *outcomes.entry(format!("{name} {outcome:?}")).or_default() += 1;
+            if !matches!(outcome, flybrain_gb::Outcome::Done) {
+                println!(
+                    "f{frame:<6} {:?} {name} {outcome:?}",
+                    state::player(gb).map(|p| (p.map, p.x, p.y))
+                );
+            }
+        }
+        since_decision += 1;
+        if frame < trace_frames {
+            println!(
+                "  t{frame:<5} {:?} mask {mask:#04x} running {:?} marks {:?} stood {}",
+                state::player(gb).map(|p| (p.map, p.x, p.y, p.facing)),
+                macros.running(),
+                macros.fences().1,
+                macros.stood()
+            );
+        }
+        gb.set_buttons(mask);
+        gb.run_frame().expect("a frame should complete");
+        *ms += MS_PER_FRAME;
+        adapter.sample(gb, *ms);
+        if single_refusals >= catch_after {
+            caught_at = Some(frame);
+            break;
+        }
+    }
+    println!("```\n");
+    println!("- refusals: {refusals:?}");
+    println!("- outcomes: {outcomes:?}");
+    let Some(frame) = caught_at else {
+        println!("- pushed tiles at the end (no window): {:?}", macros.fences().0);
+        println!("\nThe pad never came down to one refusing button in {budget} frames.");
+        return;
+    };
+    println!(
+        "\n## Caught on frame {frame} ({:.1} brain minutes): one button, refused twenty holds running\n",
+        frame as f64 * MS_PER_FRAME / 60_000.0
+    );
+    let (pushed, frontiers) = macros.fences();
+    println!("- pushed tiles (no window): {pushed:?}");
+    println!("- frontier marks (no window): {frontiers:?}");
+    let ledger = AdapterLedger(&*adapter);
+    macros.inspect(gb, &ledger, |state: &mut dyn MacroState| {
+        let player = state.player().expect("a loaded map");
+        println!("- player: {player:?}");
+        println!("- objective: {:?}", state.objective());
+        println!("- `objective_goals`: {:?}", palette::objective_goals(state));
+        println!("- `objective_targets`: {:?}", palette::objective_targets(state));
+        println!("- `untalked_people`: {:?}", palette::untalked_people(state));
+        println!("- `untalked_objects`: {:?}", palette::untalked_objects(state));
+        println!("- `facing_untalked`: {}", palette::facing_untalked(state));
+        println!("- `frontier_aims`: {} tiles", palette::frontier_aims(state).len());
+        println!("- `frontier_exhausted`: {}", state.frontier_exhausted());
+        println!("- `stranded`: {}", palette::stranded(state));
+        for way in [Way::Exit, Way::Passage, Way::Route] {
+            println!("- `ways({way:?})`: {:?}", palette::ways(state, way).iter().map(|exit| (exit.id, exit.tile)).collect::<Vec<_>>());
+        }
+        println!("\n### Every way out, and whether the route search reaches it from here\n");
+        for exit in path::exits(state) {
+            let reach = path::route(state, &[exit.tile]).map(|route| route.goal.is_some());
+            println!(
+                "- {:?} at ({:2},{:2}) way {:?} -> {:?}: map_visited {:?}, blocked {}, reachable {:?}",
+                exit.id,
+                exit.tile.x,
+                exit.tile.y,
+                exit.way,
+                exit.destination(player.map),
+                exit.destination(player.map).map(|map| state.map_visited(map)),
+                state.blocked(TargetKey::Exit(exit.id)),
+                reach
+            );
+        }
+        println!("\n### The fly's own neighbourhood (pushed = `P`, player = `@`)\n\n```");
+        for y in player.y.saturating_sub(3)..=player.y.saturating_add(3) {
+            let row: String = (player.x.saturating_sub(6)..=player.x.saturating_add(6))
+                .map(|x| {
+                    if x == player.x && y == player.y {
+                        '@'
+                    } else if state.pushed_tile(x, y) {
+                        'P'
+                    } else {
+                        match state.walkable(x, y) {
+                            flybrain_gb::pokemon_red::macros::state::Walkable::Yes => '.',
+                            flybrain_gb::pokemon_red::macros::state::Walkable::No => '#',
+                            flybrain_gb::pokemon_red::macros::state::Walkable::Unknown => '?',
+                        }
+                    }
+                })
+                .collect();
+            println!("y{y:2} x{:2}..  {row}", player.x.saturating_sub(6));
+        }
+        println!("```");
+    });
+}
+
 /// How the candidate readings of "a two-option box is up" separate the frames of a survey.
 ///
 /// Three columns, because three things could say it and only a measurement says which: the
@@ -1372,7 +1607,13 @@ fn main() {
     let mut gb = Emulator::new(&rom, DEFAULT_AUDIO_FREQUENCY, DEFAULT_AUDIO_FRAMES)
         .expect("binjgb should accept the cartridge");
     let mut adapter = PokemonRedReward::new();
-    gb.import_state(&checkpoint.runtime.emulator).expect("the checkpoint's emulator state");
+    // `FLY_PROBE_RATCHET=1` starts from the ratchet's best snapshot instead: where a "Stuck"
+    // rollback puts the fly, which is where a live session that spent its rollbacks resumed from.
+    if std::env::var("FLY_PROBE_RATCHET").is_ok_and(|value| value == "1") {
+        gb.import_state(&checkpoint.runtime.ratchet_game).expect("the ratchet's snapshot");
+    } else {
+        gb.import_state(&checkpoint.runtime.emulator).expect("the checkpoint's emulator state");
+    }
     adapter.import_state(&checkpoint.runtime.reward).expect("the checkpoint's reward ledger");
 
     let channels = flybrain_gb::macro_channels("pokemon-red");
@@ -1433,6 +1674,13 @@ fn main() {
     // the dialog pad makes of it press by press.
     if std::env::var("FLY_PROBE_CATCH").is_ok_and(|value| value == "dialog") {
         dialog_survey(&mut gb, &mut adapter, &mut ms);
+        return;
+    }
+
+    // Row 57's pad survey: earn the session's ledgers from the checkpoint with the real palette,
+    // and read the frame the pad comes down to one refusing button on.
+    if std::env::var("FLY_PROBE_CATCH").is_ok_and(|value| value == "route") {
+        route_survey(&mut gb, &mut adapter, &mut ms);
         return;
     }
 

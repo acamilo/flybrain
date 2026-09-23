@@ -599,9 +599,17 @@ pct exec <ctid> -- cat /run/fly/wd/loop.json | jq .
 | `fly_loop_repeats` | how many times that block repeats at the end of the 10-brain-minute window |
 | `fly_loop_distinct_macros` | distinct macro names started in the window |
 | `fly_places_delta` | growth in `game.uniqueLocations` since the previous probe (`-1` = no previous probe) |
+| `fly_loop_refused` | macro presses refused in the window: a bound button pressed, nothing run |
+| `fly_loop_blocked` | macros that ended `blocked` or `timeout` in the window |
+| `fly_loop_done` | macros that ended `done` in the window |
 
 The flag needs **both** halves: at most 3 distinct macro names with the block repeating 20+
-times, or one macro at 95%+ of the window — **and** no growth in the exploration count. A
+times, one macro at 95%+ of the window's decisions, 90%+ of 20+ decisions ending refused,
+blocked or timed out (`stalled`), or decisions with no `done` among them on two probes in a row
+(`zero-progress`) — **and** no growth in the exploration count. A decision is a `start` or a
+`refused`: a refused press starts nothing, which is why counting starts alone read row 57's
+pad (`GO ROUTE refused` ~740 times in ten brain minutes, `macros-traps.md`) as one start and
+one name. A
 repeating macro over ground that keeps growing is a walk longer than the 600-frame cap, not a
 trap (`macros-traps.md`: `GO FRONTIER` x19 across 93 tiles), and the watchdog is deliberately
 quiet about it. The thresholds are `WD_LOOP_*` in `infra/bin/fly-watchdog`; the 3-name ceiling

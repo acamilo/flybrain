@@ -1804,6 +1804,12 @@ impl MacroState for PokeState<'_> {
         self.targets.blocked(map, target)
     }
 
+    /// Whether the macro in `slot` was refused on the tile the fly is standing on (row 57).
+    fn refused_here(&mut self, slot: u8) -> bool {
+        let Some(player) = player(self.memory) else { return false };
+        self.targets.refused(player.map, slot, Tile::new(player.x, player.y))
+    }
+
     /// Whether `GO ITEM` or `GO NPC` has already reached `target` on the map that is loaded.
     fn reached(&mut self, target: TargetKey) -> bool {
         let Some(map) = player(self.memory).map(|player| player.map) else { return false };

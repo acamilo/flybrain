@@ -67,6 +67,7 @@ log_info() {
 : "${WD_LOOP_MIN_REPEATS:=20}"            # ... repeating at least this many times
 : "${WD_LOOP_DOMINANCE_PCT:=95}"          # or one macro being this share of the window
 : "${WD_LOOP_MIN_EVENTS:=20}"             # floor under the dominance rule (see check 10)
+: "${WD_LOOP_STALL_PCT:=90}"              # decisions that ended refused/blocked/timeout: this share is a stall (row 57)
 : "${WD_LOOP_REPORT:=${WD_RUN_DIR}/loop.json}"
 
 mkdir -p "$WD_RUN_DIR" "$WD_STATE_DIR"
@@ -187,7 +188,7 @@ write_textfile_metrics() {
         # convention as fly_watchdog_encoder_degraded), while the flag itself
         # starts at 0, because a 0/1 flag carrying -1 reads as a loop to every
         # alert expression that would ever use it.
-        echo "# HELP fly_loop_suspected 1 when the last check-10 probe found a short macro cycle repeating with no growth in the exploration count. Report only: the watchdog never restarts or presses anything for this."
+        echo "# HELP fly_loop_suspected 1 when the last check-10 probe found a short macro cycle repeating, one macro dominating, or the decisions stalled (refused/blocked) or completing nothing, with no growth in the exploration count. Report only: the watchdog never restarts or presses anything for this."
         echo "# TYPE fly_loop_suspected gauge"
         echo "fly_loop_suspected $(cat "${WD_RUN_DIR}/loop.suspected" 2>/dev/null || echo 0)"
         echo "# HELP fly_loop_period Length in macro labels of the shortest repeating block found at the end of the window (0 when nothing repeats, -1 before the first probe)."
@@ -199,6 +200,18 @@ write_textfile_metrics() {
         echo "# HELP fly_loop_distinct_macros Distinct macro names started in the window (-1 before the first probe)."
         echo "# TYPE fly_loop_distinct_macros gauge"
         echo "fly_loop_distinct_macros $(cat "${WD_RUN_DIR}/loop.distinct" 2>/dev/null || echo -1)"
+        # Row 57: outcomes, not only starts. A pad whose one button refuses
+        # every hold reads as one start and one name; these say what the
+        # decisions came to (-1 before the first probe).
+        echo "# HELP fly_loop_refused Macro presses refused (nothing pressed) in the last check-10 window (-1 before the first probe)."
+        echo "# TYPE fly_loop_refused gauge"
+        echo "fly_loop_refused $(cat "${WD_RUN_DIR}/loop.refused" 2>/dev/null || echo -1)"
+        echo "# HELP fly_loop_blocked Macros that ended blocked or timed out in the last check-10 window (-1 before the first probe)."
+        echo "# TYPE fly_loop_blocked gauge"
+        echo "fly_loop_blocked $(cat "${WD_RUN_DIR}/loop.blocked" 2>/dev/null || echo -1)"
+        echo "# HELP fly_loop_done Macros that ended done in the last check-10 window (-1 before the first probe)."
+        echo "# TYPE fly_loop_done gauge"
+        echo "fly_loop_done $(cat "${WD_RUN_DIR}/loop.done" 2>/dev/null || echo -1)"
         echo "# HELP fly_places_delta Growth in game.uniqueLocations (the exploration count) since the previous check-10 probe. -1 when there is no previous probe to compare against."
         echo "# TYPE fly_places_delta gauge"
         echo "fly_places_delta $(cat "${WD_RUN_DIR}/loop.places_delta" 2>/dev/null || echo -1)"
@@ -736,10 +749,22 @@ check_capture_freeze() {
 # time, not wall time — a box running under 1.0x realtime would otherwise get
 # a shorter window than the thresholds were measured over), the distinct macro
 # names in it, and the shortest block up to WD_LOOP_MAX_PERIOD that repeats at
-# the end of the sequence. Start events only: a start is one decision, and
-# counting the `done` beside it would double every sequence and halve every
-# period. They are the same names trap_hunt prints, so its numbers and these
-# are comparable.
+# the end of the sequence. The sequence is the fly's DECISIONS: a `start`, or a
+# `refused` (a bound button that was pressed and did nothing, with no start
+# beside it). Counting the `done` beside a start would double every sequence
+# and halve every period. They are the same names trap_hunt prints, so its
+# numbers and these are comparable.
+#
+# Row 57 (macros-traps.md): counting starts alone was blind to a pad whose
+# one button refused. `GO ROUTE refused` ~740 times per 10 brain minutes for
+# two hours read as 1 start, 1 distinct name, nothing flagged. So the window
+# also counts every OUTCOME (done/blocked/timeout/refused), and two rules read
+# them, both behind the same "no new ground" gate as the others:
+#   stalled        — WD_LOOP_MIN_EVENTS+ decisions and WD_LOOP_STALL_PCT% of
+#                    them ended refused, blocked or timed out;
+#   zero-progress  — decisions in the window, not one `done` among them, on
+#                    this probe AND the previous one (two probes, so a single
+#                    unlucky window never flags).
 #
 # The tile rule is what separates a loop from a legitimately repeating
 # explorer (macros-traps.md: `GO FRONTIER` x19 over 93 tiles is a walk longer
@@ -798,9 +823,12 @@ loop_macro_stream() {
 # loop_analyze — reads that stream on stdin and echoes one tab-separated line:
 #
 #   total US distinct US topCount US period US repeats US windowFrom US
-#   windowTo US topName US block US tail
+#   windowTo US topName US block US tail US decisions US refused US blocked US
+#   timeout US done
 #
-# `total` counts start events inside the window, `period`/`repeats` describe
+# `total` counts start events inside the window, `decisions` starts plus
+# refusals (the sequence, `distinct` and `topCount` are over decisions), and
+# the last four count each outcome in the window. `period`/`repeats` describe
 # the shortest repeating block at the END of the sequence (0/0 when nothing
 # repeats), `block` is that block comma-joined, and `tail` is the last 12
 # names for context. The window ends at the newest macro event's own brain
@@ -809,13 +837,19 @@ loop_analyze() {
     awk -F'\t' -v win="$WD_LOOP_WINDOW_MS" -v maxp="$WD_LOOP_MAX_PERIOD" '
     { ms[NR] = $1 + 0; lbl[NR] = $2; n = NR }
     END {
-        if (n == 0) { printf "0\0370\0370\0370\0370\0370\0370\037\037\037\n"; exit }
+        if (n == 0) { printf "0\0370\0370\0370\0370\0370\0370\037\037\037\0370\0370\0370\0370\0370\n"; exit }
         to = ms[n]; from = to - win
         k = 0; distinct = 0; topn = 0; top = ""
+        starts = 0; refused = 0; blocked = 0; timeout = 0; done = 0
         for (i = 1; i <= n; i++) {
             if (ms[i] < from) continue
-            if (lbl[i] !~ / start$/) continue
-            name = lbl[i]; sub(/ start$/, "", name)
+            if (lbl[i] ~ / blocked$/) { blocked++; continue }
+            if (lbl[i] ~ / timeout$/) { timeout++; continue }
+            if (lbl[i] ~ / done$/) { done++; continue }
+            if (lbl[i] ~ / refused$/) refused++
+            else if (lbl[i] ~ / start$/) starts++
+            else continue
+            name = lbl[i]; sub(/ (start|refused)$/, "", name)
             seq[++k] = name
             if (!(name in cnt)) { cnt[name] = 0; distinct++ }
             cnt[name]++
@@ -839,8 +873,9 @@ loop_analyze() {
         tailstr = ""
         start = k - 11; if (start < 1) start = 1
         for (j = start; j <= k; j++) tailstr = tailstr (tailstr == "" ? "" : ", ") seq[j]
-        printf "%d\037%d\037%d\037%d\037%d\037%d\037%d\037%s\037%s\037%s\n", \
-            k, distinct, topn, period, repeats, from, to, top, block, tailstr
+        printf "%d\037%d\037%d\037%d\037%d\037%d\037%d\037%s\037%s\037%s\037%d\037%d\037%d\037%d\037%d\n", \
+            starts, distinct, topn, period, repeats, from, to, top, block, tailstr, \
+            k, refused, blocked, timeout, done
     }'
 }
 
@@ -898,13 +933,20 @@ check_loop() {
     echo "$delta" > "${WD_RUN_DIR}/loop.places_delta"
 
     local analysis total distinct topn period repeats win_from win_to top block tailstr
+    local decisions refused blocked timeouts completed
     analysis="$(loop_macro_stream | loop_analyze)"
-    IFS=$'\037' read -r total distinct topn period repeats win_from win_to top block tailstr <<< "$analysis"
+    IFS=$'\037' read -r total distinct topn period repeats win_from win_to top block tailstr \
+        decisions refused blocked timeouts completed <<< "$analysis"
     total="${total:-0}"; distinct="${distinct:-0}"; topn="${topn:-0}"
     period="${period:-0}"; repeats="${repeats:-0}"
+    decisions="${decisions:-0}"; refused="${refused:-0}"; blocked="${blocked:-0}"
+    timeouts="${timeouts:-0}"; completed="${completed:-0}"
     echo "$distinct" > "${WD_RUN_DIR}/loop.distinct"
     echo "$period" > "${WD_RUN_DIR}/loop.period"
     echo "$repeats" > "${WD_RUN_DIR}/loop.repeats"
+    echo "$refused" > "${WD_RUN_DIR}/loop.refused"
+    echo "$(( blocked + timeouts ))" > "${WD_RUN_DIR}/loop.blocked"
+    echo "$completed" > "${WD_RUN_DIR}/loop.done"
 
     local prev_suspected=0
     [ -f "${WD_RUN_DIR}/loop.suspected" ] && prev_suspected="$(cat "${WD_RUN_DIR}/loop.suspected" 2>/dev/null || echo 0)"
@@ -917,13 +959,32 @@ check_loop() {
     local grown=1
     [ "$delta_known" -eq 1 ] && [ "$delta" -le 0 ] && grown=0
 
+    # Zero progress is judged over two probes: a window with decisions and no
+    # `done` among them is remembered, and only a second one in a row flags.
+    local idle_file="${WD_RUN_DIR}/loop.prev_idle" prev_idle=0 idle=0
+    [ -f "$idle_file" ] && prev_idle="$(cat "$idle_file" 2>/dev/null || echo 0)"
+    case "${prev_idle:-}" in ''|*[!0-9]*) prev_idle=0 ;; esac
+    [ "$decisions" -gt 0 ] && [ "$completed" -eq 0 ] && [ "$grown" -eq 0 ] && idle=1
+    echo "$idle" > "$idle_file"
+
+    local failed=$(( refused + blocked + timeouts ))
     local suspected=0 reason=""
-    if [ "$total" -gt 0 ] && [ "$grown" -eq 0 ]; then
-        if [ "$distinct" -le "$WD_LOOP_MAX_DISTINCT" ] && [ "$repeats" -ge "$WD_LOOP_MIN_REPEATS" ]; then
+    if [ "$decisions" -gt 0 ] && [ "$grown" -eq 0 ]; then
+        if [ "$decisions" -ge "$WD_LOOP_MIN_EVENTS" ] \
+           && [ $(( failed * 100 )) -ge $(( decisions * WD_LOOP_STALL_PCT )) ]; then
+            # Row 57: the fly keeps deciding and nothing it decides runs. A
+            # refused press is a decision with no start, which is why the
+            # rules below were blind to a pad of one button that refused.
+            suspected=1
+            reason="stalled"
+        elif [ "$idle" -eq 1 ] && [ "$prev_idle" -eq 1 ]; then
+            suspected=1
+            reason="zero-progress"
+        elif [ "$distinct" -le "$WD_LOOP_MAX_DISTINCT" ] && [ "$repeats" -ge "$WD_LOOP_MIN_REPEATS" ]; then
             suspected=1
             reason="sequence"
-        elif [ "$total" -ge "$WD_LOOP_MIN_EVENTS" ] \
-             && [ $(( topn * 100 )) -ge $(( total * WD_LOOP_DOMINANCE_PCT )) ]; then
+        elif [ "$decisions" -ge "$WD_LOOP_MIN_EVENTS" ] \
+             && [ $(( topn * 100 )) -ge $(( decisions * WD_LOOP_DOMINANCE_PCT )) ]; then
             # One macro and almost nothing else. The floor under it is not in
             # the spec but is load-bearing: two starts in ten brain minutes are
             # 100% of a window and mean the fly is barely deciding at all,
@@ -935,7 +996,7 @@ check_loop() {
     echo "$suspected" > "${WD_RUN_DIR}/loop.suspected"
 
     local dom_pct=0
-    [ "$total" -gt 0 ] && dom_pct=$(( topn * 100 / total ))
+    [ "$decisions" -gt 0 ] && dom_pct=$(( topn * 100 / decisions ))
     # The sequence a reader wants: the repeating block when there is one, the
     # single dominant name when the dominance rule is what fired.
     local shown="$block"
@@ -956,6 +1017,11 @@ check_loop() {
         --argjson repeats "$repeats" \
         --argjson distinct "$distinct" \
         --argjson total "$total" \
+        --argjson decisions "$decisions" \
+        --argjson refused "$refused" \
+        --argjson blocked "$blocked" \
+        --argjson timeouts "$timeouts" \
+        --argjson completed "$completed" \
         --argjson windowFrom "${win_from:-0}" \
         --argjson windowTo "${win_to:-0}" \
         --argjson windowMs "$WD_LOOP_WINDOW_MS" \
@@ -982,6 +1048,8 @@ check_loop() {
           window: {
             brainMsFrom: $windowFrom, brainMsTo: $windowTo, brainMs: $windowMs,
             macroStarts: $total,
+            decisions: $decisions,
+            outcomes: { done: $completed, blocked: $blocked, timeout: $timeouts, refused: $refused },
             tail: (if $tail == "" then [] else ($tail | split(", ")) end)
           },
           dominant: { name: (if $dominant == "" then null else $dominant end),
@@ -1005,13 +1073,15 @@ check_loop() {
 
     local mins=$(( WD_LOOP_WINDOW_MS / 60000 ))
     if [ "$suspected" -eq 1 ]; then
-        if [ "$reason" = "sequence" ]; then
+        if [ "$reason" = "stalled" ] || [ "$reason" = "zero-progress" ]; then
+            log_err "loop suspected (${reason}): [${shown}] — ${decisions} decisions in the last ${mins} brain minutes, ${total} started, ${completed} done, ${refused} refused, $(( blocked + timeouts )) blocked or timed out, exploration count ${places:-?} unchanged (delta ${delta}), rung ${rank:-?} '${mlabel:-?}' for ${since:-?}s. NOT acting: nothing restarted, nothing pressed, the game untouched — a pad whose buttons cannot run is a macro bug. Report: ${WD_LOOP_REPORT}; see infra/docs/runbook.md 'loop suspected'."
+        elif [ "$reason" = "sequence" ]; then
             log_err "loop suspected: [${shown}] x${repeats} (period ${period}) in the last ${mins} brain minutes — ${total} macro starts, ${distinct} distinct name(s), exploration count ${places:-?} unchanged (delta ${delta}), rung ${rank:-?} '${mlabel:-?}' for ${since:-?}s. NOT acting: nothing restarted, nothing pressed, the game untouched — a loop is a macro target-choice bug and a bounce would only restore the same loop. Report: ${WD_LOOP_REPORT}; see infra/docs/runbook.md 'loop suspected'."
         else
             log_err "loop suspected: [${shown}] is ${dom_pct}% of ${total} macro starts in the last ${mins} brain minutes (${distinct} distinct name(s)), exploration count ${places:-?} unchanged (delta ${delta}), rung ${rank:-?} '${mlabel:-?}' for ${since:-?}s. NOT acting: nothing restarted, nothing pressed, the game untouched. Report: ${WD_LOOP_REPORT}; see infra/docs/runbook.md 'loop suspected'."
         fi
     elif [ "$prev_suspected" -eq 1 ]; then
-        log_info "loop cleared: ${total} macro starts over ${distinct} distinct name(s) in the last ${mins} brain minutes, longest repeat x${repeats} (period ${period}), exploration count ${places:-?} delta ${delta}. Nothing was ever done about the loop; if a fix went in, this is it landing."
+        log_info "loop cleared: ${total} macro starts (${decisions} decisions, ${completed} done, ${refused} refused) over ${distinct} distinct name(s) in the last ${mins} brain minutes, longest repeat x${repeats} (period ${period}), exploration count ${places:-?} delta ${delta}. Nothing was ever done about the loop; if a fix went in, this is it landing."
     fi
 }
 

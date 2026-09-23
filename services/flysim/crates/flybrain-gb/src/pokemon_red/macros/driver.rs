@@ -165,6 +165,44 @@ impl PokemonPalette {
         self.frontiers.len()
     }
 
+    /// Read the frame exactly as the macros read it -- this session's ledgers included -- and hand
+    /// the state to `visit`. A survey seam (`examples/scene_probe.rs`), not a decision path: it
+    /// writes nothing, and what it sees is what the next `observe` would deal from.
+    pub fn inspect<R>(
+        &mut self,
+        memory: &mut dyn MemoryReader,
+        ledger: &dyn RunLedger,
+        visit: impl FnOnce(&mut dyn MacroState) -> R,
+    ) -> R {
+        let mut state = PokeState::with_ledgers(
+            memory,
+            ledger,
+            &self.talked,
+            &self.targets,
+            &self.stood,
+            &self.areas,
+            &self.pushed,
+        )
+        .caching_grid(&mut self.grids)
+        .with_frontiers(&self.frontiers);
+        visit(&mut state)
+    }
+
+    /// The session's no-window ledgers, for a survey line: the tiles the cartridge has pushed the
+    /// fly off and the maps whose frontier is marked unreachable.
+    pub fn fences(&self) -> (&Pushed, &Frontiers) {
+        (&self.pushed, &self.frontiers)
+    }
+
+    /// The session's ledgers, writable, for a survey that has to rebuild a live session's state
+    /// from a checkpoint (a restore starts them empty by design). Never called by the loop.
+    #[doc(hidden)]
+    pub fn ledgers_mut(
+        &mut self,
+    ) -> (&mut Talked, &mut Targets, &mut Stood, &mut Pushed, &mut Frontiers) {
+        (&mut self.talked, &mut self.targets, &mut self.stood, &mut self.pushed, &mut self.frontiers)
+    }
+
     /// Take whatever the machine's last finished macro earned into the session's ledgers.
     fn record_talk(&mut self) {
         if let Some((map, target)) = self.machine.take_talked() {
@@ -181,6 +219,11 @@ impl PokemonPalette {
         // the event that unlocks it, and nothing here knows which event that is (row 37).
         if let Some((map, tile)) = self.machine.take_pushed() {
             self.pushed.record(map, tile);
+        }
+        // A refusal from where the fly is standing: that button is not dealt again from this tile
+        // for the window (row 57). The fly moving, or the window closing, deals it again.
+        if let Some((map, slot, tile)) = self.machine.take_refused() {
+            self.targets.record_refused(map, slot, tile);
         }
         // A frontier the walk could not reach any of: a fact about this map's ground, with no
         // window on it (section 12.14).
@@ -414,6 +457,7 @@ impl MacroPalette for PokemonPalette {
         // reach: the fly is about to be standing somewhere else.
         let _ = self.machine.take_pushed();
         let _ = self.machine.take_exhausted();
+        let _ = self.machine.take_refused();
         // The cached palette was dealt for a frame that is being thrown away. Dropping it makes
         // the next `start` before the next `observe` a nameless refusal, which presses nothing
         // and reports nothing, rather than a named refusal against a scene that no longer exists.

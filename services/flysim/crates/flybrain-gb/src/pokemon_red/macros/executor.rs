@@ -36,7 +36,7 @@ use super::palette::{
     precondition,
     shop_screen, stock_index, throw_slot, untalked_objects, untalked_people, ways,
 };
-use super::path::{self, Route, Way};
+use super::path::{self, Exit, Route, Way};
 use super::state::{Facing, Scene, ShopScreen};
 
 /// Hard cap on one macro, in game frames. `docs/design/macros.md` section 4: "hard cap 600 frames
@@ -590,6 +590,10 @@ pub struct MacroMachine {
     /// from the frame the push is seen, because by the time the next macro starts the fly has been
     /// walked somewhere else.
     pushed_tile: Option<(u8, Tile)>,
+    /// A refusal the route search or the precondition made, and where the fly stood for it --
+    /// `(map, slot, tile)`, waiting to be taken into the session's ledger
+    /// ([`super::cartridge::Targets::record_refused`], row 57 of `infra/docs/macros-traps.md`).
+    refused_at: Option<(u8, u8, Tile)>,
     /// The target a frame-cap `Timeout` spent itself on, and whether the walk ended nearer a goal
     /// than it began: [`super::cartridge::Targets::record_timeout`]'s two arguments.
     ///
@@ -661,6 +665,7 @@ impl MacroMachine {
             reached: None,
             exhausted: None,
             pushed_tile: None,
+            refused_at: None,
             timed_out: None,
             resume: VecDeque::new(),
             pending_talk: None,
@@ -689,10 +694,19 @@ impl MacroMachine {
             machine.outcome = Some((spec.name, MacroAbort::Refused));
             Err(MacroRefused { slot, reason })
         };
+        // Where the fly stands for a refusal that is a fact about *here* (row 57): no route from
+        // this tile, or a precondition the dealer and the starter answered differently on it.
+        let here = state.player().map(|player| (player.map, Tile::new(player.x, player.y)));
+        let refused_here = |machine: &mut Self| {
+            if let Some((map, tile)) = here {
+                machine.refused_at = Some((map, slot.0, tile));
+            }
+        };
         if class(scene) != class(palette.scene) {
             return refuse(self, Refusal::WrongScene);
         }
         if !precondition(spec.kind, state) {
+            refused_here(self);
             return refuse(self, Refusal::Precondition);
         }
         let mut unreachable: Vec<TargetKey> = Vec::new();
@@ -702,6 +716,13 @@ impl MacroMachine {
             // all" -- and the route search is the real one, so a bound macro can refuse `no route`
             // once per hold for ever while the candidate list never changes. Recording what it
             // could not reach is what empties the list and takes the button off the pad.
+            // Row 57: a refusal that teaches the blocked ledger nothing new -- every goal it could
+            // not reach is already resting there -- is one the dealer will deal again unchanged,
+            // because only a last resort deals goals the ledger is resting. That refusal is the
+            // one remembered where the fly stands. A refusal that writes a new exclusion changes
+            // the next deal by itself and is not held against the tile: the next deal may be the
+            // last resort, whose own walk can go where this one could not.
+            let taught = unreachable.iter().any(|key| !state.blocked(*key));
             if let Some(map) = state.player().map(|player| player.map) {
                 self.blocked.extend(unreachable.into_iter().map(|key| (map, key)));
                 // And for the frontier, the same fact one level up: every tile of this map the
@@ -711,6 +732,9 @@ impl MacroMachine {
                 if spec.kind == MacroKind::GoFrontier {
                     self.exhausted = Some(map);
                 }
+            }
+            if !taught {
+                refused_here(self);
             }
             return refuse(self, Refusal::NoRoute);
         };
@@ -883,6 +907,12 @@ impl MacroMachine {
         self.pushed_tile.take()
     }
 
+    /// Where the last `no route` or `precondition` refusal happened, taken rather than read
+    /// (row 57).
+    pub fn take_refused(&mut self) -> Option<(u8, u8, Tile)> {
+        self.refused_at.take()
+    }
+
     /// The frame-cap timeout a walk earned, with whether it ended nearer its goal, taken rather
     /// than read. The ledger decides what it means.
     pub fn take_timeout(&mut self) -> Option<(u8, TargetKey, bool)> {
@@ -908,6 +938,7 @@ impl MacroMachine {
         // out of reach either: the fly is about to be somewhere else entirely.
         self.pushed_tile = None;
         self.exhausted = None;
+        self.refused_at = None;
         self.timed_out = None;
         // A rollback puts the fly somewhere else on the map, so every suspended route is a route
         // from a tile it is no longer standing on. `take_resume` would refuse them one at a time;
@@ -1088,8 +1119,20 @@ impl MacroMachine {
                 // say (row 37 of `infra/docs/macros-traps.md`). The fly may already have been
                 // walked a tile by the script, so the tile the macro set out from is the honest
                 // answer when there is one and the current tile otherwise.
+                //
+                // **Except for a walk** (row 57). A walk set out from wherever the last one left
+                // the fly, and the script fired on the tile the walk had *reached*: Pewter City's
+                // youngster takes the joypad on four tiles by the road east, and a `GO ROUTE` that
+                // set out from the town's south entrance twenty-six tiles away walled the south
+                // entrance -- with no window, in the middle of the town. A dozen of those fenced
+                // the fly into a pocket no walk could leave. The tile a walk last stood the fly on
+                // is its own record of where the cartridge took over.
                 if let Some(player) = at {
-                    let tile = active.from.unwrap_or(Tile::new(player.x, player.y));
+                    let current = Tile::new(player.x, player.y);
+                    let tile = match active.plan.front() {
+                        Some(Step::Walk(walk)) => walk.expect.unwrap_or(current),
+                        _ => active.from.unwrap_or(current),
+                    };
                     self.pushed_tile = Some((player.map, tile));
                 }
             }
@@ -1652,7 +1695,17 @@ fn script(
             };
             let goals = exit_goals(state, way);
             unreachable.extend(goal_keys(&goals));
-            let (walk, target) = walk_to(state, goals)?;
+            // A last resort that preferred the way toward the objective, and the route search
+            // cannot reach it: the rest of the last resort, nearest reachable first (row 57).
+            let walked = match walk_to(state, goals) {
+                Some(walked) => Some(walked),
+                None => {
+                    let rest = super::palette::last_resort_wide(state, way);
+                    let wide = goals_of(state, rest);
+                    if wide.is_empty() { None } else { walk_to(state, wide) }
+                }
+            };
+            let (walk, target) = walked?;
             aimed = target;
             vec![Step::Walk(walk)]
         }
@@ -2041,7 +2094,13 @@ fn one_target(goals: &[Goal]) -> Option<TargetKey> {
 /// is in the moment it comes down a staircase and lands on the warp tile. A doormat underfoot is
 /// different: its press is the point, so it stays.
 fn exit_goals(state: &mut dyn MacroState, way: Way) -> Vec<Goal> {
-    let mut goals: Vec<Goal> = ways(state, way)
+    let exits = ways(state, way);
+    goals_of(state, exits)
+}
+
+/// [`exit_goals`] over a list of exits the caller already has.
+fn goals_of(state: &mut dyn MacroState, exits: Vec<Exit>) -> Vec<Goal> {
+    let mut goals: Vec<Goal> = exits
         .into_iter()
         .map(|exit| Goal {
             tile: exit.tile,
