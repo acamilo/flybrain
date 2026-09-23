@@ -165,6 +165,44 @@ impl PokemonPalette {
         self.frontiers.len()
     }
 
+    /// Read the frame exactly as the macros read it -- this session's ledgers included -- and hand
+    /// the state to `visit`. A survey seam (`examples/scene_probe.rs`), not a decision path: it
+    /// writes nothing, and what it sees is what the next `observe` would deal from.
+    pub fn inspect<R>(
+        &mut self,
+        memory: &mut dyn MemoryReader,
+        ledger: &dyn RunLedger,
+        visit: impl FnOnce(&mut dyn MacroState) -> R,
+    ) -> R {
+        let mut state = PokeState::with_ledgers(
+            memory,
+            ledger,
+            &self.talked,
+            &self.targets,
+            &self.stood,
+            &self.areas,
+            &self.pushed,
+        )
+        .caching_grid(&mut self.grids)
+        .with_frontiers(&self.frontiers);
+        visit(&mut state)
+    }
+
+    /// The session's no-window ledgers, for a survey line: the tiles the cartridge has pushed the
+    /// fly off and the maps whose frontier is marked unreachable.
+    pub fn fences(&self) -> (&Pushed, &Frontiers) {
+        (&self.pushed, &self.frontiers)
+    }
+
+    /// The session's ledgers, writable, for a survey that has to rebuild a live session's state
+    /// from a checkpoint (a restore starts them empty by design). Never called by the loop.
+    #[doc(hidden)]
+    pub fn ledgers_mut(
+        &mut self,
+    ) -> (&mut Talked, &mut Targets, &mut Stood, &mut Pushed, &mut Frontiers) {
+        (&mut self.talked, &mut self.targets, &mut self.stood, &mut self.pushed, &mut self.frontiers)
+    }
+
     /// Take whatever the machine's last finished macro earned into the session's ledgers.
     fn record_talk(&mut self) {
         if let Some((map, target)) = self.machine.take_talked() {
