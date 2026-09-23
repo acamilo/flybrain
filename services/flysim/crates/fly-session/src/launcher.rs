@@ -30,6 +30,7 @@ use flybus::{Client, ClientConfig, Router, ServiceConfig, Transport, UnixListene
 
 use crate::agent::{AgentConfig, AgentFaults, FakeAgentWorker};
 use crate::environment::{CounterEnvironment, EnvironmentConfig, EnvironmentFaults};
+use crate::legacy_agent::{LegacyAgentConfig, LegacyAgentWorker, LegacyProfileKind};
 use crate::rpc::WorkerRef;
 use crate::types::*;
 use crate::worker::{StatusCell, WorkerHandle, serve};
@@ -253,6 +254,26 @@ pub struct EnvironmentLaunch {
     /// Where this world counts the frames it renders, with the same process caveat.
     pub renders: crate::media::RenderCounter,
     pub faults: EnvironmentFaults,
+    pub client_id: String,
+    pub service: String,
+}
+
+/// What one legacy agent participant (AGENT-01) is started with.
+///
+/// Everything crosses a process boundary as argv, like the synthetic agent's configuration: a
+/// dataset directory, the profile it serves and the composition's macro channels. The seed,
+/// the profile `AssetRef` and the first frame arrive in `Agent.Initialize`, not here.
+#[derive(Clone, Debug)]
+pub struct LegacyAgentLaunch {
+    pub session_id: Id,
+    pub agent_id: Id,
+    pub port_id: Id,
+    pub incarnation_id: Id,
+    pub worker_threads: usize,
+    pub dataset_dir: PathBuf,
+    pub profile: LegacyProfileKind,
+    /// `executor.macroChannels` in composition order; empty in raw mode.
+    pub macro_channels: Vec<String>,
     pub client_id: String,
     pub service: String,
 }
@@ -581,6 +602,38 @@ impl Launcher {
         }
     }
 
+    /// Starts one legacy agent (AGENT-01), in the launcher's configured mode, and identifies it.
+    pub async fn launch_legacy_agent(
+        &mut self,
+        spec: LegacyAgentLaunch,
+    ) -> Result<WorkerIdentity, DomainError> {
+        let threads = self.budget.allocate(&spec.agent_id, spec.worker_threads)?;
+        let identity = WorkerIdentity {
+            session_id: spec.session_id.clone(),
+            client_id: spec.client_id.clone(),
+            service: spec.service.clone(),
+            worker_id: spec.agent_id.clone(),
+            incarnation_id: spec.incarnation_id.clone(),
+            role: Role::Agent,
+            port_id: Some(spec.port_id.clone()),
+            worker_threads: threads,
+        };
+        let started = self
+            .start_participant(&identity, Started::LegacyAgent(spec.clone()), threads)
+            .await;
+        match started {
+            Ok(worker) => {
+                let identity = worker.identity.clone();
+                self.workers.insert(spec.agent_id.clone(), worker);
+                Ok(identity)
+            }
+            Err(e) => {
+                self.budget.release(&spec.agent_id);
+                Err(e)
+            }
+        }
+    }
+
     /// Starts the environment, in the launcher's configured mode, and identifies it.
     pub async fn launch_environment(
         &mut self,
@@ -687,6 +740,12 @@ impl Launcher {
         Ok(match what {
             Started::Agent(spec) => {
                 let endpoint = FakeAgentWorker::new(agent_config(spec, identity.worker_threads));
+                let status = endpoint.status();
+                (serve(client, service, endpoint), status)
+            }
+            Started::LegacyAgent(spec) => {
+                let endpoint =
+                    LegacyAgentWorker::new(legacy_agent_config(spec, identity.worker_threads));
                 let status = endpoint.status();
                 (serve(client, service, endpoint), status)
             }
@@ -1250,6 +1309,10 @@ pub(crate) mod flags {
     pub const OMIT_AUDIO_AT_BOUNDARY: &str = "omit-audio-at-boundary";
     pub const OVERLAPPING_AUDIO_AT_BOUNDARY: &str = "overlapping-audio-at-boundary";
 
+    pub const DATASET: &str = "dataset";
+    pub const PROFILE: &str = "profile";
+    pub const MACRO_CHANNELS: &str = "macro-channels";
+
     pub const MODE: &str = "mode";
     pub const AGENTS: &str = "agents";
     pub const STEPS: &str = "steps";
@@ -1281,6 +1344,8 @@ pub(crate) mod flags {
         FAIL_STAGE_RESTORE,
         FAIL_ACTIVATE_RESTORE,
     ];
+    /// What only a legacy agent (AGENT-01) is given.
+    pub const LEGACY_AGENT_ONLY: &[&str] = &[AGENT, PORT, DATASET, PROFILE, MACRO_CHANNELS];
     /// What only the environment is given, media options included.
     pub const ENVIRONMENT_ONLY: &[&str] = &[
         WORKER,
@@ -1313,6 +1378,7 @@ fn arg(name: &str, value: impl std::fmt::Display) -> (String, String) {
 #[derive(Clone, Debug)]
 pub(crate) enum Started {
     Agent(AgentLaunch),
+    LegacyAgent(LegacyAgentLaunch),
     Environment(EnvironmentLaunch),
 }
 
@@ -1320,6 +1386,7 @@ impl Started {
     pub(crate) fn subcommand(&self) -> &'static str {
         match self {
             Started::Agent(_) => "agent",
+            Started::LegacyAgent(_) => "legacy-agent",
             Started::Environment(_) => "environment",
         }
     }
@@ -1350,6 +1417,17 @@ impl Started {
                 }
                 args
             }
+            Started::LegacyAgent(spec) => vec![
+                arg(flags::SESSION, &spec.session_id),
+                arg(flags::AGENT, &spec.agent_id),
+                arg(flags::PORT, &spec.port_id),
+                arg(flags::INCARNATION, &spec.incarnation_id),
+                arg(flags::DATASET, spec.dataset_dir.display()),
+                arg(flags::PROFILE, spec.profile.label()),
+                // An empty list is raw mode; the flag is always written so the parser never
+                // has to guess which one a missing flag meant.
+                arg(flags::MACRO_CHANNELS, spec.macro_channels.join(",")),
+            ],
             Started::Environment(spec) => {
                 let mut args = vec![
                     arg(flags::SESSION, &spec.session_id),
@@ -1405,6 +1483,18 @@ pub(crate) fn agent_config(spec: &AgentLaunch, worker_threads: usize) -> AgentCo
     }
 }
 
+pub(crate) fn legacy_agent_config(spec: &LegacyAgentLaunch, worker_threads: usize) -> LegacyAgentConfig {
+    LegacyAgentConfig {
+        session_id: spec.session_id.clone(),
+        agent_id: spec.agent_id.clone(),
+        incarnation_id: spec.incarnation_id.clone(),
+        worker_threads,
+        dataset_dir: spec.dataset_dir.clone(),
+        profile: spec.profile,
+        macro_channels: spec.macro_channels.clone(),
+    }
+}
+
 pub(crate) fn environment_config(spec: &EnvironmentLaunch) -> EnvironmentConfig {
     EnvironmentConfig {
         session_id: spec.session_id.clone(),
@@ -1440,6 +1530,11 @@ pub(crate) async fn serve_one(
             client,
             service,
             FakeAgentWorker::new(agent_config(spec, worker_threads)),
+        ),
+        Started::LegacyAgent(spec) => serve(
+            client,
+            service,
+            LegacyAgentWorker::new(legacy_agent_config(spec, worker_threads)),
         ),
         Started::Environment(spec) => {
             serve(client, service, CounterEnvironment::new(environment_config(spec)))
@@ -1528,6 +1623,21 @@ mod flag_tests {
         }
     }
 
+    fn legacy_agent_launch() -> LegacyAgentLaunch {
+        LegacyAgentLaunch {
+            session_id: id("demo"),
+            agent_id: id("fly-a"),
+            port_id: id("p1"),
+            incarnation_id: id("fly-a-inc-1"),
+            worker_threads: 1,
+            dataset_dir: PathBuf::from("/nonexistent/legacy-toy"),
+            profile: LegacyProfileKind::Toy,
+            macro_channels: vec!["macro_talk".to_owned()],
+            client_id: "worker-fly-a".to_owned(),
+            service: "agent.fly-a".to_owned(),
+        }
+    }
+
     /// Both halves of the command line name the same constants, and this proves it for every
     /// argument a launch can produce: a flag the launcher writes that the parser does not
     /// accept would be a silently ignored option, which is what the parser now refuses.
@@ -1539,6 +1649,10 @@ mod flag_tests {
                 [flags::COMMON, flags::ENVIRONMENT_ONLY],
             ),
             (Started::Agent(agent_launch()), [flags::COMMON, flags::AGENT_ONLY]),
+            (
+                Started::LegacyAgent(legacy_agent_launch()),
+                [flags::COMMON, flags::LEGACY_AGENT_ONLY],
+            ),
         ] {
             let arguments = started.arguments();
             assert!(!arguments.is_empty());
