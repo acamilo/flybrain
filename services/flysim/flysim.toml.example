@@ -62,6 +62,13 @@ bind = "127.0.0.1:7400"
 # Audio attachment rate. 48 kHz is Web Audio's native rate on Linux, so the page never resamples.
 # env: FLYSIM_FEED_AUDIO_HZ
 audio_hz = 48000
+# Who serves `bind`: "direct" (flysim, the default) or "bus" (flysim publishes on an embedded
+# flybus router and the `fly-edge` process serves the same bytes; docs/design/flybus.md).
+# env: FLY_FEED_VIA, FLYSIM_FEED_VIA
+via = "direct"
+# The bus router's socket and artifact store in "bus" mode. tmpfs.
+# env: FLY_BUS_DIR, FLYSIM_FEED_BUS_DIR
+bus_dir = "/run/fly/bus"
 
 [control]
 # http://127.0.0.1:7401 — docs/control-api.md. Loopback only; there is no auth because nothing

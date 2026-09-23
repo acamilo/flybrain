@@ -131,6 +131,9 @@ publish. Pacing uses absolute deadlines at 1.0x by default; it never skips frame
   snapshot at 30 Hz: a JSON header (status, rates, learning stats, game mode, milestone rank and
   total, sugar state, events, chat ring) followed by attachments: RGBA frame, f32 stereo 48 kHz
   audio (binjgb's unipolar u8 converted and DC-blocked), and a 17,407-byte spike bitset.
+  flysim serves it itself by default; with `FLY_FEED_VIA=bus` it publishes each snapshot on an
+  embedded flybus router and the `fly-edge` process serves the same bytes
+  (`docs/design/flybus.md`, "Feed over the bus").
 - Control API (`docs/control-api.md`): loopback HTTP :7401. `POST /stimulate` (sugar: a timed PAM
   pulse, rate-limited server side), `POST /reward` (present, disabled by config), `POST /chat`
   (sanitized, deny-listed, ring of 12), `/status`, `/checkpoint`, `/pause`, `/resume`,
@@ -159,8 +162,8 @@ sequenceDiagram
   S->>S: every 5 s hot copy, every 300 s durable checkpoint
 ```
 
-Where: `services/flysim/crates/flysim/src/{main,config,simloop,pacing,snapshot,feed,api,chat,store,eventlog,metrics}.rs`,
-`docs/design/flysim.md`.
+Where: `services/flysim/crates/flysim/src/{main,config,simloop,pacing,snapshot,feed,feedbus,api,chat,store,eventlog,metrics}.rs`,
+`services/flysim/crates/fly-edge`, `docs/design/flysim.md`.
 
 ## 4. Stage page
 
