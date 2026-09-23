@@ -145,6 +145,11 @@ pub mod poke {
     /// zero in the overworld, non-zero from the frame a trainer's challenge closes to the end of
     /// the battle, including the 219 frames of the battle transition in between.
     pub const CUR_OPPONENT: u16 = super::ram::wBattleType - 1;
+    /// `constants/ram_constants.asm`: `wStatusFlags7` bit 3, `BIT_TRAINER_BATTLE` (row 61). Set by
+    /// `CheckFightingMapTrainers` (`home/trainers.asm`) on the frame a trainer sees the player,
+    /// cleared at `.battleOccurred` (`home/overworld.asm`) once the battle is over -- before the
+    /// blackout check, so a lost battle clears it too. Nothing else writes it.
+    pub const TRAINER_BATTLE_STATUS7: u8 = 1 << 3;
 
     /// `constants/battle_constants.asm`: the non-volatile status byte.
     pub const SLP_MASK: u8 = 0b111;
@@ -1841,8 +1846,14 @@ impl<'a> PokeState<'a> {
 }
 
 impl GameState for PokeState<'_> {
+    /// [`super::scene::detect`], except that an overworld frame inside a trainer's challenge is
+    /// the cartridge's ([`trainer_engaged`], row 61): section 12.13's `Unknown` with no text box,
+    /// an empty pad the fly waits out, and no frame a held push-back is decided on.
     fn scene(&mut self) -> Scene {
-        super::scene::detect(self.memory)
+        match super::scene::detect(self.memory) {
+            Scene::Overworld if trainer_engaged(self.memory) => Scene::Unknown,
+            scene => scene,
+        }
     }
 
     fn player(&mut self) -> Option<Player> {
@@ -1912,6 +1923,24 @@ impl GameState for PokeState<'_> {
 
 /// The cartridge tables on their defaults, and the exploration ledger wired through.
 ///
+/// Whether a trainer who saw the player is between its "!" and the end of its battle (row 61).
+///
+/// `DisplayEnemyTrainerTextAndStartBattle` (`home/trainers.asm`) clears `wJoyIgnore` before the
+/// challenge text and calls `StartTrainerBattle`, which writes `wCurOpponent`, only after that
+/// text's close-down has redrawn the map. Measured in Viridian Forest: five frames with the box
+/// gone, every bit [`controllable`] reads clear and `wCurOpponent` still zero, and then the
+/// battle. The macro seam read them as an overworld the fly owned, so the push-back a walk earned
+/// when the trainer took the joypad (row 58's held entry) was written on the first of them: the
+/// one free tile beside the trainer, in the only corridor to the forest's north gate, walled for
+/// the session.
+///
+/// **The macros' reading only.** [`controllable`] and [`super::scene::detect`] are shared with
+/// the reward adapter (the talk payout's "ready" test, the feed's scene), which this row does not
+/// change; [`PokeState`]'s own `scene` and `scripted` read this beside them.
+pub fn trainer_engaged(memory: &mut dyn MemoryReader) -> bool {
+    read(memory, ram::wStatusFlags7) & poke::TRAINER_BATTLE_STATUS7 != 0
+}
+
 /// `pokemon_red/macros/cartridge.rs` defaults every [`MacroState`] method and every default
 /// *narrows* what the palette offers, so the executor runs over live WRAM with no overrides at
 /// all and each one turned on later widens it without changing a signature. Two are still on
@@ -1923,7 +1952,7 @@ impl GameState for PokeState<'_> {
 /// taken rather than at the nearest door (`docs/design/macros.md` section 3).
 impl MacroState for PokeState<'_> {
     fn scripted(&mut self) -> bool {
-        !controllable(self.memory)
+        !controllable(self.memory) || trainer_engaged(self.memory)
     }
 
     fn text_open(&mut self) -> bool {
