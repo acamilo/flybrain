@@ -20,7 +20,8 @@ FLY_ROM=".../Pokemon Red (U) [S][BF].gb" FLY_MACRO_BRAIN=data/fafb-v783 \
   cargo run --release -p flysim --example palette_bench
 ```
 
-Both arms are the sim loop's own frame order over the real connectome (`data/fafb-v783`), the real
+Both arms are the sim loop's own frame order (`flysim::frame::LegacyFrame` since 2026-09-23;
+before that `NeuralAgent::tick`'s, one frame behind the stream) over the real connectome (`data/fafb-v783`), the real
 Game Boy readout preset with nothing overridden, the real Pokémon adapter paying the real reward
 catalog, and the real ratchet on the adapter's own recovery policy. The only difference between
 them is `flysim::macros::MacroLayer`, built from the configuration the way `Sim::boot` builds it,

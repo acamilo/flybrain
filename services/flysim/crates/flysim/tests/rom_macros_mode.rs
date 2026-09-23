@@ -42,6 +42,7 @@ use flybrain_gb::{
     AdapterLedger, DEFAULT_AUDIO_FRAMES, DEFAULT_AUDIO_FREQUENCY, Emulator, GameAdapter, buttons,
 };
 use flysim::config::Config;
+use flysim::frame::LegacyFrame;
 use flysim::macros::{MacroLayer, macro_layer};
 use flysim::snapshot::MacroMode;
 
@@ -147,6 +148,8 @@ struct Run {
     gb: Emulator,
     adapter: PokemonRedReward,
     layer: MacroLayer,
+    /// The stream's frame (`flysim::frame::LegacyFrame`), behind the stub readout.
+    frame: LegacyFrame,
     /// The readout under test: the shipping decoder, fed by hand.
     decoder: PopulationDecoder,
     /// The macro channels, in the decoder's own order, for the rotation.
@@ -402,6 +405,7 @@ impl Run {
             gb,
             adapter,
             layer,
+            frame: LegacyFrame::new(),
             decoder,
             channels,
             ms,
@@ -520,6 +524,7 @@ impl Run {
             gb,
             adapter,
             layer,
+            frame: LegacyFrame::new(),
             decoder,
             channels,
             ms,
@@ -815,9 +820,15 @@ impl Run {
         self.talk_on_pad = talk_bound;
         let active =
             self.decoder.decode_bound(&rates(hot), self.ms, false, None, Some(&bound));
-        let (mask, started, blocked, done) = {
-            let ledger = AdapterLedger(&self.adapter);
-            let decision = self.layer.decide(&active, 0, self.ms, &mut self.gb, &ledger);
+        let (started, blocked, done) = {
+            let decision = self.frame.execute(
+                Some(&mut self.layer),
+                &active,
+                0,
+                self.ms,
+                &mut self.gb,
+                &self.adapter,
+            );
             let started: Vec<&'static str> = decision
                 .events
                 .iter()
@@ -840,7 +851,7 @@ impl Run {
                 })
                 .map(|event| event.name)
                 .collect();
-            (decision.mask, started, blocked, done)
+            (started, blocked, done)
         };
         // Row 54's own measure, taken before the starts below so that a macro that finishes and
         // another that starts on the same frame are not confused for one another.
@@ -963,15 +974,10 @@ impl Run {
             let (x, y) = self.tile();
             self.started_at = Some((self.map(), x, y));
         }
-        self.gb.set_buttons(mask as u8);
-        self.gb.run_frame().expect("a frame should complete");
         self.ms += MS_PER_FRAME;
-        let ms = self.ms;
-        self.adapter.sample(&mut self.gb, ms);
-        {
-            let ledger = AdapterLedger(&self.adapter);
-            let _ = self.layer.observe(&mut self.gb, &ledger, ms);
-        }
+        self.frame
+            .stub_advance(Some(&mut self.layer), &mut self.gb, &mut self.adapter, self.ms)
+            .expect("a frame should complete");
         // Battle boundaries, after the frame: what a battle cost in macros, and whether it ended.
         let now_in_battle = self.in_battle() != 0;
         match (self.was_in_battle, now_in_battle) {

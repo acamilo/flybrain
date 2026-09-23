@@ -70,19 +70,20 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use flybrain_core::agent::{
-    AgentConfig, NeuralAgent, RewardEvent as NeuralReward, TickOptions,
+    AgentConfig, NeuralAgent,
 };
 use flybrain_core::dataset::load_brain_dataset_from_dir;
-use flybrain_core::decoder::gameboy::{gameboy_decoder_config_with_macros, to_button_mask};
+use flybrain_core::decoder::gameboy::gameboy_decoder_config_with_macros;
 use flybrain_core::lif::SweepPlan;
 use flybrain_gb::adapter::GameAdapter;
 use flybrain_gb::pokemon_red::PokemonRedReward;
 use flybrain_gb::ratchet::Ratchet;
-use flybrain_gb::recovery::{NeuralRecovery, recover_game};
 use flybrain_gb::{AdapterLedger, DEFAULT_AUDIO_FRAMES, DEFAULT_AUDIO_FREQUENCY, Emulator, buttons};
 use flysim::config::Config;
+use flysim::frame::{Executed, FrameObserver, LegacyFrame, Parts};
 use flysim::macros::{MacroLayer, OutcomeCounts, Silence, macro_layer};
 use flysim::snapshot::MacroMode;
+use flysim::trace::FrameTrace;
 
 /// `constants/map_constants.asm`: Red's bedroom, where a cold boot ends up.
 const REDS_HOUSE_2F: u32 = 0x26;
@@ -103,25 +104,12 @@ fn emulator(rom: &[u8]) -> Emulator {
         .expect("binjgb should accept the cartridge")
 }
 
-/// The neural half of a ratchet recovery, exactly as `simloop.rs` wires it.
-struct AgentRecovery<'a> {
-    agent: &'a mut NeuralAgent,
-}
+/// Whether a macro owned the buttons of a frame: read as the executor hands the mask over.
+struct MacroOwned(bool);
 
-impl NeuralRecovery for AgentRecovery<'_> {
-    fn clear_decoder_holds(&mut self) {
-        let ms = self.agent.network.ms;
-        self.agent.decoder.clear_holds(ms);
-    }
-
-    fn clear_eligibility(&mut self) {
-        let ms = self.agent.network.ms;
-        self.agent.network.plasticity.clear_eligibility(ms);
-    }
-
-    fn set_visual_frame(&mut self, frame: &[u8]) {
-        let (width, height) = (self.agent.frame.width, self.agent.frame.height);
-        self.agent.network.set_visual_frame(frame, width, height);
+impl FrameObserver for MacroOwned {
+    fn executed(&mut self, _frame: &LegacyFrame, parts: &mut Parts<'_>, _executed: &Executed) {
+        self.0 = parts.macros.as_deref().is_some_and(|layer| layer.running().is_some());
     }
 }
 
@@ -244,11 +232,9 @@ fn boot_to_bedroom(rom: &[u8]) -> Vec<u8> {
 
 /// One arm: `hours` brain hours of the sim loop's frame order, unthrottled.
 ///
-/// The order is `simloop.rs`'s (steps 2 to 10), as `NeuralAgent::tick` expresses it: the frame and
-/// the payouts handed to a tick are the ones the previous tick's buttons produced. The macro layer
-/// is consulted at exactly the two points the loop consults it — after the decode, before the
-/// buttons reach the emulator, and after the frame and its payouts — so the arm measures the
-/// wiring under test rather than a second implementation of it.
+/// The frame is `flysim::frame::LegacyFrame`, the one the stream runs, so the arm measures the
+/// wiring under test rather than a second implementation of it. (Before FND-01 the arms ticked the
+/// brain through `NeuralAgent::tick`, one frame behind the stream's order.)
 fn run_arm(
     rom: &[u8],
     data: &Arc<flybrain_core::dataset::BrainDataset>,
@@ -270,48 +256,39 @@ fn run_arm(
         .or(preset.exclusive.as_ref())
         .expect("the preset has a group")
         .hold_ms;
-    let blocked_ms = preset.exclusive.as_ref().expect("the preset has an exclusive group").blocked_ms;
     let mut agent_config = AgentConfig::with_decoder(preset);
     let mut ratchet = Ratchet::with_policy(adapter.recovery_policy());
     let mut arm = Arm { mode: mode.as_str(), ..Arm::default() };
 
-    match start {
-        Start::Fresh { state, warmup_ms } => {
-            emulator.import_state(state).expect("the booted state should import");
-            agent_config.warmup_ms = *warmup_ms;
-        }
-        Start::Live { checkpoint } => {
-            emulator
-                .import_state(&checkpoint.runtime.emulator)
-                .expect("the checkpoint's emulator state should import");
-            adapter
-                .import_state(&checkpoint.runtime.reward)
-                .expect("the checkpoint's reward ledger should import");
-            let snapshot = (!checkpoint.runtime.ratchet_game.is_empty()).then(|| {
-                flybrain_gb::ratchet::Snapshot {
-                    game: checkpoint.runtime.ratchet_game.clone(),
-                    frame: checkpoint.runtime.ratchet_frame.clone(),
-                }
-            });
-            ratchet
-                .import(Some(checkpoint.runtime.ratchet), snapshot, adapter.rank_ladder().len())
-                .expect("the checkpoint's ratchet state should import");
-        }
+    if let Start::Fresh { warmup_ms, .. } = start {
+        agent_config.warmup_ms = *warmup_ms;
     }
 
     let mut agent = NeuralAgent::new(Arc::clone(data), agent_config).expect("a valid agent");
     if threads > 1 {
         agent.set_sweep_plan(SweepPlan::with_threads(threads).expect("a sweep plan"));
     }
+    let mut frame = LegacyFrame::new()
+        .with_trace(FrameTrace::from_env().expect("FLY_TRACE should name a writable file"));
     match start {
-        Start::Fresh { .. } => {
-            agent.warmup(Some(emulator.framebuffer())).expect("warm-up");
+        Start::Fresh { state, warmup_ms: _ } => {
+            emulator.import_state(state).expect("the booted state should import");
+            frame.frame_buffer.copy_from_slice(emulator.framebuffer());
+            agent.warmup(Some(&frame.frame_buffer)).expect("warm-up");
         }
-        Start::Live { checkpoint } => {
-            agent.import_state(&checkpoint.agent).expect("the checkpoint's agent should import");
-            let (width, height) = (agent.frame.width, agent.frame.height);
-            agent.network.set_visual_frame(&checkpoint.runtime.framebuffer, width, height);
-        }
+        // The stream's own restore, into the stream's own frame.
+        Start::Live { checkpoint } => frame
+            .restore(
+                &mut Parts {
+                    agent: &mut agent,
+                    emulator: &mut emulator,
+                    adapter: &mut adapter,
+                    ratchet: &mut ratchet,
+                    macros: None,
+                },
+                checkpoint,
+            )
+            .expect("the checkpoint should restore"),
     }
 
     // The layer under test, built the way the sim loop builds it: from the configuration, so raw
@@ -328,136 +305,62 @@ fn run_arm(
 
     let began_ms = agent.network.ms;
     let until = began_ms + hours * HOUR_MS;
-    let mut frame = emulator.framebuffer().to_vec();
-    let mut payouts: Vec<flybrain_gb::RewardEvent> = Vec::new();
-    let mut location = adapter.location();
-    let mut blocked_since_ms = began_ms;
-    let mut held_channel: Option<String> = agent.decoder.current().map(str::to_string);
     let mut rank = adapter.progress().rank;
     let tiles_at_start = adapter.progress().unique_locations;
     arm.rungs.push((rank, adapter.progress().rank_label, 0.0));
 
-    // The scene has not been observed yet, so the first frame is decided on an empty palette,
-    // which presses nothing. That is one frame, and it is the honest starting state.
+    // One observation before the first frame, as the sim loop takes after a restore, so frame one
+    // is decided on a real palette.
     if let Some(layer) = macros.as_mut() {
         let ledger = AdapterLedger(&adapter);
         let _ = layer.observe(&mut emulator, &ledger, agent.network.ms);
     }
 
     while agent.network.ms < until {
-        let rewards: Vec<NeuralReward> = payouts
-            .iter()
-            .map(|event| {
-                NeuralReward::with_stimulation(event.value, f64::from(event.stimulation_ms))
-            })
-            .collect();
-        let options = TickOptions { rewards: &rewards, boot: adapter.boot(), learn: true };
-
-        // The blocked-direction cooldown's input, as `simloop.rs` computes it.
-        let ms = agent.network.ms;
-        let blocked = (blocked_ms > 0.0 && ms - blocked_since_ms >= blocked_ms)
-            .then(|| agent.decoder.current().map(str::to_string))
-            .flatten();
-        // The scene's own macro buttons, from the palette the previous frame's `observe` dealt:
-        // the same mask the sim loop passes (`docs/design/macros.md` section 12). `None` in the
-        // raw arm, which has no layer and no macro group at all.
-        let bound = macros.as_ref().map(MacroLayer::bound_channels);
-        let result = agent
-            .tick_bound(&frame, &options, blocked.as_deref(), bound.as_deref())
-            .expect("a tick");
-        let held = agent.decoder.current().map(str::to_string);
-        if held != held_channel {
-            held_channel = held;
-            blocked_since_ms = ms;
-        }
-
-        // Step 4, with the layer in the middle of it in macros mode and absent in raw mode.
-        let ms = agent.network.ms;
-        let mut mask = to_button_mask(&result.active);
-        if let Some(layer) = macros.as_mut() {
-            let ledger = AdapterLedger(&adapter);
-            let decision = layer.decide(&result.active, mask, ms, &mut emulator, &ledger);
-            mask = decision.mask;
-            if let Some(silence) = decision.silence {
+        let mut parts = Parts {
+            agent: &mut agent,
+            emulator: &mut emulator,
+            adapter: &mut adapter,
+            ratchet: &mut ratchet,
+            macros: macros.as_mut(),
+        };
+        let mut owned = MacroOwned(false);
+        let transition = frame.transition(&mut parts, &mut owned).expect("a frame");
+        let ms = transition.ms;
+        let executed = &transition.executed;
+        if let Some(layer) = parts.macros.as_deref() {
+            if let Some(silence) = executed.silence {
                 *arm.silence.entry(silence.label()).or_insert(0) += 1;
             }
-            for event in decision.events.iter().filter(|event| event.outcome.is_none()) {
+            for event in executed.events.iter().filter(|event| event.outcome.is_none()) {
                 *arm.by_rank.entry(event.slot).or_insert(0) += 1;
             }
-            if layer.running().is_some() {
+            if owned.0 {
                 arm.macro_frames += 1;
             }
+            *arm.scenes.entry(layer.scene_name()).or_insert(0) += 1;
         }
-        if mask == 0 {
+        if executed.mask == 0 {
             arm.idle_frames += 1;
         }
-        emulator.set_buttons(mask as u8);
-        emulator.run_frame().expect("a frame should complete");
         arm.frames += 1;
-        frame.copy_from_slice(emulator.framebuffer());
-
-        // Steps 7 to 9, then the scene.
-        payouts = adapter.sample(&mut emulator, ms);
-        for event in &payouts {
+        for event in &transition.evaluated.rewards {
             arm.reward += event.value;
             *arm.payouts.entry(event.kind).or_insert(0) += 1;
         }
-        if let Some(layer) = macros.as_mut() {
-            let ledger = AdapterLedger(&adapter);
-            let _ = layer.observe(&mut emulator, &ledger, agent.network.ms);
-            *arm.scenes.entry(layer.scene_name()).or_insert(0) += 1;
-        }
-
-        let now = adapter.location();
-        if now.is_some() && now != location {
-            location = now;
-            blocked_since_ms = ms;
-        }
-        arm.digest = hash(arm.digest, u64::from(mask));
-        if let Some((map, x, y)) = location {
+        arm.digest = hash(arm.digest, u64::from(executed.mask));
+        if let Some((map, x, y)) = frame.location {
             arm.digest = hash(arm.digest, u64::from(map) << 32 | u64::from(x) << 16 | u64::from(y));
         }
 
-        // Step 10: the ratchet, with the adapter's own policy.
-        let progress = adapter.progress();
+        let progress = transition.evaluated.progress;
         if progress.rank != rank {
             rank = progress.rank;
             arm.rungs.push((rank, progress.rank_label, ms - began_ms));
         }
-        let safe = adapter.safe_for_snapshot();
-        let capture_due = safe && u64::from(progress.rank) > ratchet.state.best;
-        let captured = capture_due.then(|| flybrain_gb::ratchet::Snapshot {
-            game: emulator.export_state().expect("state export"),
-            frame: frame.clone(),
-        });
-        let recover = ratchet.observe_with_game_over(
-            safe,
-            u64::from(progress.rank),
-            progress.unique_locations as u64,
-            ms as u64,
-            adapter.game_over(),
-            || captured.expect("the ratchet only captures when a snapshot was prepared"),
-        );
-        if recover {
-            let snapshot = flybrain_gb::ratchet::Snapshot {
-                game: ratchet.game().expect("a recovery has a snapshot").to_vec(),
-                frame: ratchet.frame().expect("a recovery has a framebuffer").to_vec(),
-            };
-            let restored = {
-                let mut neural = AgentRecovery { agent: &mut agent };
-                recover_game(&mut emulator, &mut adapter, &mut neural, &snapshot)
-                    .expect("recovering the game")
-            };
-            frame.copy_from_slice(&restored);
-            emulator.set_buttons(0);
+        let boundary = frame.boundary(&mut parts, &progress, ms).expect("the boundary");
+        if boundary.rollback.is_some() {
             arm.recoveries += 1;
-            location = adapter.location();
-            held_channel = None;
-            blocked_since_ms = ms;
-            // The sim loop abandons a running macro on a rollback, and so does this.
-            if let Some(layer) = macros.as_mut() {
-                layer.cancel(ms);
-            }
         }
     }
 

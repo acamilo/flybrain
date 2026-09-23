@@ -259,10 +259,10 @@ impl NeuralAgent {
     /// scene has put on the pad (`docs/design/macros.md` section 12). A host with no macro group
     /// -- every caller that came before it -- passes `None` and decodes exactly as it always did.
     ///
-    /// `flysim`'s sim loop does not come through here (it drives the network and the decoder
-    /// itself, so that the macro layer can read the emulator between the two), but the bench that
-    /// measures the two arms against each other does, and a bench whose macro group could win a
-    /// channel the scene never bound would be measuring something the stream cannot do.
+    /// `flysim` does not come through here: its frame (`flysim::frame::LegacyFrame`) drives the
+    /// network and the decoder itself, so that the macro layer can read the emulator between the
+    /// two, and it installs a frame and its rewards straight after the frame rather than after the
+    /// next ticks. Every `flysim` harness runs that frame too.
     pub fn tick_bound(
         &mut self,
         frame: &[u8],

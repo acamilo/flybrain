@@ -437,6 +437,17 @@ async fn the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_kil
     assert_eq!(logged[0]["by"], json!("integration-test"));
     let on_disk = std::fs::read_to_string(dir.path().join("state/events.jsonl")).unwrap();
     assert!(on_disk.contains("integration-test fed the fly sugar"), "{on_disk}");
+    // And in the hot directory's journal, stamped with the frame it was applied before, which
+    // is what a shadow run replays (`flysim::journal`).
+    let journal_path = dir.path().join("hot").join(flysim::journal::FILE_NAME);
+    let journal = flysim::journal::read(&journal_path).expect("the sugar journal");
+    assert_eq!(journal.len(), 1, "{journal:?}");
+    assert_eq!(journal[0]["kind"], json!("sugar"));
+    assert_eq!(journal[0]["eventId"], json!(event_id));
+    assert_eq!(journal[0]["durationMs"], json!(400.0));
+    let stamped: u64 =
+        journal[0]["frame"].as_str().and_then(|frame| frame.parse().ok()).expect("a frame");
+    assert!(stamped >= 1, "stamped with a frame the emulator has run: {stamped}");
 
     // A second pulse while the first is still being applied is refused, not stacked.
     let (status, body) = service.post(

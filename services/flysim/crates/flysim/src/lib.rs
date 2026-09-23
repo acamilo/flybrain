@@ -27,6 +27,8 @@ pub mod config;
 pub mod eventlog;
 pub mod feed;
 pub mod feedbus;
+pub mod frame;
+pub mod journal;
 pub mod macros;
 pub mod metrics;
 pub mod pacing;
@@ -37,6 +39,7 @@ pub mod sdnotify;
 pub mod simloop;
 pub mod snapshot;
 pub mod store;
+pub mod trace;
 
 use std::sync::Arc;
 

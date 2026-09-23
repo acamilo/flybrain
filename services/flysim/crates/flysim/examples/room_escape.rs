@@ -77,7 +77,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use flybrain_core::agent::{
-    AgentConfig, GAMEBOY_MS_PER_FRAME, NeuralAgent, RewardEvent as NeuralReward, TickOptions,
+    AgentConfig, GAMEBOY_MS_PER_FRAME, NeuralAgent,
 };
 use flybrain_core::dataset::load_brain_dataset_from_dir;
 use flybrain_core::decoder::gameboy::{GAMEBOY_BUTTONS, gameboy_decoder_config, to_button_mask};
@@ -88,8 +88,8 @@ use flybrain_gb::adapter::{GameAdapter, MemoryReader};
 use flybrain_gb::pokemon_red::symbols::ram;
 use flybrain_gb::pokemon_red::{PokemonRedReward, SUPPORTED_ROM};
 use flybrain_gb::ratchet::Ratchet;
-use flybrain_gb::recovery::{NeuralRecovery, recover_game};
 use flybrain_gb::{DEFAULT_AUDIO_FRAMES, DEFAULT_AUDIO_FREQUENCY, Emulator, buttons};
+use flysim::frame::{FrameObserver, FramePhase, LegacyFrame, Parts};
 
 /// `constants/map_constants.asm`: Red's bedroom and the ground floor of his house.
 const REDS_HOUSE_2F: u32 = 0x26;
@@ -496,28 +496,6 @@ fn print_table(title: &str, cells: &BTreeMap<(String, u64, u64, u64), Cell>, roo
 // The real brain
 // -------------------------------------------------------------------------------------------
 
-/// The neural half of a ratchet recovery, exactly as `flysim::simloop` wires it.
-struct AgentRecovery<'a> {
-    agent: &'a mut NeuralAgent,
-}
-
-impl NeuralRecovery for AgentRecovery<'_> {
-    fn clear_decoder_holds(&mut self) {
-        let ms = self.agent.network.ms;
-        self.agent.decoder.clear_holds(ms);
-    }
-
-    fn clear_eligibility(&mut self) {
-        let ms = self.agent.network.ms;
-        self.agent.network.plasticity.clear_eligibility(ms);
-    }
-
-    fn set_visual_frame(&mut self, frame: &[u8]) {
-        let (width, height) = (self.agent.frame.width, self.agent.frame.height);
-        self.agent.network.set_visual_frame(frame, width, height);
-    }
-}
-
 /// Where one brain run starts.
 enum Start<'a> {
     /// A save state and the map it stands in: a fresh fly, warmed up here.
@@ -666,6 +644,97 @@ fn survey(rom: &[u8], state: &[u8]) -> Survey {
     (reachable, exits)
 }
 
+/// The room-escape instrumentation inside the stream's frame: the decoder as it stood before
+/// the decode and after it, read at the one point between the two.
+struct Escape<'a> {
+    /// The readout before this frame's decode.
+    before: Option<flybrain_core::decoder::DecoderState>,
+    hold_start: (Option<(u32, u32, u32)>, f64),
+    run_winner: Option<String>,
+    run_length: f64,
+    start_map: u32,
+    exits: &'a BTreeMap<(u32, u32), Vec<&'static str>>,
+    hold_ms: f64,
+    trace: Trace,
+}
+
+impl FrameObserver for Escape<'_> {
+    fn after(&mut self, phase: FramePhase, agent: &mut NeuralAgent) {
+        if phase == FramePhase::Ticked {
+            self.before = Some(agent.decoder.export_state());
+        }
+    }
+
+    fn before_execute(&mut self, frame: &LegacyFrame, parts: &mut Parts<'_>, _active: &[String]) {
+        let Some(before) = self.before.take() else { return };
+        let agent = &*parts.agent;
+        let after = agent.decoder.export_state();
+        if after.next_decision == before.next_decision {
+            return;
+        }
+        let ms = agent.network.ms;
+        let location = frame.location;
+        let trace = &mut self.trace;
+        trace.decisions += 1;
+        let winner = after.current.clone().expect("a decision names a winner");
+        // The raw argmax, recomputed from the decoder's own inputs: the rates the decode saw, the
+        // calibrated baseline, and the fatigue as it stood *before* the decision. Comparing it
+        // with the winner is what "the incumbent won by hysteresis" means.
+        let adjusted = |channel: &str| {
+            let index = DIRECTIONS.iter().position(|name| *name == channel).expect("a direction");
+            let role = ROLES[index];
+            let rate = agent.network.rates.get_or_zero(role);
+            let base = after.baseline.get_or_zero(role);
+            (rate + 1.0) / (base + 1.0) / (1.0 + before.fatigue.get_or_zero(channel))
+        };
+        let mut argmax = DIRECTIONS[0];
+        for channel in DIRECTIONS.iter().skip(1) {
+            if adjusted(channel) > adjusted(argmax) {
+                argmax = channel;
+            }
+        }
+        if argmax != winner {
+            trace.hysteresis_holds += 1;
+        }
+        if let Some(name) = DIRECTIONS.iter().find(|name| **name == winner) {
+            *trace.wins.entry(name).or_insert(0) += 1;
+        }
+        if self.run_winner.as_deref() == Some(winner.as_str()) {
+            self.run_length += 1.0;
+        } else {
+            if self.run_length > 0.0 {
+                trace.runs.push(self.run_length);
+            }
+            self.run_winner = Some(winner.clone());
+            self.run_length = 1.0;
+        }
+
+        // Was the hold that just ended a wall bump? The location now against the location at the
+        // previous decision, for the direction that was held in between.
+        if let (Some(previous), Some(held)) = (self.hold_start.0, before.current.as_deref())
+            && ms - self.hold_start.1 >= self.hold_ms
+            && location == Some(previous)
+            && let Some(name) = DIRECTIONS.iter().find(|name| **name == held)
+        {
+            *trace.blocked_holds.entry(name).or_insert(0) += 1;
+        }
+        self.hold_start = (location, ms);
+
+        // The decision this whole exercise is about: standing on a tile one press from leaving,
+        // did the readout choose that press? Only on the starting map: the bedroom has walkable
+        // tiles at the same coordinates and they are not these exits.
+        if let Some(leaving) = location
+            .filter(|(map, _, _)| *map == self.start_map)
+            .and_then(|(_, x, y)| self.exits.get(&(x, y)))
+        {
+            trace.exit_decisions += 1;
+            if leaving.iter().any(|direction| *direction == winner) {
+                trace.exit_decisions_taken += 1;
+            }
+        }
+    }
+}
+
 /// One instrumented brain run: the real network, the real readout, the real adapter, and -- from a
 /// live checkpoint -- the real reward ledger and the real ratchet.
 ///
@@ -697,174 +766,81 @@ fn brain_trace(
     let mut emulator = emulator(rom);
     let mut adapter = PokemonRedReward::new();
     let mut agent_config = AgentConfig::with_decoder(config.clone());
-    let (hold_ms, blocked_ms) = {
-        let group = config.exclusive.as_ref().expect("the Game Boy preset has an exclusive group");
-        (group.hold_ms, group.blocked_ms)
-    };
+    let hold_ms =
+        config.exclusive.as_ref().expect("the Game Boy preset has an exclusive group").hold_ms;
     let mut ratchet = Ratchet::with_policy(adapter.recovery_policy());
     let mut trace = Trace::default();
-
-    let start_map = match &start {
-        Start::Fresh { state, map, warmup_ms } => {
-            emulator.import_state(state).expect("the starting state should import");
-            agent_config.warmup_ms = *warmup_ms;
-            *map
-        }
-        Start::Live { checkpoint, .. } => {
-            emulator
-                .import_state(&checkpoint.runtime.emulator)
-                .expect("the checkpoint's emulator state should import");
-            adapter
-                .import_state(&checkpoint.runtime.reward)
-                .expect("the checkpoint's reward ledger should import");
-            let snapshot = (!checkpoint.runtime.ratchet_game.is_empty()).then(|| {
-                flybrain_gb::ratchet::Snapshot {
-                    game: checkpoint.runtime.ratchet_game.clone(),
-                    frame: checkpoint.runtime.ratchet_frame.clone(),
-                }
-            });
-            ratchet
-                .import(Some(checkpoint.runtime.ratchet), snapshot, adapter.rank_ladder().len())
-                .expect("the checkpoint's ratchet state should import");
-            u32::from(emulator.read8(ram::wCurMap))
-        }
-    };
+    if let Start::Fresh { warmup_ms, .. } = &start {
+        agent_config.warmup_ms = *warmup_ms;
+    }
 
     let mut agent = NeuralAgent::new(Arc::clone(data), agent_config).expect("a valid agent");
     if threads > 1 {
         agent.set_sweep_plan(SweepPlan::with_threads(threads).expect("a sweep plan"));
     }
-    match &start {
-        Start::Fresh { .. } => agent.warmup(Some(emulator.framebuffer())).expect("warm-up"),
-        Start::Live { checkpoint, rng } => {
-            let mut state = checkpoint.agent.clone();
-            state.network.rng = *rng;
-            agent.import_state(&state).expect("the checkpoint's agent state should import");
-            let (width, height) = (agent.frame.width, agent.frame.height);
-            agent.network.set_visual_frame(&checkpoint.runtime.framebuffer, width, height);
+    // The stream's own frame (`flysim::frame::LegacyFrame`), in raw mode: no macro layer.
+    let mut frame = LegacyFrame::new();
+    let start_map = match &start {
+        Start::Fresh { state, map, .. } => {
+            emulator.import_state(state).expect("the starting state should import");
+            frame.frame_buffer.copy_from_slice(emulator.framebuffer());
+            agent.warmup(Some(&frame.frame_buffer)).expect("warm-up");
+            *map
         }
-    }
+        Start::Live { checkpoint, rng } => {
+            let mut checkpoint = (*checkpoint).clone();
+            checkpoint.agent.network.rng = *rng;
+            frame
+                .restore(
+                    &mut Parts {
+                        agent: &mut agent,
+                        emulator: &mut emulator,
+                        adapter: &mut adapter,
+                        ratchet: &mut ratchet,
+                        macros: None,
+                    },
+                    &checkpoint,
+                )
+                .expect("the checkpoint should restore");
+            u32::from(emulator.read8(ram::wCurMap))
+        }
+    };
 
     trace.maps.push(start_map);
     let began_ms = agent.network.ms;
     let until = began_ms + minutes * 60_000.0;
-    // The sim loop's own order (`simloop.rs`, steps 2 to 10), as `NeuralAgent::tick` expresses it:
-    // the frame and the payouts handed to a tick are the ones the previous tick's buttons produced.
-    let mut frame = emulator.framebuffer().to_vec();
-    let mut payouts: Vec<flybrain_gb::RewardEvent> = Vec::new();
-    let mut location = adapter.location();
-    // The blocked-direction cooldown's window, restarted by a move *or* by a new winner, exactly
-    // as `simloop.rs` restarts it: a direction that has just won has not had a hold to move in yet.
-    let mut blocked_since_ms = began_ms;
-    let mut held_channel: Option<String> = agent.decoder.current().map(str::to_string);
-    let mut hold_start = (location, began_ms);
-    let mut run_winner: Option<String> = None;
-    let mut run_length = 0.0f64;
+    let mut escape = Escape {
+        before: None,
+        hold_start: (frame.location, began_ms),
+        run_winner: None,
+        run_length: 0.0,
+        start_map,
+        exits,
+        hold_ms,
+        trace,
+    };
     // Reported on its own: the longest stretch with no movement at all, whatever was held.
     let mut still_since_ms = began_ms;
     let tiles_at_start = adapter.progress().unique_locations;
-    trace.tiles = tiles_at_start;
+    escape.trace.tiles = tiles_at_start;
 
     while agent.network.ms < until {
-        let rewards: Vec<NeuralReward> = payouts
-            .iter()
-            .map(|event| {
-                NeuralReward::with_stimulation(event.value, f64::from(event.stimulation_ms))
-            })
-            .collect();
-        let options = TickOptions { rewards: &rewards, boot: adapter.boot(), learn: true };
+        let mut parts = Parts {
+            agent: &mut agent,
+            emulator: &mut emulator,
+            adapter: &mut adapter,
+            ratchet: &mut ratchet,
+            macros: None,
+        };
+        let location_before = frame.location;
+        let transition = frame.transition(&mut parts, &mut escape).expect("a frame");
+        let ms = transition.ms;
+        let trace = &mut escape.trace;
+        trace.reward += transition.evaluated.rewards.iter().map(|event| event.value).sum::<f64>();
+        trace.tiles = transition.evaluated.progress.unique_locations;
 
-        // The blocked-direction cooldown's input, computed the way `simloop.rs` computes it: the
-        // channel the readout is holding, once the adapter's location has stood still for a whole
-        // hold. `blocked_ms == 0` is the rule switched off, and reports nothing.
-        let ms = agent.network.ms;
-        let blocked = (blocked_ms > 0.0 && ms - blocked_since_ms >= blocked_ms)
-            .then(|| agent.decoder.current().map(str::to_string))
-            .flatten();
-
-        let before = agent.decoder.export_state();
-        let result = agent.tick_blocked(&frame, &options, blocked.as_deref()).expect("a tick");
-        let after = agent.decoder.export_state();
-        let held = agent.decoder.current().map(str::to_string);
-        if held != held_channel {
-            held_channel = held;
-            blocked_since_ms = ms;
-        }
-
-        if after.next_decision != before.next_decision {
-            trace.decisions += 1;
-            let winner = after.current.clone().expect("a decision names a winner");
-            // The raw argmax, recomputed from the decoder's own inputs: the rates the decode saw
-            // (`tick` decodes on the post-step rates and nothing changes them afterwards), the
-            // calibrated baseline, and the fatigue as it stood *before* the decision. Comparing it
-            // with the winner is what "the incumbent won by hysteresis" means.
-            let adjusted = |channel: &str| {
-                let index =
-                    DIRECTIONS.iter().position(|name| *name == channel).expect("a direction");
-                let role = ROLES[index];
-                let rate = agent.network.rates.get_or_zero(role);
-                let base = after.baseline.get_or_zero(role);
-                (rate + 1.0) / (base + 1.0) / (1.0 + before.fatigue.get_or_zero(channel))
-            };
-            let mut argmax = DIRECTIONS[0];
-            for channel in DIRECTIONS.iter().skip(1) {
-                if adjusted(channel) > adjusted(argmax) {
-                    argmax = channel;
-                }
-            }
-            if argmax != winner {
-                trace.hysteresis_holds += 1;
-            }
-            if let Some(name) = DIRECTIONS.iter().find(|name| **name == winner) {
-                *trace.wins.entry(name).or_insert(0) += 1;
-            }
-            if run_winner.as_deref() == Some(winner.as_str()) {
-                run_length += 1.0;
-            } else {
-                if run_length > 0.0 {
-                    trace.runs.push(run_length);
-                }
-                run_winner = Some(winner.clone());
-                run_length = 1.0;
-            }
-
-            // Was the hold that just ended a wall bump? The location now against the location at
-            // the previous decision, for the direction that was held in between.
-            if let (Some(previous), Some(held)) = (hold_start.0, before.current.as_deref())
-                && ms - hold_start.1 >= hold_ms
-                && location == Some(previous)
-                && let Some(name) = DIRECTIONS.iter().find(|name| **name == held)
-            {
-                *trace.blocked_holds.entry(name).or_insert(0) += 1;
-            }
-            hold_start = (location, ms);
-
-            // The decision this whole exercise is about: standing on a tile one press from
-            // leaving, did the readout choose that press? Only on the starting map: the bedroom
-            // has walkable tiles at the same coordinates and they are not these exits.
-            if let Some(leaving) = location
-                .filter(|(map, _, _)| *map == start_map)
-                .and_then(|(_, x, y)| exits.get(&(x, y)))
-            {
-                trace.exit_decisions += 1;
-                if leaving.iter().any(|direction| *direction == winner) {
-                    trace.exit_decisions_taken += 1;
-                }
-            }
-        }
-
-        emulator.set_buttons(to_button_mask(&result.active) as u8);
-        emulator.run_frame().expect("a frame should complete");
-        frame.copy_from_slice(emulator.framebuffer());
-        let ms = agent.network.ms;
-        payouts = adapter.sample(&mut emulator, ms);
-        trace.reward += payouts.iter().map(|event| event.value).sum::<f64>();
-        trace.tiles = adapter.progress().unique_locations;
-
-        let now = adapter.location();
-        if now.is_some() && now != location {
-            location = now;
-            blocked_since_ms = ms;
+        let location = frame.location;
+        if location != location_before {
             still_since_ms = ms;
         }
         trace.longest_still_ms = trace.longest_still_ms.max(ms - still_since_ms);
@@ -876,40 +852,15 @@ fn brain_trace(
             *trace.exit_tile_frames.entry(tile).or_insert(0) += 1;
         }
 
-        // Step 10: the ratchet, with the adapter's own policy and the checkpoint's own budget.
-        let progress = adapter.progress();
-        let safe = adapter.safe_for_snapshot();
-        let capture_due = safe && u64::from(progress.rank) > ratchet.state.best;
-        let captured = capture_due.then(|| flybrain_gb::ratchet::Snapshot {
-            game: emulator.export_state().expect("state export"),
-            frame: frame.clone(),
-        });
-        let recover = ratchet.observe(
-            safe,
-            u64::from(progress.rank),
-            progress.unique_locations as u64,
-            ms as u64,
-            || captured.expect("the ratchet only captures when a snapshot was prepared"),
-        );
-        if recover {
-            let snapshot = flybrain_gb::ratchet::Snapshot {
-                game: ratchet.game().expect("a recovery has a snapshot").to_vec(),
-                frame: ratchet.frame().expect("a recovery has a framebuffer").to_vec(),
-            };
-            let restored = {
-                let mut neural = AgentRecovery { agent: &mut agent };
-                recover_game(&mut emulator, &mut adapter, &mut neural, &snapshot)
-                    .expect("recovering the game")
-            };
-            frame.copy_from_slice(&restored);
-            emulator.set_buttons(0);
-            trace.recoveries += 1;
-            location = adapter.location();
-            held_channel = None;
-            blocked_since_ms = ms;
+        // The ratchet, with the adapter's own policy and the checkpoint's own budget.
+        let progress = transition.evaluated.progress;
+        let boundary = frame.boundary(&mut parts, &progress, ms).expect("the boundary");
+        if boundary.rollback.is_some() {
+            escape.trace.recoveries += 1;
             still_since_ms = ms;
-            hold_start = (location, ms);
+            escape.hold_start = (frame.location, ms);
         }
+        let trace = &mut escape.trace;
 
         let Some(map) = adapter.map_id() else { continue };
         if trace.maps.last() != Some(&map) {
@@ -925,6 +876,7 @@ fn brain_trace(
             }
         }
     }
+    let Escape { mut trace, run_length, .. } = escape;
     if run_length > 0.0 {
         trace.runs.push(run_length);
     }

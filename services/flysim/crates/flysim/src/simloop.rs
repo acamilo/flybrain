@@ -8,7 +8,8 @@
 //!
 //! The per-frame order is the prototype worker's (`fly-plays-pokemon/src/simulation.worker.ts`,
 //! `tick()`), not `NeuralAgent::tick`'s argument order, because the prototype samples reward
-//! inside the same frame it produced:
+//! inside the same frame it produced. It lives in `crate::frame::LegacyFrame`, the one copy every
+//! harness runs too; in outline:
 //!
 //! 1. drain commands
 //! 2. step the brain 16 or 17 ms (the fractional remainder carries and is checkpointed)
@@ -30,14 +31,13 @@ use anyhow::{Context, Result, anyhow, bail};
 use flybrain_core::agent::{AgentConfig, NeuralAgent};
 use flybrain_core::dataset::load_brain_dataset_from_dir;
 use flybrain_core::decoder::DecoderConfig;
-use flybrain_core::decoder::gameboy::{gameboy_decoder_config_with_macros, to_button_mask};
+use flybrain_core::decoder::gameboy::gameboy_decoder_config_with_macros;
 use flybrain_core::decoder::platformer::platformer_decoder_config;
 use flybrain_core::lif::SweepPlan;
 use flybrain_gb::adapter::{DecoderPresetId, GameAdapter, ProgressSnapshot};
 use flybrain_gb::macros::AdapterLedger;
-use flybrain_gb::emulator::{DEFAULT_AUDIO_FRAMES, Emulator, FRAMEBUFFER_LEN};
+use flybrain_gb::emulator::{DEFAULT_AUDIO_FRAMES, Emulator};
 use flybrain_gb::ratchet::Ratchet;
-use flybrain_gb::recovery::{NeuralRecovery, recover_game};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -45,6 +45,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 use crate::chat::{ChatLimiter, ChatRefusal, ChatRing, DenyList, RejectReason};
 use crate::config::Config;
 use crate::eventlog::{EventLog, EventRing, NewEvent, now_wall_ms, utc_day};
+use crate::journal::{Input, SugarJournal};
+use crate::frame::{FrameObserver, FramePhase, LegacyFrame, Parts, RollbackTrigger};
 use crate::macros::{MacroEvent, MacroLayer, macro_layer};
 use crate::metrics::Metrics;
 use crate::pacing::{Pacer, RealtimeWindow};
@@ -56,6 +58,7 @@ use crate::snapshot::{
     RewardCounts, RewardKind, Snapshot, f32_bytes, finite, spike_bitset,
 };
 use crate::store::{self, RuntimeState, Store};
+use crate::trace::FrameTrace;
 
 /// Commands the control API queues for the sim thread.
 #[derive(Debug)]
@@ -273,25 +276,26 @@ pub fn booting_snapshot(seq: u64, wall_ms: u64, mode: MacroMode) -> Snapshot {
     }
 }
 
-/// The neural half of a ratchet recovery, wired to `flybrain-core`.
-struct AgentRecovery<'a> {
-    agent: &'a mut NeuralAgent,
+/// The stream's only look inside the frame: the per-phase profile (`crate::profile`).
+struct Laps<'a> {
+    profiler: &'a mut Profiler,
 }
 
-impl NeuralRecovery for AgentRecovery<'_> {
-    fn clear_decoder_holds(&mut self) {
-        let ms = self.agent.network.ms;
-        self.agent.decoder.clear_holds(ms);
-    }
-
-    fn clear_eligibility(&mut self) {
-        let ms = self.agent.network.ms;
-        self.agent.network.plasticity.clear_eligibility(ms);
-    }
-
-    fn set_visual_frame(&mut self, frame: &[u8]) {
-        let (width, height) = (self.agent.frame.width, self.agent.frame.height);
-        self.agent.network.set_visual_frame(frame, width, height);
+impl FrameObserver for Laps<'_> {
+    fn after(&mut self, phase: FramePhase, agent: &mut NeuralAgent) {
+        match phase {
+            FramePhase::Ticked => {
+                self.profiler.lap(Phase::Step);
+                if self.profiler.enabled() {
+                    self.profiler.absorb_brain(agent.network.timings());
+                    agent.network.reset_timings();
+                }
+            }
+            FramePhase::Executed => self.profiler.lap(Phase::Decode),
+            FramePhase::Emulated => self.profiler.lap(Phase::Emulate),
+            FramePhase::Advanced => self.profiler.lap(Phase::Retina),
+            FramePhase::Committed => self.profiler.lap(Phase::Rewards),
+        }
     }
 }
 
@@ -336,24 +340,11 @@ pub struct Sim {
     next_generation: u64,
     best_archived_rank: Option<u32>,
 
-    /// Fractional millisecond carried into the next frame, exactly as `NeuralAgent` keeps it.
-    remainder: f64,
-    frame_counter: u64,
-    frame_buffer: Vec<u8>,
+    /// The frame order and its state: the remainder, the frame counter, the frame on screen, the
+    /// mask and the readout's blocked-direction window (`crate::frame`).
+    frame: LegacyFrame,
     pending_audio: Vec<f32>,
     dc_blocker: DcBlocker,
-    buttons: u32,
-    /// The readout's blocked-direction cooldown (`docs/readout.md`), as the loop computes it: the
-    /// player's area and tile as of the last frame the adapter reported one, the channel the group is
-    /// holding, and the brain clock at which *either* of those last changed. A direction is only
-    /// blamed once it has been held for a whole `blocked_ms` with no movement, so a direction that
-    /// has just won is never blamed for a wall the previous one hit.
-    ///
-    /// All three are transient and deliberately not checkpointed: one hold of a wall after a
-    /// restart is cheaper than a stale position surviving a restore.
-    location: Option<(u32, u32, u32)>,
-    held_channel: Option<String>,
-    blocked_since_ms: f64,
 
     /// Palette mode (`docs/design/macros.md`), or `None` in raw mode — which is the default and
     /// which is byte for byte the behaviour that predates it: every call site below is inside an
@@ -385,6 +376,9 @@ pub struct Sim {
     sugar_last_by: Option<String>,
     sugar_today: u64,
     sugar_day: String,
+    /// Every admitted sugar and operator pulse, frame-stamped, in the hot directory
+    /// (`crate::journal`): what a shadow run replays. Not checkpointed.
+    journal: SugarJournal,
 
     /// The chat path. None of it is wired to the agent, the emulator or plasticity.
     chat_ring: ChatRing,
@@ -566,16 +560,14 @@ impl Sim {
             writer_thread: None,
             next_generation: 1,
             best_archived_rank: None,
-            remainder: 0.0,
-            frame_counter: 0,
-            frame_buffer: vec![0u8; FRAMEBUFFER_LEN],
+            // The per-frame trace, off unless `FLY_TRACE` names a file (`crate::trace`).
+            frame: LegacyFrame::new().with_trace(
+                FrameTrace::from_env()
+                    .with_context(|| format!("creating the {} file", crate::trace::ENV))?,
+            ),
             pending_audio: Vec::new(),
             dc_blocker: DcBlocker::default(),
-            buttons: 0,
             status: FeedStatus::Booting,
-            location: None,
-            held_channel: None,
-            blocked_since_ms: 0.0,
             pending_recovery: false,
             seq: 0,
             started,
@@ -589,6 +581,7 @@ impl Sim {
             sugar_last_by: None,
             sugar_today: 0,
             sugar_day: utc_day(now_wall_ms()),
+            journal: SugarJournal::new(&config.paths.hot_dir),
             chat_ring: ChatRing::new(config.chat.ring),
             chat_limits: ChatLimiter::default(),
             deny_list: if config.chat.enabled {
@@ -686,7 +679,7 @@ impl Sim {
                     }
                     tracing::info!(
                         origin = %candidate.origin,
-                        frame = self.frame_counter,
+                        frame = self.frame.frame_counter,
                         brain_ms = self.agent.network.ms,
                         rank = self.rank,
                         "restored"
@@ -749,46 +742,21 @@ impl Sim {
                 self.compatibility
             ),
         }
-        if runtime.framebuffer.len() != FRAMEBUFFER_LEN {
-            bail!("checkpoint framebuffer is {} bytes", runtime.framebuffer.len());
-        }
         // `import_state` is self-validating and a no-op on failure, so a refused checkpoint
         // leaves the agent exactly as it was and the next candidate starts clean.
-        self.agent
-            .import_state(&checkpoint.agent)
-            .map_err(|error| anyhow!("{error}"))?;
-        self.emulator
-            .import_state(&runtime.emulator)
-            .map_err(|error| anyhow!("{error}"))?;
-        if !runtime.reward.is_null() {
-            self.adapter
-                .import_state(&runtime.reward)
-                .map_err(|error| anyhow!("{error}"))?;
+        {
+            let mut parts = Parts {
+                agent: &mut self.agent,
+                emulator: &mut self.emulator,
+                adapter: self.adapter.as_mut(),
+                ratchet: &mut self.ratchet,
+                macros: self.macros.as_mut(),
+            };
+            self.frame.restore(&mut parts, &checkpoint)?;
         }
-        let snapshot = if runtime.ratchet_game.is_empty() {
-            None
-        } else {
-            Some(flybrain_gb::ratchet::Snapshot {
-                game: runtime.ratchet_game.clone(),
-                frame: runtime.ratchet_frame.clone(),
-            })
-        };
-        self.ratchet
-            .import(Some(runtime.ratchet), snapshot, self.adapter.rank_ladder().len())
-            .map_err(|error| anyhow!("{error}"))?;
-
-        self.remainder = checkpoint.agent.remainder;
-        self.frame_counter = runtime.emulator_frame;
-        self.buttons = runtime.buttons;
         self.rank_since_ms = runtime.rank_since_ms;
-        self.frame_buffer.copy_from_slice(&runtime.framebuffer);
-        let (width, height) = (self.agent.frame.width, self.agent.frame.height);
-        self.agent
-            .network
-            .set_visual_frame(&self.frame_buffer, width, height);
         self.rank = self.adapter.progress().rank;
         self.log.resume_from(runtime.last_event_id);
-        self.emulator.set_buttons(self.buttons as u8);
         Ok(())
     }
 
@@ -796,16 +764,8 @@ impl Sim {
     /// readout on the settled rates. Never after a restore, which already carries a settled
     /// network and a calibrated decoder.
     fn fresh_start(&mut self) -> Result<()> {
-        self.emulator
-            .run_frame()
-            .map_err(|error| anyhow!("running the first frame: {error}"))?;
-        self.frame_buffer.copy_from_slice(self.emulator.framebuffer());
-        self.frame_counter = 1;
-        let raw = self.emulator.take_audio_u8();
+        let raw = self.frame.initialize(&mut self.emulator, &mut self.agent)?;
         self.dc_blocker.process_into(&raw, &mut self.pending_audio);
-        self.agent
-            .warmup(Some(&self.frame_buffer))
-            .map_err(|error| anyhow!("{error}"))?;
         self.emit(NewEvent::new(FeedEventKind::System, "Fresh start: the fly woke up"));
         Ok(())
     }
@@ -927,117 +887,27 @@ impl Sim {
         self.deny_list.maybe_reload(Instant::now(), forced);
     }
 
-    /// One frame, in the prototype's order.
+    /// One frame, in the prototype's order (`crate::frame`).
     fn step_frame(&mut self) -> Result<()> {
-        // 2. Step the brain: 16 or 17 integer ticks, the remainder carried and checkpointed.
-        self.remainder += self.agent.ms_per_frame;
-        let steps = self.remainder.floor();
-        self.remainder -= steps;
-        self.agent.network.step(steps as u64);
-        self.profiler.lap(Phase::Step);
-        if self.profiler.enabled() {
-            self.profiler.absorb_brain(self.agent.network.timings());
-            self.agent.network.reset_timings();
-        }
-
-        // 3. Decode, 4. apply the buttons.
-        // Not the mode string: the adapter decides what counts as boot, because a platformer needs
-        // the permissive Start variant in four of its five modes (`GameAdapter::boot`).
-        let boot = self.adapter.boot();
-        let ms = self.agent.network.ms;
-        let rates = self.agent.network.rates.clone();
-        // The readout's blocked-direction cooldown (`docs/readout.md`): the direction the group is
-        // holding, once the adapter's position has stood still for a whole `blocked_ms`. The loop
-        // owns the clock and the position; the decoder only learns *which* channel did nothing.
-        // `blocked_ms == 0` -- the platformer preset, and the Game Boy preset before v0.1.1 --
-        // switches the rule off here, before the decoder is asked.
-        let blocked_ms = self.agent.decoder.blocked_ms();
-        let blocked = (blocked_ms > 0.0 && ms - self.blocked_since_ms >= blocked_ms)
-            .then(|| self.agent.decoder.current())
-            .flatten()
-            .map(str::to_string);
-        // The scene's own macro buttons, for the macro group's per-decision mask
-        // (`docs/design/macros.md` section 12: "unbound channels are masked from the decision").
-        // They are the bindings the previous frame's `observe` dealt, which is the palette the
-        // page is showing, so the fly is choosing among exactly the buttons the audience can see.
-        // `None` in raw mode, where the group has no channels to mask anyway.
-        let bound = self.macros.as_ref().map(MacroLayer::bound_channels);
-        let active = self.agent.decoder.decode_bound(
-            &rates,
-            ms,
-            boot,
-            blocked.as_deref(),
-            bound.as_deref(),
-        );
-        // A new winner starts its own window: it has not had a hold to move in yet.
-        let held = self.agent.decoder.current().map(str::to_string);
-        if held != self.held_channel {
-            self.held_channel = held;
-            self.blocked_since_ms = ms;
-        }
-        self.buttons = to_button_mask(&active);
-        // Macros mode (`docs/design/macros.md` sections 4 and 12): the same decode, plus the
-        // macro group whose winner is in `active` alongside the buttons. The mask that reaches
-        // the emulator is the running macro's, or nothing, or -- on the title screen alone -- the
-        // raw mask above. In raw mode `self.macros` is `None` and not one line of this runs.
-        let started_or_finished = match self.macros.as_mut() {
-            // Two disjoint fields of the same struct, so the layer can read the emulator while
-            // the loop still owns both. Taking the layer out and putting it back would leave
-            // raw mode running silently if anything in between ever panicked.
-            Some(layer) => {
-                // Three disjoint fields: the layer decides, the emulator is read, and the
-                // adapter's exploration ledger answers the ways out' "unvisited" — read-only, by
-                // `&dyn`, and the only thing the palette is told about the reward side.
-                let ledger = AdapterLedger(self.adapter.as_ref());
-                let decision = layer.decide(
-                    &active,
-                    self.buttons,
-                    ms,
-                    &mut self.emulator,
-                    &ledger,
-                );
-                self.buttons = decision.mask;
-                decision.events
-            }
-            None => Vec::new(),
+        // Prepare through commit: ticks, decode, the executor's mask, one emulator frame, rewards,
+        // the scene and the location, then the stimulations and the reinforcement.
+        let transition = {
+            let mut parts = Parts {
+                agent: &mut self.agent,
+                emulator: &mut self.emulator,
+                adapter: self.adapter.as_mut(),
+                ratchet: &mut self.ratchet,
+                macros: self.macros.as_mut(),
+            };
+            let mut laps = Laps { profiler: &mut self.profiler };
+            self.frame.transition(&mut parts, &mut laps)?
         };
-        self.emit_macro_events(&started_or_finished);
-        self.emulator.set_buttons(self.buttons as u8);
-        self.profiler.lap(Phase::Decode);
-
-        // 5. Run one emulator frame, 6. set the visual frame from it.
-        self.emulator
-            .run_frame()
-            .map_err(|error| anyhow!("frame {}: {error}", self.frame_counter + 1))?;
-        self.frame_counter += 1;
         Metrics::incr(&self.shared.metrics.sim_frames);
-        self.profiler.lap(Phase::Emulate);
-        self.frame_buffer.copy_from_slice(self.emulator.framebuffer());
-        let (width, height) = (self.agent.frame.width, self.agent.frame.height);
-        self.agent
-            .network
-            .set_visual_frame(&self.frame_buffer, width, height);
-        let raw = self.emulator.take_audio_u8();
-        self.dc_blocker.process_into(&raw, &mut self.pending_audio);
-        self.profiler.lap(Phase::Retina);
-
-        // 7. Sample rewards from the frame just produced.
-        let ms = self.agent.network.ms;
-        let events = {
-            let (adapter, emulator) = (&mut self.adapter, &mut self.emulator);
-            adapter.sample(emulator, ms)
-        };
-
-        // 8. Stimulate once per event, 9. reinforce with the sum.
-        let mut total = 0.0;
-        for event in &events {
-            self.agent.network.stimulate(f64::from(event.stimulation_ms));
-            total += event.value;
-        }
-        if self.agent.network.plasticity.enabled {
-            self.agent.network.plasticity.reinforce(total, ms);
-        }
-        for event in &events {
+        self.dc_blocker.process_into(&transition.audio, &mut self.pending_audio);
+        // The feed events, in the order the phases produced them: the executor's starts and
+        // finishes, the rewards, then the observation's abandonment.
+        self.emit_macro_events(&transition.executed.events);
+        for event in &transition.evaluated.rewards {
             let kind = RewardKind::from_adapter(event.kind);
             let mut new = NewEvent::new(FeedEventKind::Reward, event.label.clone())
                 .value(event.value);
@@ -1046,68 +916,27 @@ impl Sim {
             }
             self.emit(new);
         }
+        self.emit_macro_events(&transition.evaluated.abandoned);
 
-        self.profiler.lap(Phase::Rewards);
-
-        // `docs/design/macros.md` section 2: the scene is sampled once per game frame, after the
-        // frame. So the palette the fly is offered on the next frame is the one for the frame it
-        // can actually see, and the feed's `game.scene` is never a frame ahead of the screen.
-        let abandoned = match self.macros.as_mut() {
-            Some(layer) => {
-                let ledger = AdapterLedger(self.adapter.as_ref());
-                layer.observe(&mut self.emulator, &ledger, ms)
-            }
-            None => Vec::new(),
-        };
-        // At most one: a macro that has run into a scene with no palette, abandoned before the
-        // header this frame publishes can show it beside that scene.
-        self.emit_macro_events(&abandoned);
-
-        // The cooldown's other reset: the player actually moved. `None` -- a battle, a script, a
-        // map transition -- is no information rather than "still", so the rule cannot fire while
-        // the fly has no control anyway.
-        let location = self.adapter.location();
-        if location.is_some() && location != self.location {
-            self.location = location;
-            self.blocked_since_ms = ms;
-        }
-
-        // 10. Ratchet: observe, and recover if it says so.
-        let progress = self.adapter.progress();
+        // The milestone archive sits here, after the commit and before the ratchet captures,
+        // which is the legacy order legacy-gameboy-v1 section 4 declares.
+        let ms = transition.ms;
+        let progress = transition.evaluated.progress;
         self.track_rank(&progress, ms);
-        let safe = self.adapter.safe_for_snapshot();
-        let capture_due = safe && u64::from(progress.rank) > self.ratchet.state.best;
-        let captured = if capture_due {
-            Some(flybrain_gb::ratchet::Snapshot {
-                game: self
-                    .emulator
-                    .export_state()
-                    .map_err(|error| anyhow!("capturing a ratchet snapshot: {error}"))?,
-                frame: self.frame_buffer.clone(),
-            })
-        } else {
-            None
+
+        // `Ready(k+1)`: the ratchet captures, observes, and rolls the game back if it says so.
+        let boundary = {
+            let mut parts = Parts {
+                agent: &mut self.agent,
+                emulator: &mut self.emulator,
+                adapter: self.adapter.as_mut(),
+                ratchet: &mut self.ratchet,
+                macros: self.macros.as_mut(),
+            };
+            self.frame.boundary(&mut parts, &progress, ms)?
         };
-        // The stall window's second progress signal (`docs/design/ladder.md`, the 2026-09-17
-        // rule as amended 2026-09-22): coverage is ground never stood on, and a fly crossing a
-        // town it has already covered to reach the rung's own door earns none of it while it is
-        // plainly getting somewhere. The macro layer answers with the map graph it already walks
-        // (`docs/design/macros.md` section 12.15); in raw mode there is no layer and no
-        // objective, and the answer is false.
-        let nearer = self.macros.as_ref().is_some_and(MacroLayer::nearer_the_objective);
-        let recover = self.ratchet.observe_with_progress(
-            safe,
-            u64::from(progress.rank),
-            progress.unique_locations as u64,
-            ms as u64,
-            self.adapter.game_over(),
-            nearer,
-            || captured.expect("the ratchet only captures when a snapshot was prepared"),
-        );
-        if recover {
-            // Two triggers, two stories on the ticker: a game over ended the run, a stall did not.
-            let reason = if self.adapter.game_over() { "Game over" } else { "Stuck" };
-            self.recover(reason)?;
+        if let Some(rollback) = boundary.rollback {
+            self.recovered(rollback.trigger, &rollback.events);
         }
         self.profiler.lap(Phase::Ratchet);
         Ok(())
@@ -1140,32 +969,14 @@ impl Sim {
         }
     }
 
-    fn recover(&mut self, reason: &str) -> Result<()> {
-        let snapshot = flybrain_gb::ratchet::Snapshot {
-            game: self
-                .ratchet
-                .game()
-                .ok_or_else(|| anyhow!("the ratchet asked to recover with no snapshot"))?
-                .to_vec(),
-            frame: self
-                .ratchet
-                .frame()
-                .ok_or_else(|| anyhow!("the ratchet snapshot has no framebuffer"))?
-                .to_vec(),
+    /// The host's half of a rollback the frame has already applied: the ticker, the metric, the
+    /// `recovering` status and a durable checkpoint.
+    fn recovered(&mut self, trigger: RollbackTrigger, events: &[crate::macros::MacroEvent]) {
+        // Two triggers, two stories on the ticker: a game over ended the run, a stall did not.
+        let reason = match trigger {
+            RollbackTrigger::GameOver => "Game over",
+            RollbackTrigger::Stall => "Stuck",
         };
-        let frame = {
-            let mut neural = AgentRecovery { agent: &mut self.agent };
-            recover_game(
-                &mut self.emulator,
-                self.adapter.as_mut(),
-                &mut neural,
-                &snapshot,
-            )
-            .map_err(|error| anyhow!("recovering the game: {error}"))?
-        };
-        self.frame_buffer.copy_from_slice(&frame);
-        self.buttons = 0;
-        self.emulator.set_buttons(0);
         Metrics::incr(&self.shared.metrics.recoveries_total);
         let attempts = self.ratchet.state.attempts;
         self.emit(
@@ -1178,31 +989,11 @@ impl Sim {
             )
             .value(f64::from(self.rank)),
         );
-        self.location = self.adapter.location();
-        self.held_channel = None;
-        self.blocked_since_ms = self.agent.network.ms;
-        // A rollback restores a game the running macro's plan was never made for, so the macro is
-        // abandoned here rather than carried over a map change it cannot see.
-        let abandoned = match self.macros.as_mut() {
-            Some(layer) => {
-                let events = layer.cancel(self.agent.network.ms);
-                // The frame's `observe` ran before the ratchet decided to roll back, so the scene
-                // and the palette describe the run that was just thrown away. The restored game
-                // is in WRAM now, so re-detect here rather than let the next frame's decision be
-                // made against a map the fly is no longer standing on.
-                let ledger = AdapterLedger(self.adapter.as_ref());
-                let mut events = events;
-                events.extend(layer.observe(&mut self.emulator, &ledger, self.agent.network.ms));
-                events
-            }
-            None => Vec::new(),
-        };
-        self.emit_macro_events(&abandoned);
+        self.emit_macro_events(events);
         self.pending_recovery = true;
         if let Err(error) = self.checkpoint(true, None) {
             tracing::error!(%error, "could not checkpoint after a recovery");
         }
-        Ok(())
     }
 
     // -- commands ------------------------------------------------------------------------
@@ -1292,6 +1083,9 @@ impl Sim {
             .clamp(1.0, self.shared.config.control.sugar_max_ms)
             .min(self.shared.config.control.sugar_max_ms);
         self.agent.network.stimulate(duration);
+        if let Some(trace) = self.frame.trace_mut() {
+            trace.sugar(duration);
+        }
 
         let day = utc_day(now_ms);
         if day != self.sugar_day {
@@ -1304,6 +1098,15 @@ impl Sim {
         let event = self.emit(NewEvent::new(FeedEventKind::Sugar, sugar_label(by))
             .by(by)
             .value(duration));
+        self.journal.record(&crate::journal::Entry {
+            frame: self.frame.frame_counter,
+            brain_ms: self.agent.network.ms,
+            input: Input::Sugar { duration_ms: duration },
+            by,
+            source,
+            event_id: event.id,
+            wall_ms: event.wall_ms,
+        });
         tracing::info!(by, source, duration_ms = duration, "sugar accepted");
         Ok(event.id)
     }
@@ -1313,13 +1116,25 @@ impl Sim {
     fn reward(&mut self, value: f64, by: &str, source: &str) -> u64 {
         let ms = self.agent.network.ms;
         self.agent.network.plasticity.reinforce(value, ms);
+        if let Some(trace) = self.frame.trace_mut() {
+            trace.reward_pulse(value);
+        }
         tracing::info!(by, source, value, "reward pulse applied");
-        self.emit(
+        let event = self.emit(
             NewEvent::new(FeedEventKind::Reward, format!("{by} sent a reward pulse ({value})"))
                 .by(by)
                 .value(value),
-        )
-        .id
+        );
+        self.journal.record(&crate::journal::Entry {
+            frame: self.frame.frame_counter,
+            brain_ms: ms,
+            input: Input::Reward { value },
+            by,
+            source,
+            event_id: event.id,
+            wall_ms: event.wall_ms,
+        });
+        event.id
     }
 
     /// `POST /chat`: the on-screen chat path, enforced here rather than trusted from the bridge.
@@ -1390,6 +1205,7 @@ impl Sim {
         if let Err(error) = self.checkpoint_blocking(true, None) {
             tracing::error!(%error, "the final checkpoint failed");
         }
+        self.frame.finish_trace();
         if let Err(error) = self.log.flush() {
             tracing::error!(%error, "the final event log flush failed");
         }
@@ -1499,6 +1315,10 @@ impl Sim {
             durable && self.best_archived_rank.is_none_or(|best| *rank > best)
         });
         let (generation, agent, runtime) = self.snapshot_state()?;
+        let step = self.frame.frame_counter;
+        if let Some(trace) = self.frame.trace_mut() {
+            trace.capture(generation, step);
+        }
         if let Some(rank) = archive_rank {
             self.best_archived_rank = Some(rank);
         }
@@ -1547,15 +1367,15 @@ impl Sim {
         let mut agent_state = self.agent.export_state();
         // The sim loop owns the frame remainder, not `NeuralAgent::tick`, so the exported state
         // carries the loop's value.
-        agent_state.remainder = self.remainder;
+        agent_state.remainder = self.frame.remainder;
         let runtime = RuntimeState {
             generation,
             wall_ms: now_wall_ms(),
             rom_sha256: self.rom_sha256.clone(),
-            emulator_frame: self.frame_counter,
+            emulator_frame: self.frame.frame_counter,
             compatibility: self.compatibility.clone(),
             speed: self.shared.config.loop_.speed,
-            buttons: self.buttons,
+            buttons: self.frame.buttons,
             rank_since_ms: self.rank_since_ms,
             last_event_id: self.log.next_id().saturating_sub(1),
             reward: self.adapter.export_state(),
@@ -1564,7 +1384,7 @@ impl Sim {
                 .emulator
                 .export_state()
                 .map_err(|error| anyhow!("exporting the Game Boy: {error}"))?,
-            framebuffer: self.frame_buffer.clone(),
+            framebuffer: self.frame.frame_buffer.clone(),
             ratchet_game: self.ratchet.game().map(<[u8]>::to_vec).unwrap_or_default(),
             ratchet_frame: self.ratchet.frame().map(<[u8]>::to_vec).unwrap_or_default(),
         };
@@ -1637,7 +1457,7 @@ impl Sim {
             let audio = f32_bytes(&self.pending_audio);
             self.pending_audio.clear();
             (
-                Arc::new(self.frame_buffer.clone()),
+                Arc::new(self.frame.frame_buffer.clone()),
                 Arc::new(audio),
                 Arc::new(bitset),
                 count,
@@ -1663,8 +1483,8 @@ impl Sim {
             uptime_seconds: self.started.elapsed().as_secs_f64(),
             run_seconds: finite(ms / 1000.0).max(0.0),
             brain_ms: finite(ms).max(0.0),
-            frame: self.frame_counter,
-            buttons: self.buttons & 0xff,
+            frame: self.frame.frame_counter,
+            buttons: self.frame.buttons & 0xff,
             rates,
             population_rate: finite(self.agent.network.population_rate).max(0.0),
             spike_count,
