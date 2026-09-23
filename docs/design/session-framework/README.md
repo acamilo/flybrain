@@ -46,6 +46,15 @@ be built without them:
   envelope and the durable commit sequence. `FLYSIM01` is unchanged and stays separately
   readable.
 
+One contract added by the 2026-09-23 amendments (PROF-02a, RT-01a), after the operator decided
+to port the live fly onto this framework:
+
+- [Legacy Game Boy composition v1](legacy-gameboy-v1.md) — the legacy profile
+  `gameboy-legacy-fafb-v783-v1`, its readout context and decision schemas, the memory-image
+  inspection, the `pokered-macros-v1` executor, the `gameboy-slots-v1` environment extension,
+  the `legacy-ratchet-rollback-v1` episode policy, `legacy-transient-reset` restore semantics and
+  the composition digest. MaleCNS bundles (PROF-02b) come later.
+
 For context: [modular-session analysis](../malecns-modular-sessions.md) and
 [Melee audit](../melee-framework-audit.md). Each contract owns its named subject; step ordering
 wins over an informal diagram, and Flybus owns transport/resource rules. Resolve contradictions
@@ -125,6 +134,19 @@ Keep legacy-gameboy-v1 distinct from lockstep-v1. Preserve TypeScript as oracle,
 versions, historical arithmetic/fingerprints and FLYSIM01 reader. New identities include sensor,
 readout/executor/task/scheduler semantics. New public feed v2 is an application/presentation
 gateway contract built on the same internal bus; it does not replace the bus or expose it raw.
+
+**Amendment, 2026-09-23 (operator decision of 2026-09-23).** "Keep legacy-gameboy-v1 distinct
+from lockstep-v1" is superseded for scheduling. The operator decided on a **full port** of the
+live fly onto the session framework: the legacy composition runs under `lockstep-v1` with one
+agent, one port and one world, declared as [legacy-gameboy-v1](legacy-gameboy-v1.md). What the
+sentence protected is kept, and now written down rather than implied: the legacy frame order is
+this framework's transaction order (legacy-gameboy-v1 section 4); the historical fingerprint,
+the default version strings and the compatibility string are unchanged and embedded, not
+recomputed; the legacy clock is proven identical to the rational one (section 3); `FLYSIM01`
+stays the format of record and its reader untouched until RETIRE-01; and the legacy restore and
+rollback semantics are declared (`legacy-transient-reset`, `legacy-ratchet-rollback-v1`) rather
+than approximated. The new identity covers what the old string never did: readout context,
+decision, decoder configuration and macro channels, executor, slots and restore semantics.
 
 ## 5. Reuse criterion
 

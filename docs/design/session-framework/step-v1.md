@@ -5,6 +5,13 @@ arrows below are RPCs through the same [Flybus router](bus-v1.md); the router it
 implements the barrier. Read [architecture](README.md) and [session RPC](ipc-v1.md) first. Method payloads are in
 [worker interfaces](workers-v1.md).
 
+**Amendment, 2026-09-23 (operator decision of 2026-09-23).** The live Game Boy fly is ported
+onto this protocol as the legacy composition of [legacy-gameboy-v1](legacy-gameboy-v1.md),
+scheduled by `lockstep-v1` with one agent, one port and one world; it is no longer a separate
+ordering. Its frame order is this document's transaction order (legacy-gameboy-v1 section 4
+maps it step by step), so the amendments below add capabilities to the protocol and change
+none of its ordering rules.
+
 ## 1. Committed boundary
 
 At `Ready(epoch, k)`:
@@ -45,6 +52,19 @@ during a transition is served by the ordinary `Committing(k) → Ready(k+1)` edg
 transition to finish first, so the only boundary such a pause can land on is the one the
 transition just committed.
 
+**Amendment, 2026-09-23 (RT-01a; operator decision of 2026-09-23).** One edge is added, for a
+composition that declares a rollback policy:
+
+```text
+Ready(e, k) → RollingBack(e', k) → Ready(e', k)
+```
+
+It is taken only when the transition that reached `k` returned `episodeRequest.kind =
+"rollback"`, after that transition fully committed and before the next Prepare (section 6
+amendment). The boundary number does not change; the epoch does. A pause requested during it
+lands on `Ready(e', k)`; any failure inside it is `Failed → Restoring(new epoch)`. Capture is
+not allowed in `RollingBack`.
+
 ## 3. Transaction sequence
 
 ### Phase A: prepare all agents concurrently
@@ -76,6 +96,12 @@ After every PreparedDecision arrives:
 2. Run each task-local action executor once, in sorted agent-ID order, against coherent current
    game state, task progress/objectives and clock from this boundary.
    Direct-control profiles use an identity executor. Macro profiles are explicit extensions.
+
+   *Amendment, 2026-09-23 (RT-01a):* the legacy composition's extension is
+   `pokered-macros-v1`. "Coherent current game state" is the boundary's 64-KiB memory image
+   from `O[k].inspection` plus the ROM `AssetRef` -- never a live emulator read -- and "clock"
+   is the agent's brain time after its Prepare ([legacy-gameboy-v1](legacy-gameboy-v1.md)
+   sections 8 and 10).
 3. Assemble all configured port controls in descriptor port order; reject duplicates/missing
    ports. Uncontrolled ports are configured neutral before the epoch, not supplied ad hoc.
 4. Send exactly one `Environment.Advance(scope=k, batchId, controls)`.
@@ -95,6 +121,15 @@ Call the task's `evaluate_transition` once with old/new inspection observations 
 controls. It returns scoped rewards/stimulation, next decision contexts, progress/events and
 an optional episode request. Commit its ledger update in memory and retain the result for
 this transition. No task output directly writes controllers or neural state.
+
+**Amendment, 2026-09-23 (RT-01a).** The task may also ask for two things that happen at the
+boundary this transition reaches, after Phase D, never inside it: a slot save
+(`Environment.SaveSlot`, composition capability `gameboy-slots-v1`) and a rollback
+(`episodeRequest.kind = "rollback"`). Both are recorded with the transition's result and
+applied by the coordinator in the order *save, then rollback* (section 6 amendment). The
+retained old inspection is what makes "evaluate once against old/new inspection" possible when
+the inspection is artifact-backed: the coordinator keeps `O[k]`'s image until this evaluation
+finishes.
 
 ### Phase D: commit all agent outcomes concurrently
 
@@ -171,6 +206,15 @@ Example: a synthetic 60-Hz environment with a 1-ms model tick produces 16,17,17 
 over three steps, totaling 50. A real backend's measured/declared emulated cadence may
 differ; never substitute this example's duration for Game Boy or Dolphin clocks.
 
+**Amendment, 2026-09-23 (PROF-02a).** The Game Boy's declared cadence is one frame of 70224
+cycles at 4194304 Hz, `stepDuration = 8572265625/512` ns. The legacy service accumulates the
+`f64` constant `1000 / (4194304 / 70224)` ms, which is exactly `548625/32768` ms, and every
+remainder it produces is a multiple of 2^-15 ms below 32 -- exact in `f64`. The legacy
+"floating remainder arithmetic" and this section's rational accumulator therefore give identical
+ticks and remainders for every frame; both implementations assert it and
+`fixtures/gameboy-legacy.json` records the first twelve frames (16, 17, 17, 16, ...). No legacy
+exception to this section is needed ([legacy-gameboy-v1](legacy-gameboy-v1.md) section 3).
+
 Wall time is only for pacing, health and presentation. The coordinator schedules absolute
 deadlines after committed boundaries; when behind, it omits sleep and reports lag. It does
 not skip world steps, drop neural ticks, or let one agent advance more slowly than another.
@@ -199,6 +243,34 @@ exactly what is retained, cleared, warmed or recalibrated. No worker independent
 
 Changing port assignment, agent membership, model/profile, cadence or task schema requires
 a new composition/epoch. Hot-join and hot-swap during an active match are not v1 capabilities.
+
+**Amendment, 2026-09-23 (RT-01a; operator decision of 2026-09-23).** A declared rollback policy
+is an episode policy that does **not** pass through Paused and does **not** start a new episode.
+For `legacy-ratchet-rollback-v1` ([legacy-gameboy-v1](legacy-gameboy-v1.md) section 11), once
+every Commit of the transition that reached `k` has succeeded:
+
+1. If the same transition asked for a slot save, `Environment.SaveSlot(scope e,k)` first.
+2. Choose a new epoch `e'`. `Environment.RestoreSlot(scope e',k; priorEpoch e)` returns the
+   restored `O'[k]`: same boundary, `worldTime` and `engineFrame` continue, no audio chunk.
+3. Coordinator-local: the task clears its transient observations; the executor cancels any
+   running action and observes `O'[k]`, which yields the next decision contexts.
+4. `Agent.Rollback(scope e',k; priorEpoch e)` on every agent concurrently: holds and
+   eligibility cleared, `O'[k]`'s view installed, no tick.
+5. With every reply in hand: `Ready(e', k)`, then the usual durable save.
+
+Exactly what is retained, cleared and installed is named by the policy, as this section already
+requires; nothing is reset by a worker on its own initiative, and a failure at any step fails
+the epoch and restores the group coherently. "Reset uses a new epoch/episode and step 0"
+remains the rule for terminal episodes; a rollback keeps the episode and the step numbering
+because the brain, the audience's history and the frame counter all continue across it, as they
+do in the running service. The policy is single-agent: a shared competitive world must not
+declare it, because it would rewind one world under every player on one player's stall, which
+[state-media-v1](state-media-v1.md) section 7 forbids.
+
+**Amendment, 2026-09-23 (RT-01a).** Sugar admission in the legacy composition reads the pulse
+from the last completed commit's telemetry, so an admission decided while a transition is in
+flight is at most one commit stale; the admitted stimulus still enters only at the next
+admission cut of section 3, Phase A ([workers-v1](workers-v1.md) section 5 amendment).
 
 ## 7. Failure rules
 

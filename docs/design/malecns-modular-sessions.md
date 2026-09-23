@@ -548,6 +548,14 @@ clock may lead environment time by warm-up; persist that offset instead of prete
 clocks start at zero. Rendering, physics and decision cadence may differ, but the backend
 must define their relationship.
 
+**Amendment, 2026-09-23 (operator decision of 2026-09-23).** "Preserve the detailed legacy
+ordering inside the legacy single-agent composition" now means inside a legacy composition that
+runs on the session framework's `lockstep-v1`, not beside it: the operator decided on a full port.
+The detailed ordering is preserved because it is already the lockstep transaction order with one
+agent ([legacy-gameboy-v1](session-framework/legacy-gameboy-v1.md) section 4), and "keep the
+legacy floating remainder arithmetic" costs nothing, because the legacy `f64` frame constant is
+exactly the rational Game Boy frame and the two accumulators are identical (section 3 there).
+
 Start with sequential agent evaluation for reproducibility. Then compare parallel agent
 evaluation against the same action trace. Cap total worker budget: `agents × brain_threads`
 can otherwise oversubscribe the machine. Use private pools for concurrent agents or serialize
@@ -605,7 +613,9 @@ jobs so repeated copies cannot exhaust memory under slow storage.
 
 Exact replay requires action-executor and admission state, not just the neural envelope.
 Legacy macros intentionally discard transient execution on restart; preserve that behavior
-for v1 and label it as legacy continuation semantics, not exact session replay. New sessions
+for v1 and label it as legacy continuation semantics, not exact session replay.
+(*2026-09-23:* the label is `restore: legacy-transient-reset`, declared by the legacy
+composition, [legacy-gameboy-v1](session-framework/legacy-gameboy-v1.md) section 14.) New sessions
 persist all behavior-affecting state or explicitly restart an episode under a documented rule.
 
 Keep `FLYSIM01` readable through a legacy adapter. Never silently rewrite a checkpoint on

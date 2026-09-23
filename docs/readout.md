@@ -99,6 +99,17 @@ argmax of the same normalized scores over the same rates. It is the same kind of
 the retina already sees, arriving through a much narrower channel, and it is disclosed on the
 honesty panel with the rest of the readout.
 
+**Where the location comes from on the session framework (2026-09-23).** When the live fly runs
+on the session framework (the operator's port decision of 2026-09-23), the sim loop that owned
+the position is split: the task reads the location, the agent owns the decoder. The location
+then reaches the decoder as a **declared** field of its decision context,
+`gameboy-readout-context-v1 {boot, bound, location}`
+([legacy Game Boy composition](design/session-framework/legacy-gameboy-v1.md) section 5). The rule is
+unchanged: the location only restarts the blocked window, `null` is still no information, the
+held channel and the window stay the readout's own state, and the blocked channel is still
+computed here, never handed in. The profile allowlists the field, and the task cannot put
+anything else in it.
+
 ## Macro group (2026-09-16)
 
 `DecoderConfig.macros` is a second `ExclusiveGroup` with the same fields and the same decision rules

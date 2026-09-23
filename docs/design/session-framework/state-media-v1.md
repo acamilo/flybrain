@@ -87,6 +87,16 @@ profile. Resizing for viewers, overlays, composition, audio mixing/resampling, e
 browser delivery and streaming belong to the application/presentation layer. No bus or
 generic session configuration assumes a 1080p show or Twitch output.
 
+**Amendment, 2026-09-23 (RT-01a; operator decision of 2026-09-23).** For the Game Boy
+environment of the legacy composition ([legacy-gameboy-v1](legacy-gameboy-v1.md) section 9):
+the environment converts binjgb's unsigned 8-bit interleaved stereo to the declared
+`f32le-interleaved` with binjgb's host rule `sample / 255` (unipolar, silence at 0.0), and does
+not filter. The DC blocker the running service applies before publishing (pole 0.995, per
+channel) moves to the **edge**, as presentation: its state is the edge's, never checkpointed,
+reset only when the edge restarts, and never seen by an agent. The observations a slot restore
+returns carry no audio chunk, like the ones `ActivateRestore` returns (section 5 amendment of
+2026-09-22), and the next chunk marks the discontinuity.
+
 640×480 RGBA at 60 fps produces 73.728 MB/s of raw image data. Artifact fan-out references
 one stored object; reads and any staging/seal copy still consume memory bandwidth. This is
 reasonable to measure before introducing codecs or pooled GPU buffers. Native dimensions
@@ -116,6 +126,13 @@ A slow spectator exhausts its own credits; new latest messages replace its queue
 If it violates configured resource policy, disconnect/restart that observer instead of freeing
 live data or silently skipping simulation input. Global store exhaustion is an explicit fault
 or pause condition; the router cannot guess that a particular live object is disposable.
+
+**Amendment, 2026-09-23 (RT-01a).** An artifact-backed inspection -- the legacy composition's
+64-KiB memory image per boundary -- is required coordinator input, not spectator data: the
+coordinator retains `O[k]`'s image through the executor's use in the next transition's Phase B
+and the task's old/new evaluation in its Phase C, and drops it after. It is never coalesced and
+never published to observers by the session; about 3.9 MB/s at the Game Boy's cadence, budgeted
+with the cached step observations above.
 
 **Amendment, 2026-09-22 (PUBLISH-01).** "Disconnect/restart that observer" names an action
 no participant can take under [Flybus v1](bus-v1.md). Section 5 there makes publish admission
@@ -151,6 +168,19 @@ The manifest records:
 - Task ledger, prior world inspection, per-agent executor state, next sensory/decision state
   or reproducible reconstruction inputs, admission state and event watermarks.
 - Payload names, lengths and hashes, including external-helper state required for exact resume.
+
+**Amendment, 2026-09-23 (RT-01a; operator decision of 2026-09-23).** A composition may declare
+**restore semantics** other than exact. The legacy composition declares
+`restore: legacy-transient-reset` ([legacy-gameboy-v1](legacy-gameboy-v1.md) section 14): its
+executor's ledgers and running macro, the agent's readout transient (held channel, blocked
+window, last location) and the task's transient observations are **not** captured and start
+cleared on every restore, exactly as the running service does on a restart. The
+[modular analysis](../malecns-modular-sessions.md) section 5.4 already asked for this to be
+labelled "legacy continuation semantics, not exact session replay"; the declaration is that
+label, in the composition digest. The consequence is explicit: for this composition the
+uninterrupted-versus-resumed trace equality of STATE-01 does not apply; its resume tests
+compare against the legacy restore outcome. The operator's unstick procedure depends on the
+reset. An environment's slots (`gameboy-slots-v1`) **are** world state and are captured.
 
 Use a new envelope version; specify exact byte layout before production files. The historical
 letter-only chunk-name constraint is not silently widened, and FLYSIM01 remains separately
@@ -232,6 +262,13 @@ provide externally atomic resume, advertise episode-restart, not exact-checkpoin
 activation acknowledgments, install the coordinator's staged task/executor/admission state
 and establish Paused(new epoch,k). Failure during activation never permits half a group to run.
 
+**Amendment, 2026-09-23 (operator decision of 2026-09-23).** `FLYSIM01` remains the **format of
+record** for the legacy composition until RETIRE-01: every durable save exports a `FLYSIM01`
+envelope the current service reads under its unchanged compatibility string, and restore
+selects from those files through the legacy compatibility decision. A `FLYSESS1` checkpoint
+may be written beside it; it is not a restore candidate for this composition until RETIRE-01
+says so ([legacy-gameboy-v1](legacy-gameboy-v1.md) section 16).
+
 ## 6. Durable commit, router failure and recovery
 
 Write payload/envelope temporary generation, fsync, rename, fsync directory, then atomically
@@ -264,3 +301,14 @@ state and retained/fresh brain components are explicit. Gain retention, eligibil
 clearing, calibration and first sensory input are part of the policy, tested independently.
 Legacy Pokémon ratchet behavior remains in the legacy composition. Shared competitive worlds
 never restore one player's environment independently of the other players.
+
+**Amendment, 2026-09-23 (RT-01a; operator decision of 2026-09-23).** The sentence above kept the
+ratchet outside the framework. The operator decided on a full port instead, so the ratchet's
+game-only rollback is now a declared episode policy of the legacy composition,
+`legacy-ratchet-rollback-v1`, with the environment capability `gameboy-slots-v1`
+([workers-v1](workers-v1.md) section 7, [step-v1](step-v1.md) section 6 amendment,
+[legacy-gameboy-v1](legacy-gameboy-v1.md) section 11). It is a rollback, not a reset: a new
+epoch at the same boundary, the episode and the brain continuing, the environment restoring a
+slot, agents clearing holds and eligibility and installing the slot frame without a tick, the
+executor cancelling then observing. What the original sentence protected still holds: the
+policy is single-agent and a shared competitive world must not declare it.
