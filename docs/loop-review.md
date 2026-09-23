@@ -19,6 +19,16 @@ the project."
    on the encoder output and `/status`, and records the release in `docs/stream-mvp-plan.md`.
    No approval round trip with the operator; he sees the record.
 
+## Unstick while a fix cooks (the operator, 2026-09-23)
+
+"lets unstick the fly so stream stays interesting. lets make that a rule. while a fix cooks,
+revert." When the watcher confirms a trap and its review agent is dispatched, the coordinator
+restarts flysim only (claimed in the host log): a restore starts with empty macro ledgers and
+keeps the rung. A recurrence gets another restart; only a fly still trapped about ten brain
+minutes after a restart is rolled back with `fly-reset-to-milestone`. This is an action outside
+the fly: it presses no button and changes no ROM, readout, catalog or adapter, and it never
+replaces the fix, which still ships through the loop above.
+
 ## The ethos check (every one must hold, or the fix is not shipped)
 
 - The ROM is never modified. Game memory is read, never written. The only write into the

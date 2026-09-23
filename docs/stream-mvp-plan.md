@@ -802,3 +802,16 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   32,496 -> 2,849. Rung 11 is not reached on either hunt arm: GO OBJECTIVE is on the Pewter pad
   and the fly picks the frontier instead, which is the fly's choice, not a trap. The watchdog's
   distinct-macro rule cannot see a four-macro ring; the watcher's zero-progress check covers it.
+- 2026-09-23 (v0.5.4, loop review, auto): row 57, Pewter City. The pad was GO ROUTE alone,
+  refused `no route` every 0.8 s for over two hours with no button pressed; the watchdog counted
+  starts only and saw one. Mechanism: the youngster's escort walls the tile each escorted walk
+  set out from, up to 26 tiles away, until the fly stands in a pocket no route leaves; every
+  refusal re-stamped the gym door's blocked window, so GO OBJECTIVE never came back. Fix: an
+  escort walls the tile where the script took over; a refusal that teaches the ledger nothing is
+  not dealt again from that tile for the window; a last resort that cannot reach the objective's
+  door takes a way out it can. ROM test: refusals in a row 746 -> 1, out of the pocket on frame
+  517 instead of 36,325; seeded hunt tiles 303 -> 439, flagged windows 70 -> 66 of 73 counting
+  refusals as decisions. Check 10 now counts outcomes (refused, blocked, done) and flags
+  `stalled` and `zero-progress`, still never acting. The GO OBJECTIVE / GO OUT ring at the gym
+  door is row 58. Ethos check held. While it cooked the operator's new unstick rule kept the
+  stream moving with flysim restarts (loop-review.md).
