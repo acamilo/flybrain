@@ -4956,6 +4956,32 @@ fn a_way_out_refused_from_here_is_not_dealt_again_from_here() {
 }
 
 #[test]
+fn a_last_resort_that_cannot_reach_the_objectives_door_takes_a_way_out_it_can_reach() {
+    // Row 57's pocket had a way out: the road east, three tiles from the fly and resting in the
+    // blocked window. The last resort ignores that window but *narrows* to the ways toward the
+    // objective, and the only one was the gym's door on the far side of the fence -- so the
+    // route search refused, and the reachable road was never tried. The narrowing is a
+    // preference; when the route search cannot honour it, the rest of the last resort is the
+    // walk's to take, nearest reachable first.
+    let mut world = fenced_in_pewter();
+    world.connections = Connections { north: false, south: true, east: false, west: false };
+    world.seen_maps.insert(maps::ROUTE_2);
+    let south = TargetKey::Exit(ExitId::Edge(Edge::South));
+    world.targets.record_blocked(world.map, south);
+    world.targets.record_blocked(world.map, TargetKey::Exit(ExitId::Warp(0)));
+    assert!(on_the_pad(&mut world, MacroKind::GoRoute), "the last resort deals it");
+
+    let started_at = world.player;
+    let outcome = run(&mut world, MacroKind::GoRoute);
+    assert!(outcome.is_ok(), "the road it can reach is walked, not refused: {outcome:?}");
+    assert!(
+        world.player.y > started_at.y,
+        "south, toward the way out on this side of the fence: {:?}",
+        world.player
+    );
+}
+
+#[test]
 fn an_escorted_walk_walls_the_tile_it_reached_not_the_one_it_set_out_from() {
     // Row 57's other half. Pewter City's youngster takes the joypad on four tiles by the road
     // east and walks the fly to the gym. A `GO ROUTE` that set out from the town's south entrance

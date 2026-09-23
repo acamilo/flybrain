@@ -1259,6 +1259,49 @@ fn last_resort(state: &mut dyn MacroState, way: Way) -> Vec<Exit> {
     if toward.is_empty() { every } else { toward }
 }
 
+/// Every way out of this kind, when [`ways`] answered with its last resort and that answer was
+/// narrowed to the ways toward the objective; empty otherwise.
+///
+/// Row 57 (`infra/docs/macros-traps.md`). The narrowing is a preference -- "a map the fly has
+/// already seen is still the way to the next rung" -- and the dealer cannot search, so it can
+/// prefer a door the fly is walled off from over one it can walk to. Live in Pewter City the last
+/// resort was the gym's door on the far side of a fence while the road east, resting in the
+/// blocked window, was three tiles away. This is the rest of the last resort, for `start` to try
+/// when its route search cannot reach the preferred ones; the choice of *which* reachable way is
+/// the route search's, nearest first, exactly as it is for every walk.
+pub fn last_resort_wide(state: &mut dyn MacroState, way: Way) -> Vec<Exit> {
+    // Only where `ways` fell through to the last resort: a tier that has anything in it is
+    // already the answer, and so is a room's or a floor's own unexcluded list.
+    if !exit_tiers(state, way).is_empty() {
+        return Vec::new();
+    }
+    match way {
+        Way::Exit => {
+            if !unexcluded_exits(state, way).is_empty() {
+                return Vec::new();
+            }
+        }
+        Way::Passage => {
+            if path::exits(state).iter().any(|exit| exit.way == Way::Exit)
+                || !unexcluded_exits(state, way).is_empty()
+            {
+                return Vec::new();
+            }
+        }
+        Way::Route => {}
+    }
+    if !stranded(state) {
+        return Vec::new();
+    }
+    let every: Vec<Exit> =
+        path::exits(state).into_iter().filter(|exit| exit.way == way).collect();
+    if toward_objective(state, &every).is_empty() {
+        // Not narrowed: the last resort was every one of them already.
+        return Vec::new();
+    }
+    every
+}
+
 /// The exits of the current map of one kind that no ledger excludes.
 fn unexcluded_exits(state: &mut dyn MacroState, way: Way) -> Vec<Exit> {
     if !objective_targets(state).is_empty() {

@@ -3046,7 +3046,9 @@ impl Palette57 {
 /// The session ledgers are what dealt that pad and a restore starts them empty, so part two seeds
 /// the pocket: the tiles every walk has stood on, the map's frontier mark, every sign and person
 /// talked to, the road east resting, and three pushed tiles sealing the strip by the road from the
-/// town. That is a reconstruction of state the checkpoint cannot carry, said as one.
+/// town. That is a reconstruction of state the checkpoint cannot carry, said as one. In it the last
+/// resort's preferred way out, the gym's door, is beyond the fence, while the road east is three
+/// tiles away and resting in its window: `start` now takes the way it can reach.
 ///
 /// ```sh
 /// FLY_ROM=/path/to/pokemon-red.gb \
@@ -3132,6 +3134,7 @@ fn the_pewter_east_pad_is_never_one_dead_button_from_the_rung_ten_checkpoint() {
 
     let (mut running, mut since) = (false, Palette57::HOLD_FRAMES);
     let mut refusals = 0u32;
+    let mut in_the_pocket = 0u32;
     let mut run_of_refusals = 0u32;
     let mut longest = 0u32;
     let mut last_refused: Option<(&'static str, (u8, u8, u8))> = None;
@@ -3144,6 +3147,9 @@ fn the_pewter_east_pad_is_never_one_dead_button_from_the_rung_ten_checkpoint() {
         first_pad.get_or_insert(pad.clone());
         if let Some(flybrain_gb::Started::Refused { name: Some(name), reason }) = tried {
             refusals += 1;
+            if at.0 == pewter && at.1 >= 34 {
+                in_the_pocket += 1;
+            }
             let key = (name, at);
             run_of_refusals = if last_refused == Some(key) { run_of_refusals + 1 } else { 1 };
             last_refused = Some(key);
@@ -3159,18 +3165,20 @@ fn the_pewter_east_pad_is_never_one_dead_button_from_the_rung_ten_checkpoint() {
         }
     }
     eprintln!(
-        "part two: first pad {first_pad:?}, {refusals} refusals, longest run on one tile {longest}, \
-         left the pocket at {left:?}"
+        "part two: first pad {first_pad:?}, {refusals} refusals ({in_the_pocket} in the pocket), \
+         longest run on one tile {longest}, left the pocket at {left:?}"
     );
     // The live pad: `GO ROUTE` refused every hold, 740 times in ten brain minutes.
     assert!(
         longest <= 1,
         "a button was refused {longest} holds running on one tile: the pad kept dealing it"
     );
-    assert!(refusals <= 6, "{refusals} refusals in twelve brain minutes");
+    assert!(in_the_pocket <= 2, "{in_the_pocket} refusals in the pocket");
     let Some(left) = left else { panic!("the fly never left the pocket in twelve brain minutes") };
-    eprintln!(
-        "left the pocket on frame {left} ({:.2} brain minutes)",
-        f64::from(left) * MS_PER_FRAME / 60_000.0
-    );
+    let minutes = f64::from(left) * MS_PER_FRAME / 60_000.0;
+    eprintln!("left the pocket on frame {left} ({minutes:.2} brain minutes)");
+    // The road east is three tiles away and resting in its window; the last resort preferred the
+    // gym's door beyond the fence. On the base the fly leaves only when the road's window lapses,
+    // ten brain minutes in.
+    assert!(minutes < 1.0, "the fly waited {minutes:.2} brain minutes for a window to lapse");
 }

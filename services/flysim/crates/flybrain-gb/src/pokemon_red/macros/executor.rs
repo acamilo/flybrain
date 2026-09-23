@@ -36,7 +36,7 @@ use super::palette::{
     precondition,
     shop_screen, stock_index, throw_slot, untalked_objects, untalked_people, ways,
 };
-use super::path::{self, Route, Way};
+use super::path::{self, Exit, Route, Way};
 use super::state::{Facing, Scene, ShopScreen};
 
 /// Hard cap on one macro, in game frames. `docs/design/macros.md` section 4: "hard cap 600 frames
@@ -1686,7 +1686,17 @@ fn script(
             };
             let goals = exit_goals(state, way);
             unreachable.extend(goal_keys(&goals));
-            let (walk, target) = walk_to(state, goals)?;
+            // A last resort that preferred the way toward the objective, and the route search
+            // cannot reach it: the rest of the last resort, nearest reachable first (row 57).
+            let walked = match walk_to(state, goals) {
+                Some(walked) => Some(walked),
+                None => {
+                    let rest = super::palette::last_resort_wide(state, way);
+                    let wide = goals_of(state, rest);
+                    if wide.is_empty() { None } else { walk_to(state, wide) }
+                }
+            };
+            let (walk, target) = walked?;
             aimed = target;
             vec![Step::Walk(walk)]
         }
@@ -2075,7 +2085,13 @@ fn one_target(goals: &[Goal]) -> Option<TargetKey> {
 /// is in the moment it comes down a staircase and lands on the warp tile. A doormat underfoot is
 /// different: its press is the point, so it stays.
 fn exit_goals(state: &mut dyn MacroState, way: Way) -> Vec<Goal> {
-    let mut goals: Vec<Goal> = ways(state, way)
+    let exits = ways(state, way);
+    goals_of(state, exits)
+}
+
+/// [`exit_goals`] over a list of exits the caller already has.
+fn goals_of(state: &mut dyn MacroState, exits: Vec<Exit>) -> Vec<Goal> {
+    let mut goals: Vec<Goal> = exits
         .into_iter()
         .map(|exit| Goal {
             tile: exit.tile,
