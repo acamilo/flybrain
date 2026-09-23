@@ -718,7 +718,7 @@ pub fn move_data(memory: &mut dyn MemoryReader, id: u8) -> Option<MoveData> {
 /// Row 60 (`docs/design/macros.md` 12.23): Squirtle's TAIL WHIP against a Pidgey whose DEFENSE
 /// was already at -6 printed "Nothing happened!" 183 times on Route 1. These are the refusals the
 /// effect routines in `engine/battle/effects.asm` make on bytes that are already in WRAM when the
-/// move is chosen, for a move that deals no damage (a move with power always does something):
+/// move is chosen, for a move that deals no damage (a move with power is always attempted (type immunity, e.g. TACKLE against GASTLY, is not answered here)):
 ///
 /// - a stat-raising effect (`StatModifierUpEffect`): the user's stage is already +6, or the stat
 ///   itself is already 999;
