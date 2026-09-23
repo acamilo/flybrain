@@ -729,6 +729,10 @@ impl MacroState for World {
         self.targets.reached(self.map, target)
     }
 
+    fn refused_here(&mut self, slot: u8) -> bool {
+        self.targets.refused(self.map, slot, self.player)
+    }
+
     fn objective(&mut self) -> Option<Objective> {
         self.objective
     }
@@ -785,6 +789,9 @@ fn drive(
         }
         if let Some(map) = machine.take_exhausted() {
             world.exhausted.insert(map);
+        }
+        if let Some((map, slot, tile)) = machine.take_refused() {
+            world.targets.record_refused(map, slot, tile);
         }
         return Err(refused);
     }
@@ -4874,8 +4881,79 @@ fn a_tile_the_cartridge_pushes_the_fly_off_is_not_a_tile_to_walk_to() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Row 57: an escorted walk, and where it was escorted from
+// Row 57: a last resort refused from here is not dealt again from here
 // ---------------------------------------------------------------------------------------------
+
+/// Pewter City as the live pad found it: the fly fenced into a corner of the town, the
+/// frontier marked, every person and sign accounted for, the errands paid -- and the only way
+/// out anything aims at, the gym's door, on the far side of the fence.
+fn fenced_in_pewter() -> World {
+    let mut world = World::room().at(3, 3);
+    world.map = maps::PEWTER_CITY;
+    world.size = MapSize { width: 20, height: 12 };
+    // The fence: a wall the height of the map, with the fly on the near side of it.
+    for y in 0..12 {
+        world.walls.insert(Tile::new(10, y));
+    }
+    world.warps = vec![Warp { x: 15, y: 3, destination_warp: 0, destination_map: maps::PEWTER_GYM }];
+    world.seen_maps.insert(maps::PEWTER_GYM);
+    world.objective = Some(Objective {
+        map: maps::PEWTER_GYM,
+        tile: None,
+        warp: None,
+        edge: None,
+        target: Some(PlaceKind::Person),
+    });
+    world.areas.insert((Amenity::Mart, maps::PEWTER_CITY));
+    world.areas.insert((Amenity::Center, maps::PEWTER_CITY));
+    world.exhausted.insert(maps::PEWTER_CITY);
+    world
+}
+
+#[test]
+fn a_way_out_refused_from_here_is_not_dealt_again_from_here() {
+    // Row 57, live on rung 10 for two hours: the pad was `GO ROUTE` alone, `refused` every 800
+    // brain ms, nothing pressed. `ways`'s last resort deliberately ignores the blocked ledger, so
+    // the `no route` refusal -- which writes what it could not reach to that ledger -- could not
+    // take the button off the pad, and the same refusal re-stamped the gym door every hold, which
+    // kept `GO OBJECTIVE`'s only goal excluded for ever.
+    let mut world = fenced_in_pewter();
+    let door = TargetKey::Exit(ExitId::Warp(0));
+    let names = |world: &mut World| -> Vec<&'static str> {
+        let scene = world.scene();
+        plan::plan_for(scene, world).slots.iter().flatten().map(|spec| spec.name).collect()
+    };
+    assert_eq!(names(&mut world), ["GO OBJECTIVE", "GO ROUTE"], "the door, two ways");
+
+    assert_eq!(
+        run(&mut world, MacroKind::GoObjective).map_err(|refused| refused.reason),
+        Err(Refusal::NoRoute)
+    );
+    assert!(world.targets.blocked(world.map, door), "the door is excluded for the window");
+    assert_eq!(names(&mut world), ["GO ROUTE"], "and the last resort still deals it");
+    assert_eq!(
+        run(&mut world, MacroKind::GoRoute).map_err(|refused| refused.reason),
+        Err(Refusal::NoRoute),
+        "the route search agrees with the fence"
+    );
+
+    // The trap: before row 57 the same button was dealt again, from the same tile, on the next
+    // hold, for ever.
+    assert!(
+        names(&mut world).is_empty(),
+        "a button refused from this tile is not dealt again from it: {:?}",
+        names(&mut world)
+    );
+
+    // It is a fact about *here*, not a retirement: standing anywhere else deals it again ...
+    world.player = Tile::new(3, 4);
+    assert_eq!(names(&mut world), ["GO ROUTE"]);
+    // ... and so does the window closing on the same tile.
+    world.player = Tile::new(3, 3);
+    assert!(names(&mut world).is_empty());
+    world.targets.clock(BLOCKED_MINUTES_DEFAULT * 60_000.0 + 1.0);
+    assert!(names(&mut world).contains(&"GO ROUTE"), "{:?}", names(&mut world));
+}
 
 #[test]
 fn an_escorted_walk_walls_the_tile_it_reached_not_the_one_it_set_out_from() {

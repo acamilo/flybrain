@@ -552,6 +552,22 @@ pub trait MacroState: GameState {
         false
     }
 
+    /// Whether the macro in `slot` was refused, for want of a route or of its precondition, on
+    /// the tile the fly is standing on now, inside the blocked window (`infra/docs/macros-traps.md`
+    /// row 57).
+    ///
+    /// The dealer asks the cheap question and `start` asks the real one, so a button can be dealt
+    /// that its own route search refuses. The blocked ledger usually closes that gap -- the refusal
+    /// writes what it could not reach and the dealer stops offering it -- but not for a list that
+    /// deliberately ignores that ledger: a last resort. Live on rung 10, Pewter City, two hours:
+    /// the pad was `GO ROUTE` and nothing else, refused `no route` every 800 brain ms, because
+    /// `ways`'s last resort ignores the window its own refusal writes. A refusal from *here* is a
+    /// fact about here; the fly standing anywhere else, or the window closing, is what can change
+    /// it. Session state, never checkpointed.
+    fn refused_here(&mut self, _slot: u8) -> bool {
+        false
+    }
+
     /// Whether `GO ITEM` or `GO NPC` has already arrived at `target` and faced it this session.
     ///
     /// The other half of the same stall: `GO NPC` walked to the same villager again and again,
@@ -907,6 +923,13 @@ pub trait TargetLedger {
 
     /// Whether `target` on `map` has been arrived at and faced this session.
     fn reached(&self, map: u8, target: TargetKey) -> bool;
+
+    /// Whether the macro in `slot` was refused standing on `tile` of `map`, inside the window
+    /// ([`MacroState::refused_here`]). Defaulted, so a ledger that never records one refuses
+    /// nothing.
+    fn refused(&self, _map: u8, _slot: u8, _tile: Tile) -> bool {
+        false
+    }
 }
 
 /// Ledgers that have recorded nothing: every target still a candidate.
@@ -948,6 +971,9 @@ pub struct Targets {
     /// stayed shut. The window keeps the loop bounded at one walk per target per window while
     /// leaving the conversation available.
     reached: std::collections::BTreeMap<(u8, TargetKey), f64>,
+    /// (map, slot, tile) -> the brain millisecond a macro was refused standing there
+    /// ([`MacroState::refused_here`], row 57). The same window as `blocked`.
+    refused: std::collections::BTreeMap<(u8, u8, Tile), f64>,
     /// The brain clock of the frame being decided, from [`super::driver::PokemonPalette`].
     now_ms: f64,
     /// How long an entry excludes its target, in brain milliseconds.
@@ -989,6 +1015,7 @@ impl Targets {
             blocked: std::collections::BTreeMap::new(),
             strikes: std::collections::BTreeMap::new(),
             reached: std::collections::BTreeMap::new(),
+            refused: std::collections::BTreeMap::new(),
             now_ms: 0.0,
             window_ms: minutes * MINUTE_MS,
         }
@@ -1004,6 +1031,15 @@ impl Targets {
     /// The exclusion window in brain minutes, for a log line and the tests.
     pub fn minutes(&self) -> f64 {
         self.window_ms / MINUTE_MS
+    }
+
+    /// Record that the macro in `slot` was refused -- no route, or no precondition -- with the fly
+    /// standing on `tile` of `map` (row 57). Re-recording restarts the window, as `blocked` does.
+    pub fn record_refused(&mut self, map: u8, slot: u8, tile: Tile) {
+        let now = self.now_ms;
+        let window = self.window_ms;
+        self.refused.retain(|_, at| now - *at < window);
+        self.refused.insert((map, slot, tile), now);
     }
 
     /// Record a `Blocked` or `Timeout` abort against the target it was aimed at.
@@ -1079,5 +1115,9 @@ impl TargetLedger for Targets {
 
     fn reached(&self, map: u8, target: TargetKey) -> bool {
         self.reached.get(&(map, target)).is_some_and(|at| self.now_ms - *at < self.window_ms)
+    }
+
+    fn refused(&self, map: u8, slot: u8, tile: Tile) -> bool {
+        self.refused.get(&(map, slot, tile)).is_some_and(|at| self.now_ms - *at < self.window_ms)
     }
 }

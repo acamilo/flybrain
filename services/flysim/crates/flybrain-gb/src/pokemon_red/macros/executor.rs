@@ -590,6 +590,10 @@ pub struct MacroMachine {
     /// from the frame the push is seen, because by the time the next macro starts the fly has been
     /// walked somewhere else.
     pushed_tile: Option<(u8, Tile)>,
+    /// A refusal the route search or the precondition made, and where the fly stood for it --
+    /// `(map, slot, tile)`, waiting to be taken into the session's ledger
+    /// ([`super::cartridge::Targets::record_refused`], row 57 of `infra/docs/macros-traps.md`).
+    refused_at: Option<(u8, u8, Tile)>,
     /// The target a frame-cap `Timeout` spent itself on, and whether the walk ended nearer a goal
     /// than it began: [`super::cartridge::Targets::record_timeout`]'s two arguments.
     ///
@@ -661,6 +665,7 @@ impl MacroMachine {
             reached: None,
             exhausted: None,
             pushed_tile: None,
+            refused_at: None,
             timed_out: None,
             resume: VecDeque::new(),
             pending_talk: None,
@@ -689,10 +694,19 @@ impl MacroMachine {
             machine.outcome = Some((spec.name, MacroAbort::Refused));
             Err(MacroRefused { slot, reason })
         };
+        // Where the fly stands for a refusal that is a fact about *here* (row 57): no route from
+        // this tile, or a precondition the dealer and the starter answered differently on it.
+        let here = state.player().map(|player| (player.map, Tile::new(player.x, player.y)));
+        let refused_here = |machine: &mut Self| {
+            if let Some((map, tile)) = here {
+                machine.refused_at = Some((map, slot.0, tile));
+            }
+        };
         if class(scene) != class(palette.scene) {
             return refuse(self, Refusal::WrongScene);
         }
         if !precondition(spec.kind, state) {
+            refused_here(self);
             return refuse(self, Refusal::Precondition);
         }
         let mut unreachable: Vec<TargetKey> = Vec::new();
@@ -712,6 +726,7 @@ impl MacroMachine {
                     self.exhausted = Some(map);
                 }
             }
+            refused_here(self);
             return refuse(self, Refusal::NoRoute);
         };
         // The map the target was chosen on, so an entry cannot be read back on another map.
@@ -883,6 +898,12 @@ impl MacroMachine {
         self.pushed_tile.take()
     }
 
+    /// Where the last `no route` or `precondition` refusal happened, taken rather than read
+    /// (row 57).
+    pub fn take_refused(&mut self) -> Option<(u8, u8, Tile)> {
+        self.refused_at.take()
+    }
+
     /// The frame-cap timeout a walk earned, with whether it ended nearer its goal, taken rather
     /// than read. The ledger decides what it means.
     pub fn take_timeout(&mut self) -> Option<(u8, TargetKey, bool)> {
@@ -908,6 +929,7 @@ impl MacroMachine {
         // out of reach either: the fly is about to be somewhere else entirely.
         self.pushed_tile = None;
         self.exhausted = None;
+        self.refused_at = None;
         self.timed_out = None;
         // A rollback puts the fly somewhere else on the map, so every suspended route is a route
         // from a tile it is no longer standing on. `take_resume` would refuse them one at a time;

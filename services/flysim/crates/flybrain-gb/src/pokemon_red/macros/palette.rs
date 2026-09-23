@@ -440,7 +440,10 @@ impl Palette {
     pub fn for_scene(scene: Scene, state: &mut dyn MacroState) -> Self {
         let mut slots: [Option<MacroSpec>; SLOTS] = [None; SLOTS];
         for kind in scene_set(scene, state) {
-            if precondition(kind, state) {
+            // A button refused from this very tile inside the window is not dealt again from it
+            // (row 57): the dealer's question is the cheap one, and `start`'s answer to the real
+            // one outranks it until the fly stands somewhere else or the window closes.
+            if precondition(kind, state) && !state.refused_here(kind.slot()) {
                 slots[usize::from(kind.slot())] = Some(MacroSpec::of(kind));
             }
         }

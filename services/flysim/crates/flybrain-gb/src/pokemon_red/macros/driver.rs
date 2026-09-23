@@ -220,6 +220,11 @@ impl PokemonPalette {
         if let Some((map, tile)) = self.machine.take_pushed() {
             self.pushed.record(map, tile);
         }
+        // A refusal from where the fly is standing: that button is not dealt again from this tile
+        // for the window (row 57). The fly moving, or the window closing, deals it again.
+        if let Some((map, slot, tile)) = self.machine.take_refused() {
+            self.targets.record_refused(map, slot, tile);
+        }
         // A frontier the walk could not reach any of: a fact about this map's ground, with no
         // window on it (section 12.14).
         if let Some(map) = self.machine.take_exhausted() {
@@ -452,6 +457,7 @@ impl MacroPalette for PokemonPalette {
         // reach: the fly is about to be standing somewhere else.
         let _ = self.machine.take_pushed();
         let _ = self.machine.take_exhausted();
+        let _ = self.machine.take_refused();
         // The cached palette was dealt for a frame that is being thrown away. Dropping it makes
         // the next `start` before the next `observe` a nameless refusal, which presses nothing
         // and reports nothing, rather than a named refusal against a scene that no longer exists.
