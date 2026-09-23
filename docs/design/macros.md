@@ -1374,6 +1374,77 @@ answers at one person in the twenty-minute reproduction.
 The decoder, the reward catalog, the adapter version, the roles and the compatibility string are
 untouched.
 
+### 12.21 A button refused from here is not dealt again from here, a last resort walks where it can, and an escort walls the tile it fired on (2026-09-23, row 57)
+
+Live on v0.5.3, rank 10, map 2 (**Pewter City**), scene `overworld`: the pad was **`GO ROUTE` and
+nothing else**, and it was refused about **740 times per ten brain minutes for more than two
+hours**, with one `GO ROUTE start` / `blocked` pair every ten brain minutes, no button pressed and
+the exploration count frozen. The watchdog read one start and one name, and never flagged it. The
+`refused` event's `value 3.0` is the slot, not a reason (row 55); the feed carries no reason.
+
+The ledgers that dealt that pad are session state and a restore starts them empty, so the trap
+does not come back from the checkpoint by itself: a twenty-brain-minute hunt with the real brain
+from the live frame covers 356 tiles. It was reproduced by **earning** them -- a new probe mode
+(`examples/scene_probe.rs`, `FLY_PROBE_CATCH=route`) drives the real palette from the checkpoint and
+can seed each ledger -- and three facts came out, each measured on the cartridge.
+
+- **The pushed ledger walled the tile a walk set out from, not the tile the script fired on.**
+  Pewter City's youngster takes the joypad on four tiles by the road east
+  (`PewterCityPlayerLeavingEastCoords`) and walks the fly to the gym until Brock is beaten. `GO
+  ROUTE` aims east every time, because Route 3 is the one connection the run has not crossed, so it
+  is escorted every time -- and row 37's ledger, which has **no window**, recorded the macro's
+  starting tile. Measured from the ratchet's rollback snapshot: one `GO ROUTE` from the town's
+  south entrance walked 26 tiles to (37, 18), was escorted, and walled **(18, 35)**, the south
+  entrance. Row 37's rule is right for a press (the fly is standing on the tile the script fires
+  on) and wrong for a walk. Walks start wherever the last one ended, so the walls accumulate
+  until the fly stands in a pocket no route leaves.
+- **In the pocket every walk refuses `no route`**, and each refusal is recorded where it belongs:
+  `GO FRONTIER`'s marks the map exhausted (12.14, no window, cleared only by new ground, and there
+  was none for hours), and `GO OBJECTIVE`'s only goal, the gym's door, goes to the blocked ledger.
+  With every person and sign already talked to and the errands paid, nothing else is left.
+- **The last resort is the one list that ignores the blocked ledger**, by design ("a target the
+  ledger is resting is still the only place to go", 13.1). So `ways` dealt `GO ROUTE` at the gym's
+  door, the route search refused it, the refusal wrote the door to a ledger the dealer does not
+  read, and the button was dealt again on the next hold. The same refusal **re-stamped the door's
+  window every hold**, which is why `GO OBJECTIVE` never came back either. Once per window the
+  road east lapsed, `GO ROUTE` walked it, and it was excluded again.
+
+Seeded with that pocket -- three pushed tiles sealing the strip by the road from the town, the
+frontier mark, everything talked to, the road east resting -- the cartridge deals exactly the live
+pad: `GO ROUTE`, refused `no route` **746 holds running** on one tile over ten brain minutes.
+
+**The fix, all three parts inside the macros:**
+
+- **A walk walls the tile it last stood the fly on**, which is where the cartridge took over; every
+  other macro keeps the tile it started on. The same walk now walls (37, 18), one of the four
+  tiles the youngster fires on.
+- **A refusal that taught the blocked ledger nothing is recorded with the tile the fly stood on,
+  and the dealer does not deal that button from that tile for the blocked window.** The dealer
+  asks the cheap question and `start` the real one, and the blocked ledger closes that gap for
+  every list but a last resort; this closes it for all of them without a route search in the
+  dealer, which runs every frame. Only a last resort deals goals the ledger is already resting, so
+  a `no route` whose every goal was resting already -- and any `precondition` refusal, which writes
+  nothing -- is the one remembered; a refusal that writes a new exclusion changes the next deal
+  by itself. (Measured: holding *every* refusal against the tile kept the real brain, which
+  pressed `GO ROUTE` first while the door was still the second tier's answer, from ever reaching
+  the last resort below.) It is a fact about *here*: the button is dealt again the moment the fly stands
+  on any other tile, or when the window closes. A pad with nothing left that can run is empty and
+  the fly waits, which is section 13.1's honest answer.
+- **A last resort that cannot reach the objective's door takes a way out it can reach.** The
+  narrowing to "the ways toward the objective" is a preference the dealer cannot check, and in the
+  pocket it chose the gym's door beyond the fence while the road east was three tiles away,
+  resting in its window (which a last resort ignores). When `start`'s route search cannot reach
+  the preferred ways it tries the rest of the last resort, nearest reachable first, as every walk
+  chooses. The pad does not change; only where the pressed macro walks.
+
+In the rebuilt pocket the fly now leaves on **frame 517** (0.14 brain minutes) -- walked east, met
+by the youngster, carried to the gym -- against frame 36,325 on the base, when the road's window
+lapsed; `GO ROUTE` is refused **once** there against 746 holds running.
+
+Nothing presses for the fly and nothing is ranked: one button leaves a pad it could not run from,
+one wall moves to the tile that earned it, and one walk goes where it can. The decoder, the reward catalog, the adapter
+version, the roles and the compatibility string are untouched.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")

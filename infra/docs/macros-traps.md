@@ -2531,3 +2531,127 @@ own measurement and the fourth branch in a row to run into it. The merge is Fabl
 - `flysim --print-compatibility`: **648 bytes, sha256 `4929f340...9ebd9`** -- byte-identical to this
   branch's base `2de2dce`. Decoder, reward catalog, adapter version and roles untouched.
 
+
+## 2026-09-23, row 57: one dead button, a last resort that could not see it, and walls the walks built
+
+### What was live
+
+Map 2 (Pewter City), scene `overworld`, rank 10, v0.5.3: the pad was **`GO ROUTE` and nothing
+else**, `GO ROUTE refused` about **740 times per ten brain minutes for more than two hours**, one
+`GO ROUTE start` / `blocked` pair every ten brain minutes, no button pressed, `uniqueLocations`
+frozen at 1,846. The live log: `GO FRONTIER` blocked and timed out through 02:36-02:38, three
+"Stuck" rollbacks to the rung's snapshot (the town's south entrance), `GO FRONTIER refused` at
+02:38:44 and `GO ROUTE refused` every hold from 02:38:45. The refusal's `value 3.0` is the slot
+(row 55). Check 10 read one start and one name and never flagged.
+
+### The survey: earning the ledgers a restore throws away
+
+The pad was dealt by session ledgers, and a restore starts them empty: from the live checkpoint
+the pad is `GO OBJECTIVE, GO ROUTE, GO ITEM, GO NPC, GO FRONTIER`, and a twenty-brain-minute hunt
+with the real brain covers 356 tiles; sixty brain minutes from the pre-deploy gym checkpoint
+covers 1,064 without meeting it. `FLY_PROBE_CATCH=route` (`examples/scene_probe.rs`) drives the
+real palette from the checkpoint and seeds each ledger (`examples/support/ledgers.rs`, shared
+with the hunt as `FLY_TRAP_SEED_*`); `FLY_PROBE_RATCHET=1` starts from the rollback snapshot.
+
+- **One escorted walk, one wall in the wrong place.** From the rollback snapshot at (18, 35),
+  `GO ROUTE` walked 26 tiles to (37, 18) -- one of `PewterCityPlayerLeavingEastCoords`, where the
+  youngster takes the joypad and walks the fly to the gym -- and the pushed ledger (row 37, no
+  window) walled **(18, 35)**: the tile the walk set out from.
+- **The pocket.** Seeded with three pushed tiles sealing the strip by the road east from the town,
+  every tile stood on, every sign and person talked to, the frontier mark and the road east
+  resting: the pad is `GO OBJECTIVE, GO ROUTE`, `GO OBJECTIVE` refuses `no route` once, and then
+  `GO ROUTE` alone, refused `no route` every hold -- **746 holds running on one tile** in ten
+  brain minutes. Read at the frame: `stranded` true, `ways(Route)` = the gym's door (16, 17),
+  blocked and unreachable; the road east reachable and blocked. At the window's lapse `GO ROUTE`
+  walks east and the youngster carries the fly out.
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 57 | a last resort is dealt by a dealer that ignores the blocked ledger, so its `no route` refusal cannot take it off the pad, and the refusal re-stamps the objective's door every hold | any map where the fly is walled off from the way toward the objective with nothing else left; Pewter City, two hours, `GO ROUTE` refused ~740 times per ten brain minutes | `a_way_out_refused_from_here_is_not_dealt_again_from_here`, part two of `the_pewter_east_pad_is_never_one_dead_button_from_the_rung_ten_checkpoint` (ROM-gated) | **fixed**: a refusal that teaches the blocked ledger nothing -- a `no route` whose every goal was already resting there, which only a last resort deals, or a `precondition` -- is recorded with the fly's tile, and the dealer does not deal that button from that tile for the blocked window. Dealt again the moment the fly stands elsewhere or the window closes. `docs/design/macros.md` 12.21 |
+| 57b | the last resort narrows to the ways toward the objective, so a reachable way out resting in its window is never tried while the preferred door is unreachable | the same pocket: the gym's door beyond the fence, the road east three tiles away | `a_last_resort_that_cannot_reach_the_objectives_door_takes_a_way_out_it_can_reach`, part two of the ROM test | **fixed**: when `start`'s route search cannot reach the preferred ways it tries the rest of the last resort, nearest reachable first. The pad is unchanged |
+| 57c | an escorted walk walls the tile it **set out from**, with no window, so walks toward a scripted road fence the fly in | Pewter City's youngster: every `GO ROUTE` toward Route 3 without the Boulder Badge | `an_escorted_walk_walls_the_tile_it_reached_not_the_one_it_set_out_from`, part one of the ROM test | **fixed**: a walk records the tile it last stood the fly on, which is where the cartridge took over; every other macro keeps its starting tile |
+| 57d | check 10 counts macro starts only, so a pad whose one button is refused every hold reads as one start and one name | the whole of row 57 | `infra/tests/lint.sh` check-10 cases 5 and 6 | **fixed**: the window counts every outcome; `stalled` (90% of 20+ decisions refused, blocked or timed out) and `zero-progress` (decisions and no `done`, two probes running), both behind the no-new-ground gate; `fly_loop_refused`, `fly_loop_blocked`, `fly_loop_done` exported. It still never acts |
+
+### The ROM-gated run, from the live checkpoint
+
+`the_pewter_east_pad_is_never_one_dead_button_from_the_rung_ten_checkpoint`
+(`FLY_PEWTER_EAST_CHECKPOINT`):
+
+| measure | base `d5d9249` | this branch |
+| --- | ---: | ---: |
+| part one: tile the escorted walk walls | **(18, 35)**, where it set out | **(37, 18)**, where the script fired |
+| part two: `GO ROUTE` refused in the pocket | **746 holds running** | **1** |
+| part two: the fly leaves the pocket | frame 36,325 (10.1 brain min) | **frame 517 (0.14)** |
+
+### The trap hunt, before and after
+
+Same seed and checkpoint, twenty brain minutes, the real brain; base `d5d9249` (plus the survey
+seam, no behaviour) against this branch.
+
+**From the bare checkpoint** the two arms are **identical** -- 356 distinct tiles, 73 of 73
+windows flagged, 1,272 macros, 3 refusals -- because the ledgers that make this row are built over
+tens of minutes of a live session and a restore starts them empty. Sixty brain minutes from the
+pre-deploy gym checkpoint on the base (1,064 tiles, 47 scattered refusals) does not meet it either.
+
+**From the rebuilt pocket** (`FLY_TRAP_SEED_*`: the three-tile seal, every tile stood on, the
+frontier mark, everything talked to, the road east resting):
+
+| measure | before | after |
+| --- | ---: | ---: |
+| refused | **748** (`GO ROUTE` 747) | **6** |
+| longest run of one macro refused on one tile | **747** | **1** |
+| the first ten brain minutes | in the pocket: one overworld run of 35,874 frames | out at once; longest overworld run 1,948 |
+| distinct (map, tile) | 303 | **439** |
+| macros started | 592 | 1,168 |
+| windows flagged | **31** / 73 | 66 / 73 |
+
+**The flagged-window count rises, and this says why rather than smoothing it.** The before arm's
+ten stuck minutes are not flagged at all: the hunt, like check 10 before this row, counts macro
+*starts*, and a refused press starts nothing, so a window of 740 refusals on one tile reads as
+silence. The after arm is flagged for battles (`NEXT` on one tile, row 50's rule) and, from 14.75
+brain minutes, for **`GO OUT, GO OUT, GO OBJECTIVE` x16 to x35 on five tiles at the gym's door**.
+That ring is **not this branch's**. The base, run 35 brain minutes from the same pocket with the
+real brain, reaches the same ring -- `GO OUT, GO OBJECTIVE, GO OUT` x14 to x20 from 23.75 brain
+minutes, about fourteen after it leaves the pocket at ten, `GO OUT` done 435 -- and driven with
+uniform choices for 42 brain minutes from the pocket it runs it harder (`GO OUT` done **853**, `GO OBJECTIVE` 235, `GO ROUTE` refused
+749) than this branch (`GO OUT` 243, `GO OBJECTIVE` 91, `GO ROUTE` refused 4). It is row 56's
+named next brief -- `GO OBJECTIVE`'s aim at a person inside a building -- reached sooner because
+the fly is no longer held in the pocket.
+
+### Residuals, named rather than worked around
+
+- **The live pocket is reconstructed, not recovered.** The pushed tiles the session held are
+  session state; the three-tile seal is the smallest one that reproduces the live pad and its
+  refusal rate. Live, the once-per-window `GO ROUTE` ended `blocked` in 3.8 s with no escort;
+  in the reconstruction it ends in the escort. The mechanism is the same; the exact walls are not
+  known.
+- **A press answered by a script still walls its own tile** (row 37's rule, unchanged): the
+  `NEXT` that advanced the youngster's last box walled (11, 18), where the escort ends. Not a trap
+  measured here; named.
+- **The hunt from the bare checkpoint cannot see this row**: the ledgers that make it are built
+  over tens of minutes of a live session. The seeded arm is the measurement.
+- **The hunt's window rule still counts starts only.** It now prints refusals by macro and the
+  longest run on one tile, but a window of refusals is still not flagged; changing what the hunt
+  flags moves every earlier row's before/after and is left for its own change.
+- **A trainer's sight line is a push-back too.** `scripted` is any joypad takeover, so a walk that
+  steps into a trainer's view walls the tile it reached -- and, before this row, the tile it set
+  out from -- with no window, though the trainer beaten opens it again. Moved, not introduced;
+  named.
+- **Rung 11 is not reached** on any arm, as in row 56: `GO OBJECTIVE`'s aim at a person behind a
+  door is still the next brief.
+- The runbook's "at most 3 distinct macro names" and `WD_LOOP_MAX_DISTINCT=4` in the watchdog
+  disagree; older than this row and left.
+
+### Gates
+
+- `cargo test --workspace --no-fail-fast` with `FLY_ROM` and `FLY_DATASET`: **1,245 passed, 1
+  failed** -- `flysim::integration::the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_killed`,
+  the debug-build boot failure row 56 recorded (`/status` still the booting header, `total` 1
+  against 38), **failing identically on the base `d5d9249`**. Nothing under `crates/flysim/src`
+  changes on this branch.
+- ROM-gated in release with the live checkpoint: `the_pewter_east_pad_is_never_one_dead_button_from_the_rung_ten_checkpoint` passes.
+- `cargo clippy --all-targets`: **0 warnings**.
+- `npm test`: 655 passed, 0 failed; `npm run typecheck`: clean.
+- `infra/tests/lint.sh`: ALL CHECKS PASSED, the two new check-10 cases and the de-PII guard included.
+- `flysim --print-compatibility`: **648 bytes, sha256 `4929f340...9ebd9`** -- byte-identical to the
+  base `d5d9249`. Decoder, reward catalog, adapter version and roles untouched.
