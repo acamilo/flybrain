@@ -177,6 +177,9 @@ impl NeuralRecovery for AgentRecovery<'_> {
 }
 
 /// Where the fly stood on one frame, and what it started on it.
+/// A refused macro and the `(map, x, y)` it was refused on.
+type RefusedAt = (&'static str, Option<(u32, u32, u32)>);
+
 struct Trace {
     /// `(brain ms, map, x, y)` for every frame the adapter could place the player on.
     steps: Vec<(f64, u32, u32, u32)>,
@@ -195,7 +198,7 @@ struct Trace {
     /// `refused` outcomes by macro, and the run of one macro refused with the fly on one tile:
     /// row 57's pad was one button refused 740 times running.
     refusals: BTreeMap<&'static str, u64>,
-    refusal_run: (Option<(&'static str, Option<(u32, u32, u32)>)>, u64),
+    refusal_run: (Option<RefusedAt>, u64),
     longest_refusal_run: (u64, &'static str),
     /// Frames spent in each scene, so a window full of macros can be read back to the scene that
     /// dealt them.
