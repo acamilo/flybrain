@@ -121,7 +121,8 @@ Indigo Plateau's rooms. Not the forest, a cave, the Underground Path or Vermilio
 1. *the fly opened*: on the last sample before the font bit (`wFontLoaded` bit 0) rose, the fly had
    the joypad -- no `wJoyIgnore`, no simulated input, no scripted movement -- was standing still
    (`wWalkCounter` zero, the only state the overworld reads A in) and stood where it stands now. A
-   script's text opens with the joypad taken, or on the frame a step onto a trigger tile ends;
+   script's text usually opens with the joypad taken; one opened by a map script the frame after a
+   step ends can still look opened by the fly, and is then held to rule 2 (below);
 2. *is with the thing in front of it*: `DisplayTextID` copies its argument into `wSpriteIndex` --
    a sprite slot up to `wNumSprites`, or a text id -- and the sprite must stand on the tile the
    player faces (or one further, across a counter, on a tileset that has counter tiles, which is
@@ -281,7 +282,12 @@ press. Nothing in the adapter presses A, chooses when, or tells the fly who is t
 read out of WRAM after a conversation the fly's own buttons -- or the macro the mushroom body chose
 -- opened and finished, and it is once per person or sign for the life of the run, so the thing
 that is learned is "the people in a building are worth a visit", not "press A". It is also why the
-rule demands evidence that the fly opened the box: text a script started pays nothing.
+rule demands evidence that the fly opened the box. That evidence is not proof: a map script runs
+one frame after a step ends and may open text while the fly is still, controllable and on the same
+tile. Such text pays only if it names the person or sign the fly is facing, once per key; in the
+early game none can (checked: the museum ticket man, the Route 22 and Route 5 guards, Viridian
+Mart, Oak's Lab), and a few late ones can once each (the Fighting Dojo master, the Elite Four
+after their battles). Review of 2026-09-23.
 
 The catalog also includes catches. The honesty panel's copy is not data-driven from the catalog --
 `apps/stage/src/lib/schedule.ts`'s rotating card is four written lines and lists no kinds -- so

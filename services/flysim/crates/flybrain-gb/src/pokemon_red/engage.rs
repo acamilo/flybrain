@@ -148,8 +148,10 @@ impl TalkWatch {
     ///    (`wFontLoaded` bit 0 rising) the fly had the joypad -- no ignored buttons, no simulated
     ///    input, no scripted movement ([`state::controllable`]) -- was standing still
     ///    (`wWalkCounter` zero, which is the only state the overworld reads A in) and stood on the
-    ///    tile it is on now. A script's text opens with the joypad already taken, or on the frame
-    ///    a step onto a trigger tile ends; neither is `ready`.
+    ///    tile it is on now. Most script text opens with the joypad already taken, and is not
+    ///    `ready`; a map script that runs the frame after a step ends can open text while the fly
+    ///    is still `ready`, so it pays only if rule 2 names the thing in front (none in the early
+    ///    game; the Fighting Dojo master and the Elite Four once each).
     /// 2. **It is with the thing in front of the fly.** `DisplayTextID` copies its argument into
     ///    `wSpriteIndex` once the font is loaded ([`ARGUMENT_SETTLED`] has the timing, and why
     ///    the byte is read only once it has changed or settled), in the bottom dialogue box --
