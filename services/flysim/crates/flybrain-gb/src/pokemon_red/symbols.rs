@@ -28,9 +28,11 @@ pub mod ram {
     pub const wJoyIgnore: u16 = 0xcd6b;                   // 52587
     pub const wNumMovesMinusOne: u16 = 0xcd6c;            // 52588
     pub const wBattleResult: u16 = 0xcf0b;                // 53003
+    pub const wSpriteIndex: u16 = 0xcf13;                 // 53011
     pub const wItemList: u16 = 0xcf7b;                    // 53115
     pub const wListMenuID: u16 = 0xcf94;                  // 53140
     pub const wFontLoaded: u16 = 0xcfc4;                  // 53188
+    pub const wWalkCounter: u16 = 0xcfc5;                 // 53189
     pub const wEnemyMonSpecies: u16 = 0xcfe5;             // 53221
     pub const wEnemyMonHP: u16 = 0xcfe6;                  // 53222
     pub const wEnemyMonLevel: u16 = 0xcff3;               // 53235
@@ -71,11 +73,15 @@ pub mod ram {
     pub const wSignCoords: u16 = 0xd4b1;                  // 54449
     pub const wSignTextIDs: u16 = 0xd4d1;                 // 54481
     pub const wNumSprites: u16 = 0xd4e1;                  // 54497
+    pub const wMapSpriteExtraData: u16 = 0xd504;          // 54532
     pub const wTilesetBank: u16 = 0xd52b;                 // 54571
     pub const wTilesetBlocksPtr: u16 = 0xd52c;            // 54572
     pub const wTilesetCollisionPtr: u16 = 0xd530;         // 54576
     pub const wTilesetTalkingOverTiles: u16 = 0xd532;     // 54578
     pub const wNumHoFTeams: u16 = 0xd5a2;                 // 54690
+    pub const wToggleableObjectFlags: u16 = 0xd5a6;       // 54694
+    pub const wToggleableObjectList: u16 = 0xd5ce;        // 54734
+    pub const wObtainedHiddenItemsFlags: u16 = 0xd6f0;    // 55024
     pub const wStatusFlags5: u16 = 0xd730;                // 55088
     pub const wStatusFlags6: u16 = 0xd732;                // 55090
     pub const wStatusFlags7: u16 = 0xd733;                // 55091

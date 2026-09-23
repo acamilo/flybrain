@@ -209,6 +209,22 @@ EXTRA_RAM = (
     # services/flysim/tools/resolve_wram.py is the second reading of it, from ram/wram.asm at
     # this commit, bracketed by wFontLoaded and wForcePlayerToChooseMon.
     'wCapturedMonSpecies',
+    # The engagement rewards (`docs/rewards-learning.md`, the operator 2026-09-23).
+    # `talk`: DisplayTextID copies its argument -- the sprite slot, or a sign's text id --
+    # into wSpriteIndex before it looks the text up, and the overworld's A press only
+    # reaches it while wWalkCounter is zero. `item`: an item ball is a sprite whose
+    # wMapSpriteExtraData entry is (item id, 0) -- LoadMapHeader writes that shape for
+    # an ITEM-flagged object_event and no other -- found in the map's
+    # wToggleableObjectList; PickUpItem hides it by setting its global bit in
+    # wToggleableObjectFlags, and FoundHiddenItemText sets the hidden item's bit in
+    # wObtainedHiddenItemsFlags, each only after GiveItem succeeded.
+    # services/flysim/tools/resolve_wram.py is the second reading of all six.
+    'wSpriteIndex',
+    'wWalkCounter',
+    'wMapSpriteExtraData',
+    'wToggleableObjectFlags',
+    'wToggleableObjectList',
+    'wObtainedHiddenItemsFlags',
 )
 
 
