@@ -267,7 +267,7 @@ async fn the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_kil
     let (status, versions) = service.get("/status");
     assert_eq!(status, 200);
     assert_eq!(versions["version"]["kernel"], json!("lif-1ms-f64-v2"));
-    assert_eq!(versions["version"]["adapter"], json!("pokered-unique8-v6"));
+    assert_eq!(versions["version"]["adapter"], json!("pokered-unique8-v7"));
     assert!(
         versions["version"]["dataset"].as_str().unwrap_or_default().len() > 32,
         "the dataset fingerprint is in /status: {}",

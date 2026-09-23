@@ -15,10 +15,10 @@
 
 use std::time::Instant;
 
-use flybrain_gb::adapter::MemoryReader;
+use flybrain_gb::adapter::{MapExit, MemoryReader};
 use flybrain_gb::emulator::{AUDIO_SILENCE_LEVEL, CPU_TICKS_PER_SECOND};
 use flybrain_gb::pokemon_red::symbols::ram;
-use flybrain_gb::pokemon_red::{PokemonRedReward, SUPPORTED_ROM};
+use flybrain_gb::pokemon_red::{PokemonRedReward, SUPPORTED_ROM, engage};
 use flybrain_gb::{
     DEFAULT_AUDIO_FRAMES, DEFAULT_AUDIO_FREQUENCY, Emulator, FRAMEBUFFER_LEN, GameAdapter,
     buttons,
@@ -444,7 +444,10 @@ fn read_u32(bytes: &[u8], offset: &mut usize) -> Option<u32> {
 /// The boundary rule, against the cartridge rather than a synthetic trace.
 ///
 /// `docs/design/room-escape.md` section 2, Verification: "from the bedroom archive, the first
-/// payouts are boundary events near the stairs". Two things are checked here that no synthetic
+/// payouts are boundary events near the stairs". Since `pokered-unique8-v7` the bedroom is
+/// *indoors* (`engage::indoor`: tileset `REDS_HOUSE_2`, neither outside nor bike-ridable), so
+/// the same walk now proves the other half of the rule: the stairs enter the ledger where they
+/// always did, and nothing is paid for them. Three things are checked here that no synthetic
 /// WRAM trace can check:
 ///
 /// 1. **the warp table layout.** `RedsHouse2F_Object` declares exactly one warp,
@@ -453,9 +456,11 @@ fn read_u32(bytes: &[u8], offset: &mut usize) -> Option<u32> {
 ///    layout were X-then-Y, or the stride were not four, this assertion is what fails.
 /// 2. **that the rule fires at the right place.** The fly spawns at (3, 6) with the stairs at
 ///    (7, 1), four tiles and five rows away, so the stairs are not baselined by the first
-///    playable sample and have to be walked to.
+///    playable sample and have to be walked to -- and the ledger records them from beside them.
+/// 3. **that the cartridge calls the bedroom a building**: `wCurMapTileset` reads `REDS_HOUSE_2`
+///    on the running game, so the rule pays nothing there.
 #[test]
-fn the_boundary_rule_pays_for_the_bedroom_stairs_on_a_real_cartridge() {
+fn the_boundary_rule_records_the_bedroom_stairs_and_pays_nothing_indoors() {
     let mut emulator = skip_without_rom!(boot());
     assert_eq!(emulator.rom_sha256(), SUPPORTED_ROM, "FLY_ROM is not the pinned cartridge");
     let mut adapter = PokemonRedReward::new();
@@ -498,6 +503,8 @@ fn the_boundary_rule_pays_for_the_bedroom_stairs_on_a_real_cartridge() {
         0,
         "an indoor map has no connected edges"
     );
+    assert_eq!(emulator.read_wram(ram::wCurMapTileset), 4, "REDS_HOUSE_2");
+    assert!(engage::indoor(4), "and the rule calls it a building");
     let (spawn_x, spawn_y) =
         (emulator.read_wram(ram::wXCoord), emulator.read_wram(ram::wYCoord));
     assert!(
@@ -509,6 +516,7 @@ fn the_boundary_rule_pays_for_the_bedroom_stairs_on_a_real_cartridge() {
     let mut seed: u64 = 0x5eed_1234_5678_9abc;
     let mut boundary: Vec<(u8, u8, f64)> = Vec::new();
     let mut kinds: Vec<&'static str> = Vec::new();
+    let mut found_at: Option<(u8, u8)> = None;
     for frame in 0..24_000u32 {
         seed = seed
             .wrapping_mul(6_364_136_223_846_793_005)
@@ -531,26 +539,19 @@ fn the_boundary_rule_pays_for_the_bedroom_stairs_on_a_real_cartridge() {
                 boundary.push((x, y, event.value));
             }
         }
+        if found_at.is_none() && adapter.exit_visited(MapExit::Warp { map: 0x26, x: 7, y: 1 }) {
+            found_at = Some((x, y));
+        }
         if adapter.map_id() != Some(0x26) {
             break;
         }
     }
 
     eprintln!("boundary: payouts in the bedroom {boundary:?}, all kinds {kinds:?}");
-    let (x, y, value) = *boundary.first().expect("the stairs were never found");
+    let (x, y) = found_at.expect("the stairs were never found");
     assert!(
         x.abs_diff(7) + y.abs_diff(1) <= 1,
-        "the first boundary payout was at ({x}, {y}), not next to the stairs at (7, 1)"
+        "the stairs entered the ledger at ({x}, {y}), not next to the stairs at (7, 1)"
     );
-    assert!(
-        value == 0.05 || value == 0.10,
-        "a boundary payout is the adjacent value or twice it, got {value}"
-    );
-    assert!(
-        boundary.len() <= 2,
-        "one warp can pay at most twice in a lifetime, got {boundary:?}"
-    );
-    for (x, y, _) in &boundary {
-        assert!(x.abs_diff(7) + y.abs_diff(1) <= 1, "payout away from the stairs at ({x}, {y})");
-    }
+    assert!(boundary.is_empty(), "an indoor exit pays nothing, got {boundary:?}");
 }

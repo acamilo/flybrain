@@ -1,4 +1,4 @@
-//! The Pokémon Red reward adapter, `pokered-unique8-v6`.
+//! The Pokémon Red reward adapter, `pokered-unique8-v7`.
 //!
 //! A port of the prototype's `src/reward/pokemon-red.ts`. The gates and budgets
 //! are unchanged; `docs/rewards-learning.md` holds the live rule table and the
@@ -6,9 +6,12 @@
 //! ladder with the 38 rungs of `docs/design/ladder.md`; v5 adds one reward rule,
 //! `boundary` (`docs/design/room-escape.md` section 2), which pays the first step
 //! next to and the first step onto each of a map's exits; v6 adds `catch`, the
-//! operator's decision of 2026-09-22, which pays for keeping a wild Pokémon.
+//! operator's decision of 2026-09-22, which pays for keeping a wild Pokémon; v7 adds
+//! `talk` and `item` and stops `boundary` paying indoors, the operator's decision of
+//! 2026-09-23 to pay for engaging with a building rather than for leaving it.
 
 pub mod catalog;
+pub mod engage;
 #[cfg(test)]
 pub(crate) mod fake_wram;
 pub mod macros;
@@ -33,33 +36,39 @@ use symbols::ram;
 
 /// Adapter version, pinned into the checkpoint compatibility string.
 ///
-/// `v6` is the `catch` rule. Bumping it is what makes a `v5` checkpoint a decision
-/// rather than an accident: the compatibility string is compared whole before a
-/// restore is attempted, so a `v5` run is refused by default and resumed only when
-/// the operator names it in `FLY_ACCEPT_ADAPTERS`
-/// ([`crate::compatibility::RestoreDecision`], `docs/design/flysim.md`). That
-/// migration is safe in one direction only, and only for this pair: `v5`'s ledger is
-/// a `v6` ledger with the catch counter absent, and an absent counter reads as zero.
+/// `v7` is the engagement rules: `talk` and `item` pay, and `boundary` stops paying on an
+/// indoor map (the operator, 2026-09-23). Bumping it is what makes a `v6` checkpoint a
+/// decision rather than an accident: the compatibility string is compared whole before a
+/// restore is attempted, so a `v6` run is refused by default and resumed only when the
+/// operator names it in `FLY_ACCEPT_ADAPTERS` ([`crate::compatibility::RestoreDecision`],
+/// `docs/design/flysim.md`). That migration is safe in one direction only, and only for this
+/// pair: `v6`'s ledger is a `v7` ledger holding no `talk:`, `item:` or `hidden:` keys, and the
+/// first sample after the restore seeds the item keys from the cartridge's own bits, so
+/// nothing already picked up pays ([`engage::ItemFlags::seed`]).
 ///
-/// (`v5` was the `boundary` rule, and rejected `v4` because a ledger that had never
+/// (`v6` was the `catch` rule and migrated `v5` the same way: an absent counter reads as
+/// zero. `v5` was the `boundary` rule, and rejected `v4` because a ledger that had never
 /// recorded a `boundary:` key could not be resumed as though its exits were already
 /// collected. `v4` was the 38-rung ladder, and rejected `v3` because a stored rank
 /// that meant "4 badges" on the old ladder is not a rung on the new one. Neither of
-/// those is a migration: this one is, because nothing a `v5` ledger holds means
-/// something different under `v6`.)
-pub const REWARD_ADAPTER: &str = "pokered-unique8-v6";
+/// those is a migration; the last two are, because nothing an older ledger holds means
+/// something different under the newer rules.)
+pub const REWARD_ADAPTER: &str = "pokered-unique8-v7";
 
-/// Adapter ids whose checkpoints `v6` can read.
+/// Adapter ids whose checkpoints `v7` can read.
 ///
-/// Exactly one, and it is one because the `catch` rule adds a counter and changes nothing else:
-/// a `v5` ledger restores as a `v6` ledger with `catchCounts` empty, and every other byte of the
-/// state means what it meant. `v4` is not here -- its `seen` ledger holds no `boundary:` keys, so
-/// resuming it would pay a second time for every exit the run had already found -- and neither is
-/// `v3`, whose stored rank is a rung on a different ladder.
+/// Exactly one, and it is one because the engagement rules add ledger keys and change nothing
+/// else a `v6` state holds: every field keeps its name, shape and meaning, the `talk:` keys start
+/// empty (no conversation was ever paid), and the `item:`/`hidden:` keys are seeded from the
+/// game's own flags on the first sample, so no pickup made under `v6` pays when a rollback
+/// un-takes it. The `boundary:` keys a `v6` run earned indoors stay in the ledger and mean what
+/// they meant -- `exit_visited` still reads them. `v5` is not here: the live run is `v6`, and
+/// the one migration the operator asked for is the one this adapter tests. `v4` and `v3` stay
+/// refused for the reasons [`REWARD_ADAPTER`] gives.
 ///
 /// Listing an id here is necessary but not sufficient: `FLY_ACCEPT_ADAPTERS` must name it too
 /// (`crate::compatibility::decide`, `docs/design/flysim.md`).
-pub const MIGRATES_FROM: &[&str] = &["pokered-unique8-v5"];
+pub const MIGRATES_FROM: &[&str] = &["pokered-unique8-v6"];
 
 /// The only cartridge semantic rewards are enabled for. Even the canonical
 /// pret build stays disabled until reviewed; see `docs/rewards-learning.md`.
@@ -89,7 +98,18 @@ pub const SUPPORTED_ROM: &str =
 /// empty, which is the truth about a run that was never paid for a catch. That is the
 /// whole of the documented `v5` -> `v6` migration; see
 /// [`crate::compatibility::RestoreDecision`].
+///
+/// *Not* bumped for the engagement rules either. `talk` and `item` key their payouts into the
+/// existing `seen` array, the way `boundary` did, and the item seed is marked there too
+/// ([`ITEMS_SEEDED`]); a `v6` state is structurally a `v7` state with none of those keys.
 pub const STATE_VERSION: u64 = 4;
+
+/// The `seen` key that says the item keys have been seeded from the cartridge's flags.
+///
+/// Absent from every `v6` state and from a fresh adapter; the first playable sample that finds
+/// it absent writes one `item:`/`hidden:` key per item the game already shows as taken, pays
+/// nothing for any of them, and writes this.
+const ITEMS_SEEDED: &str = "items:seeded";
 
 /// Catch payouts one species may earn in the lifetime of a run's ledger.
 ///
@@ -441,6 +461,13 @@ pub struct PokemonRedReward {
     battle: Option<Battle>,
     mode: String,
 
+    /// The `talk` rule's frame-to-frame watch. Transient: never checkpointed, cleared by a
+    /// rollback and by a restore.
+    talk: engage::TalkWatch,
+    /// The item bitsets as of the last playable sample, so a pickup is a bit that *rose*.
+    /// Transient for the same reason.
+    item_flags: Option<engage::ItemFlags>,
+
     /// Transient, recomputed every sample and never checkpointed.
     safe: bool,
     progress: u32,
@@ -491,6 +518,8 @@ impl PokemonRedReward {
             stable: 0,
             battle: None,
             mode: "BOOT".to_string(),
+            talk: engage::TalkWatch::default(),
+            item_flags: None,
             safe: false,
             progress: 0,
             badges: 0,
@@ -635,6 +664,10 @@ impl PokemonRedReward {
         self.stable = 0;
         self.battle = None;
         self.safe = false;
+        // A conversation or a pickup in flight across a rollback is not paid: the game the
+        // fly returns to has not had it. What *was* paid stays in `seen` and blocks a replay.
+        self.talk.clear();
+        self.item_flags = None;
         let keys: Vec<String> = self.wild_wins.keys().cloned().collect();
         for key in keys {
             self.replay_blocked.insert(&key);
@@ -750,11 +783,13 @@ impl PokemonRedReward {
             self.boundary(&mut emitted, memory, map, x, y, width, height, true, brain_ms);
             self.initialized = true;
         }
+        self.items(&mut emitted, memory, brain_ms);
 
         let in_battle = memory.read8(ram::wIsInBattle);
         if in_battle == 1 || in_battle == 2 || in_battle == 255 {
             self.mode = "BATTLE".to_string();
             self.stable = 0;
+            self.talk.interrupt();
             let species_paid = self.counts.get(kind::SPECIES);
             if self.battle.is_none() && in_battle != 255 {
                 self.battle = Some(Battle {
@@ -848,6 +883,18 @@ impl PokemonRedReward {
                     }
                     self.catch_counts.insert(key, (paid + 1).min(MAX_CATCH_PAYOUTS));
                 }
+            }
+            // The talk rule (`docs/rewards-learning.md`, the operator 2026-09-23): a conversation
+            // the fly opened indoors, paid once per (map, object) when its box closes.
+            if let Some(conversation) = self.talk.observe(memory, map, x, y) {
+                self.once(
+                    &mut emitted,
+                    &conversation.key(),
+                    kind::TALK,
+                    conversation.label(),
+                    false,
+                    brain_ms,
+                );
             }
             let location = format!("{map}:{x}:{y}");
             self.stable = if self.location == location { self.stable + 1 } else { 1 };
@@ -1056,6 +1103,11 @@ impl PokemonRedReward {
     /// What this is not: a path. No button is chosen here, nothing is planned, and no map
     /// knowledge reaches the readout. It is a reward the fly may or may not find, like every other
     /// rule in the catalog.
+    ///
+    /// **Indoors it pays nothing** (the operator, 2026-09-23): on a map [`engage::indoor`] calls a
+    /// building, every key is still written to the ledger -- so [`GameAdapter::exit_visited`]
+    /// answers exactly what it did, and a door found indoors is found -- but no payout is emitted.
+    /// The exits of a town, a route, a forest or a cave pay as they always have.
     #[allow(clippy::too_many_arguments)]
     fn boundary(
         &mut self,
@@ -1072,6 +1124,7 @@ impl PokemonRedReward {
         // Collected first, paid second: the ledger writes need `&mut self` and the table walk
         // needs the sample cache, and the order of the collection is the order of the payouts.
         let mut hits: Vec<(String, bool)> = Vec::new();
+        let pays = !engage::indoor(memory.read8(ram::wCurMapTileset));
 
         let warps = memory.read8(ram::wNumberOfWarps).min(MAX_WARP_EVENTS);
         for index in 0..u16::from(warps) {
@@ -1112,6 +1165,10 @@ impl PokemonRedReward {
                 continue;
             }
             let key = format!("{key}:{}", if on_exit { "on" } else { "near" });
+            if !pays {
+                self.seen.insert(&key);
+                continue;
+            }
             self.once_scaled(
                 emitted,
                 &key,
@@ -1122,6 +1179,34 @@ impl PokemonRedReward {
                 brain_ms,
             );
         }
+    }
+
+    /// Pay each item picked up since the last playable sample, once per item for the lifetime of
+    /// the ledger (`docs/rewards-learning.md`, the operator 2026-09-23).
+    ///
+    /// The first sample that finds [`ITEMS_SEEDED`] absent -- a fresh adapter, or a `v6` state
+    /// restored under `v7` -- keys every item the cartridge already shows as taken and pays for
+    /// none of them. After that a pickup is a bit that rose between two playable samples
+    /// ([`engage::pickups`]) and pays unless its key is already in `seen`, which is what stops a
+    /// rollback that un-takes an item from paying for it twice.
+    fn items(
+        &mut self,
+        emitted: &mut Vec<RewardEvent>,
+        memory: &mut impl MemoryReader,
+        brain_ms: f64,
+    ) {
+        let now = engage::ItemFlags::read(memory);
+        if !self.seen.contains(ITEMS_SEEDED) {
+            for key in now.seed() {
+                self.seen.insert(&key);
+            }
+            self.seen.insert(ITEMS_SEEDED);
+        } else if let Some(before) = &self.item_flags {
+            for pickup in engage::pickups(memory, before, &now) {
+                self.once(emitted, &pickup.key, kind::ITEM, pickup.label, false, brain_ms);
+            }
+        }
+        self.item_flags = Some(now);
     }
 
     pub fn export_state(&self) -> Value {
@@ -1287,6 +1372,8 @@ impl PokemonRedReward {
         self.mode = mode.to_string();
         self.progress = progress;
         self.badges = badges;
+        self.talk.clear();
+        self.item_flags = None;
         Ok(())
     }
 }

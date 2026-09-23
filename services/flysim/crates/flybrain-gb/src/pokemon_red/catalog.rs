@@ -1,4 +1,4 @@
-//! The `pokered-unique8-v6` reward catalog.
+//! The `pokered-unique8-v7` reward catalog.
 //!
 //! A direct port of the prototype's `src/reward/catalog.ts`, including the
 //! declaration order, which is the order `counts` and `last` serialize in.
@@ -21,6 +21,8 @@ pub mod kind {
     pub const BADGE: &str = "badge";
     pub const BOUNDARY: &str = "boundary";
     pub const CATCH: &str = "catch";
+    pub const TALK: &str = "talk";
+    pub const ITEM: &str = "item";
 }
 
 /// What a `catch` of a species this run has already caught pays.
@@ -44,7 +46,7 @@ pub struct RewardRule {
     pub stimulation_ms: u32,
 }
 
-pub const REWARDS: [RewardRule; 9] = [
+pub const REWARDS: [RewardRule; 11] = [
     RewardRule {
         kind: kind::MILESTONE,
         label: "Story",
@@ -124,6 +126,30 @@ pub const REWARDS: [RewardRule; 9] = [
         trigger: "Wild Pokémon caught; 0.10 for a species already caught; max 3 per species",
         value: 0.30,
         stimulation_ms: 150,
+    },
+    // The operator's decision of 2026-09-23: pay the fly for engaging with what is *inside* a
+    // building rather than for leaving it (`boundary` pays nothing on an indoor map from v7).
+    // Both appended, for the reason every rule since `boundary` was: the declaration order is
+    // the key order `counts` serializes in, and every checkpoint already written carries the
+    // first nine in this order.
+    //
+    // `talk` is one payout per person or sign per map for the lifetime of the ledger, and only
+    // indoors: the conversation the fly opened by pressing A at it, paid when the box closes.
+    RewardRule {
+        kind: kind::TALK,
+        label: "Talk",
+        trigger: "Conversation the fly opened indoors; once per map and person or sign",
+        value: 0.10,
+        stimulation_ms: 100,
+    },
+    // `item` is one payout per item ball or hidden item for the lifetime of the ledger, on any
+    // map: the cartridge's own "this one has been taken" bit rising.
+    RewardRule {
+        kind: kind::ITEM,
+        label: "Item",
+        trigger: "Item ball or hidden item picked up; once per item",
+        value: 0.15,
+        stimulation_ms: 120,
     },
 ];
 
@@ -229,12 +255,17 @@ mod tests {
         assert_eq!(rule(kind::CATCH).unwrap().value, 0.30);
         assert_eq!(CATCH_REPEAT_VALUE, 0.10);
         assert_eq!(rule(kind::CATCH).unwrap().stimulation_ms, 150);
+        // Nor these: the operator's engagement rules, `pokered-unique8-v7`.
+        assert_eq!(rule(kind::TALK).unwrap().value, 0.10);
+        assert_eq!(rule(kind::TALK).unwrap().stimulation_ms, 100);
+        assert_eq!(rule(kind::ITEM).unwrap().value, 0.15);
+        assert_eq!(rule(kind::ITEM).unwrap().stimulation_ms, 120);
         assert!(rule("blackout").is_none(), "the catalog has no penalties");
         assert!(REWARDS.iter().all(|rule| rule.value > 0.0));
     }
 
     #[test]
-    fn the_catch_rule_is_last_so_the_older_key_order_does_not_move() {
+    fn new_rules_are_appended_so_the_older_key_order_does_not_move() {
         let order: Vec<&str> = REWARDS.iter().map(|rule| rule.kind).collect();
         assert_eq!(
             order,
@@ -248,9 +279,11 @@ mod tests {
                 kind::BADGE,
                 kind::BOUNDARY,
                 kind::CATCH,
+                kind::TALK,
+                kind::ITEM,
             ]
         );
-        assert_eq!(index(kind::CATCH), Some(REWARDS.len() - 1));
+        assert_eq!(index(kind::ITEM), Some(REWARDS.len() - 1));
     }
 
     #[test]

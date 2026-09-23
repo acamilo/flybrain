@@ -56,10 +56,10 @@ impl MemoryReader for &mut dyn MemoryReader {
 /// One reward payout in one frame.
 ///
 /// `kind` is an adapter-owned interned name (Pokémon: `milestone`,
-/// `exploration`, `map`, `species`, `trainer`, `battle`, `badge`, `boundary`, `catch`); it is the
-/// key the statistics counters and the on-screen ticker group by. Field names
-/// serialize exactly as the prototype's `RewardEvent` did, so a checkpoint
-/// written by either implementation reads in the other.
+/// `exploration`, `map`, `species`, `trainer`, `battle`, `badge`, `boundary`, `catch`,
+/// `talk`, `item`); it is the key the statistics counters and the on-screen ticker group
+/// by. Field names serialize exactly as the prototype's `RewardEvent` did, so a
+/// checkpoint written by either implementation reads in the other.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RewardEvent {
     pub kind: &'static str,
@@ -241,7 +241,7 @@ impl std::error::Error for AdapterError {}
 /// A game, as the sim loop sees it.
 pub trait GameAdapter: Send {
     /// Adapter version string, pinned into the checkpoint compatibility string.
-    /// Pokémon: `pokered-unique8-v6`.
+    /// Pokémon: `pokered-unique8-v7`.
     fn id(&self) -> &'static str;
 
     /// Earlier [`GameAdapter::id`]s whose checkpoints this build can read, by a migration
