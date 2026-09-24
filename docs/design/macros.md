@@ -1650,6 +1650,44 @@ Nothing is ranked or pressed for the fly: frames that were never the fly's deal 
 decoder, the reward catalog, the adapter version, the roles and the compatibility string are
 untouched.
 
+### 12.27 An A the cartridge has not let go of is not a press, and a menu it is acting on is not a pad (2026-09-24, row 63)
+
+Live on v0.6.2, rung 12, Mt. Moon B2F (map 61), wild battles: per ten minutes `BACK` 62, `ITEM`
+28, `RUN` 21, `MOVE 1` 10, no game event; the log ITEM, BACK, BACK, ITEM, BACK ... then RUN, and
+MOVE 1, BACK. Reproduced from the live checkpoint (`scene_probe`, `FLY_PROBE_CATCH=bag`).
+
+- **The bag was not the problem.** Wartortle out at 8/86 with an Antidote, a Potion and TM34. The
+  cartridge's own `ItemUsePtrTable` (`$03:$55E1`) and each routine's checks say: the Potion would
+  be taken, the Antidote has nobody poisoned, TM34 is never usable in a battle. `ITEM` was dealt
+  correctly and it never used the Potion.
+- **`ITEM`'s last press was no press.** The A that chose the Potion opens the party list. Its
+  cursor bytes read open at once, and with one Pokémon the cursor is already on its target, so the
+  script confirmed on the first frame. But `_Joypad` makes a press out of an edge against
+  `hJoyLast`, and the game does not ask again until the list is drawn: the Potion's A is still
+  `hJoyLast`, and an A pressed into that window is down on both sides of the comparison. Measured
+  by rollback: an A in the first 22 frames after the pulse is lost every time, and `hJoyLast`
+  alone separates lost from answered frames (every other WRAM and HRAM byte overlaps). `ITEM`
+  reported done over a list still waiting; `BACK` left it (the item unused, back to the bag) and
+  `BACK` left the bag. The pair was `ITEM` and `BACK`, and `ITEM` never did anything.
+- **A confirming A waits for the cartridge to let go of the last one** (`state::a_latched`, the
+  cursor step). A wait presses nothing and shares the cursor step's budget. It applies to every
+  confirm, so SWITCH, a move, a ball and a purchase get the same guarantee.
+- **A battle menu the cartridge still holds an A on deals no pad.** The same latch after an
+  answer: RUN's A is taken and the menu's box stays up to sixteen frames while the game acts on
+  it. A macro dealt there pressed at a menu already gone and held the pad for its three-second
+  cursor wait over "Got away safely!". Empty for those frames, 12.13's reading.
+- **`MOVE 1` over the menu is FIGHT's backstop only while nothing else is a move** (12.8, 12.23).
+  Slot one spent beside slot four with PP, it was dealt anyway; its script confirms FIGHT and
+  stops, which opens the list its `BACK` closes. That is 12.11's pair, and `MOVE 4` is on the same
+  menu. With nothing usable it is the backstop as before.
+- `ITEM` also asks the cartridge about its Potion (`item_refused`). With `hurt` it always agrees.
+  It is the same kind of rule as 12.23, and it is there for the day `hurt`'s reading and the
+  cartridge's part.
+
+Nothing is ranked, weighted or pressed for the fly: a press waits for the cartridge to read it,
+and a menu nobody is reading has no pad. The decoder, the reward catalog, the adapter version, the
+roles and the compatibility string are untouched.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")
@@ -1733,6 +1771,7 @@ observe is not a precondition, it is a guess.
 | Battle, own turn, main menu | MOVE 1..4, SWITCH, ITEM, THROW BALL, RUN (whose cursor indices are FIGHT 0, **ITEM 1, PKMN 2**, RUN 3 -- two columns, 12.11) | four move buttons for `ATTACK` (section 14); THROW BALL added, and gated on the species since 12.9; **RUN gated**, below. No `BACK`: the four entries are the answers to this menu. **`NEXT` removed by 12.10** — an A press here confirms FIGHT and reopens the list the move list's `BACK` just closed, and `MOVE 1` is the backstop instead, bound here whatever the battler reads as |
 | Battle, own turn, move list (**the box on screen**, 12.18) | MOVE 1..4, BACK -- or **MOVE 1 alone** | as above, plus **12.11**: `BACK` is dealt here only while `wBattleMon*` reads, because a list that binds no `MOVE n` has a pad whose one button closes the list `MOVE 1` underneath had just opened. With nothing readable the pad is `MOVE 1` and its script confirms where the cursor stands |
 | Battle, own turn, party list | SWITCH, BACK | unchanged |
+| Battle, own turn, any menu the cartridge still holds an A on (**12.27**) | nothing | new: the answer is taken or the list is not yet asking; the pad is back on the first frame the game reads the joypad |
 | Battle, own turn, the bag | ITEM, THROW BALL, **BACK** | the bag reports a *cursor* (`macros-wram.md` 7.1), and since **12.10** it is the own turn, because a cursor accepting input is one. Its pad is the list's own answers; `NEXT` and `CONFIRM` are both off it, being the same blind A press that *uses* whatever the cursor holds |
 | Battle, forced switch | SWITCH, NEXT | unchanged (row 8). The one arm that keeps `NEXT` with a cursor up, because it cannot be cancelled and has no `BACK` to undo it |
 | Battle, between turns | NEXT | since **12.18** this row is most of a battle, and correctly so: a frame whose move list is remembered rather than drawn lands here. `BACK` was added here for the bag and **taken back out by 12.9**: on a frame of battle text there is no list to leave, and a `BACK` that changes nothing is the trap of section 12.2. Since **12.10** the bag is not on this row at all, so `NEXT` here is only ever the A that advances text |
@@ -1781,6 +1820,7 @@ measured where it cannot.
 | the title screen, and raw mode | not an empty pad by contract: the readout's boot variant applies and no palette is dealt |
 | a scene the detector cannot name | `Unknown` deals `NEXT` and `BACK`; a screen neither press leaves (the naming screen, row 14) is a genuine stall and still needs START, which is a contract change |
 | an `Unknown` frame that is the **overworld with the cartridge driving** -- a warp in flight, a scripted push-back, a guide walking the fly through a door | **empty on purpose** (12.13). There is no box to advance and no screen to leave, so an A or a B press is a press into somebody else's script: it changes nothing and completes where the fly stands. This is the one empty pad that ends itself -- the cartridge gives the buttons back within a few frames -- and `game.padEmptyMs` reports it like any other |
+| the fly's own turn while the cartridge holds the A it last took (`hJoyLast`) | **empty on purpose** (12.27): a menu the game is acting on or has not started reading. Ends itself on the game's next joypad read |
 | the fly's own turn where the seam cannot read the battler, now that `NEXT` is off that row (12.10) | **fixed**: `MOVE 1` is bound over the top-level menu whatever `wBattleMon*` reads as, because FIGHT is one of that menu's four entries and always opens |
 
 And because "closed where a macro can close it" is not "closed":
