@@ -11,7 +11,7 @@
 use super::cartridge::{
     CHEAPEST_PURCHASE, FACINGS, MART_CURSOR_ROWS, opposite,
     ExitId, ListKind, Listing, MacroState, Objective, PARTY_CAPACITY, PURCHASES, TalkTarget,
-    TargetKey, Tile, item, outdoors,
+    TargetKey, Tile, item, outdoors, price,
 };
 use crate::adapter::PlaceKind;
 
@@ -627,7 +627,13 @@ pub fn precondition(kind: MacroKind, state: &mut dyn MacroState) -> bool {
         // object with a purpose, not a person to chat with: with the party already full her whole
         // conversation is forty-six text frames that end where they began, which is section
         // 12.2's trap at conversation scale (section 12.12).
-        MacroKind::Talk => facing_untalked(state) && !rested_nurse(state),
+        // ...and, since row 62, at a counter the fly has a use for however many times this
+        // session has already talked to it ([`facing_service`]): a clerk or a nurse is a service,
+        // and the talked ledger answers "is there anything left to say", which for a service is
+        // the party's HP or the bag's balls rather than the last conversation.
+        MacroKind::Talk => {
+            (facing_untalked(state) || facing_service(state)) && !rested_nurse(state)
+        }
         // The start menu opens from anywhere, and that is exactly why `MENU` is on no pad:
         // "the precondition is satisfied wherever the fly stands" is section 12.2's trap, and a
         // macro whose whole effect is a screen its own scene's `BACK` closes again is 12.10's
@@ -973,9 +979,16 @@ pub fn stock_index(state: &mut dyn MacroState, item: u8) -> Option<u8> {
 pub fn amenity_goals(state: &mut dyn MacroState, kind: Amenity) -> Vec<Aim> {
     let Some(here) = state.player().map(|player| player.map) else { return Vec::new() };
     if geography::amenity_at(here) == Some(kind) {
+        // **A counter the fly has a use for is not retired by the last visit** (row 62). The
+        // reached and talked ledgers answer "is this job done", and for a service the answer is
+        // the party or the bag, not the ledger: a nurse reached an hour ago with a party that has
+        // since been beaten is a job to do again.
+        if service_needed(state, kind) {
+            return service_aims(state, kind);
+        }
         return counter_aims(state, counter_sprite(kind));
     }
-    match errand(state, kind) {
+    match amenity_wanted(state, kind) {
         Some(map) => {
             let here = state.player().map(|player| Tile::new(player.x, player.y));
             goals_toward(state, map)
@@ -1003,7 +1016,97 @@ pub fn heal_goals(state: &mut dyn MacroState) -> Vec<Aim> {
     if geography::amenity_at(here) != Some(Amenity::Center) {
         return Vec::new();
     }
-    counter_aims(state, poke_sprite::NURSE)
+    // **Neither the reached nor the talked ledger, and the counter the fly already faces is
+    // somewhere to heal from** (row 62). `HEAL` is only dealt while the party needs it, and that
+    // is its whole satiation: a completed heal leaves a party that reads full. Through
+    // [`counter_aims`] the button was off the pad on the one tile it is for -- facing the nurse,
+    // which is where `GO HEAL` leaves the fly, and for ten brain minutes after `GO HEAL` had
+    // reached her. Only the blocked window is kept: a counter no walk can reach is still that.
+    person_aims(state, poke_sprite::NURSE, Ledgers::BlockedOnly, true)
+}
+
+/// Whether the building of `kind` has something to do for the fly right now: the party needs the
+/// nurse, or the bag has no ball the wallet could buy one of (row 62).
+///
+/// The errand (section 13) is "visit each area's building once per run", and it is paid on
+/// entering -- by a visit on which the counter could do nothing, too: the Viridian mart is entered
+/// first for Oak's parcel, when its clerk sells nothing, and a centre entered with a full party
+/// heals nothing. Once paid it was never offered again, whatever the party or the bag read. This
+/// is the other half of the same question, read from the cartridge each time it is asked, and
+/// **it satisfies itself**: a heal leaves the party full and a purchase leaves a ball in the bag,
+/// so the button leaves the pad the moment the job is done.
+///
+/// - **Centre**: [`party_needs_rest`], the same byte `HEAL` and the nurse's prompt read.
+/// - **Mart**: no ball in the bag, and the money for one. A ball because `THROW BALL` is the one
+///   button in the vocabulary that a purchase has to make possible -- with no ball it is never
+///   dealt (section 12.9) -- and every mart in Kanto stocks it as its first row
+///   (`data/items/marts.asm`), inside the cursor's reach ([`stock_index`]). And not while the bag
+///   holds Oak's parcel: until it is delivered the Viridian clerk's text table is the parcel's,
+///   and his counter sells nothing (`scripts/ViridianMart.asm`).
+pub fn service_needed(state: &mut dyn MacroState, kind: Amenity) -> bool {
+    match kind {
+        Amenity::Center => party_needs_rest(state),
+        Amenity::Mart => {
+            let bag = state.bag();
+            state.money() >= price::POKE_BALL
+                && !bag.iter().any(|stack| item::BALLS.contains(&stack.id) && stack.count > 0)
+                && !bag.iter().any(|stack| stack.id == item::OAKS_PARCEL)
+        }
+    }
+}
+
+/// The map `GO SHOP` or `GO HEAL` walks toward from elsewhere in the area, or `None`.
+///
+/// The errand while it stands ([`errand`]), and otherwise the area's building of that kind while
+/// it has something to do ([`service_needed`]). Nothing here ranks the building above anything
+/// else on the pad: it is what the button aims at, and the fly chooses the button.
+pub fn amenity_wanted(state: &mut dyn MacroState, kind: Amenity) -> Option<u8> {
+    if let Some(map) = errand(state, kind) {
+        return Some(map);
+    }
+    if !service_needed(state, kind) {
+        return None;
+    }
+    geography::amenity_of(area_here(state)?, kind)
+}
+
+/// Inside a building with a job to do: the tiles to face its counter person from, whatever the
+/// ledgers say, and nothing once the fly already faces them -- that is `TALK`'s tile, and a walk
+/// that settles where it started is section 12.2's trap.
+fn service_aims(state: &mut dyn MacroState, kind: Amenity) -> Vec<Aim> {
+    if facing_counter_person(state, kind) {
+        return Vec::new();
+    }
+    person_aims(state, counter_sprite(kind), Ledgers::BlockedOnly, false)
+}
+
+/// Whether the fly stands facing the clerk or the nurse of the building of `kind` it is in.
+fn facing_counter_person(state: &mut dyn MacroState, kind: Amenity) -> bool {
+    let inside = state.player().is_some_and(|player| geography::amenity_at(player.map) == Some(kind));
+    let Some(TalkTarget::Sprite(slot)) = facing_target(state) else { return false };
+    inside
+        && state
+            .npcs()
+            .iter()
+            .any(|npc| npc.slot == slot && npc.picture == counter_sprite(kind))
+}
+
+/// Whether the fly faces a counter whose service it has a use for: `TALK`'s second reason (row
+/// 62). The press that opens a mart's counter or a nurse's conversation, dealt whatever the talked
+/// ledger says, while [`service_needed`] holds.
+pub fn facing_service(state: &mut dyn MacroState) -> bool {
+    Amenity::ALL
+        .into_iter()
+        .any(|kind| facing_counter_person(state, kind) && service_needed(state, kind))
+}
+
+/// Which of the target ledgers [`person_aims`] respects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ledgers {
+    /// Talked, reached and blocked: a person whose conversation is a job done once.
+    All,
+    /// Blocked alone: a service, whose job is done when the cartridge says so.
+    BlockedOnly,
 }
 
 /// The picture id of the person who stands behind `kind`'s counter.
@@ -1039,10 +1142,29 @@ pub mod poke_sprite {
 /// Nearest first by Manhattan distance, ties by tile, which is `approach`'s own rule. Whether any
 /// of the tiles is *reachable* is the route search's answer, not this one's.
 pub fn counter_aims(state: &mut dyn MacroState, picture: u8) -> Vec<Aim> {
+    person_aims(state, picture, Ledgers::All, false)
+}
+
+/// [`counter_aims`] with the ledgers it respects, and whether the tile the fly already faces
+/// the person from stays in the list (`HEAL`'s walk may be no steps at all).
+fn person_aims(
+    state: &mut dyn MacroState,
+    picture: u8,
+    ledgers: Ledgers,
+    keep_facing: bool,
+) -> Vec<Aim> {
     let Some(player) = state.player() else { return Vec::new() };
     let here = Tile::new(player.x, player.y);
-    let mut people: Vec<(u32, Tile, u8)> = state
-        .npcs()
+    // **Drawn or not** (row 62). A centre is entered at (3, 7) and its nurse stands at (3, 1), six
+    // rows up and off the top of the screen, so from the doormat the drawn sprites held nobody
+    // behind the counter: `HEAL` was off the pad, `GO HEAL` had nobody to walk to and the
+    // counter's suppression was released, all on the frame the fly walked in -- measured in the
+    // Pewter centre, where the pad on arrival was the way out. Row 58's reading of the sprites the
+    // cartridge keeps off the screen is the same table, so the counter person is found from the
+    // door.
+    let mut everyone = state.npcs();
+    everyone.extend(state.offscreen_npcs());
+    let mut people: Vec<(u32, Tile, u8)> = everyone
         .iter()
         .filter(|npc| npc.picture == picture)
         .map(|npc| (Tile::new(npc.x, npc.y).distance(here), Tile::new(npc.x, npc.y), npc.slot))
@@ -1055,10 +1177,11 @@ pub fn counter_aims(state: &mut dyn MacroState, picture: u8) -> Vec<Aim> {
     // already been stood in front of, or already talked to, is a job done. Without them
     // `amenity_goals` never empties, `GO SHOP` never leaves the pad inside the building, and the
     // suppression in [`ways`] would keep the fly in there for ever.
-    if state.talked(target)
-        || state.reached(TargetKey::Thing(target))
-        || state.blocked(TargetKey::Thing(target))
-    {
+    let retired = match ledgers {
+        Ledgers::All => state.talked(target) || state.reached(TargetKey::Thing(target)),
+        Ledgers::BlockedOnly => false,
+    };
+    if retired || state.blocked(TargetKey::Thing(target)) {
         return Vec::new();
     }
     let key = Some(TargetKey::Thing(target));
@@ -1096,7 +1219,9 @@ pub fn counter_aims(state: &mut dyn MacroState, picture: u8) -> Vec<Aim> {
     // The tile the fly is already standing on facing the right way is not somewhere to walk to:
     // that is `TALK`'s state, and the same exclusion `untalked` makes (row 4).
     let ahead = Tile::new(player.x, player.y).step(player.facing);
-    aims.retain(|aim| aim.tile != here || Some(tile) != ahead);
+    if !keep_facing {
+        aims.retain(|aim| aim.tile != here || Some(tile) != ahead);
+    }
     aims
 }
 
