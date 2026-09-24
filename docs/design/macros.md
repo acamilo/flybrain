@@ -1650,6 +1650,73 @@ Nothing is ranked or pressed for the fly: frames that were never the fly's deal 
 decoder, the reward catalog, the adapter version, the roles and the compatibility string are
 untouched.
 
+### 12.26 A counter the fly has a use for is dealt again, and a purchase is done when it is paid (2026-09-24, row 62)
+
+The operator's reset to milestone 1 was to watch the shop, the Poké Balls and the catching. Eleven
+and a half hours later the live fly (v0.6.2) had reached rung 12, Mt. Moon, with the Boulder Badge,
+and in the whole event log had done `GO SHOP` twice (the parcel) and nothing else of it: no `BUY`,
+no `THROW BALL`, no `GO HEAL`, `HEAL` or nurse's YES. It whited out in Mt. Moon again and again and
+walked back from Pallet Town each time. The log records what was chosen, not what was dealt, so
+the question was which. Surveyed with a new probe mode (`FLY_PROBE_CATCH=offers` in
+`examples/scene_probe.rs`: the service's frame behind a uniform stub, counting per decidable frame
+what is on the pad and reading the cartridge beside it) from the live checkpoint and four others.
+**It was the pad**, in five places:
+
+- **The errand was paid by a visit on which the counter could do nothing, and never came back.**
+  Section 13's "one visit per area per run" is paid on entering, and since row 54 by the
+  adapter's lifetime map ledger too. The Viridian mart is first entered for Oak's parcel, when
+  its clerk sells nothing; a centre entered with a full party heals nothing. From then on
+  `GO SHOP` and `GO HEAL` were off every pad in that area for the run, whatever the party or the
+  bag read. **`service_needed`** is the other half of the question, read from the cartridge each
+  time: a centre while the party needs rest (`party_needs_rest`, the byte `HEAL` and the nurse's
+  prompt already read), a mart while the bag has no ball, the wallet covers one (200) and the bag
+  does not hold Oak's parcel (until it is delivered the Viridian clerk's text table is the
+  parcel's). A ball because `THROW BALL` is the one button a purchase has to make possible, and
+  every Kanto mart stocks it first, within the cursor's reach. It **satisfies itself**: a heal
+  leaves the party full and a purchase leaves a ball, so the button leaves the pad when its job
+  is done. `GO SHOP` / `GO HEAL` aim at the area's building while the errand or the need holds.
+- **A counter person the session had talked to or reached was retired for the session.** Inside,
+  with the need, the walk to the counter and `TALK` at it ignore the talked and reached ledgers
+  (the blocked window is kept); `TALK` at a counter is `facing_service` beside `facing_untalked`.
+  12.12's rule is unchanged where it applies: a rested party has no use for the nurse and `TALK`
+  is off.
+- **`HEAL` was off the pad on the one tile it is for.** Its goals were `counter_aims`, which drops
+  the tile already facing the nurse -- where `GO HEAL` leaves the fly -- and retires a nurse
+  `GO HEAL` has reached for ten brain minutes. `HEAL`'s goals now keep that tile and read neither
+  ledger; the party is its satiation.
+- **From a centre's door the nurse is off the screen.** A centre is entered at (3, 7) and its
+  nurse stands at (3, 1), six rows up, so the drawn sprites held nobody behind the counter: on the
+  arrival frame `HEAL`, `GO HEAL` and the counter's suppression (13.1) were all off, and the pad
+  was the way out. The counter person is read from the drawn and the off-screen sprites, row 58's
+  reading of the cartridge's own availability rule.
+- **Route 4's centre, the last before Mt. Moon, was on no table.** `MT_MOON_POKECENTER` (`$44`,
+  Route 4's warp at (11, 5)) is on the map graph, on Route 4's west piece and in the amenity table
+  as Route 4's centre, so `HEAL` is dealt in it, and a hurt fly in Mt. Moon's first floor (whose
+  area is Route 4) has `GO HEAL` to walk out to it.
+
+**And `BUY BALL` reported `done` with nothing bought.** Pressed at the counter it ran 55 times from
+the Pewter checkpoint, 55 `done`, the wallet at 1,606 throughout. After the quantity the mart
+prints "POKé BALL? / That will be" and **waits for a press** (a `cont`), then prints "¥200. OK?"
+and only then draws its YES/NO box; the script's one blind A after a settle was that press, and
+the macro ended before the box existed. A purchase now pulses A until the box is drawn (the
+general `yes_no_prompt` reading of row 56), presses YES, and is `done` when the wallet reads less
+than it did: the cartridge rings the item up a few frames after the press. Either wait running
+out is `blocked`.
+
+**Measured, and what stays the fly's.** `THROW BALL` was never the pad's fault: it is off with no
+ball (it cannot work) and dealt on 385 of 1,070 wild-battle frames with one, on both arms; pressed,
+it catches. The live run had no ball because nothing on the pad could buy one. Survey totals, ten
+twenty-minute uniform-stub runs per arm (`infra/docs/macros-traps.md` row 62): `GO HEAL` dealt
+140 -> 2,300 frames, heals 2 -> 12, the whiteout map moved off Pallet Town in 2 -> 9 runs,
+whiteouts 14 -> 9; `GO SHOP` dealt 101 -> 569. Whether the fly presses `TALK` at an open counter,
+`CONFIRM` at the clerk's greeting and `BUY BALL` on the list is its choice; under the uniform stub
+it rarely strings the four together, and with them preferred the chain buys a ball on the
+cartridge (the ROM test).
+
+Nothing ranks a button or presses for the fly: preconditions read the cartridge, and a purchase
+waits for the box it answers. The decoder, the reward catalog, the adapter version, the roles and
+the compatibility string are untouched.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")
@@ -1664,7 +1731,8 @@ Knowledge inside macros, never in the choice; the pad still lists buttons and th
 - **`GO SHOP` / `GO HEAL`** are the errands as buttons of their own too (populations
   `macro_go_shop`, `macro_go_heal`, from the same MBON/motor pool by the same rule): on the pad
   when the area's mart / center is unvisited (GO SHOP also needs money), walk to its door and
-  in; inside, walk to the counter / nurse and face them.
+  in; inside, walk to the counter / nurse and face them. Since **12.26** also while the building
+  has a job to do: a centre for a party that needs rest, a mart for a bag with no ball.
 - **Shop scene.** Buttons are purchases: `BUY POTION`, `BUY BALL`, `BUY ANTIDOTE`, `BUY REPEL`,
   each bound only when the mart's stock (read from WRAM, `shop_stock` accessor, verified by
   the survey method) lists it and money allows at least one; each macro buys ONE unit through
