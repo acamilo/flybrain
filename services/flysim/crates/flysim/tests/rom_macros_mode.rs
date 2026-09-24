@@ -778,8 +778,10 @@ impl Run {
         // picks among exactly those (`docs/design/macros.md` section 12).
         let bound = self.layer.bound_channels();
         // Only the fly's *own* turn. Battle text between turns is a pad of one `NEXT` by design
-        // (the v0.2.4 deadlock fix), so counting it would measure the wrong thing.
-        if self.own_turn() {
+        // (the v0.2.4 deadlock fix), so counting it would measure the wrong thing. Nor a menu the
+        // cartridge still holds an A on, whose pad is empty on purpose (12.27): the answer is
+        // taken or the list is not yet asking, and it is back on the game's next joypad read.
+        if self.own_turn() && !flybrain_gb::pokemon_red::state::a_latched(&mut self.gb) {
             self.move_button_on_battle_pad |=
                 bound.iter().any(|channel| channel.starts_with("macro_move_"));
             let dealt = bound.len();
