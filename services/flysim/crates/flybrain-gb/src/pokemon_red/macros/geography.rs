@@ -160,6 +160,10 @@ const LINKS: &[(u8, u8)] = &[
     (maps::MT_MOON_1F, maps::MT_MOON_B1F),
     (maps::MT_MOON_B1F, maps::MT_MOON_B2F),
     (maps::MT_MOON_B1F, maps::ROUTE_4),
+    // Route 4's own Pokémon Center, the door at (11, 5) on the cave mouth's side (row 62). On the
+    // graph because it is an amenity ([`AMENITIES`]): a centre with no row here is one no errand
+    // can walk to and no `HEAL` is dealt in.
+    (maps::MT_MOON_POKECENTER, maps::ROUTE_4),
     (maps::CERULEAN_GYM, maps::CERULEAN_CITY),
     (maps::CERULEAN_MART, maps::CERULEAN_CITY),
     (maps::CERULEAN_POKECENTER, maps::CERULEAN_CITY),
@@ -283,7 +287,11 @@ const SPLIT: &[Split] = &[
         pieces: &[
             Piece {
                 doors: &[(0, 11, 5), (1, 18, 5)],
-                next: &[Region::whole(maps::ROUTE_3), Region::whole(maps::MT_MOON_1F)],
+                next: &[
+                    Region::whole(maps::ROUTE_3),
+                    Region::whole(maps::MT_MOON_POKECENTER),
+                    Region::whole(maps::MT_MOON_1F),
+                ],
             },
             Piece {
                 doors: &[(2, 24, 5)],
@@ -627,6 +635,9 @@ const AMENITIES: &[(u8, Amenity, u8)] = &[
     (maps::VIRIDIAN_CITY, Amenity::Center, maps::VIRIDIAN_POKECENTER),
     (maps::PEWTER_CITY, Amenity::Mart, maps::PEWTER_MART),
     (maps::PEWTER_CITY, Amenity::Center, maps::PEWTER_POKECENTER),
+    // Route 4 has no mart, and its centre is the last one before Mt. Moon (row 62): the one the
+    // cave's first floor is an area with, since Mt. Moon's mouths open onto Route 4.
+    (maps::ROUTE_4, Amenity::Center, maps::MT_MOON_POKECENTER),
     (maps::CERULEAN_CITY, Amenity::Mart, maps::CERULEAN_MART),
     (maps::CERULEAN_CITY, Amenity::Center, maps::CERULEAN_POKECENTER),
 ];
