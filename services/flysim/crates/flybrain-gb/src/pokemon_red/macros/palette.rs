@@ -547,6 +547,16 @@ pub fn scene_set(scene: Scene, state: &mut dyn MacroState) -> Vec<MacroKind> {
         // list* closed it again; neither spent a turn, and the two of them were half the pad
         // between them. Two buttons that undo each other with nothing else changing are section
         // 12.2's trap spread over two sub-states of one turn.
+        // **A battle menu the cartridge is still holding an A on is not the fly's to answer**
+        // (row 63). The A that chose RUN, FIGHT or the Potion is taken, and the game stops asking
+        // the joypad while it acts on it -- so `hJoyLast` keeps that A, and the menu's box and
+        // cursor bytes stay on screen for as many as sixteen frames after its answer. A macro dealt
+        // there presses at a menu that is already gone: measured from the row-63 checkpoint, every
+        // `RUN` from FIGHT's column was followed by a `MOVE 4` dealt on the frame after, which
+        // pressed UP at "Got away safely!" and held the pad for its whole cursor wait. The pad is
+        // empty for those frames, which is 12.13's reading: the cartridge is driving, and it gives
+        // the buttons back on the first frame it asks again.
+        Scene::Battle { own_turn: true, .. } if state.a_latched() => Vec::new(),
         Scene::Battle { own_turn: true, .. } => match battle_menu(state) {
             // The move list. `BACK` is a button here because there is a list to leave (12.9) --
             // but only while the moves can be *read*: a battler the seam cannot place leaves all

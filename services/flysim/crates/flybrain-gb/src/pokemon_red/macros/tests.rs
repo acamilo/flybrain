@@ -2410,6 +2410,20 @@ fn move_one_is_not_fights_backstop_beside_a_usable_move() {
 }
 
 #[test]
+fn a_battle_menu_the_cartridge_still_holds_an_a_on_deals_no_pad() {
+    // Row 63: RUN's A is taken, and the menu's box stays up while the game stops asking the
+    // joypad. The frame after `RUN` finished dealt `MOVE 4` over that box, which pressed at "Got
+    // away safely!" and held the pad through its whole cursor wait. Until the cartridge asks
+    // again the menu is not the fly's to answer.
+    let mut world = World::battle();
+    assert!(!pad_of(&mut world).is_empty());
+    world.latched_until = world.frames + 10;
+    assert_eq!(pad_of(&mut world), Vec::<&str>::new(), "the cartridge is acting on its last A");
+    world.frames += 10;
+    assert!(pad_of(&mut world).contains(&"MOVE 1"), "and the pad is back when it asks again");
+}
+
+#[test]
 fn buy_potion_takes_buy_then_the_item_then_confirms_twice() {
     let mut world = World::room();
     world.scene = Scene::Shop;
