@@ -120,6 +120,16 @@ const SETTLE_FRAMES: u32 = 20;
 /// because a battle spends whole seconds animating, and a wait presses nothing.
 const CURSOR_WAIT: u32 = 180;
 
+/// Frames a purchase waits for the mart's YES/NO box before it gives up ([`Step::Prompt`]).
+///
+/// The price line is two dozen characters either side of one press, at the cartridge's text
+/// speed; six brain seconds is twice what the Pewter counter took.
+const PROMPT_WAIT: u32 = 360;
+
+/// Frames between the presses [`Step::Prompt`] makes while the price line is up: one
+/// [`PRESS_HOLD`] of A, then released, so the press is a new one each time.
+const PROMPT_PULSE: u32 = 40;
+
 /// Extra presses a cursor navigation may spend beyond twice the length of its list, to cover a
 /// press the game swallows while a menu is still drawing.
 const CURSOR_SLACK: u8 = 6;
@@ -343,6 +353,23 @@ enum Step {
     /// the presses happened and the conversation may simply have been about something else -- so
     /// it reports `Next` and the close press still happens.
     Rested { waited: u32 },
+    /// Advance the price line until the mart's YES/NO box is drawn ([`MacroState::yes_no_prompt`]),
+    /// then move on to the press that answers it; `Blocked` if the box never comes.
+    ///
+    /// A purchase's last answer (row 62). After the quantity the mart prints "POKe BALL? / That
+    /// will be" and **waits for a press** -- the line is a `cont`, with the blinking arrow -- and
+    /// only after it prints "200. OK?" and draws the box. The script's one blind A after a settle
+    /// was that press, so the box came up after the macro had reported `done`: 55 `BUY BALL`
+    /// starts on the cartridge, 55 `done`, the wallet at 1,606 throughout, and the box left to
+    /// whatever the pad dealt next. So this pulses A every [`PROMPT_PULSE`] frames while no box
+    /// is drawn -- a press on a line still printing only prints it faster -- and reads the box
+    /// the way `HEAL` reads the party. `before` is the wallet when the purchase began: if it has
+    /// dropped, a pulse already answered the box and the purchase is rung up.
+    Prompt { waited: u32, before: u32 },
+    /// Press nothing until the wallet reads less than `before`, which is the purchase rung up;
+    /// `Blocked` if it never does. The cartridge adds the item and takes the money a few frames
+    /// after the YES, so a purchase is `done` when the wallet says so and not when the press is.
+    Paid { waited: u32, before: u32 },
 }
 
 /// Progress through one A* walk.
@@ -1462,6 +1489,32 @@ fn advance(step: &mut Step, state: &mut dyn MacroState) -> Progress {
                 Progress::Hold(buttons::NONE)
             }
         }
+        Step::Paid { waited, before } => {
+            if state.money() < *before {
+                Progress::Next
+            } else if *waited >= PROMPT_WAIT {
+                Progress::Blocked
+            } else {
+                *waited += 1;
+                Progress::Hold(buttons::NONE)
+            }
+        }
+        Step::Prompt { waited, before } => {
+            if state.money() < *before {
+                Progress::Finished
+            } else if state.yes_no_prompt() {
+                Progress::Next
+            } else if *waited >= PROMPT_WAIT {
+                Progress::Blocked
+            } else {
+                *waited += 1;
+                if *waited % PROMPT_PULSE < PRESS_HOLD {
+                    Progress::Hold(buttons::A)
+                } else {
+                    Progress::Hold(buttons::NONE)
+                }
+            }
+        }
     }
 }
 
@@ -2284,6 +2337,7 @@ fn approach(state: &mut dyn MacroState, targets: &[(Tile, TalkTarget)]) -> Vec<G
 /// script works both from a freshly opened counter and from the buy list.
 fn shop_plan(state: &mut dyn MacroState, want: u8) -> Option<Vec<Step>> {
     let index = stock_index(state, want)?;
+    let before = state.money();
     let mut steps = Vec::new();
     if shop_screen(state)? == ShopScreen::BuySellQuit {
         // BUY is the counter menu's first entry.
@@ -2292,10 +2346,12 @@ fn shop_plan(state: &mut dyn MacroState, want: u8) -> Option<Vec<Step>> {
     }
     steps.push(cursor(index, true));
     steps.push(settle());
-    // The quantity prompt opens on one, and the price confirmation opens on YES.
+    // The quantity prompt opens on one, and the price confirmation opens on YES -- once it is
+    // drawn, which is after the price has finished printing (row 62).
     steps.push(press(buttons::A));
-    steps.push(settle());
+    steps.push(Step::Prompt { waited: 0, before });
     steps.push(press(buttons::A));
+    steps.push(Step::Paid { waited: 0, before });
     Some(steps)
 }
 

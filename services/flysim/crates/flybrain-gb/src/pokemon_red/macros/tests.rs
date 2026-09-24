@@ -19,7 +19,7 @@ use crate::emulator::buttons;
 
 use super::cartridge::{
     BLOCKED_MINUTES_DEFAULT, CHEAPEST_PURCHASE, Edge, ExitId, FACINGS, LAST_MAP, MacroState, Objective,
-    TalkTarget, TargetKey, TargetLedger, Targets, Tile, battle_entry, button, item, price,
+    PURCHASES, TalkTarget, TargetKey, TargetLedger, Targets, Tile, battle_entry, button, item, price,
 };
 use super::geography::Amenity;
 use super::executor::{
@@ -186,6 +186,14 @@ struct World {
     /// beside a cursor the game never clears, and what the palette asks is only "is a choice
     /// open" (section 12.12).
     prompt: bool,
+    /// A mart's price confirmation (row 62): after this many more A presses in the shop the price
+    /// line starts printing, and the YES/NO box is drawn this many frames later. `None`: the fake
+    /// draws no price box at all, which is what it did before row 62.
+    price_after: Option<(u8, u32)>,
+    /// The frame the price box is drawn on, once the presses above have been made.
+    price_at: Option<u32>,
+    /// Purchases the fake mart has rung up: an A on its drawn price box.
+    bought: u32,
     /// Whether the cartridge is driving the player right now ([`MacroState::scripted`]).
     scripted: bool,
     /// A frame at which the cartridge takes the joypad, which is what the Viridian gate does.
@@ -264,6 +272,9 @@ impl World {
             heal_at: None,
             box_open: false,
             prompt: false,
+            price_after: None,
+            price_at: None,
+            bought: 0,
             scripted: false,
             scripted_at: None,
             pulses: Vec::new(),
@@ -422,6 +433,12 @@ impl World {
             }
             self.heal_at = None;
         }
+        if let Some(at) = self.price_at
+            && self.frames >= at
+        {
+            self.prompt = true;
+            self.price_at = None;
+        }
         if mask == buttons::NONE && self.previous != buttons::NONE {
             self.pulses.push(self.previous);
             self.on_pulse(self.previous);
@@ -466,6 +483,24 @@ impl World {
             if self.b_to_close == 0 {
                 self.scene = Scene::Overworld;
                 self.list = List::None;
+            }
+        }
+        if mask == buttons::A && self.scene == Scene::Shop {
+            if self.prompt {
+                // YES on the drawn price box: the one press that rings a purchase up, and the
+                // wallet pays for the item the list's cursor is on.
+                self.prompt = false;
+                self.bought += 1;
+                let item = self.stock.get(usize::from(self.cursor)).copied();
+                let price = PURCHASES.iter().find(|(id, _)| Some(*id) == item).map_or(0, |(_, p)| *p);
+                self.money = self.money.saturating_sub(price);
+            } else if let Some((left, print)) = self.price_after {
+                if left <= 1 {
+                    self.price_after = None;
+                    self.price_at = Some(self.frames + print);
+                } else {
+                    self.price_after = Some((left - 1, print));
+                }
             }
         }
         if mask == buttons::A
@@ -696,7 +731,7 @@ impl MacroState for World {
     /// A drawn box is what the reading rests on, so a prompt cannot be open with no box open:
     /// `pokemon_red::state::yes_no_prompt` gates on `wFontLoaded` before it looks at the tiles.
     fn yes_no_prompt(&mut self) -> bool {
-        self.prompt && self.scene == Scene::Dialog
+        self.prompt && matches!(self.scene, Scene::Dialog | Scene::Shop)
     }
 
     fn move_without_effect(&mut self, id: u8) -> bool {
@@ -2317,6 +2352,8 @@ fn buy_potion_takes_buy_then_the_item_then_confirms_twice() {
     world.list = List::Shop(ShopScreen::BuySellQuit);
     world.cursor_max = 2;
     world.stock = vec![item::POKE_BALL, item::POTION];
+    // BUY, the item, the quantity, then the press the price line's `cont` waits for (row 62).
+    world.price_after = Some((4, 40));
     world.money = 1000;
     world.b_to_close = u8::MAX;
     // A on BUY opens the priced stock list.
@@ -2330,10 +2367,11 @@ fn buy_potion_takes_buy_then_the_item_then_confirms_twice() {
     assert_eq!(world.cursor, 1, "the potion is the second thing the mart stocks");
     assert_eq!(
         world.pulses.iter().filter(|mask| **mask == buttons::A).count(),
-        4,
-        "BUY, the item, the quantity and the price: {:?}",
+        5,
+        "BUY, the item, the quantity, the price line and the YES: {:?}",
         world.pulses
     );
+    assert_eq!(world.bought, 1, "and the price box was answered once it was drawn");
 }
 
 #[test]
@@ -2345,12 +2383,14 @@ fn buy_ball_skips_the_counter_menu_when_the_buy_list_is_already_up() {
     world.stock = vec![item::POKE_BALL, item::POTION];
     world.money = 1000;
     world.b_to_close = u8::MAX;
+    world.price_after = Some((3, 40));
     assert_eq!(run(&mut world, MacroKind::BuyBall).unwrap(), MacroAbort::Done);
+    assert_eq!(world.bought, 1);
     assert_eq!(world.cursor, 0);
     assert_eq!(
         world.pulses.iter().filter(|mask| **mask == buttons::A).count(),
-        3,
-        "the item, the quantity and the price: {:?}",
+        4,
+        "the item, the quantity, the price line and the YES: {:?}",
         world.pulses
     );
 }
@@ -4414,6 +4454,7 @@ fn a_purchase_navigates_by_the_items_place_in_the_stock_list() {
     world.cursor_max = 3;
     world.stock = vec![item::POKE_BALL, item::ANTIDOTE, 15, 12];
     world.money = 3_000;
+    world.price_after = Some((3, 40));
     assert_eq!(run(&mut world, MacroKind::BuyAntidote).unwrap(), MacroAbort::Done);
     assert_eq!(world.cursor, 1, "the Antidote's own index");
     assert_eq!(world.pulses.last(), Some(&buttons::A), "the price confirmation");
@@ -5486,4 +5527,39 @@ fn a_trainer_walking_up_teaches_the_ledgers_nothing() {
     hand_back(&mut machine, &mut world);
     assert!(!world.targets.blocked(world.map, north), "a challenge is not the road refusing");
     assert!(world.pushes.is_empty(), "and the ground is as walkable as it was");
+}
+
+#[test]
+fn a_purchase_answers_the_price_box_once_the_cartridge_has_drawn_it() {
+    // Row 62, from the rung-11 checkpoint in the Pewter mart: the price line "POKe BALL? That will
+    // be 200. OK?" prints at text speed after the quantity is chosen, and only then is the YES/NO
+    // box drawn. The script's last A came one settle after the quantity's and landed on the text
+    // while it was still printing, so `BUY BALL` reported `done` with nothing bought -- 55 starts,
+    // 55 `done`, the wallet at 1,606 throughout -- and the box it had not answered was left to
+    // whatever the pad dealt next.
+    let mut world = World::room();
+    world.scene = Scene::Shop;
+    world.list = List::Shop(ShopScreen::Buying);
+    world.cursor_max = 3;
+    world.stock = vec![item::POKE_BALL, item::POTION, 29, item::ANTIDOTE];
+    world.money = 1_606;
+    world.b_to_close = u8::MAX;
+    // Measured: the line waits for a press after "That will be", and the box is drawn after
+    // the rest of it prints. The fake draws it three presses after the item's: the item, the
+    // quantity, and the press that the `cont` waits for.
+    world.price_after = Some((3, 30));
+    assert_eq!(run(&mut world, MacroKind::BuyBall).unwrap(), MacroAbort::Done);
+    assert_eq!(world.bought, 1, "YES on the drawn box: {:?}", world.pulses);
+    assert!(!world.prompt, "and the box is answered, not left up");
+
+    // A box that never comes is not a purchase: `blocked`, and nothing answered.
+    let mut world = World::room();
+    world.scene = Scene::Shop;
+    world.list = List::Shop(ShopScreen::Buying);
+    world.cursor_max = 3;
+    world.stock = vec![item::POKE_BALL];
+    world.money = 1_606;
+    world.b_to_close = u8::MAX;
+    assert_eq!(run(&mut world, MacroKind::BuyBall).unwrap(), MacroAbort::Blocked);
+    assert_eq!(world.bought, 0);
 }
