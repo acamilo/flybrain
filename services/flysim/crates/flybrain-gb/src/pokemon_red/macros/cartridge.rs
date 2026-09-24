@@ -388,6 +388,26 @@ pub trait MacroState: GameState {
         false
     }
 
+    /// Whether the cartridge would refuse bag item `id` if the fly chose it from the battle bag on
+    /// this frame -- "It won't have any effect.", "This isn't the time to use that!", a ball at a
+    /// trainer's Pokémon -- and put the fly back in the bag with nothing changed.
+    ///
+    /// Row 63 (`docs/design/macros.md` 12.27), read from the cartridge's own `ItemUsePtrTable`
+    /// and the checks each routine makes ([`crate::pokemon_red::state::battle_item_use`]). The
+    /// default is `false`: a state that cannot read the table has proved nothing.
+    fn item_refused(&mut self, _id: u8) -> bool {
+        false
+    }
+
+    /// Whether the cartridge still holds `A` down from the last time it read the joypad, so an
+    /// `A` pressed now is no edge and is not a press (row 63,
+    /// [`crate::pokemon_red::state::a_latched`]). A confirming press waits while this holds. The
+    /// default is `false`: a state that cannot read the latch presses when the list reads open,
+    /// which is what every script did before.
+    fn a_latched(&mut self) -> bool {
+        false
+    }
+
     /// Whether a `GO FRONTIER` on this map has already proved its frontier unreachable.
     ///
     /// [`FrontierLedger`] is the evidence and the measurement. The default is `false`: a state

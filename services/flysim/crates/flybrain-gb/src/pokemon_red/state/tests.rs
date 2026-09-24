@@ -1253,3 +1253,115 @@ fn a_trainers_challenge_is_the_cartridges_until_its_battle_is_over() {
     assert_eq!(PokeState::new(&mut after).scene(), Scene::Overworld);
     assert!(!PokeState::new(&mut after).scripted());
 }
+
+// ---------------------------------------------------------------------------------------------
+// Row 63: what the cartridge does with an item chosen from the battle bag, and its joypad latch
+// ---------------------------------------------------------------------------------------------
+
+const ANTIDOTE: u8 = 0x0b;
+const POTION: u8 = 0x14;
+const POKE_BALL: u8 = 0x04;
+const ESCAPE_ROPE: u8 = 0x1d;
+const X_ATTACK: u8 = 0x41;
+const POKE_DOLL: u8 = 0x33;
+const REVIVE: u8 = 0x35;
+const ETHER: u8 = 0x50;
+const TM34: u8 = 0xea;
+
+/// The row-63 battle: a wild Geodude, and Wartortle out at 8 of 86 with the bag the live fly
+/// carried (an Antidote, a Potion and TM34).
+fn bag_battle() -> Wram {
+    let mut wram = Wram::new();
+    wram.party_mon(0, 0xb3, 28, 8, 86, 0, &[(44, 0), (55, 25)])
+        .battle_mon(0, 0xb3, 28, 8, 86, 0, &[(44, 0), (55, 25)])
+        .enemy_mon(0xa9, 9, 28, 28)
+        .battle(1)
+        .bag(&[(ANTIDOTE, 1), (POTION, 1), (TM34, 1)])
+        .item_table();
+    wram
+}
+
+#[test]
+fn the_item_table_is_read_by_id_and_checked_against_its_own_shape() {
+    let mut wram = bag_battle();
+    assert_eq!(item_routine(&mut wram, POKE_BALL), item_routine(&mut wram, 0x01));
+    assert_eq!(item_routine(&mut wram, POTION), item_routine(&mut wram, ANTIDOTE));
+    assert_ne!(item_routine(&mut wram, POTION), item_routine(&mut wram, POKE_BALL));
+    assert_eq!(item_routine(&mut wram, 0), None, "no item zero");
+    assert_eq!(item_routine(&mut wram, TM34), None, "a TM is ItemUseTMHM's, before the table");
+    assert_eq!(item_routine(&mut Wram::new(), POTION), None, "no cartridge, no answer");
+    // A table that is not where the disassembly says: the Safari Ball parts company with the
+    // other balls, and nothing is read from it.
+    let at = poke::items::TABLE_ADDRESS + 2 * u16::from(poke::items::SAFARI_BALL - 1);
+    wram.rom_byte(poke::items::TABLE_BANK, at, 0x00);
+    assert_eq!(item_routine(&mut wram, POTION), None);
+}
+
+#[test]
+fn the_row_63_bag_holds_one_item_the_cartridge_would_take() {
+    let mut wram = bag_battle();
+    assert_eq!(battle_item_use(&mut wram, POTION), Some(true), "8 of 86 is somebody to heal");
+    assert_eq!(battle_item_use(&mut wram, ANTIDOTE), Some(false), "nobody is poisoned");
+    assert_eq!(battle_item_use(&mut wram, TM34), None, "the table does not cover it");
+    assert_eq!(battle_item_use(&mut wram, ESCAPE_ROPE), Some(false), "not inside a battle");
+
+    // The battle's copy is the one the damage went to; the party struct catches up at the top of
+    // the turn. A full party struct under a hurt battler is still somebody to heal.
+    wram.set_word_be(ram::wPartyMon1 + 1, 86);
+    assert_eq!(battle_item_use(&mut wram, POTION), Some(true));
+    wram.set_word_be(ram::wBattleMonHP, 86);
+    assert_eq!(battle_item_use(&mut wram, POTION), Some(false), "full: no effect");
+
+    // A status heal answers the status it cures, and only that one.
+    wram.set(ram::wBattleMonStatus, 1 << poke::PSN);
+    assert_eq!(battle_item_use(&mut wram, ANTIDOTE), Some(true));
+    wram.set(ram::wBattleMonStatus, 1 << poke::PAR);
+    assert_eq!(battle_item_use(&mut wram, ANTIDOTE), Some(false));
+
+    // A Revive wants somebody fainted, and a Potion does not.
+    wram.set_word_be(ram::wBattleMonHP, 0);
+    assert_eq!(battle_item_use(&mut wram, POTION), Some(false));
+    assert_eq!(battle_item_use(&mut wram, REVIVE), Some(true));
+
+    // Outside a battle this is not a question this reader answers.
+    wram.battle(0);
+    assert_eq!(battle_item_use(&mut wram, POTION), None);
+}
+
+#[test]
+fn a_ball_and_a_poke_doll_are_for_a_wild_battle_and_the_x_items_for_any() {
+    let mut wram = bag_battle();
+    assert_eq!(battle_item_use(&mut wram, POKE_BALL), Some(true));
+    assert_eq!(battle_item_use(&mut wram, POKE_DOLL), Some(true));
+    assert_eq!(battle_item_use(&mut wram, X_ATTACK), Some(true));
+    // A full party leaves the ball to the box, whose count is not read: no answer.
+    for slot in 1..6 {
+        wram.party_mon(slot, 0xb3, 5, 10, 10, 0, &[(33, 10)]);
+    }
+    assert_eq!(battle_item_use(&mut wram, POKE_BALL), None);
+    // A trainer blocks the ball and the doll does nothing; an X item still works.
+    wram.battle(2);
+    assert_eq!(battle_item_use(&mut wram, POKE_BALL), Some(false));
+    assert_eq!(battle_item_use(&mut wram, POKE_DOLL), Some(false));
+    assert_eq!(battle_item_use(&mut wram, X_ATTACK), Some(true));
+}
+
+#[test]
+fn an_ether_wants_a_move_below_its_pp() {
+    let mut wram = bag_battle();
+    wram.move_table(&[(44, 0, 60, 0), (55, 0, 40, 0x15)]);
+    // Slot one at 0 PP (the fake's move table gives every move 35).
+    assert_eq!(battle_item_use(&mut wram, ETHER), Some(true));
+    wram.set(ram::wPartyMon1 + 29, 35).set(ram::wPartyMon1 + 30, 35);
+    assert_eq!(battle_item_use(&mut wram, ETHER), Some(false), "every move is full");
+}
+
+#[test]
+fn the_joypad_latch_is_hjoylast_bit_zero() {
+    let mut wram = Wram::new();
+    assert!(!a_latched(&mut wram));
+    wram.set(poke::H_JOY_LAST, poke::pad::A);
+    assert!(a_latched(&mut wram));
+    wram.set(poke::H_JOY_LAST, poke::pad::DOWN);
+    assert!(!a_latched(&mut wram), "a direction down is not an A down");
+}

@@ -430,6 +430,35 @@ impl Wram {
         self
     }
 
+    /// The cartridge's `ItemUsePtrTable`, one pointer per item id, grouped the way the pinned
+    /// commit groups them: the balls share one routine, the potions, drinks, status heals and
+    /// revives another, the four X stat items another, the four PP restores another, and every
+    /// item with no use in a battle points at `UnusableItem` here (the real table spreads those
+    /// over a dozen routines, all of which refuse inside a battle). The addresses are the
+    /// cartridge's own; only their grouping is under test.
+    pub fn item_table(&mut self) -> &mut Self {
+        use super::state::poke::items::{LAST_ITEM, TABLE_ADDRESS, TABLE_BANK};
+        for id in 1..=LAST_ITEM {
+            let routine: u16 = match id {
+                0x01..=0x04 | 0x08 => 0x5687,
+                0x0b..=0x14 | 0x34..=0x36 | 0x3c..=0x3e => 0x5abb,
+                0x2e => 0x6013,
+                0x33 => 0x60cd,
+                0x37 => 0x60dc,
+                0x3a => 0x60f5,
+                0x41..=0x44 => 0x6104,
+                0x49 => 0x6140,
+                0x50..=0x53 => 0x631e,
+                _ => 0x6476,
+            };
+            let at = TABLE_ADDRESS + 2 * u16::from(id - 1);
+            let [low, high] = routine.to_le_bytes();
+            self.rom.insert((TABLE_BANK, at), low);
+            self.rom.insert((TABLE_BANK, at + 1), high);
+        }
+        self
+    }
+
     /// One byte of a fake cartridge bank.
     pub fn rom_byte(&mut self, bank: u8, address: u16, byte: u8) -> &mut Self {
         self.rom.insert((bank, address), byte);
