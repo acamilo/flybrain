@@ -30,6 +30,12 @@
 //! | `FLY_TRAP_CHECKPOINT` | `FLY_MACRO_CHECKPOINT` | the `FLYSIM01` checkpoint to start from |
 //! | `FLY_PROBE_FRAMES` | 200000 | frames to drive before giving up |
 //! | `FLY_PROBE_STUCK` | 600 | consecutive frames in one non-overworld scene that count as stuck |
+//!
+//! `FLY_PROBE_CATCH=offers` (row 62) is a different drive: twenty brain minutes of the service's
+//! frame behind a uniform stub, counting on every decidable frame which of the shop, centre and
+//! ball buttons are on the pad, and reading the cartridge beside it (heals, purchases, throws,
+//! catches, whiteouts, `wLastBlackoutMap`). `FLY_PROBE_RNG`, `FLY_PROBE_PREFER`, `FLY_PROBE_PADS`
+//! and `FLY_PROBE_TRACE_MACRO` are documented on `offers_survey`.
 
 use std::collections::BTreeMap;
 
@@ -1703,6 +1709,303 @@ fn route_survey(
     });
 }
 
+/// Row 62's offer survey: which of the shop, the centre and the ball buttons the pad deals, on how
+/// many frames, under which preconditions, and what comes of the ones that are pressed.
+///
+/// `FLY_PROBE_CATCH=offers`. The live run bought nothing, threw nothing and healed nowhere for
+/// eleven hours, and the event log records only what was chosen, so the question is what was
+/// *dealt*. This drives the service's own frame (`flysim::frame::LegacyFrame`) with the macro layer
+/// behind a uniform stub: once per hold one of the scene's bound channels is made hot, chosen
+/// uniformly (a survey's driver, never the fly's; nothing in the crate reads it). Every frame on
+/// which the fly could decide -- a playable scene, a non-empty pad, no macro running -- counts which
+/// watched buttons are on the pad; the cartridge is read beside it for what those buttons change.
+///
+/// `FLY_PROBE_FRAMES` (default twenty brain minutes) bounds the drive, `FLY_PROBE_RNG` changes the
+/// choices, `FLY_PROBE_PREFER` names buttons pressed whenever dealt, `FLY_PROBE_PADS=1` prints
+/// every pad change and every macro event (and, in a centre with a hurt party and no `HEAL`,
+/// the sprites and the ground the nurse's aims are read from), and `FLY_PROBE_TRACE_MACRO=<NAME>`
+/// prints every frame of that macro's first three runs with the screen as text
+/// (`FLY_PROBE_TRACE_SCREEN=all` on every frame rather than on each press).
+#[allow(clippy::too_many_lines)]
+fn offers_survey(
+    gb: &mut Emulator,
+    adapter: &mut PokemonRedReward,
+    ms: &mut f64,
+    layer: &mut flysim::macros::MacroLayer,
+    decoder: &mut PopulationDecoder,
+    hold_ms: f64,
+) {
+    use flybrain_gb::pokemon_red::macros::cartridge::MacroState;
+    use flybrain_gb::pokemon_red::macros::geography::{self, Amenity};
+    use flybrain_gb::pokemon_red::macros::palette;
+
+    const WATCH: [&str; 12] = [
+        "HEAL", "GO HEAL", "GO SHOP", "BUY BALL", "BUY POTION", "THROW BALL", "YES", "NO", "TALK",
+        "ITEM", "LEAVE", "CONFIRM",
+    ];
+    const POKE_BALL: u8 = 0x04;
+    const CENTERS: [u8; 11] = [0x29, 0x3a, 0x40, 0x44, 0x51, 0x59, 0x85, 0x8d, 0x9a, 0xab, 0xb6];
+    const MARTS: [u8; 3] = [0x2a, 0x38, 0x43];
+    let blackout = |gb: &mut Emulator| gb.read8(0xd719);
+    let balls = |gb: &mut Emulator| {
+        state::bag(gb).iter().filter(|item| item.id == POKE_BALL).map(|item| u32::from(item.count)).sum::<u32>()
+    };
+    let snapshot = |gb: &mut Emulator, adapter: &PokemonRedReward, label: &str| {
+        let party = state::party(gb);
+        let hp: Vec<String> =
+            party.mons.iter().map(|mon| format!("{}/{} {:?}", mon.hp, mon.max_hp, mon.status)).collect();
+        let bag: Vec<(u8, u8)> = state::bag(gb).iter().map(|item| (item.id, item.count)).collect();
+        let money = state::money(gb);
+        let last = blackout(gb);
+        let player = state::player(gb);
+        let ledger = AdapterLedger(adapter);
+        let mut poke = flybrain_gb::pokemon_red::state::PokeState::with_ledger(gb, &ledger);
+        let st: &mut dyn MacroState = &mut poke;
+        println!("\n## {label}\n");
+        println!("- player {player:?}, area {:?}, rank {}", palette::area_here(st), adapter.progress().rank);
+        println!("- party {hp:?}; needs rest {}", palette::party_needs_rest(st));
+        println!("- money {money}, bag {bag:?}");
+        println!("- wLastBlackoutMap ($d719) = {last:#04x}");
+        let centers: Vec<(String, bool)> =
+            CENTERS.iter().map(|map| (format!("{map:#04x}"), st.map_visited(*map))).collect();
+        let marts: Vec<(String, bool)> =
+            MARTS.iter().map(|map| (format!("{map:#04x}"), st.map_visited(*map))).collect();
+        println!("- centres visited (lifetime): {centers:?}");
+        println!("- marts visited (lifetime): {marts:?}");
+        println!(
+            "- errand here: mart {:?}, centre {:?}; amenity at map {:?}",
+            palette::errand(st, Amenity::Mart),
+            palette::errand(st, Amenity::Center),
+            player.and_then(|player| geography::amenity_at(player.map))
+        );
+    };
+    snapshot(gb, adapter, "Before the drive");
+
+    let budget = env_usize("FLY_PROBE_FRAMES", 71_673);
+    let mut rng = env_usize("FLY_PROBE_RNG", 20_260_924) as u32 | 1;
+    let prefer: Vec<String> = std::env::var("FLY_PROBE_PREFER")
+        .map(|value| value.split(',').map(|name| name.trim().to_string()).collect())
+        .unwrap_or_default();
+    // `FLY_PROBE_PADS=1` prints every pad the fly could decide on, when it changes.
+    let pads = std::env::var("FLY_PROBE_PADS").is_ok_and(|value| value == "1");
+    let trace_macro = std::env::var("FLY_PROBE_TRACE_MACRO").ok();
+    let mut traced = 0u32;
+    let mut tracing_macro = false;
+    let mut last_mask = 0u32;
+    let mut last_pad: Vec<String> = Vec::new();
+    let mut legacy = flysim::frame::LegacyFrame::new();
+    let mut hot: Option<String> = None;
+    let mut hot_until = 0.0f64;
+    let mut next_pick = *ms;
+    // (button) -> [decidable frames on the pad, starts, done, other outcomes]
+    let mut tally: BTreeMap<&str, [u64; 4]> = WATCH.iter().map(|name| (*name, [0u64; 4])).collect();
+    let mut decidable = 0u64;
+    let mut context: BTreeMap<String, u64> = BTreeMap::new();
+    let mut starts: BTreeMap<String, u64> = BTreeMap::new();
+    let mut log: Vec<String> = Vec::new();
+    let mut last_balls = balls(gb);
+    let mut last_money = state::money(gb);
+    let mut last_blackout = blackout(gb);
+    let mut last_map = state::player(gb).map(|player| player.map);
+    let mut was_wiped = false;
+    let mut was_full = true;
+    let mut counts: BTreeMap<&str, u64> = BTreeMap::new();
+    let mut maps_seen: BTreeMap<u8, u64> = BTreeMap::new();
+    for frame in 0..budget {
+        let bound = layer.bound_channels();
+        if *ms >= next_pick && !bound.is_empty() && layer.running().is_none() {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            // `FLY_PROBE_PREFER=BUY BALL,THROW BALL` presses those whenever they are dealt, first
+            // one first: to see what a button does once pressed, not how often the fly would.
+            let preferred = prefer.iter().map(|name| format!("macro_{}", name.to_lowercase().replace(' ', "_"))).find(|channel| bound.contains(channel));
+            hot = Some(preferred.unwrap_or_else(|| bound[rng as usize % bound.len()].clone()));
+            hot_until = *ms + BURST_MS;
+            next_pick = *ms + hold_ms;
+        }
+        if *ms >= hot_until {
+            hot = None;
+        }
+        let active = decoder.decode_bound(&rates(hot.as_deref()), *ms, false, None, Some(&bound));
+        // What the fly could have pressed on this frame, before the layer acts on it.
+        let names: Vec<String> = layer.feed_palette().into_iter().map(|slot| slot.name).collect();
+        let free = layer.running().is_none() && !names.is_empty();
+        if pads && free && names != last_pad {
+            println!(
+                "  f{frame:<6} {:?} {} pad {names:?}",
+                state::player(gb).map(|p| (p.map, p.x, p.y, p.facing)),
+                layer.scene_name()
+            );
+            last_pad = names.clone();
+            let party_hurt = state::party(gb).mons.iter().any(|mon| mon.hp < mon.max_hp);
+            if party_hurt
+                && state::player(gb).is_some_and(|p| CENTERS.contains(&p.map))
+                && !names.iter().any(|name| name == "HEAL")
+            {
+                let ledger = AdapterLedger(&*adapter);
+                let mut poke = flybrain_gb::pokemon_red::state::PokeState::with_ledger(gb, &ledger);
+                let st: &mut dyn MacroState = &mut poke;
+                println!("    npcs {:?}", st.npcs());
+                println!("    heal_goals {:?}", palette::heal_goals(st));
+                let size = st.map_size();
+                println!("    size {size:?}");
+                if let Some(size) = size {
+                    for y in 0..size.height {
+                        let row: String = (0..size.width)
+                            .map(|x| match st.walkable(x, y) {
+                                flybrain_gb::pokemon_red::macros::state::Walkable::Yes => if st.counter_tile(x, y) { 'c' } else { '.' },
+                                flybrain_gb::pokemon_red::macros::state::Walkable::No => if st.counter_tile(x, y) { 'C' } else { '#' },
+                                flybrain_gb::pokemon_red::macros::state::Walkable::Unknown => '?',
+                            })
+                            .collect();
+                        println!("    y{y:2} {row}");
+                    }
+                }
+            }
+        }
+        if free {
+            decidable += 1;
+            for name in &names {
+                if let Some(entry) = tally.get_mut(name.as_str()) {
+                    entry[0] += 1;
+                }
+            }
+        }
+        let executed = legacy.execute(Some(layer), &active, 0, *ms, gb, adapter);
+        // `FLY_PROBE_TRACE_MACRO=BUY BALL` prints every frame of that macro's first three runs:
+        // the mask, the scene, the counter's screen, the cursor and the wallet.
+        if let Some(want) = trace_macro.as_deref()
+            && layer.running() == Some(want)
+            && traced < 3
+        {
+            let shop = state::shop(gb);
+            let cur = state::cursor(gb);
+            println!(
+                "    {want} f{frame} mask {:#04x} scene {} shop {:?} cursor {}/{} top ({},{}) money {} text {:?}",
+                executed.mask,
+                layer.scene_name(),
+                shop.map(|shop| shop.screen),
+                cur.current,
+                cur.max,
+                cur.top_x,
+                cur.top_y,
+                state::money(gb),
+                state::text_box(gb)
+            );
+            if executed.mask != last_mask || std::env::var("FLY_PROBE_TRACE_SCREEN").is_ok_and(|v| v == "all") {
+                for line in screen_text(gb) {
+                    println!("      | {line}");
+                }
+            }
+            last_mask = executed.mask;
+            tracing_macro = true;
+        } else if tracing_macro {
+            tracing_macro = false;
+            traced += 1;
+        }
+        for event in &executed.events {
+            if pads {
+                println!("  f{frame:<6} event {} hot {hot:?}", event.label());
+            }
+            let key = match event.outcome { None => 1, Some(flysim::snapshot::MacroOutcome::Done) => 2, Some(_) => 3 };
+            if let Some(entry) = tally.get_mut(event.name) {
+                entry[key] += 1;
+            }
+            if event.outcome.is_none() {
+                *starts.entry(event.name.to_string()).or_default() += 1;
+            }
+        }
+        *ms += MS_PER_FRAME;
+        let evaluated = legacy.stub_advance(Some(layer), gb, adapter, *ms).expect("a frame should complete");
+        for reward in &evaluated.rewards {
+            if reward.label.contains("CAUGHT") || reward.label.contains("CATCH") { log.push(format!("f{frame} {}: {}", reward.kind, reward.label)); }
+            if reward.kind == "catch" {
+                *counts.entry("catches").or_default() += 1;
+                log.push(format!("f{frame} catch: {}", reward.label));
+            }
+        }
+        // The cartridge beside the pad.
+        let party = state::party(gb);
+        let player = state::player(gb);
+        let map = player.map(|player| player.map);
+        if let Some(map) = map {
+            *maps_seen.entry(map).or_default() += 1;
+        }
+        let wiped = !party.mons.is_empty() && party.mons.iter().all(|mon| mon.hp == 0);
+        let full = party.mons.iter().all(|mon| mon.hp == mon.max_hp && matches!(mon.status, flybrain_gb::pokemon_red::macros::state::Status::Healthy));
+        if wiped && !was_wiped {
+            *counts.entry("whiteouts").or_default() += 1;
+            log.push(format!("f{frame} whiteout on map {map:?}"));
+        }
+        if full && !was_full && !wiped && map.is_some_and(|map| CENTERS.contains(&map)) {
+            *counts.entry("heals at a nurse").or_default() += 1;
+            log.push(format!("f{frame} healed at a nurse on map {map:?}"));
+        }
+        was_wiped = wiped;
+        was_full = full;
+        let now_balls = balls(gb);
+        if now_balls > last_balls {
+            *counts.entry("balls bought").or_default() += u64::from(now_balls - last_balls);
+            log.push(format!("f{frame} balls {last_balls} -> {now_balls}"));
+        } else if now_balls < last_balls {
+            *counts.entry("balls thrown").or_default() += u64::from(last_balls - now_balls);
+            log.push(format!("f{frame} balls {last_balls} -> {now_balls}"));
+        }
+        last_balls = now_balls;
+        let money = state::money(gb);
+        if money < last_money && map.is_some_and(|map| MARTS.contains(&map)) {
+            *counts.entry("spent at a mart").or_default() += u64::from(last_money - money);
+            log.push(format!("f{frame} money {last_money} -> {money} on map {map:?}"));
+        }
+        last_money = money;
+        let now_blackout = blackout(gb);
+        if now_blackout != last_blackout {
+            log.push(format!("f{frame} wLastBlackoutMap {last_blackout:#04x} -> {now_blackout:#04x}"));
+            last_blackout = now_blackout;
+        }
+        if map != last_map {
+            if map.is_some_and(|map| CENTERS.contains(&map) || MARTS.contains(&map)) {
+                log.push(format!("f{frame} entered {map:?} (party full {full}, money {money})"));
+            }
+            last_map = map;
+        }
+        if free {
+            let inside = match map {
+                Some(map) if CENTERS.contains(&map) => "in a centre",
+                Some(map) if MARTS.contains(&map) => "in a mart",
+                _ => "elsewhere",
+            };
+            let hurt = if full { "full" } else { "hurt" };
+            let scene = layer.scene_name();
+            *context.entry(format!("{scene} {inside} party {hurt}")).or_default() += 1;
+            if scene == "battle" && state::party(gb).active.is_some() {
+                let ball = if balls(gb) == 0 { "0 balls" } else { ">0 balls" };
+                let kind = match gb.read8(ram::wIsInBattle) { 1 => "wild", 2 => "trainer", _ => "other" };
+                *context.entry(format!("battle {kind} {ball}")).or_default() += 1;
+            }
+        }
+    }
+    println!("\n## Offers over {budget} frames ({:.1} brain minutes), {decidable} decidable\n", budget as f64 * MS_PER_FRAME / 60_000.0);
+    println!("| button | frames on the pad | share of decidable | starts | done | other |");
+    println!("| --- | ---: | ---: | ---: | ---: | ---: |");
+    for (name, [offered, started, done, other]) in &tally {
+        println!(
+            "| {name} | {offered} | {:.2}% | {started} | {done} | {other} |",
+            if decidable == 0 { 0.0 } else { *offered as f64 * 100.0 / decidable as f64 }
+        );
+    }
+    println!("\n- decidable frames by context: {context:?}");
+    println!("- all starts: {starts:?}");
+    println!("- counts: {counts:?}");
+    println!("- frames per map: {maps_seen:?}");
+    println!("\n### Events\n");
+    for line in log.iter().take(200) {
+        println!("- {line}");
+    }
+    snapshot(gb, adapter, "After the drive");
+}
+
 /// How the candidate readings of "a two-option box is up" separate the frames of a survey.
 ///
 /// Three columns, because three things could say it and only a measurement says which: the
@@ -1827,6 +2130,12 @@ fn main() {
     // the dialog pad makes of it press by press.
     if std::env::var("FLY_PROBE_CATCH").is_ok_and(|value| value == "dialog") {
         dialog_survey(&mut gb, &mut adapter, &mut ms);
+        return;
+    }
+
+    // Row 62's offer survey: which shop, centre and ball buttons are dealt, frame by frame.
+    if std::env::var("FLY_PROBE_CATCH").is_ok_and(|value| value == "offers") {
+        offers_survey(&mut gb, &mut adapter, &mut ms, &mut layer, &mut decoder, hold_ms);
         return;
     }
 
