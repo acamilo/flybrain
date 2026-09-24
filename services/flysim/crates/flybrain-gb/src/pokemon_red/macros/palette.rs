@@ -658,7 +658,13 @@ pub fn precondition(kind: MacroKind, state: &mut dyn MacroState) -> bool {
         // the fly's.
         MacroKind::ThrowBall => throw_slot(state).is_some(),
         MacroKind::Switch => healthiest_other(state).is_some(),
-        MacroKind::Item => hurt(state) && potion_slot(state).is_some(),
+        // ...and a Potion the cartridge would take (row 63): `ItemUseMedicine` answers "It won't
+        // have any effect." to a Pokémon that is fainted or full, and the fly is back in the bag
+        // with nothing changed. `hurt` already says the one that is out is neither, so this is
+        // the cartridge agreeing rather than a second opinion.
+        MacroKind::Item => {
+            hurt(state) && potion_slot(state).is_some() && !state.item_refused(item::POTION)
+        }
         // A wild battle the fly is *losing* (`docs/design/macros.md` section 13.1, the operator: "we run
         // away a lot"). Knowledge inside the macro, as a precondition: nothing ranks `RUN` below
         // `ATTACK` -- the button simply is not there while the fight is still worth having.
@@ -1985,8 +1991,14 @@ pub fn move_slot_bound(state: &mut dyn MacroState, kind: MacroKind) -> bool {
     }
     let any_useful = useful.iter().any(|flag| *flag);
     let entry = holds(usize::from(index)).copied();
+    // `MOVE 1` over the menu is FIGHT's backstop **only while nothing else is a move**: Struggle,
+    // or nothing that would do anything (row 34, row 60). Beside a usable move a spent slot one is
+    // what it is over the list -- not a move -- and its script, "confirm FIGHT and stop", only
+    // opens the list whose `BACK` closes it again: row 63 measured `MOVE 1`, `BACK` ten times in
+    // ten minutes on Mt. Moon B2F with `MOVE 4` usable, 12.11's pair once more. The usable move is
+    // on this pad itself, and it is the button that ends the turn.
     if index == 0 && main {
-        return !any_useful || useful[0] || entry.is_none_or(|entry| entry.pp == 0);
+        return !any_useful || useful[0];
     }
     let Some(entry) = entry else { return false };
     if entry.pp > 0 {

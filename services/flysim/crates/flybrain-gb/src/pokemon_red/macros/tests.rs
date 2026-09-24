@@ -2378,6 +2378,38 @@ fn a_confirm_is_not_held_back_when_nothing_is_latched() {
 }
 
 #[test]
+fn item_is_off_the_pad_while_the_cartridge_would_refuse_the_potion() {
+    let mut world = World::battle();
+    world.bag = vec![(item::POTION, 1)];
+    assert!(precondition(MacroKind::Item, &mut world));
+    world.refused_items.insert(item::POTION);
+    assert!(!precondition(MacroKind::Item, &mut world), "\"It won't have any effect.\"");
+}
+
+#[test]
+fn move_one_is_not_fights_backstop_beside_a_usable_move() {
+    // Row 63's second pair, the same ten minutes: slot one spent, slot four with 25 PP. `MOVE 1`
+    // over the menu confirmed FIGHT and stopped, which opens the list and chooses nothing, and the
+    // list's `BACK` closed it again -- `MOVE 1`, `BACK`, ten times. `MOVE 4` is on this menu too,
+    // and it is the button that ends the turn.
+    let mut world = World::battle();
+    world.mons = vec![mon(0, 8, 86, &[(44, 0), (39, 0), (145, 0), (55, 25)])];
+    let moves: Vec<&str> =
+        pad_of(&mut world).into_iter().filter(|name| name.starts_with("MOVE")).collect();
+    assert_eq!(moves, ["MOVE 4"]);
+    // With nothing usable it is the backstop again: Struggle is behind FIGHT (row 34).
+    world.mons = vec![mon(0, 8, 86, &[(44, 0), (39, 0), (145, 0), (55, 0)])];
+    let moves: Vec<&str> =
+        pad_of(&mut world).into_iter().filter(|name| name.starts_with("MOVE")).collect();
+    assert_eq!(moves, ["MOVE 1"]);
+    // And with slot one usable it is slot one's own button.
+    world.mons = vec![mon(0, 8, 86, &[(44, 3), (55, 25)])];
+    let moves: Vec<&str> =
+        pad_of(&mut world).into_iter().filter(|name| name.starts_with("MOVE")).collect();
+    assert_eq!(moves, ["MOVE 1", "MOVE 2"]);
+}
+
+#[test]
 fn buy_potion_takes_buy_then_the_item_then_confirms_twice() {
     let mut world = World::room();
     world.scene = Scene::Shop;
