@@ -1,0 +1,8 @@
+[Unit]
+Description=Check confirmed macro loops for minimal flysim recovery
+
+[Service]
+Type=oneshot
+User=fly
+EnvironmentFile=-/etc/fly/loop-recovery.env
+ExecStart=/opt/fly/bin/fly-loop-recover

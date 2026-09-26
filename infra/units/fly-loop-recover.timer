@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for repeated macro loops after watchdog probes
+
+[Timer]
+OnBootSec=7min
+OnUnitActiveSec=5min
+AccuracySec=10s
+Unit=fly-loop-recover.service
+
+[Install]
+WantedBy=timers.target

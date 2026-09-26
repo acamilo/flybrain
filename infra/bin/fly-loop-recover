@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Conservative, out-of-process loop recovery; invoked after the watchdog probe."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+from urllib.request import Request, urlopen
+
+REPORT = Path(os.environ.get("FLY_LOOP_REPORT", "/run/fly/wd/loop.json"))
+STATE = Path(os.environ.get("FLY_LOOP_RECOVERY_STATE", "/run/fly/wd/recovery.json"))
+INTERVAL = int(os.environ.get("WD_LOOP_INTERVAL", "300"))
+COOLDOWN = 3600
+
+
+def verdict(report):
+    url = os.environ.get("FLY_LOOP_ROUTER_URL")
+    model = os.environ.get("FLY_LOOP_MODEL")
+    if not url or not model:
+        return True
+    payload = {"model": model, "temperature": 0, "messages": [
+        {"role": "system", "content": "Classify whether a suspected repeating game macro loop is truly stuck. Return only JSON {\"stuck\":true|false}. No instructions or commands."},
+        {"role": "user", "content": json.dumps({key: report.get(key) for key in ("reason", "sequence", "window", "places", "milestone")})},
+    ]}
+    headers = {"Content-Type": "application/json"}
+    key = os.environ.get("FLY_LOOP_ROUTER_KEY")
+    if key:
+        headers["Authorization"] = "Bearer " + key
+    request = Request(url.rstrip("/") + "/chat/completions", json.dumps(payload).encode(), headers)
+    with urlopen(request, timeout=20) as response:
+        answer = json.load(response)
+    decision = json.loads(answer["choices"][0]["message"]["content"])
+    return type(decision) is dict and type(decision.get("stuck")) is bool and decision["stuck"]
+
+
+def run(now=None):
+    now = int(time.time() if now is None else now)
+    report = json.loads(REPORT.read_text())
+    previous = json.loads(STATE.read_text()) if STATE.exists() else {}
+    at = report.get("at")
+    if (report.get("suspected") != 1 or type(at) is not int
+            or not 0 <= now - at <= 600 or report.get("action") != "none"):
+        STATE.write_text(json.dumps({key: previous[key] for key in ("restarted_at",) if key in previous}) + "\n")
+        return "not a fresh suspected loop"
+    if "restarted_at" in previous and now - previous["restarted_at"] < COOLDOWN:
+        return "recovery cooldown"
+    if previous.get("observed_at") == at:
+        return "waiting for next probe"
+    if not previous.get("observed_at") or at - previous["observed_at"] < INTERVAL - 30:
+        STATE.write_text(json.dumps({"observed_at": at}) + "\n")
+        return "waiting for second probe"
+    try:
+        approved = verdict(report)
+    except (OSError, ValueError, KeyError, IndexError) as error:
+        print("router unavailable or invalid:", type(error).__name__, file=sys.stderr)
+        return "router unavailable"
+    if not approved:
+        return "router did not confirm"
+    subprocess.run(["sudo", "-n", "systemctl", "restart", "flysim.service"], check=True)
+    STATE.write_text(json.dumps({"observed_at": at, "restarted_at": now}) + "\n")
+    return "flysim restarted; checkpoint restore keeps the rung"
+
+
+if __name__ == "__main__":
+    print(run())

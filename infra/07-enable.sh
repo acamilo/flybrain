@@ -27,7 +27,7 @@ require_pve_host
 need pct
 
 ALWAYS_ON_UNITS="xvfb.service pulse.service mediamtx.service flysim.service flystage-web.service flystage.service flycast.service flybridge.service"
-ALWAYS_ON_TIMERS="fly-recap.timer fly-retention.timer fly-watchdog.timer"
+ALWAYS_ON_TIMERS="fly-recap.timer fly-retention.timer fly-watchdog.timer fly-loop-recover.timer"
 
 log "07-enable: enabling app units (not yet starting)"
 for u in $ALWAYS_ON_UNITS; do
