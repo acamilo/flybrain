@@ -1483,6 +1483,13 @@ else
     echo "         mention is genuinely legitimate, add it to infra/tests/de-pii-allow.txt with a reason." >&2
 fi
 
+echo "--- loop recovery tests ---"
+if python3 -m unittest discover -s "$REPO_ROOT/infra/tests" -p 'test_loop_recover.py' >/dev/null 2>&1; then
+    pass "loop recovery: fresh probes, cooldown, and router refusal"
+else
+    fail "loop recovery tests failed; run python3 -m unittest discover -s infra/tests -p test_loop_recover.py -v"
+fi
+
 echo "==="
 if [ "$FAILED" -eq 0 ]; then
     echo "lint.sh: ALL CHECKS PASSED"
