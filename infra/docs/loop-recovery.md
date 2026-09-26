@@ -18,8 +18,8 @@ containing `FLY_LOOP_ROUTER_URL` (base URL ending in `/v1`) and
 `FLY_LOOP_MODEL` (an available free-tier model). A private router can additionally
 use `FLY_LOOP_ROUTER_KEY`; provision it outside this public checkout and limit
 file permissions to `0640 root:fly`. Never put credentials in the unit or the
-repository. When a router is configured, malformed or unavailable responses
-prevent recovery; the model may only return `{"stuck": true|false}` and cannot
+repository. When either router setting is present, both must be set; malformed or
+unavailable responses prevent recovery. The model may only return `{"stuck": true|false}` and cannot
 choose commands, buttons, or checkpoint paths. Confirm the model actually
 exists and is reachable from the release container before configuring it.
 

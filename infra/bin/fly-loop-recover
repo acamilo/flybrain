@@ -17,8 +17,10 @@ COOLDOWN = 3600
 def verdict(report):
     url = os.environ.get("FLY_LOOP_ROUTER_URL")
     model = os.environ.get("FLY_LOOP_MODEL")
-    if not url or not model:
+    if not url and not model:
         return True
+    if not url or not model:
+        return False
     payload = {"model": model, "temperature": 0, "messages": [
         {"role": "system", "content": "Classify whether a suspected repeating game macro loop is truly stuck. Return only JSON {\"stuck\":true|false}. No instructions or commands."},
         {"role": "user", "content": json.dumps({key: report.get(key) for key in ("reason", "sequence", "window", "places", "milestone")})},

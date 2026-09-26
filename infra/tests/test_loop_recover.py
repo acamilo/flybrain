@@ -76,6 +76,12 @@ class RecoveryTests(unittest.TestCase):
             self.assertIn("did not confirm", recover.run(1300))
             restart.assert_not_called()
 
+    def test_partial_router_configuration_cannot_bypass_veto(self):
+        with patch.dict("os.environ", {"FLY_LOOP_ROUTER_URL": "http://router/v1"}, clear=True):
+            self.assertFalse(recover.verdict(self.report))
+        with patch.dict("os.environ", {"FLY_LOOP_MODEL": "free"}, clear=True):
+            self.assertFalse(recover.verdict(self.report))
+
     def test_unconfigured_router_uses_deterministic_confirmation(self):
         with patch.dict("os.environ", {}, clear=True):
             self.assertTrue(recover.verdict(self.report))
