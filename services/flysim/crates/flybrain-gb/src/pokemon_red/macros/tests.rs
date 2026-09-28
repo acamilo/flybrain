@@ -5487,3 +5487,39 @@ fn a_trainer_walking_up_teaches_the_ledgers_nothing() {
     assert!(!world.targets.blocked(world.map, north), "a challenge is not the road refusing");
     assert!(world.pushes.is_empty(), "and the ground is as walkable as it was");
 }
+
+#[test]
+fn a_walk_that_starts_on_the_ladder_it_wants_steps_off_and_back_on_to_take_it() {
+    // Row 64, Mt. Moon B2F (5, 7): the fly came down the ladder and is standing on it, and the
+    // ladder is the one way on. The cartridge fires a ladder at the end of a step onto it and at
+    // no other time, so a walk that "arrives" on the tile it is already standing on and settles
+    // there presses nothing, reports `done` and changes nothing -- `GO OBJECTIVE` and `GO WARP`,
+    // 27 frames each, for two days. The walk takes it the way the cartridge does: a step onto
+    // free ground beside it and the step back.
+    for kind in [MacroKind::GoWarp, MacroKind::GoObjective] {
+        let mut world = World::room().at(3, 3);
+        world.warps = vec![Warp { x: 3, y: 3, destination_warp: 0, destination_map: 0x26 }];
+        if kind == MacroKind::GoObjective {
+            world.objective = Some(Objective { map: 0x26, tile: None, warp: None, edge: None, target: None });
+        }
+        assert_eq!(run(&mut world, kind), Ok(MacroAbort::Done), "{}", kind.name());
+        assert_eq!(world.map, 0x26, "{} took the ladder it was standing on", kind.name());
+        assert!(!world.pulses.is_empty(), "{} pressed something to take it", kind.name());
+    }
+}
+
+#[test]
+fn a_walk_off_its_ladder_does_not_step_onto_another_warp() {
+    // Stepping onto a warp is what fires it, so the step off the one underfoot goes to plain
+    // ground. With the only free side another ladder there is nowhere to step off to, and the
+    // walk ends `blocked` -- its exit rests in the window -- rather than taking the other ladder.
+    let mut world = World::room().at(3, 3).wall(&[(3, 2), (2, 3), (3, 4)]);
+    world.warps = vec![
+        Warp { x: 3, y: 3, destination_warp: 0, destination_map: 0x26 },
+        Warp { x: 4, y: 3, destination_warp: 0, destination_map: 0x27 },
+    ];
+    world.seen_maps = BTreeSet::from([0x27]);
+    // Only one side is free and it is the other ladder: nowhere to step off to without firing it.
+    assert_eq!(run(&mut world, MacroKind::GoWarp), Ok(MacroAbort::Blocked));
+    assert_eq!(world.map, 0x25, "the other ladder was not taken for this one");
+}
