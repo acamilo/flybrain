@@ -188,6 +188,13 @@ struct World {
     prompt: bool,
     /// Whether the cartridge is driving the player right now ([`MacroState::scripted`]).
     scripted: bool,
+    /// Ledges, as the tile a press hops from and its direction (row 64). Empty everywhere but the
+    /// tests about them, and with it empty the world has no decoded grid, as before.
+    ledges: Vec<(Tile, Facing)>,
+    /// A hop the cartridge is carrying the player through: frames left, the ledge tile, the
+    /// landing. `HandleLedges` takes the joypad for the length of it, so the scene reads
+    /// `Unknown` and the world is scripted.
+    hop: Option<(u32, Tile, Tile)>,
     /// A frame at which the cartridge takes the joypad, which is what the Viridian gate does.
     scripted_at: Option<u32>,
     /// Every completed pulse, in order.
@@ -265,6 +272,8 @@ impl World {
             box_open: false,
             prompt: false,
             scripted: false,
+            ledges: Vec::new(),
+            hop: None,
             scripted_at: None,
             pulses: Vec::new(),
             held: 0,
@@ -393,6 +402,23 @@ impl World {
 
     fn frame(&mut self, mask: u8) {
         self.frames += 1;
+        // A ledge hop in flight: the cartridge's own joypad states, whatever is pressed.
+        if let Some((left, over, landing)) = self.hop {
+            let left = left.saturating_sub(1);
+            if left == 8 {
+                self.player = over;
+            }
+            if left == 0 {
+                self.player = landing;
+                self.scene = Scene::Overworld;
+                self.scripted = false;
+                self.hop = None;
+            } else {
+                self.hop = Some((left, over, landing));
+            }
+            self.previous = mask;
+            return;
+        }
         if let Some((at, next)) = self.pending
             && self.frames >= at
         {
@@ -537,6 +563,15 @@ impl World {
             return;
         }
         let next = Tile::new(x as u8, y as u8);
+        // `HandleLedges`: the press over a ledge takes the joypad and hops two tiles.
+        if self.ledges.contains(&(self.player, facing))
+            && let Some(landing) = next.step(facing)
+        {
+            self.scene = Scene::Unknown;
+            self.scripted = true;
+            self.hop = Some((16, next, landing));
+            return;
+        }
         if self.walkable(next.x, next.y) != Walkable::Yes {
             return;
         }
@@ -749,6 +784,25 @@ impl MacroState for World {
 
     fn objective(&mut self) -> Option<Objective> {
         self.objective
+    }
+
+    /// The decoded grid, only for a world with ledges in it (row 64): the same walls the window
+    /// reads, plus the hops. Every other fixture keeps answering from the window, as before.
+    fn map_grid(&mut self) -> Option<std::sync::Arc<super::state::MapGrid>> {
+        if self.ledges.is_empty() {
+            return None;
+        }
+        let mut grid = super::state::MapGrid::new(self.map, self.size.width, self.size.height);
+        for y in 0..self.size.height {
+            for x in 0..self.size.width {
+                let wall = self.walls.contains(&Tile::new(x, y));
+                grid.set(x, y, if wall { 0x60 } else { 0x01 }, if wall { Walkable::No } else { Walkable::Yes });
+            }
+        }
+        for (tile, facing) in &self.ledges {
+            grid.ledge(tile.x, tile.y, *facing);
+        }
+        Some(std::sync::Arc::new(grid))
     }
 }
 
@@ -5522,4 +5576,39 @@ fn a_walk_off_its_ladder_does_not_step_onto_another_warp() {
     // Only one side is free and it is the other ladder: nowhere to step off to without firing it.
     assert_eq!(run(&mut world, MacroKind::GoWarp), Ok(MacroAbort::Blocked));
     assert_eq!(world.map, 0x25, "the other ladder was not taken for this one");
+}
+
+#[test]
+fn a_ledge_the_walk_presses_into_is_hopped_and_is_not_a_push_back() {
+    // Row 64, Route 4 east of Mt. Moon: Cerulean is three ledges down from the cave's exit, and a
+    // ledge read as a wall both ways, so `GO OBJECTIVE` refused `no route` there. The route search
+    // takes a hop the one way the cartridge does, and the walk waits while the cartridge carries
+    // the fly over -- `HandleLedges` takes the joypad for it, which is the same reading as a
+    // scripted push-back, and a push-back walls the tile for the session.
+    let mut world = World::room().at(3, 1);
+    world.map = 0x0f;
+    for x in 0..8 {
+        world.walls.insert(Tile::new(x, 3));
+        world.ledges.push((Tile::new(x, 2), Facing::Down));
+    }
+    let goal = Tile::new(3, 6);
+    world.objective = Some(Objective { map: 0x0f, tile: Some(goal), warp: None, edge: None, target: None });
+    let mut machine = MacroMachine::new(0x1234_5678);
+    assert_eq!(run_with(&mut machine, &mut world, MacroKind::GoObjective), Ok(MacroAbort::Done));
+    assert_eq!(world.player, goal, "over the ledge and on to the goal in one walk");
+    hand_back(&mut machine, &mut world);
+    assert!(world.pushes.is_empty(), "the hop the walk asked for walled nothing: {:?}", world.pushes);
+    assert!(!world.targets.blocked(world.map, TargetKey::Tile(goal)), "nor rested the goal");
+
+    // From below, the ledge is a wall: nothing plans up it.
+    let mut below = World::room().at(3, 6);
+    below.map = 0x0f;
+    for x in 0..8 {
+        below.walls.insert(Tile::new(x, 3));
+        below.ledges.push((Tile::new(x, 2), Facing::Down));
+    }
+    below.objective =
+        Some(Objective { map: 0x0f, tile: Some(Tile::new(3, 1)), warp: None, edge: None, target: None });
+    assert!(run(&mut below, MacroKind::GoObjective).is_err(), "a ledge is not climbed");
+    assert_eq!(below.player, Tile::new(3, 6));
 }

@@ -422,6 +422,16 @@ struct Walk {
     /// without this the same tile is aimed at once per hold for ever, which is what a ledge, a
     /// tile-pair rule or a person on the far side of it looks like.
     stalled: bool,
+    /// The ledge hop the held press is making, as the tile it was pressed from and its direction.
+    ///
+    /// Row 64. The route search takes a ledge the one way the cartridge does
+    /// ([`path::route_avoiding`]), and the cartridge's way is to take the joypad: `HandleLedges`
+    /// sets `wJoyIgnore` and simulates the two tiles of the jump, so the scene reads
+    /// [`Scene::Unknown`] for the length of it. Without this the walk ended on that scene change
+    /// like any other, `scripted` and all, and [`MacroMachine::observe_push`] wrote a hop the walk
+    /// asked for as a push-back: the tile walled for the session and the target rested for the
+    /// window. Set when the press begins, cleared when the fly has moved.
+    hop: Option<(Tile, Facing)>,
     /// The warp this walk began standing on, while it has not yet stepped off it.
     ///
     /// Row 64, Mt. Moon, two days. A ladder, a cave mouth, a staircase -- every warp whose exit
@@ -866,6 +876,13 @@ impl MacroMachine {
         // ended every walk north this way, `Done` with nothing recorded, once per hold for eight
         // hours.
         let now = class(state.scene());
+        // A ledge the walk pressed into is the cartridge carrying the fly where the walk asked it
+        // to go, not the world moving on under it ([`Walk::hop`]): the walk waits it out and
+        // re-plans from the landing.
+        if now != started_in && !spans.contains(&now) && self.hopping(state) {
+            self.active.as_mut()?.frames += 1;
+            return Some(buttons::NONE);
+        }
         if now != started_in && !spans.contains(&now) {
             let pushed = state.scripted() || self.moved_away(state);
             let at = pushed.then(|| state.player()).flatten();
@@ -1002,6 +1019,24 @@ impl MacroMachine {
         // Nor the cartridge refusing a step: the frames it happened in are being thrown away too.
         self.pending_push.clear();
         self.pending_push_calm = 0;
+    }
+
+    /// Whether the running walk is mid-hop: it pressed into a ledge ([`Walk::hop`]), the
+    /// cartridge has the joypad with no text up, and the fly is on the hop's own line -- the tile
+    /// it pressed from, the ledge, or the landing -- on the walk's own map. A wild battle on the
+    /// landing is a battle, and ends the walk as a scene change always has.
+    fn hopping(&self, state: &mut dyn MacroState) -> bool {
+        let Some(active) = self.active.as_ref() else { return false };
+        let Some(Step::Walk(walk)) = active.plan.front() else { return false };
+        let Some((from, facing)) = walk.hop else { return false };
+        if state.scene() != Scene::Unknown || !state.scripted() || state.text_open() {
+            return false;
+        }
+        let Some(player) = state.player() else { return false };
+        let at = Tile::new(player.x, player.y);
+        let over = from.step(facing);
+        let landing = over.and_then(|tile| tile.step(facing));
+        player.map == walk.map && (at == from || Some(at) == over || Some(at) == landing)
     }
 
     /// Whether the fly is standing somewhere other than where the running macro began.
@@ -1567,10 +1602,12 @@ fn walk_frame(walk: &mut Walk, state: &mut dyn MacroState) -> Progress {
     if let Some((facing, from)) = walk.holding {
         if here != from {
             // Moved: this tile is done and the failure run is broken. The plan's head is spent,
-            // and the next one steps from where the player now stands.
+            // and the next one steps from where the player now stands -- two tiles on, after a
+            // ledge ([`Walk::hop`]).
             walk.plan.pop_front();
             walk.expect = Some(here);
             walk.holding = None;
+            walk.hop = None;
             walk.held = 0;
             walk.failures = 0;
             walk.gap = STEP_GAP;
@@ -1590,6 +1627,7 @@ fn walk_frame(walk: &mut Walk, state: &mut dyn MacroState) -> Progress {
         walk.plan.clear();
         walk.expect = None;
         walk.holding = None;
+        walk.hop = None;
         walk.held = 0;
         walk.gap = STEP_GAP;
         walk.failures += 1;
@@ -1642,6 +1680,10 @@ fn walk_frame(walk: &mut Walk, state: &mut dyn MacroState) -> Progress {
     };
     walk.holding = Some((first, here));
     walk.held = 1;
+    walk.hop = state
+        .map_grid()
+        .is_some_and(|grid| grid.map() == walk.map && grid.hops(here.x, here.y, first))
+        .then_some((here, first));
     Progress::Hold(button(first))
 }
 
@@ -2204,6 +2246,7 @@ fn walk_then(
             best_distance: distance,
             continues,
             stalled: false,
+            hop: None,
             step_off,
         },
         target,

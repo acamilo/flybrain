@@ -36,6 +36,8 @@ struct Ground {
     npcs: Vec<Npc>,
     /// Whether the whole map is decoded, or only the window can answer.
     decoded: bool,
+    /// Ledges, as the tile a press hops from and its direction, as the grid records them (row 64).
+    ledges: Vec<(Tile, Facing)>,
 }
 
 impl Ground {
@@ -52,6 +54,7 @@ impl Ground {
             connections: Connections::default(),
             npcs: Vec::new(),
             decoded: true,
+            ledges: Vec::new(),
         }
     }
 
@@ -205,6 +208,9 @@ impl MacroState for Ground {
         for (tile, facing) in &self.pair_walls {
             grid.wall(tile.x, tile.y, *facing);
         }
+        for (tile, facing) in &self.ledges {
+            grid.ledge(tile.x, tile.y, *facing);
+        }
         Some(Arc::new(grid))
     }
 
@@ -341,4 +347,33 @@ fn a_connection_on_the_far_edge_is_a_goal_and_the_walls_along_it_are_not() {
         .filter(|exit| exit.id == ExitId::Edge(Edge::North))
         .count();
     assert_eq!(count, 20);
+}
+
+#[test]
+fn a_ledge_is_one_press_down_and_a_wall_up() {
+    // Row 64: Route 4 east of Mt. Moon, where every road to Cerulean is a ledge down. A row of
+    // ledge tiles across the map, which the collision list calls a wall.
+    let mut ground = Ground::new(12, 10, (5, 1));
+    for x in 0..12 {
+        ground.walls.insert(Tile::new(x, 4));
+        ground.ledges.push((Tile::new(x, 3), Facing::Down));
+    }
+    let below = Tile::new(5, 8);
+    let route = path::route(&mut ground, &[below]).expect("a route down");
+    assert_eq!(route.goal, Some(0), "the goal itself, over the ledge");
+    // Two steps to the ledge's edge, one press that hops two tiles, three steps on.
+    assert_eq!(route.steps, vec![Facing::Down; 6]);
+
+    // Up is a wall: the search gets as close as it can and reaches nothing.
+    ground.player = below;
+    let route = path::route(&mut ground, &[Tile::new(5, 1)]);
+    assert!(route.as_ref().is_none_or(|route| route.goal.is_none()), "a ledge is not climbed: {route:?}");
+
+    // And without the decoded grid there is nothing to read a ledge from: a wall, as before.
+    let mut blind = Ground::new(12, 10, (5, 1));
+    for x in 0..12 {
+        blind.walls.insert(Tile::new(x, 4));
+    }
+    let route = path::route(&mut blind, &[below]);
+    assert!(route.as_ref().is_none_or(|route| route.goal.is_none()), "no hop without a ledge: {route:?}");
 }

@@ -143,11 +143,12 @@ pub enum Way {
 /// A *directed* wall, which is the only shape that fits what the game encodes. Two of its rules
 /// are invisible to the collision table [`super::state::walkable`] reads:
 ///
-/// - **ledges.** `HandleLedges` (`home/overworld.asm`) matches a triple of facing, the tile the
-///   player stands on and the tile in front against `LedgeTiles`, and hops the player *two* tiles
-///   that way. The ledge tile itself is absent from every tileset's passable list, so the
-///   predicate already calls it [`Walkable::No`] and the search never plans through one in either
-///   direction — a hop is a move the walk declines to use rather than one it gets wrong.
+/// - **ledges.** `HandleLedges` (`engine/overworld/ledges.asm`) matches a triple of facing, the
+///   tile the player stands on and the tile in front against `LedgeTiles`, and hops the player
+///   *two* tiles that way. The ledge tile itself is absent from every tileset's passable list, so
+///   the predicate calls it [`Walkable::No`] from both sides. With the decoded grid the search
+///   takes the hop the one way the cartridge does (row 64, [`route_avoiding`]); without one, or
+///   from the side below, it is a wall the walk declines to plan through.
 /// - **tile-pair collisions.** `TilePairCollisionsLand` and `...Water`
 ///   (`data/tilesets/tile_pair_collisions.asm`) refuse a step *between* two tiles that are each
 ///   passable on their own — the water/land boundary, a forest's tree line, a gym's floor edge.
@@ -252,6 +253,36 @@ pub fn route_avoiding(
             if best.get(&next).is_none_or(|(known, _, _)| step_cost < *known) {
                 best.insert(next, (step_cost, tile, facing));
                 open.push(Reverse((step_cost + heuristic(next), step_cost, next)));
+            }
+        }
+        // **A ledge is a step the cartridge takes one way** (row 64). The ledge tile reads
+        // [`Walkable::No`] and the loop above never plans onto it, which is right from below and
+        // wrong from above: pressed into from its top side the cartridge hops the fly over it and
+        // lands it two tiles on. Before this, Route 4 east of Mt. Moon had no road to Cerulean at
+        // all -- the way down is three ledges -- so `GO OBJECTIVE` refused `no route` on the
+        // mountain's far side and the fly walked back into the cave. One press, one plan entry;
+        // the executor holds the walk while the cartridge carries the fly over.
+        if let Some(grid) = grid {
+            for facing in super::cartridge::FACINGS {
+                if !grid.hops(tile.x, tile.y, facing) || refused.contains(&(tile, facing)) {
+                    continue;
+                }
+                let Some(landing) = tile.step(facing).and_then(|over| over.step(facing)) else {
+                    continue;
+                };
+                if landing.x >= size.width || landing.y >= size.height {
+                    continue;
+                }
+                if state.pushed_tile(landing.x, landing.y)
+                    || !grid.walkable(landing.x, landing.y).is_walkable()
+                {
+                    continue;
+                }
+                let step_cost = cost + 2;
+                if best.get(&landing).is_none_or(|(known, _, _)| step_cost < *known) {
+                    best.insert(landing, (step_cost, tile, facing));
+                    open.push(Reverse((step_cost + heuristic(landing), step_cost, landing)));
+                }
             }
         }
     }

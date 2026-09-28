@@ -29,6 +29,8 @@
 //! What it does **not** model is what it did not model before: sprites standing on ground (the
 //! sprite list answers that, and [`super::macros::path::frontier`] reads it), warps that fire on
 //! the step onto them, and scripts that push the fly off a tile (a session ledger answers that).
+//! Ledges it has modelled since row 64 ([`LEDGE_TILES`]): a wall in the collision list, and a hop
+//! the route search may take the one way the cartridge takes it.
 
 use std::sync::Arc;
 
@@ -76,6 +78,7 @@ const ANCHOR_ROW: usize = 1;
 /// Tileset ids the tile-pair lists name (`constants/tileset_constants.asm`, counted in the order
 /// that file declares them: OVERWORLD 0 … FOREST 3 … CAVERN 17).
 pub mod tileset {
+    pub const OVERWORLD: u8 = 0;
     pub const FOREST: u8 = 3;
     pub const CAVERN: u8 = 17;
 }
@@ -108,6 +111,31 @@ pub const TILE_PAIRS_LAND: [(u8, u8, u8); 11] = [
     (tileset::FOREST, 0x20, 0x2e),
     (tileset::FOREST, 0x5e, 0x2e),
     (tileset::FOREST, 0x5f, 0x2e),
+];
+
+/// `LedgeTiles` at the pinned pokered commit, as `(facing, the tile stood on, the ledge tile)`.
+///
+/// `data/tilesets/ledge_tiles.asm`, read by `HandleLedges` (`engine/overworld/ledges.asm`) on the
+/// OVERWORLD tileset only (`wCurMapTileset` is 0 or it returns): when the player faces one of
+/// these ledge tiles from one of these tiles with that direction held, the cartridge takes the
+/// joypad and hops the player **two** tiles that way. Both tiles are the ones
+/// `_GetTileAndCoordsInFrontOfPlayer` reads -- screen `(8, 9)` for the player's own and `(8, 11)`,
+/// `(8, 7)`, `(6, 9)` or `(10, 9)` for the one in front -- which is the lower-left corner of each
+/// map tile's quadrant, the same corner [`ANCHOR_ROW`] decodes. The input column of the table is
+/// the facing again, so it is not repeated.
+///
+/// The ledge tile is absent from every passable list, which is why a ledge read as a wall in both
+/// directions before row 64 and why nothing east of Mt. Moon could be walked to from its exit:
+/// Route 4's road down to Cerulean is three ledges, and every one of them faces away from the cave.
+pub const LEDGE_TILES: [(Facing, u8, u8); 8] = [
+    (Facing::Down, 0x2c, 0x37),
+    (Facing::Down, 0x39, 0x36),
+    (Facing::Down, 0x39, 0x37),
+    (Facing::Left, 0x2c, 0x27),
+    (Facing::Left, 0x39, 0x27),
+    (Facing::Right, 0x2c, 0x0d),
+    (Facing::Right, 0x2c, 0x1d),
+    (Facing::Right, 0x39, 0x0d),
 ];
 
 /// The tileset's two tables, as the decoder needs them.
@@ -178,7 +206,38 @@ pub fn decode(map: u8, width_blocks: u8, height_blocks: u8, blocks: &[u8], tiles
         }
     }
     add_pair_walls(&mut grid, tiles.id);
+    add_ledge_hops(&mut grid, tiles.id);
     grid
+}
+
+/// Mark every ledge the loaded tileset has as a hop out of the tile in front of it ([`LEDGE_TILES`]).
+///
+/// Only where the cartridge would take it: the OVERWORLD tileset, a ledge tile in front, and a
+/// landing two tiles away that is still on the map. Whether the landing is ground is the route
+/// search's question, as it is for every step.
+fn add_ledge_hops(grid: &mut MapGrid, tileset: u8) {
+    if tileset != tileset::OVERWORLD {
+        return;
+    }
+    for y in 0..grid.height() {
+        for x in 0..grid.width() {
+            let Some(here) = grid.tile_id(x, y) else { continue };
+            for (facing, stood, ledge) in LEDGE_TILES {
+                if here != stood {
+                    continue;
+                }
+                let (dx, dy) = facing.delta();
+                let (Some(nx), Some(ny)) = (checked_step(x, dx), checked_step(y, dy)) else { continue };
+                let (Some(lx), Some(ly)) = (checked_step(nx, dx), checked_step(ny, dy)) else { continue };
+                if lx >= grid.width() || ly >= grid.height() {
+                    continue;
+                }
+                if grid.tile_id(nx, ny) == Some(ledge) {
+                    grid.ledge(x, y, facing);
+                }
+            }
+        }
+    }
 }
 
 /// Turn every tile-pair collision the loaded tileset has into two directed walls.

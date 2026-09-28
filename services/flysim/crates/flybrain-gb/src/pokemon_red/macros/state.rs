@@ -421,7 +421,13 @@ impl Walkable {
 /// - **directed walls**: one step out of one tile in one direction that the cartridge refuses
 ///   although both tiles are passable. Pokered has two such rules and the tile-pair lists are the
 ///   one that can be read ahead of time; a ledge is already [`Walkable::No`] in the collision
-///   list, and a person in the way is the sprite list's answer, not the ground's.
+///   list, and a person in the way is the sprite list's answer, not the ground's;
+/// - **ledge hops** (row 64): the one step the collision list calls a wall that the cartridge
+///   *does* take, one way, two tiles at a time -- `HandleLedges` matching the facing, the tile
+///   stood on and the ledge tile in front against `LedgeTiles`
+///   ([`crate::pokemon_red::mapgrid::LEDGE_TILES`]). A hop is a fact about the tables, like a
+///   wall, and only [`super::path::route_avoiding`] reads it: [`MapGrid::reachable`] keeps the
+///   ground as the collision list draws it, which is what a map's pieces are measured on.
 ///
 /// Nothing here is a fact about the run: no ledger, no visit, no target. Those stay where they
 /// are, session state in the executor layer.
@@ -437,6 +443,9 @@ pub struct MapGrid {
     /// Row-major bitmask of the directions a step out of this tile is refused in
     /// ([`MapGrid::wall`]).
     walls: Vec<u8>,
+    /// Row-major bitmask of the directions a press out of this tile hops a ledge in
+    /// ([`MapGrid::ledge`]), landing two tiles that way.
+    hops: Vec<u8>,
 }
 
 impl MapGrid {
@@ -450,6 +459,7 @@ impl MapGrid {
             tiles: vec![Walkable::Unknown; cells],
             ids: vec![None; cells],
             walls: vec![0; cells],
+            hops: vec![0; cells],
         }
     }
 
@@ -484,6 +494,18 @@ impl MapGrid {
         if let Some(index) = self.index(x, y) {
             self.walls[index] |= wall_bit(facing);
         }
+    }
+
+    /// Record that a press out of `(x, y)` in `facing` hops the ledge in front, two tiles.
+    pub fn ledge(&mut self, x: u8, y: u8, facing: Facing) {
+        if let Some(index) = self.index(x, y) {
+            self.hops[index] |= wall_bit(facing);
+        }
+    }
+
+    /// Whether a press out of `(x, y)` in `facing` is a ledge hop ([`MapGrid::ledge`]).
+    pub fn hops(&self, x: u8, y: u8, facing: Facing) -> bool {
+        self.index(x, y).is_some_and(|index| self.hops[index] & wall_bit(facing) != 0)
     }
 
     /// Whether the player could stand on this tile. Off the map is [`Walkable::No`], which is the
