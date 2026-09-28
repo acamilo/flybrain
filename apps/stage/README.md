@@ -47,12 +47,15 @@ are a `chromium --kiosk` line in a systemd unit and a Playwright test.
 | `feed` | ws URL | Feed override for `mode=live`. Default `ws://127.0.0.1:7400/feed`. |
 | `gain`, `gamegain`, `sfxgain` | 0..1 | Master / game / SFX gain. Defaults 0.9 / 0.8 / 0.5. |
 | `audio` | `0` | Do not create an AudioContext at all. |
+| `recovery` | `1`, `0` | Poll `/recovery-notice.json` for the auto-recovery splash. Defaults to on in `live` mode and off in `player` mode, so a fixture screenshot never picks up a stray notice file. |
 
 `window.__stage` exposes the operator surface: `metrics()` (per-stage paint timings), `audio()`
 (context state, ring fill, underruns, drops), `health()` (accepted snapshots, feed gaps, decode
 errors), `manifest()`, `seek(seconds)`, `stopFeed()`, `gameScale()`, `fly()` (renderer mode, gait
 phase, leg tips, proboscis extension), `motion()` (which tab and why, the moment on stage and its
 phase, the queue depth, live particles), `pam()` (the PAM centroid the flare spreads from), and
+`recovery(notice, nowS?)` (put a recovery notice on the splash by hand, validated like a polled
+one, with its clock optionally pinned; `null` clears it), and
 `fire(type, label, detail)` — the one deliberate way to drive the moment catalogue by hand, which
 is what the moment mockups and the moment assertions use instead of waiting for a fixture to
 contain one of each.
@@ -95,7 +98,8 @@ Builds, serves, and writes sixteen PNGs to `mockups/`, at 1920x1080 and DPR 1:
 `steady-t1-{senses,connectome,ladder}` and `describe` for the four tabs, `big-moment-t1` 2.5 s into that
 fixture's milestone, `moment-{milestone,badge,sugar,rollback}` shot 300 ms after the trigger (the
 middle of every arrival in the catalogue), `macros-{overworld,running,outcome,battle,indoors}` for
-the macro strip's five states, and the two `fly-*` review crops at 2x. `--only <substring>` shoots
+the macro strip's five states, `recovery-<phase>-<action>` for the auto-recovery splash, and the
+two `fly-*` review crops at 2x. `--only <substring>` shoots
 just the ones whose name contains it, which is how one panel gets re-reviewed without rewriting
 every committed PNG.
 
@@ -194,6 +198,7 @@ Four rail panels instead of layout v1's five, on a 12 px gutter; the left column
 | CHAT | 1012x244 | The last seven chat lines, or nothing at all | `panels/ChatPanel.tsx` |
 | Moment layer | — | Caption band, rail flash, particles, day slide | `panels/MomentLayer.tsx` |
 | Stale feed banner | 1824x40 | Over the title strip after 2 s of silence | `panels/StaleBanner.tsx` |
+| Recovery splash | over the game | The auto-recovery notice: a text box, or the whole game while flysim restarts | `panels/RecoverySplash.tsx` |
 
 ### The progress cluster
 
@@ -263,6 +268,48 @@ a viewer reads as "the stream is broken", so it is the case the structural test 
 Bot lines green, names amber, text ink: a viewer has to be able to tell the bridge's own template
 replies from a person at a glance, because the bridge is the only thing on this stream that can be
 made to say something by accident.
+
+### Recovery splash
+
+`infra/bin/fly-loop-recover` (`infra/docs/loop-recovery.md`) unsticks a confirmed macro loop by
+restarting flysim or resetting the run to an earlier rung. Without a word on screen, viewers see
+the game freeze and jump. The splash says what is happening, in the Game Boy's own four greens so
+it reads as the cartridge's text box, not as a rail panel or an alarm:
+
+| Phase | Layout | Reset copy | Restart copy |
+|---|---|---|---|
+| `countdown` | Text box over the bottom ~40% of the game, big `M:SS` to `executeAt`, the loop and how long it was stuck. The stuck loop stays visible above it | The fly is stuck in a loop! / Rewinding to PEWTER CITY in 0:42 | … / Shaking it off in 0:42 |
+| `acting` | Covers the whole 800x720 game panel, which is frozen or blank while flysim is down; a stepped progress bar | Rewinding… / Back to PEWTER CITY | Shaking it off… / Same place, fresh start |
+| `done` | Text box, 8 s after the helper's `updatedAt` | Back at PEWTER CITY! | All shaken off! |
+| `failed` | Text box, 20 s | That didn't work / A human will take a look | same |
+
+**Where the notice comes from.** Not the feed: flysim is the thing being restarted. The helper
+writes `/run/fly/wd/recovery-notice.json` atomically (tmp + rename); `flystage-web`
+(`infra/config/serve.mjs`, the page's own static server, User=fly, same container, independent of
+flysim) serves it at `/recovery-notice.json` — 200 with the bytes, or 204 when there is no file
+— and the page polls that once a second (`src/lib/recovery-poll.ts`). `FLY_RECOVERY_NOTICE`
+overrides the path, for `serve.mjs` and for the Vite dev and preview servers alike, which serve
+the same route.
+
+**It can never break the stream.** `src/lib/recovery.ts` is pure and stateless: a missing,
+malformed, oversized (> 16 KiB) or wrong-version file is no splash; a notice whose `updatedAt` is
+more than 15 minutes old is ignored; `acting` stops covering the game 10 minutes after its last
+write even if the helper never follows up, so a dead helper cannot hide the game; and every
+string the helper wrote is clipped to letters, digits, spaces and `.,'&:#/-` at a fixed length
+before it can reach the screen. Because the view is a function of the file and the wall clock
+alone, a page that reloads mid-recovery shows exactly what one that watched it all would.
+
+To look at it by hand:
+
+```sh
+export FLY_RECOVERY_NOTICE=$PWD/.recovery-notice.json      # any writable path
+npm run dev -w @flybrain/stage                               # http://127.0.0.1:5273/?recovery=1
+npm run recovery-notice -w @flybrain/stage -- --phase countdown --action reset --in 45
+npm run recovery-notice -w @flybrain/stage -- --demo restart   # 20 s countdown, 15 s acting, done
+npm run recovery-notice -w @flybrain/stage -- --clear
+```
+
+`npm run mockups -- --only recovery` writes the eight `mockups/recovery-<phase>-<action>.png`.
 
 ### Moments
 

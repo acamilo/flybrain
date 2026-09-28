@@ -50,6 +50,8 @@ import {
   boxStyle,
 } from '@/lib/geometry';
 import { stageOptions } from '@/lib/query';
+import { parseRecoveryNotice, recoveryView, type RecoveryView } from '@/lib/recovery';
+import { RecoveryPoller } from '@/lib/recovery-poll';
 import { Director, FLY_HEAD_ANCHOR } from '@/motion/director';
 import { MotionEngine } from '@/motion/engine';
 import type { MomentType } from '@/motion/moments';
@@ -68,6 +70,7 @@ import { FlyStrip } from '@/panels/FlyStrip';
 import { GamePanel } from '@/panels/GamePanel';
 import { MomentLayer } from '@/panels/MomentLayer';
 import { ProgressCluster } from '@/panels/ProgressCluster';
+import { RecoverySplash, nowSeconds, useRecovery } from '@/panels/RecoverySplash';
 import { StaleBanner } from '@/panels/StaleBanner';
 import { TabSlot } from '@/panels/TabSlot';
 import { TitleStrip } from '@/panels/TitleStrip';
@@ -632,6 +635,14 @@ export function App() {
 
     loop.start();
 
+    // -- The auto-recovery splash's notice ----------------------------------------------------
+    // Polled from `flystage-web`, not the feed: flysim is what the helper restarts
+    // (`src/lib/recovery-poll.ts`). Off in player mode unless `?recovery=1`.
+    const recoveryPoller = options.recovery
+      ? new RecoveryPoller({ onChange: (notice) => useRecovery.setState({ notice }) })
+      : null;
+    recoveryPoller?.start();
+
     // -- Test and operator surface ------------------------------------------------------------
     window.__stage = {
       options,
@@ -687,6 +698,19 @@ export function App() {
         ingest.commit(hot.lastSnapshotMs, true);
         return useStage.getState().chat.length;
       },
+      /**
+       * Put a notice on the recovery splash by hand, the same way `fire` drives a moment: for the
+       * splash mockups and e2e assertions. The raw object goes through the same validation as a
+       * polled file, the poller stops so it cannot overwrite it, and `nowS` pins the splash's clock
+       * so a countdown screenshot is reproducible. `null` clears it. Returns what the splash shows.
+       */
+      recovery: (raw, nowS) => {
+        recoveryPoller?.stop();
+        const notice = raw === null ? null : parseRecoveryNotice(raw);
+        const pinnedNowS = nowS ?? null;
+        useRecovery.setState({ notice, pinnedNowS });
+        return recoveryView(notice, nowSeconds(pinnedNowS));
+      },
       fly: () => ({
         // The renderer that is actually drawing, which is not always the one that was asked for:
         // `webgl` falls back to `paper` on a host with no usable GL context (`src/fly/index.ts`).
@@ -714,6 +738,7 @@ export function App() {
       if (readyTimer !== null) clearTimeout(readyTimer);
       loop.stop();
       source?.stop();
+      recoveryPoller?.stop();
       fly?.dispose();
       worker.terminate();
       void engine?.stop();
@@ -739,6 +764,7 @@ export function App() {
       <ChatPanel source={options.chat} />
 
       <MomentLayer particleRef={particleCanvas} />
+      <RecoverySplash />
       <StaleBanner />
     </div>
   );
@@ -764,6 +790,8 @@ declare global {
       fire: (type: MomentType, label?: string, detail?: string) => number | null;
       /** Replace the held feed's chat ring by hand; returns how many lines the panel accepted. */
       chat: (lines: readonly { by: string; text: string; bot?: boolean }[]) => number;
+      /** Show a recovery notice by hand (validated like a polled one); null clears it. */
+      recovery: (notice: unknown, nowS?: number) => RecoveryView | null;
       fly: () => {
         mode: string;
         requested: string;

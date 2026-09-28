@@ -16,7 +16,8 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createReadStream } from 'node:fs';
-import { cp, stat } from 'node:fs/promises';
+import { cp, readFile, stat } from 'node:fs/promises';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { dirname, join, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import tailwindcss from '@tailwindcss/vite';
@@ -87,8 +88,41 @@ function datasetArtifacts(): Plugin {
   };
 }
 
+/**
+ * `GET /recovery-notice.json` in dev and preview, the same route `infra/config/serve.mjs` gives
+ * the deployed page: the auto-recovery helper's notice file (`FLY_RECOVERY_NOTICE`, default
+ * `/run/fly/wd/recovery-notice.json`), or 204 when there is none. What makes
+ * `npm run recovery-notice` (`tools/recovery-notice.mts`) work against a local page.
+ */
+function recoveryNotice(): Plugin {
+  const serve = async (req: IncomingMessage, res: ServerResponse, next: () => void): Promise<void> => {
+    if ((req.url ?? '').split('?')[0] !== '/recovery-notice.json') return next();
+    const path = process.env.FLY_RECOVERY_NOTICE || '/run/fly/wd/recovery-notice.json';
+    res.setHeader('cache-control', 'no-store');
+    try {
+      const info = await stat(path);
+      if (!info.isFile() || info.size === 0 || info.size > 16_384) throw new Error('no notice');
+      const body = await readFile(path);
+      res.setHeader('content-type', 'application/json; charset=utf-8');
+      res.end(body);
+    } catch {
+      res.statusCode = 204;
+      res.end();
+    }
+  };
+  return {
+    name: 'flystage-recovery-notice',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => void serve(req, res, next));
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use((req, res, next) => void serve(req, res, next));
+    },
+  };
+}
+
 export default defineConfig(({ command }) => ({
-  plugins: [react(), tailwindcss(), datasetArtifacts()],
+  plugins: [react(), tailwindcss(), datasetArtifacts(), recoveryNotice()],
   define: {
     __STAGE_VERSION__: JSON.stringify(stageVersion(command)),
   },

@@ -1,0 +1,230 @@
+/**
+ * The auto-recovery splash (`src/panels/RecoverySplash.tsx`), over the 800x720 game panel.
+ *
+ * Its own palette on purpose: the Game Boy's four greens, so the splash reads as the cartridge's
+ * own text box / screen and never as a rail panel or an alarm. Square corners, a 4 px outer frame
+ * and a 2 px inner line, like every other box on the page (`tokens.css`). Type sits on the page's
+ * floors: Press Start 2P for the dialogue line and the countdown, VT323 for the rest.
+ */
+.recovery {
+  --gb-0: #e0f0c8; /* lightest: the paper */
+  --gb-1: #8bac0f;
+  --gb-2: #306230;
+  --gb-3: #0f380f; /* darkest: the ink */
+  pointer-events: none;
+}
+
+/* -- Box: countdown, done, failed ---------------------------------------------------------- */
+
+.recovery__box {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  padding: 30px 28px 20px;
+  background: var(--gb-0);
+  color: var(--gb-3);
+  border: var(--border-w) solid var(--gb-3);
+  outline: var(--border-inner-w) solid var(--gb-0);
+  outline-offset: calc(-1 * var(--border-w) - 6px);
+  box-shadow: inset 0 0 0 10px var(--gb-0), inset 0 0 0 12px var(--gb-2);
+  animation: recovery-rise 320ms var(--ease-pixel, steps(8, end)) both;
+}
+
+.recovery__chip {
+  position: absolute;
+  top: -18px;
+  left: 24px;
+  padding: 2px 12px;
+  font-family: var(--font-label);
+  font-size: var(--fs-body);
+  line-height: 28px;
+  background: var(--gb-3);
+  color: var(--gb-0);
+  letter-spacing: 0.04em;
+}
+
+.recovery__row {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.recovery__text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.recovery__headline {
+  margin: 0 0 14px;
+  font-family: var(--font-pixel);
+  font-size: 24px;
+  line-height: 1.45;
+}
+
+.recovery__body {
+  margin: 0;
+  font-family: var(--font-text);
+  font-size: 40px;
+  line-height: 1.05;
+  color: var(--gb-2);
+}
+
+.recovery__countdown {
+  flex: 0 0 auto;
+  font-family: var(--font-pixel);
+  font-size: 52px;
+  line-height: 1;
+  padding: 16px 14px 12px;
+  background: var(--gb-3);
+  color: var(--gb-0);
+  font-variant-numeric: tabular-nums;
+}
+
+.recovery__loop {
+  margin-top: 14px;
+  font-family: var(--font-text);
+  font-size: 30px;
+  line-height: 1;
+  color: var(--gb-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recovery__loop-macros {
+  color: var(--gb-3);
+}
+
+.recovery__sep {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin: 0 14px;
+  vertical-align: middle;
+  background: var(--gb-1);
+}
+
+/* The Pokémon "more text" arrow, blinking in the corner. Drawn, not typed: no glyph to miss. */
+.recovery__arrow {
+  position: absolute;
+  right: 22px;
+  bottom: 16px;
+  width: 0;
+  height: 0;
+  border-left: 10px solid transparent;
+  border-right: 10px solid transparent;
+  border-top: 12px solid var(--gb-3);
+  animation: recovery-blink 1s steps(1, end) infinite;
+}
+
+/* Three dots that count up, for "working on it". Steps, not a fade. */
+.recovery__dots::after {
+  content: '...';
+  display: inline-block;
+  width: 3ch;
+  overflow: hidden;
+  vertical-align: bottom;
+  text-align: left;
+  animation: recovery-dots 1.2s steps(4, jump-none) infinite;
+}
+
+/* -- Cover: acting --------------------------------------------------------------------------- */
+
+.recovery__cover {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  padding: 40px;
+  background: var(--gb-0);
+  color: var(--gb-3);
+  border: var(--border-w) solid var(--gb-3);
+  box-shadow: inset 0 0 0 12px var(--gb-0), inset 0 0 0 16px var(--gb-2);
+  text-align: center;
+}
+
+.recovery__chip--cover {
+  position: static;
+}
+
+.recovery__big {
+  margin: 0;
+  font-family: var(--font-pixel);
+  font-size: 44px;
+  line-height: 1.3;
+}
+
+.recovery__body--cover {
+  font-size: 48px;
+}
+
+.recovery__was {
+  margin-top: 8px;
+  font-family: var(--font-label);
+  font-size: var(--fs-body);
+  color: var(--gb-2);
+  min-height: 1px;
+}
+
+.recovery__cover .recovery__loop {
+  margin-top: 0;
+  max-width: 100%;
+}
+
+/* Eight cells lighting in turn: right-to-left for a rewind, left-to-right for a restart. */
+.recovery__bar {
+  display: flex;
+  gap: 8px;
+}
+
+.recovery__bar--reset {
+  flex-direction: row-reverse;
+}
+
+.recovery__bar span {
+  width: 40px;
+  height: 24px;
+  background: var(--gb-1);
+  animation: recovery-cell 1.2s steps(1, end) infinite;
+}
+
+@keyframes recovery-rise {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+@keyframes recovery-blink {
+  50% {
+    visibility: hidden;
+  }
+}
+
+@keyframes recovery-dots {
+  from {
+    width: 0;
+  }
+  to {
+    width: 3ch;
+  }
+}
+
+@keyframes recovery-cell {
+  0%,
+  12% {
+    background: var(--gb-3);
+  }
+  13%,
+  100% {
+    background: var(--gb-1);
+  }
+}

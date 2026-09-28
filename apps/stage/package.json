@@ -14,7 +14,8 @@
     "test:e2e": "playwright test",
     "mockups": "tsx tools/mockup.mts",
     "fonts": "tsx tools/font-compare.mts",
-    "record": "tsx tools/record-fixture.mts"
+    "record": "tsx tools/record-fixture.mts",
+    "recovery-notice": "tsx tools/recovery-notice.mts"
   },
   "dependencies": {
     "@flybrain/brain": "*",

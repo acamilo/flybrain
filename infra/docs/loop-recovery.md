@@ -63,8 +63,13 @@ reads. It holds the contract below, written atomically, mode 0644:
  "announcedAt": 1790629095, "executeAt": 1790629155, "updatedAt": 1790629160}
 ```
 
-`toRung`/`toLabel` are present for a reset only. Consumers ignore a notice whose `updatedAt` is
-more than 15 minutes old.
+`toRung`/`toLabel` are present for a reset only; every write refreshes `updatedAt`, and the
+helper never deletes the file. `flystage-web` serves it at `/recovery-notice.json` (204 when
+absent) and the page's recovery splash polls it once a second (`apps/stage/README.md`, "Recovery
+splash"). The page ignores a notice more than 15 minutes old, shows `done` for 8 s and `failed`
+for 20 s, and stops covering the game 10 minutes after an `acting` write that nothing followed.
+A milestone step pauses the watchdog, so Chromium is not restarted under the splash; a plain
+restart is short enough that a watchdog pass rarely lands in it.
 
 ## Model confirmation
 
