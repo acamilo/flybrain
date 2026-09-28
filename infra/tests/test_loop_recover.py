@@ -267,7 +267,12 @@ class WrapperTests(unittest.TestCase):
         self.calls = root / "calls.log"
         (root / "state").mkdir()
         (root / "bin").mkdir()
-        self.script(root / "bin/systemctl", f'echo "systemctl $*" >> {self.calls}; [ "$1" != is-active ] || exit 3')
+        # The watchdog probe is mid-run ("activating") for the first two looks.
+        self.script(root / "bin/systemctl", f'''echo "systemctl $*" >> {self.calls}
+if [ "$1" = show ]; then
+  n=$(grep -c "^systemctl show" {self.calls})
+  if [ "$n" -le 2 ]; then echo activating; else echo inactive; fi
+fi''')
         self.script(root / "flysim", f'[ "$1" = --print-compatibility ] && echo "{BUILD}"')
         self.script(root / "reset", f'echo "reset $* FLY_BIN=$FLY_BIN" >> {self.calls}')
         self.env_file = root / "fly.env"
@@ -288,6 +293,7 @@ class WrapperTests(unittest.TestCase):
         env = {"PATH": f"{self.root}/bin:/usr/bin:/bin", "FLY_LOOP_RESET_TEST_STATE_DIR": str(self.root / "state"),
                "FLY_LOOP_RESET_TEST_ENV_FILE": str(self.env_file), "FLY_LOOP_RESET_TEST_FLYSIM": str(self.root / "flysim"),
                "FLY_LOOP_RESET_TEST_RESET_BIN": str(self.root / "reset")}
+        env.update(getattr(self, "extra_env", {}))
         return recover.subprocess.run([str(WRAPPER), *args], env=env, capture_output=True, text=True, timeout=60)
 
     def log(self):
@@ -303,7 +309,9 @@ class WrapperTests(unittest.TestCase):
         done = self.run_wrapper("12")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual([line.split()[:3] for line in self.log().splitlines() if not line.startswith("systemctl is-active")], [
-            ["systemctl", "stop", "fly-watchdog.timer"], ["systemctl", "stop", "flysim.service"],
+            ["systemctl", "stop", "fly-watchdog.timer"],
+            ["systemctl", "show", "-p"], ["systemctl", "show", "-p"], ["systemctl", "show", "-p"], ["systemctl", "show", "-p"],
+            ["systemctl", "stop", "flysim.service"],
             ["reset", "12", f"FLY_BIN={self.root}/flysim"],
             ["systemctl", "start", "flysim.service"], ["systemctl", "start", "fly-watchdog.timer"]])
 
@@ -323,6 +331,20 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(self.run_wrapper("--list").stdout, "")
         self.assertEqual(self.run_wrapper("12").returncode, 3)
         self.assertEqual(self.log(), "")
+
+    def test_a_root_copy_that_is_not_the_running_build_restores_nothing(self):
+        other = self.root / "live-flysim"
+        self.script(other, "echo other build")
+        self.extra_env = {"FLY_LOOP_RESET_TEST_LIVE_FLYSIM": str(other)}
+        self.assertEqual(self.run_wrapper("--list").stdout, "")
+        self.assertEqual(self.run_wrapper("12").returncode, 3)
+
+    def test_a_watchdog_probe_that_never_finishes_blocks_the_reset(self):
+        self.script(self.root / "bin/systemctl", f'echo "systemctl $*" >> {self.calls}; [ "$1" != show ] || echo activating')
+        self.script(self.root / "bin/sleep", "exit 0")
+        self.assertEqual(self.run_wrapper("12").returncode, 4)
+        self.assertNotIn("systemctl stop flysim.service", self.log())
+        self.assertIn("systemctl start fly-watchdog.timer", self.log())
 
     def test_bad_arguments_are_refused(self):
         for args in ((), ("--check", "12"), ("12", "13"), ("../12",), ("123",), ("-1",)):

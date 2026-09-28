@@ -94,12 +94,21 @@ migration_accepted() {
     return 1
 }
 
+# The root copy must be the flysim that runs: a manual rollback of /opt/fly/current without a
+# deploy would otherwise approve archives the running build refuses.
+LIVE_FLYSIM=/opt/fly/current/flysim
+[ "$(id -u)" -eq 0 ] || LIVE_FLYSIM="${FLY_LOOP_RESET_TEST_LIVE_FLYSIM:-$FLYSIM}"
+same_build() {
+    [ -f "$LIVE_FLYSIM" ] \
+        && [ "$(sha256sum < "$FLYSIM" | cut -d' ' -f1)" = "$(sha256sum < "$LIVE_FLYSIM" | cut -d' ' -f1)" ]
+}
+
 build_compat=""
-if [ -x "$FLYSIM" ] && [ "$(stat -c %u "$FLYSIM")" = "$(id -u)" ]; then
+if [ -x "$FLYSIM" ] && [ "$(stat -c %u "$FLYSIM")" = "$(id -u)" ] && same_build; then
     build_compat="$(clean_env timeout 90 "$FLYSIM" --print-compatibility 2>/dev/null | tail -n1 || true)"
 fi
 if [ -z "$build_compat" ]; then
-    log "no compatibility string from $FLYSIM (missing, not owned by $(id -un), or failed); no rung is restorable"
+    log "no compatibility string from $FLYSIM (missing, not owned by $(id -un), not the running build, or failed); no rung is restorable"
     [ "$LIST" -eq 1 ] && exit 0
     exit 3
 fi
@@ -141,11 +150,18 @@ trap 'exit 143' TERM INT HUP
 
 log "pausing ${WATCHDOG_TIMER} and stopping ${SERVICE} to reset to rung ${RANK}"
 systemctl stop "$WATCHDOG_TIMER"
+# A oneshot probe mid-run is "activating", which `is-active` does not count; wait on ActiveState.
+watchdog_idle() {
+    case "$(systemctl show -p ActiveState --value "$WATCHDOG_SERVICE")" in
+        inactive|failed) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 for _ in $(seq 1 60); do
-    systemctl is-active --quiet "$WATCHDOG_SERVICE" || break
+    watchdog_idle && break
     sleep 1
 done
-if systemctl is-active --quiet "$WATCHDOG_SERVICE"; then
+if ! watchdog_idle; then
     log "${WATCHDOG_SERVICE} still running after 60 s; not resetting"
     exit 4
 fi

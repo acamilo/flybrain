@@ -15,7 +15,8 @@ a ladder one step per trap that outlives the previous step:
 - **Outlives** means the reports that confirm it again are at least 20 minutes after the step, so
   their 10-brain-minute window lies after it. The helper waits that long after every step.
 - **Budget:** at most two milestone resets per 24 hours. With the budget spent the step is a
-  restart, at most every three hours, until a reset is free again.
+  restart, at most every three hours, until a reset is free again. The same three-hour spacing applies
+  when a reset level finds no restorable rung and restarts instead.
 - **Starting over:** the ladder returns to level 0 when the fly reaches a new best rung, or after
   six hours with no suspected report.
 
@@ -29,9 +30,12 @@ release env file so a deploy does not drop it.
 The step runs `/opt/fly/bin/fly-loop-reset <rung>` through sudo (the one line in
 `config/fly-sudoers`). As root it:
 
-- runs only the root-owned `/opt/fly/sbin/flysim` that `05-deploy.sh` installs from the release
-  tarball after checking it against the tarball's MANIFEST, never the fly-owned release tree;
-  without that copy no rung is restorable;
+- runs only the root-owned `/opt/fly/sbin/flysim`, and only while it is byte-identical to the
+  flysim `/opt/fly/current` points to, that `05-deploy.sh` installs from the release
+  tarball after checking it against the tarball's MANIFEST (never the fly-owned release tree).
+  Without that copy (an infra-only deploy, or a manual rollback) no rung is restorable and the
+  ladder only restarts; after a release deploy, check as `fly` that
+  `sudo -n /opt/fly/bin/fly-loop-reset --list` names the current rung;
 - reads `fly.env` as `KEY=VALUE` data, never sources it, and ignores the caller's environment;
 - stops `fly-watchdog.timer` and waits for a running probe to finish, so the watchdog cannot
   start flysim on a half-rewritten store; stops flysim; runs `fly-reset-to-milestone`; and on every
@@ -41,7 +45,9 @@ The reset copies both stores to `/srv/fly/state.reset-<UTC>` first, as in the ru
 clears milestone archives above the rung. After each step the helper waits up to four minutes for
 `/status` to report `running` (and the target rank for a reset). Otherwise the step is recorded
 as failed and the ladder still climbs. The step is recorded before it runs, so a helper killed
-mid-step has still climbed and spent the reset.
+mid-step has still climbed and spent the reset. Do not stop `fly-loop-recover.service` during a
+step: that kills the reset too, and the wrapper's exit trap starts flysim on whatever state is
+left.
 
 ## On stream
 
