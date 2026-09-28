@@ -272,6 +272,21 @@ if [ -n "$RELEASE_TARBALL" ]; then
         cpu_pin chown -R fly:fly "$release_path"
     fi
 
+    # A root-owned flysim for fly-loop-reset, which runs as root and so must never execute the
+    # fly-owned copy above (the fly account could replace it). Taken from the tarball on the host
+    # and checked against the tarball's own MANIFEST on every deploy, so a release installed by
+    # an earlier deploy is covered too.
+    log "05-deploy: installing a root-owned flysim at /opt/fly/sbin/flysim for fly-loop-reset"
+    root_flysim="$(mktemp)"
+    tar -xzOf "$RELEASE_TARBALL" ./flysim > "$root_flysim"
+    want_sha="$(tar -xzOf "$RELEASE_TARBALL" ./MANIFEST | awk '$2 == "flysim" || $2 == "./flysim" {print $1; exit}')"
+    [ -n "$want_sha" ] && [ "$(sha256sum "$root_flysim" | cut -d' ' -f1)" = "$want_sha" ] \
+        || { rm -f "$root_flysim"; die "the tarball's flysim does not match its MANIFEST; not installing /opt/fly/sbin/flysim"; }
+    ct_exec "$CTID" -- install -d -o root -g root -m 0755 /opt/fly/sbin
+    ct_push_file "$CTID" "$root_flysim" /opt/fly/sbin/flysim.new 0755
+    ct_exec "$CTID" -- sh -c 'chown root:root /opt/fly/sbin/flysim.new && mv -f /opt/fly/sbin/flysim.new /opt/fly/sbin/flysim'
+    rm -f "$root_flysim"
+
     log "05-deploy: overlaying infra-owned stage/serve.{mjs,sh} (docs/design/infra.md's 'own tiny static server' clarification)"
     converge_file "$CTID" "$INFRA_DIR/config/serve.mjs" "${release_path}/stage/serve.mjs" 0644 fly:fly >/dev/null
     converge_file "$CTID" "$INFRA_DIR/config/serve.sh"  "${release_path}/stage/serve.sh"  0755 fly:fly >/dev/null

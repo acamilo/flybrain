@@ -32,6 +32,9 @@ MAX_RESETS = 2       # milestone resets per DAY
 VETO_LIMIT = 3       # model vetoes of one step before it goes ahead anyway
 MODEL_BUDGET = 90    # seconds across all models in one decision
 VERIFY_TIMEOUT = 240
+LIST_TIMEOUT = 120
+RESTART_TIMEOUT = 180
+RESET_TIMEOUT = 480  # the wrapper waits up to 60 s for the watchdog, then stop, reset, start
 
 # docs/design/ladder.md; mirrors RANK_LADDER in flybrain-gb's pokemon_red/mod.rs (a test pins it).
 LADDER = [
@@ -140,27 +143,30 @@ def rungs():
 
 
 def plan(level, rank, best, resets_left):
-    """(action, target rung) for a ladder level; a spent budget or no archive falls back to restart.
+    """(action, target rung) for a ladder level; a spent budget or no restorable archive is a restart.
 
-    Level 1 resets to the current rung's archive, level 2 and beyond to the archive below the
-    best rung (never lower), so repeated days of a trap cannot walk the run down the ladder.
+    Level 1 resets to the current rung's archive; level 2 and beyond to the rung below the best,
+    and never lower, so repeated days of a trap cannot walk the run down the ladder.
     """
     if level == 0 or not resets_left or rank is None:
         return "restart", None
-    ceiling = rank if level == 1 else min(rank, max(best, rank) - 1)
-    for rung in reversed([rung for rung in rungs() if rung <= ceiling]):
-        if restorable(rung):
-            return "reset", rung
-    return "restart", None
+    target = rank if level == 1 else max(best, rank) - 1
+    if target > rank or target not in restorable_rungs():
+        return "restart", None
+    return "reset", target
 
 
-def restorable(rung):
-    """Whether the running build can restore this archive (fly-loop-reset --check)."""
+def restorable_rungs():
+    """The rungs the running build can restore (fly-loop-reset --list), empty on any failure."""
     try:
-        return subprocess.run(["sudo", "-n", RESET_BIN, "--check", str(rung)], check=False, timeout=60,
-                              stdout=subprocess.DEVNULL).returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        return False
+        done = subprocess.run(["sudo", "-n", RESET_BIN, "--list"], check=False, timeout=LIST_TIMEOUT,
+                              capture_output=True, text=True)
+    except (OSError, subprocess.SubprocessError) as error:
+        print("restorable rungs unknown:", type(error).__name__, file=sys.stderr)
+        return set()
+    if done.returncode != 0:
+        return set()
+    return {int(line) for line in done.stdout.split() if line.isdigit()}
 
 
 def status():
@@ -184,10 +190,14 @@ def verify(target, deadline):
 
 def act(action, target):
     if action == "restart":
-        command = ["sudo", "-n", "systemctl", "restart", "flysim.service"]
+        command, limit = ["sudo", "-n", "systemctl", "restart", "flysim.service"], RESTART_TIMEOUT
     else:
-        command = ["sudo", "-n", RESET_BIN, str(target)]
-    done = subprocess.run(command, check=False, timeout=VERIFY_TIMEOUT)
+        command, limit = ["sudo", "-n", RESET_BIN, str(target)], RESET_TIMEOUT
+    try:
+        done = subprocess.run(command, check=False, timeout=limit)
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"{action} did not complete: {type(error).__name__}", file=sys.stderr)
+        return False
     if done.returncode != 0:
         return False
     return verify(target, time.monotonic() + VERIFY_TIMEOUT)
@@ -268,15 +278,18 @@ def run(now=None, sleep=time.sleep, clock=None):
         base.update(toRung=target, toLabel=LADDER[target] if 0 <= target < len(LADDER) else None)
     notice(base, "countdown", now)
     sleep(COUNTDOWN)
-    notice(base, "acting", clock())
+    started = int(clock())
+    # Recorded before acting, so a helper killed mid-step has still climbed and spent the reset.
+    state.update(level=level + 1, actedAt=started, lastAction=action, vetoes=0)
+    state.pop("observedAt", None)
+    if action == "reset":
+        state["resets"].append(started)
+    write_json(STATE, state)
+    notice(base, "acting", started)
     ok = act(action, target)
     finished = int(clock())
     notice(base, "done" if ok else "failed", finished)
-
-    state.update(level=level + 1, actedAt=finished, lastAction=action, vetoes=0)
-    state.pop("observedAt", None)
-    if action == "reset":
-        state["resets"].append(finished)
+    state["actedAt"] = finished
     write_json(STATE, state)
     log({"at": finished, "event": action, "target": target, "ok": ok, "why": why, "rank": rank,
          "level": level, "sequence": report.get("sequence"), "map": report.get("map")})

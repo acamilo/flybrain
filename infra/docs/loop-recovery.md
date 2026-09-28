@@ -19,21 +19,29 @@ a ladder one step per trap that outlives the previous step:
 - **Starting over:** the ladder returns to level 0 when the fly reaches a new best rung, or after
   six hours with no suspected report.
 
-A milestone step only uses an archive the running build can restore: `fly-loop-reset --check`
-compares the archive's compatibility string with `flysim --print-compatibility` and accepts an
+A milestone step only uses an archive the running build can restore. `fly-loop-reset --list`
+compares each archive's compatibility string with `flysim --print-compatibility` and accepts an
 adapter-only difference that `FLY_ACCEPT_ADAPTERS` in `/etc/fly/fly.env` names (the rule
-`05-deploy.sh` applies). A flysim that refuses every checkpoint refuses to start, so an archive
-from an older adapter is skipped for the next one down unless the deploy named its adapter; with
-none restorable the step is a restart. Keep `FLY_ACCEPT_ADAPTERS` in the release env file so a
-deploy does not drop it.
+`05-deploy.sh` applies). A flysim that refuses every checkpoint refuses to start, so a step whose
+rung is not restorable is a restart instead, never a lower rung. Keep `FLY_ACCEPT_ADAPTERS` in the
+release env file so a deploy does not drop it.
 
-A milestone step runs `/opt/fly/bin/fly-loop-reset <rung>` through sudo (the one line in
-`config/fly-sudoers`): stop flysim, `fly-reset-to-milestone`, start flysim. flysim is started again
-even when the reset fails. The reset copies both stores to `/srv/fly/state.reset-<UTC>` first, as
-in the runbook, and needs no deploy when the running release wrote the archive or
-`FLY_ACCEPT_ADAPTERS` already names its adapter. After each step the helper waits up to four
-minutes for `/status` to report `running` (and the target rank for a reset); otherwise the step is
-recorded as failed and the ladder still climbs.
+The step runs `/opt/fly/bin/fly-loop-reset <rung>` through sudo (the one line in
+`config/fly-sudoers`). As root it:
+
+- runs only the root-owned `/opt/fly/sbin/flysim` that `05-deploy.sh` installs from the release
+  tarball after checking it against the tarball's MANIFEST, never the fly-owned release tree;
+  without that copy no rung is restorable;
+- reads `fly.env` as `KEY=VALUE` data, never sources it, and ignores the caller's environment;
+- stops `fly-watchdog.timer` and waits for a running probe to finish, so the watchdog cannot
+  start flysim on a half-rewritten store; stops flysim; runs `fly-reset-to-milestone`; and on every
+  exit path starts flysim and the watchdog timer again.
+
+The reset copies both stores to `/srv/fly/state.reset-<UTC>` first, as in the runbook, and
+clears milestone archives above the rung. After each step the helper waits up to four minutes for
+`/status` to report `running` (and the target rank for a reset). Otherwise the step is recorded
+as failed and the ladder still climbs. The step is recorded before it runs, so a helper killed
+mid-step has still climbed and spent the reset.
 
 ## On stream
 
