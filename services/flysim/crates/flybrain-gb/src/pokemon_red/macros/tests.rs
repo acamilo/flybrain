@@ -195,6 +195,10 @@ struct World {
     /// landing. `HandleLedges` takes the joypad for the length of it, so the scene reads
     /// `Unknown` and the world is scripted.
     hop: Option<(u32, Tile, Tile)>,
+    /// Warps a step onto does not fire: the "turns out to need some other press" of
+    /// [`path::exits`]'s `outward`, for the executor's rule about a way out that did not take the
+    /// fly anywhere.
+    duds: BTreeSet<Tile>,
     /// A frame at which the cartridge takes the joypad, which is what the Viridian gate does.
     scripted_at: Option<u32>,
     /// Every completed pulse, in order.
@@ -274,6 +278,7 @@ impl World {
             scripted: false,
             ledges: Vec::new(),
             hop: None,
+            duds: BTreeSet::new(),
             scripted_at: None,
             pulses: Vec::new(),
             held: 0,
@@ -581,6 +586,9 @@ impl World {
         else {
             return;
         };
+        if self.duds.contains(&next) {
+            return;
+        }
         // An interior warp fires on the step onto it; a doormat only when the step onto it is the
         // same direction the step off the map would be.
         match outward(next, self.size.height) {
@@ -901,6 +909,10 @@ fn settle(machine: &mut MacroMachine, world: &mut World) {
     while let Some((map, tile)) = machine.take_pushed() {
         assert_eq!(map, world.map);
         world.pushes.insert(tile);
+    }
+    // `PokemonPalette::record_talk` drains this after every finish, not only after a refusal.
+    if let Some((map, slot, tile)) = machine.take_refused() {
+        world.targets.record_refused(map, slot, tile);
     }
     if let Some((map, target)) = machine.take_talked() {
         assert_eq!(map, world.map);
@@ -5611,4 +5623,49 @@ fn a_ledge_the_walk_presses_into_is_hopped_and_is_not_a_push_back() {
         Some(Objective { map: 0x0f, tile: Some(Tile::new(3, 1)), warp: None, edge: None, target: None });
     assert!(run(&mut below, MacroKind::GoObjective).is_err(), "a ledge is not climbed");
     assert_eq!(below.player, Tile::new(3, 6));
+}
+
+#[test]
+fn a_way_out_that_does_not_take_the_fly_anywhere_is_not_done() {
+    // The general half of row 64 (section 12.2's rule, held by the executor): a way out's promise
+    // is another map, so settling on one that leaves the fly on this map is not an arrival. Live,
+    // `GO OBJECTIVE` and `GO WARP` reported that `done` ~750 times per ten brain minutes on one
+    // tile for two days. Here the warp does not fire at all, whatever the walk does.
+    let mut world = World::room().at(1, 1);
+    world.warps = vec![Warp { x: 5, y: 5, destination_warp: 0, destination_map: 0x26 }];
+    world.duds = BTreeSet::from([Tile::new(5, 5)]);
+    let mut machine = MacroMachine::new(0x1234_5678);
+    assert_eq!(run_with(&mut machine, &mut world, MacroKind::GoWarp), Ok(MacroAbort::Blocked));
+    assert_eq!((world.map, world.player), (0x25, Tile::new(5, 5)), "walked to it; it did not fire");
+    let exit = TargetKey::Exit(ExitId::Warp(0));
+    assert!(world.targets.blocked(world.map, exit), "the dead exit rests in the window");
+    // Walked to from elsewhere, so the button is not held against the tile it now stands on:
+    // a different tile is a different press.
+    assert!(!world.targets.refused(world.map, MacroKind::GoWarp.slot(), world.player));
+}
+
+#[test]
+fn a_way_out_pressed_from_where_it_does_not_fire_is_not_dealt_again_from_there() {
+    // Standing on it: step off, step back on, nothing. The blocked entry rests the exit for every
+    // list but a last resort, and the last resort ignores the blocked ledger by design, so on a
+    // map with nothing else on it the same button would be dealt at the same dead exit once per
+    // hold. Row 57's ledger ends that: not from this tile, for the window.
+    let mut world = World::room().at(3, 3);
+    world.warps = vec![Warp { x: 3, y: 3, destination_warp: 0, destination_map: 0x26 }];
+    world.duds = BTreeSet::from([Tile::new(3, 3)]);
+    world.seen_maps = BTreeSet::from([0x26]);
+    world.stood = (0..8).flat_map(|y| (0..8).map(move |x| Tile::new(x, y))).collect();
+    let mut machine = MacroMachine::new(0x1234_5678);
+    // Nothing else on this map: the last resort is what deals `GO WARP` here.
+    assert!(pick_opt(&mut world, MacroKind::GoWarp), "the last resort deals the only way out");
+    assert_eq!(run_with(&mut machine, &mut world, MacroKind::GoWarp), Ok(MacroAbort::Blocked));
+    assert_eq!((world.map, world.player), (0x25, Tile::new(3, 3)));
+    assert!(world.targets.refused(world.map, MacroKind::GoWarp.slot(), world.player));
+    assert!(!pick_opt(&mut world, MacroKind::GoWarp), "not dealt again from the tile it failed on");
+}
+
+/// Whether `kind` is on the pad the world's scene deals now.
+fn pick_opt(world: &mut World, kind: MacroKind) -> bool {
+    let scene = world.scene();
+    Palette::for_scene(scene, world).slots.iter().any(|slot| slot.is_some_and(|spec| spec.kind == kind))
 }

@@ -444,6 +444,14 @@ struct Walk {
     /// So a walk that starts on its own step-fired warp takes it the way the cartridge does: one
     /// step onto free ground beside it, and the step back.
     step_off: Option<Tile>,
+    /// Whether the walk settled on a way out and the map did not change: the exit did not take it.
+    ///
+    /// The general half of row 64 (section 12.2's rule, held by the executor instead of by each
+    /// macro): a way out's whole promise is a different map, so a `Settle` arrival on one that
+    /// leaves the fly on this map has not arrived anywhere. It ends `Blocked` -- the exit rests in
+    /// the window -- and, when the fly never left the tile it pressed from,
+    /// [`MacroMachine::unfired_here`] keeps the button off this tile for the window too.
+    unfired: bool,
 }
 
 /// Progress through one cursor navigation.
@@ -909,6 +917,9 @@ impl MacroMachine {
                 Decided::End(outcome) => {
                     let pushed = state.scripted();
                     let at = pushed.then(|| state.player()).flatten();
+                    if outcome == MacroAbort::Blocked {
+                        self.unfired_here(state);
+                    }
                     return self.finish(outcome, true, pushed, at);
                 }
                 Decided::Pop => {
@@ -1019,6 +1030,26 @@ impl MacroMachine {
         // Nor the cartridge refusing a step: the frames it happened in are being thrown away too.
         self.pending_push.clear();
         self.pending_push_calm = 0;
+    }
+
+    /// A way out that did not fire, pressed from the tile the fly is still standing on: the button
+    /// is not dealt again from here for the window (row 57's ledger, [`Walk::unfired`]).
+    ///
+    /// The blocked entry alone rests the exit for every list but a last resort, and a last resort
+    /// ignores the blocked ledger by design -- so on a map with nothing else on it the same button
+    /// would be dealt at the same dead exit once per hold, which is the ring this is here to end.
+    /// A pad with nothing left that can run is empty and the fly waits, section 13.1's answer.
+    fn unfired_here(&mut self, state: &mut dyn MacroState) {
+        let Some(active) = self.active.as_ref() else { return };
+        let Some(Step::Walk(walk)) = active.plan.front() else { return };
+        if !walk.unfired {
+            return;
+        }
+        let Some(player) = state.player() else { return };
+        let here = Tile::new(player.x, player.y);
+        if player.map == walk.map && active.from == Some(here) {
+            self.refused_at = Some((player.map, active.kind.slot(), here));
+        }
     }
 
     /// Whether the running walk is mid-hop: it pressed into a ledge ([`Walk::hop`]), the
@@ -1554,6 +1585,11 @@ fn walk_frame(walk: &mut Walk, state: &mut dyn MacroState) -> Progress {
                 walk.held += 1;
                 if walk.held <= SETTLE_FRAMES {
                     Progress::Hold(buttons::NONE)
+                } else if settled_on_a_way_out(walk) {
+                    // Still on this map (the top of this function ends the walk on any other):
+                    // the way out did not take the fly anywhere ([`Walk::unfired`]).
+                    walk.unfired = true;
+                    Progress::Blocked
                 } else {
                     arrived(walk.continues)
                 }
@@ -1685,6 +1721,16 @@ fn walk_frame(walk: &mut Walk, state: &mut dyn MacroState) -> Progress {
         .is_some_and(|grid| grid.map() == walk.map && grid.hops(here.x, here.y, first))
         .then_some((here, first));
     Progress::Hold(button(first))
+}
+
+/// Whether the goal the walk is settling on is a way out: an exit key, whose promise is a map
+/// change. A tile the objective names is not one -- standing on it is the point.
+fn settled_on_a_way_out(walk: &Walk) -> bool {
+    walk.arrived.is_some_and(|tile| {
+        walk.goals
+            .iter()
+            .any(|goal| goal.tile == tile && matches!(goal.key, Some(TargetKey::Exit(_))))
+    })
 }
 
 /// The tiles one step from `here` that are not themselves warps: where a walk standing on a warp
@@ -2248,6 +2294,7 @@ fn walk_then(
             stalled: false,
             hop: None,
             step_off,
+            unfired: false,
         },
         target,
     ))
