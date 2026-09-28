@@ -1485,7 +1485,7 @@ fi
 
 echo "--- loop recovery tests ---"
 if python3 -m unittest discover -s "$REPO_ROOT/infra/tests" -p 'test_loop_recover.py' >/dev/null 2>&1; then
-    pass "loop recovery: fresh probes, cooldown, and router refusal"
+    pass "loop recovery: ladder, budget, reboot-safe state, model delay and fallback, splash notice"
 else
     fail "loop recovery tests failed; run python3 -m unittest discover -s infra/tests -p test_loop_recover.py -v"
 fi

@@ -16,3 +16,7 @@ fly ALL=(root) NOPASSWD: /usr/bin/systemctl restart flycast.service
 fly ALL=(root) NOPASSWD: /usr/bin/systemctl restart mediamtx.service
 fly ALL=(root) NOPASSWD: /usr/bin/systemctl restart flypush.service
 fly ALL=(root) NOPASSWD: /usr/sbin/reboot
+# fly-loop-recover.service (also User=fly): its ladder restarts flysim (granted above) and
+# resets to a milestone archive through this one root wrapper, which validates the rung,
+# stops/resets/starts flysim and nothing else (infra/docs/loop-recovery.md).
+fly ALL=(root) NOPASSWD: /opt/fly/bin/fly-loop-reset

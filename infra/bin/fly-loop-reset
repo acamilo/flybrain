@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# infra/bin/fly-loop-reset — the milestone step of fly-loop-recover's ladder, as root.
+#
+# fly-loop-recover runs as User=fly and reaches this through one NOPASSWD sudoers line
+# (config/fly-sudoers). It does what infra/docs/runbook.md "Restart the run from a rung"
+# does by hand: stop flysim, promote milestone-<N>.checkpoint with fly-reset-to-milestone,
+# start flysim.
+#
+# Root never executes anything the fly account can write. The release tree under
+# /opt/fly/releases is fly-owned, so the flysim run here is the root-owned copy 05-deploy
+# installs at /opt/fly/sbin/flysim straight from the release tarball; without it every rung is
+# refused and the ladder falls back to restarts. Paths are fixed (test overrides are honoured
+# only when not root), and /etc/fly/fly.env is read as KEY=VALUE data, never sourced.
+#
+# fly-reset-to-milestone does not check that the build can restore the archive, and a flysim
+# that refuses every checkpoint refuses to start: a black stream. So a rung is only used when
+# its archive's compatibility string equals this build's, or differs only in an adapter id that
+# FLY_ACCEPT_ADAPTERS names (05-deploy.sh's adapter_migration_accepted).
+#
+# fly-watchdog restarts a flysim whose /healthz fails, which during a reset would start it on a
+# half-rewritten store; its timer is stopped for the reset and started again on every exit path.
+#
+# Usage: fly-loop-reset <rung>      reset to that rung
+#        fly-loop-reset --list      print the rungs this build can restore, one per line
+set -euo pipefail
+
+STATE_DIR=/srv/fly/state
+ENV_FILE=/etc/fly/fly.env
+FLYSIM=/opt/fly/sbin/flysim
+RESET_BIN=/opt/fly/bin/fly-reset-to-milestone
+if [ "$(id -u)" -ne 0 ]; then
+    STATE_DIR="${FLY_LOOP_RESET_TEST_STATE_DIR:-$STATE_DIR}"
+    ENV_FILE="${FLY_LOOP_RESET_TEST_ENV_FILE:-$ENV_FILE}"
+    FLYSIM="${FLY_LOOP_RESET_TEST_FLYSIM:-$FLYSIM}"
+    RESET_BIN="${FLY_LOOP_RESET_TEST_RESET_BIN:-$RESET_BIN}"
+fi
+SERVICE=flysim.service
+WATCHDOG_TIMER=fly-watchdog.timer
+WATCHDOG_SERVICE=fly-watchdog.service
+readonly STATE_DIR ENV_FILE FLYSIM RESET_BIN SERVICE WATCHDOG_TIMER WATCHDOG_SERVICE
+
+log() { echo "fly-loop-reset: $*" >&2; }
+usage() { log "usage: fly-loop-reset <rung> | --list"; exit 2; }
+
+LIST=0
+RANK=""
+[ "$#" -eq 1 ] || usage
+if [ "$1" = --list ]; then
+    LIST=1
+elif [[ "$1" =~ ^[0-9]{1,2}$ ]]; then
+    RANK="$1"
+else
+    usage
+fi
+
+# FLY_* lines of fly.env as `env` arguments. Values may be quoted the systemd way; nothing
+# is evaluated.
+env_args=()
+accepted=""
+if [ -r "$ENV_FILE" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        [[ "$line" =~ ^(FLY_[A-Z0-9_]*)=(.*)$ ]] || continue
+        key="${BASH_REMATCH[1]}"
+        value="${BASH_REMATCH[2]}"
+        if [[ "$value" =~ ^\"(.*)\"$ ]] || [[ "$value" =~ ^\'(.*)\'$ ]]; then
+            value="${BASH_REMATCH[1]}"
+        fi
+        env_args+=("$key=$value")
+        if [ "$key" = FLY_ACCEPT_ADAPTERS ]; then
+            accepted="$value"
+        fi
+    done < "$ENV_FILE"
+fi
+clean_env() { env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root "${env_args[@]}" "$@"; }
+
+# The same rule as 05-deploy.sh: exactly one '/'-separated field differs, it is the adapter
+# (index 1), and the archive's adapter id is listed.
+migration_accepted() {
+    local old="$1" new="$2" i differing=0 index=-1 entry
+    local -a old_parts new_parts
+    IFS='/' read -r -a old_parts <<< "$old"
+    IFS='/' read -r -a new_parts <<< "$new"
+    [ "${#old_parts[@]}" -eq "${#new_parts[@]}" ] || return 1
+    for ((i = 0; i < ${#old_parts[@]}; i++)); do
+        if [ "${old_parts[$i]}" != "${new_parts[$i]}" ]; then
+            differing=$((differing + 1))
+            index=$i
+        fi
+    done
+    [ "$differing" -eq 1 ] && [ "$index" -eq 1 ] || return 1
+    for entry in ${accepted//,/ }; do
+        [ "$entry" = "${old_parts[1]}" ] && return 0
+    done
+    return 1
+}
+
+# The root copy must be the flysim that runs: a manual rollback of /opt/fly/current without a
+# deploy would otherwise approve archives the running build refuses.
+LIVE_FLYSIM=/opt/fly/current/flysim
+[ "$(id -u)" -eq 0 ] || LIVE_FLYSIM="${FLY_LOOP_RESET_TEST_LIVE_FLYSIM:-$FLYSIM}"
+same_build() {
+    [ -f "$LIVE_FLYSIM" ] \
+        && [ "$(sha256sum < "$FLYSIM" | cut -d' ' -f1)" = "$(sha256sum < "$LIVE_FLYSIM" | cut -d' ' -f1)" ]
+}
+
+build_compat=""
+if [ -x "$FLYSIM" ] && [ "$(stat -c %u "$FLYSIM")" = "$(id -u)" ] && same_build; then
+    build_compat="$(clean_env timeout 90 "$FLYSIM" --print-compatibility 2>/dev/null | tail -n1 || true)"
+fi
+if [ -z "$build_compat" ]; then
+    log "no compatibility string from $FLYSIM (missing, not owned by $(id -un), not the running build, or failed); no rung is restorable"
+    [ "$LIST" -eq 1 ] && exit 0
+    exit 3
+fi
+
+restorable() {
+    local archive="${STATE_DIR}/milestone-$1.checkpoint" compat
+    [ -f "$archive" ] || return 1
+    compat="$(head -c 262144 "$archive" 2>/dev/null | grep -a -o -m1 '"compatibility"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | cut -d'"' -f4 || true)"
+    [ -n "$compat" ] || return 1
+    [ "$compat" = "$build_compat" ] || migration_accepted "$compat" "$build_compat"
+}
+
+if [ "$LIST" -eq 1 ]; then
+    for archive in "${STATE_DIR}"/milestone-*.checkpoint; do
+        [ -e "$archive" ] || continue
+        rung="${archive##*/milestone-}"
+        rung="${rung%.checkpoint}"
+        if [[ "$rung" =~ ^[0-9]{1,2}$ ]] && restorable "$rung"; then
+            echo "$rung"
+        fi
+    done | sort -n
+    exit 0
+fi
+
+if ! restorable "$RANK"; then
+    log "rung ${RANK}'s archive is missing or not restorable by this build (FLY_ACCEPT_ADAPTERS='${accepted}'); nothing touched"
+    exit 3
+fi
+
+# shellcheck disable=SC2317  # invoked by the EXIT trap
+finish() {
+    local status=$?
+    systemctl start "$SERVICE" || log "starting ${SERVICE} failed"
+    systemctl start "$WATCHDOG_TIMER" || log "starting ${WATCHDOG_TIMER} failed"
+    exit "$status"
+}
+trap finish EXIT
+trap 'exit 143' TERM INT HUP
+
+log "pausing ${WATCHDOG_TIMER} and stopping ${SERVICE} to reset to rung ${RANK}"
+systemctl stop "$WATCHDOG_TIMER"
+# A oneshot probe mid-run is "activating", which `is-active` does not count; wait on ActiveState.
+watchdog_idle() {
+    case "$(systemctl show -p ActiveState --value "$WATCHDOG_SERVICE")" in
+        inactive|failed) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+for _ in $(seq 1 60); do
+    watchdog_idle && break
+    sleep 1
+done
+if ! watchdog_idle; then
+    log "${WATCHDOG_SERVICE} still running after 60 s; not resetting"
+    exit 4
+fi
+systemctl stop "$SERVICE"
+status=0
+clean_env FLY_BIN="$FLYSIM" "$RESET_BIN" "$RANK" || status=$?
+[ "$status" -eq 0 ] || log "fly-reset-to-milestone ${RANK} failed (exit ${status}); starting ${SERVICE} on the state it left"
+exit "$status"

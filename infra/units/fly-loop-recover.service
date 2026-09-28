@@ -1,8 +1,13 @@
 [Unit]
-Description=Check confirmed macro loops for minimal flysim recovery
+Description=Recover confirmed macro loops: flysim restart, then milestone resets
 
 [Service]
 Type=oneshot
 User=fly
 EnvironmentFile=-/etc/fly/loop-recovery.env
+# The ladder's state and history outlive a reboot (/run does not).
+StateDirectory=fly-loop-recover
+# A step: the rung list (<=2 min), up to 90 s of model calls, a 60 s on-stream countdown,
+# the reset (<=8 min) and 4 min to verify. systemd must never kill the wrapper mid-reset.
+TimeoutStartSec=25min
 ExecStart=/opt/fly/bin/fly-loop-recover
