@@ -878,3 +878,16 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   branch reaches Pewter on frame 23,755, and offers no button on any of the 67 challenge frames
   (67 of 67 before). Survey seed 7: rung 9 -> BOULDER BADGE. The trap hunt's stub cannot see this
   trap; the ROM test and survey are the proof (recorded deviation). Ethos check held.
+- 2026-09-28 (v0.6.4, infra + stage, auto): automatic loop recovery that climbs. The v0.6.3 timer
+  only restarted flysim, once an hour; a trap that outlives a restore (Mt. Moon, rung 12, GO
+  OBJECTIVE / GO WARP) was restarted 48 times in two days. `fly-loop-recover` now climbs a ladder
+  per confirmed trap that outlives the last step: restart flysim, reset to the current rung's
+  milestone, reset to the rung below the best (never lower); two resets a day, restarts three
+  hours apart once they are spent; it starts over at a new best rung or after six quiet hours, and
+  its state survives a reboot. A router model list confirms each step and can delay it three
+  probes, never deny it. Resets go through one root wrapper (`fly-loop-reset`) that runs only a
+  root-owned flysim identical to the running one, uses only archives this build can restore,
+  and pauses the watchdog for the reset. Every step is announced 60 s ahead on stream: the
+  recovery splash counts down over the stuck loop, covers the game while it acts, and reports the
+  result (`apps/stage/mockups/`). Independent review: BLOCK, then fixed; round 2 approved with
+  the watchdog wait fixed.
