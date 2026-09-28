@@ -19,6 +19,14 @@ a ladder one step per trap that outlives the previous step:
 - **Starting over:** the ladder returns to level 0 when the fly reaches a new best rung, or after
   six hours with no suspected report.
 
+A milestone step only uses an archive the running build can restore: `fly-loop-reset --check`
+compares the archive's compatibility string with `flysim --print-compatibility` and accepts an
+adapter-only difference that `FLY_ACCEPT_ADAPTERS` in `/etc/fly/fly.env` names (the rule
+`05-deploy.sh` applies). A flysim that refuses every checkpoint refuses to start, so an archive
+from an older adapter is skipped for the next one down unless the deploy named its adapter; with
+none restorable the step is a restart. Keep `FLY_ACCEPT_ADAPTERS` in the release env file so a
+deploy does not drop it.
+
 A milestone step runs `/opt/fly/bin/fly-loop-reset <rung>` through sudo (the one line in
 `config/fly-sudoers`): stop flysim, `fly-reset-to-milestone`, start flysim. flysim is started again
 even when the reset fails. The reset copies both stores to `/srv/fly/state.reset-<UTC>` first, as

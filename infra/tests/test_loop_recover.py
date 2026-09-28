@@ -40,6 +40,10 @@ class RecoveryTests(unittest.TestCase):
         for key in ("FLY_LOOP_ROUTER_URL", "FLY_LOOP_MODELS", "FLY_LOOP_MODEL", "FLY_LOOP_ROUTER_KEY"):
             recover.os.environ.pop(key, None)
         self.acts = []
+        self.unrestorable = set()
+        restorable = patch.object(recover, "restorable", side_effect=lambda rung: rung not in self.unrestorable)
+        restorable.start()
+        self.addCleanup(restorable.stop)
         self.act = patch.object(recover, "act", side_effect=lambda action, target: self.acts.append((action, target)) or True)
         self.act.start()
         self.addCleanup(self.act.stop)
@@ -88,6 +92,18 @@ class RecoveryTests(unittest.TestCase):
         recover.write_json(recover.STATE, state)
         self.confirm(T0, rank=11)
         self.assertEqual(self.acts, [("reset", 11)])
+
+    def test_an_archive_this_build_cannot_restore_is_skipped(self):
+        self.unrestorable = {11}
+        recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "resets": [], "actedAt": 0})
+        self.confirm(T0)
+        self.assertEqual(self.acts, [("reset", 10)])
+
+    def test_no_restorable_archive_means_a_restart(self):
+        self.unrestorable = {1, 9, 10, 11, 12}
+        recover.write_json(recover.STATE, {"level": 1, "bestRank": 12, "resets": [], "actedAt": 0})
+        self.confirm(T0)
+        self.assertEqual(self.acts, [("restart", None)])
 
     def test_new_best_rung_starts_the_ladder_over(self):
         recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "resets": [], "actedAt": 0})

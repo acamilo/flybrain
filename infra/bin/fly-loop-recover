@@ -148,10 +148,19 @@ def plan(level, rank, best, resets_left):
     if level == 0 or not resets_left or rank is None:
         return "restart", None
     ceiling = rank if level == 1 else min(rank, max(best, rank) - 1)
-    below = [rung for rung in rungs() if rung <= ceiling]
-    if below:
-        return "reset", below[-1]
+    for rung in reversed([rung for rung in rungs() if rung <= ceiling]):
+        if restorable(rung):
+            return "reset", rung
     return "restart", None
+
+
+def restorable(rung):
+    """Whether the running build can restore this archive (fly-loop-reset --check)."""
+    try:
+        return subprocess.run(["sudo", "-n", RESET_BIN, "--check", str(rung)], check=False, timeout=60,
+                              stdout=subprocess.DEVNULL).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def status():

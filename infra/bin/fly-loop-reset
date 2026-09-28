@@ -8,24 +8,78 @@
 # again whether or not the reset worked, so the stream never stays down on a failure;
 # fly-reset-to-milestone copies both stores aside before it rewrites anything.
 #
-# Usage: fly-loop-reset <rung>
+# fly-reset-to-milestone does not check that the running build can restore the archive, and a
+# flysim that refuses every checkpoint refuses to start: a black stream. So an archive is only
+# used when its compatibility string equals this build's, or differs only in an adapter id that
+# FLY_ACCEPT_ADAPTERS in /etc/fly/fly.env names (05-deploy.sh's adapter_migration_accepted).
+#
+# Usage: fly-loop-reset [--check] <rung>    (--check: exit 0 if restorable, 3 if not; touch nothing)
 set -euo pipefail
 
 : "${FLY_STATE_DIR:=/srv/fly/state}"
 : "${FLY_SERVICE:=flysim.service}"
 : "${FLY_RESET_BIN:=/opt/fly/bin/fly-reset-to-milestone}"
+: "${FLY_ENV_FILE:=/etc/fly/fly.env}"
+: "${FLY_BIN:=/opt/fly/current/flysim}"
 
 log() { echo "fly-loop-reset: $*" >&2; }
 
+CHECK=0
+if [ "${1:-}" = "--check" ]; then
+    CHECK=1
+    shift
+fi
 RANK="${1:-}"
 if [ "$#" -ne 1 ] || ! [[ "$RANK" =~ ^[0-9]{1,2}$ ]]; then
-    log "usage: fly-loop-reset <rung>"
+    log "usage: fly-loop-reset [--check] <rung>"
     exit 2
 fi
-if [ ! -f "${FLY_STATE_DIR}/milestone-${RANK}.checkpoint" ]; then
+ARCHIVE="${FLY_STATE_DIR}/milestone-${RANK}.checkpoint"
+if [ ! -f "$ARCHIVE" ]; then
     log "no milestone archive for rung ${RANK}; nothing touched"
     exit 1
 fi
+
+# The same rule as 05-deploy.sh: exactly one '/'-separated field differs, it is the adapter
+# (index 1), and the archive's adapter id is listed.
+migration_accepted() {
+    local old="$1" new="$2" accepted="$3" i differing=0 index=-1 entry
+    local -a old_parts new_parts
+    IFS='/' read -r -a old_parts <<< "$old"
+    IFS='/' read -r -a new_parts <<< "$new"
+    [ "${#old_parts[@]}" -eq "${#new_parts[@]}" ] || return 1
+    for ((i = 0; i < ${#old_parts[@]}; i++)); do
+        if [ "${old_parts[$i]}" != "${new_parts[$i]}" ]; then
+            differing=$((differing + 1))
+            index=$i
+        fi
+    done
+    [ "$differing" -eq 1 ] && [ "$index" -eq 1 ] || return 1
+    for entry in ${accepted//,/ }; do
+        [ "$entry" = "${old_parts[1]}" ] && return 0
+    done
+    return 1
+}
+
+accepted=""
+if [ -r "$FLY_ENV_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    . "$FLY_ENV_FILE"
+    set +a
+    accepted="${FLY_ACCEPT_ADAPTERS:-}"
+fi
+archive_compat="$(head -c 262144 "$ARCHIVE" 2>/dev/null | grep -a -o -m1 '"compatibility":"[^"]*"' | head -n1 | cut -d'"' -f4 || true)"
+build_compat="$("$FLY_BIN" --print-compatibility 2>/dev/null | tail -n1 || true)"
+if [ -z "$archive_compat" ] || [ -z "$build_compat" ]; then
+    log "cannot read the compatibility of rung ${RANK}'s archive or of this build; nothing touched"
+    exit 3
+fi
+if [ "$archive_compat" != "$build_compat" ] && ! migration_accepted "$archive_compat" "$build_compat" "$accepted"; then
+    log "rung ${RANK}'s archive ($(echo "$archive_compat" | cut -d/ -f2)) is not restorable by this build ($(echo "$build_compat" | cut -d/ -f2)), FLY_ACCEPT_ADAPTERS='${accepted}'; nothing touched"
+    exit 3
+fi
+[ "$CHECK" -eq 0 ] || exit 0
 
 log "stopping ${FLY_SERVICE} to reset to rung ${RANK}"
 systemctl stop "$FLY_SERVICE"
