@@ -40,6 +40,7 @@ import { HealthState, Metrics } from './health';
 import type { ExplainerPoster } from './explainer';
 import type { OnscreenChat } from './onscreen-chat';
 import type { ChatSubscriptionHealth } from './subscription-health';
+import { safeErrorMessage } from './redact';
 import { isWebsocketTransportLimitError } from './subscription-health';
 
 /** What one created subscription looks like from here: an id, which is all this module uses. */
@@ -244,7 +245,7 @@ export function startEventSub(deps: EventSubDeps): EventSubListeners {
       connected.set(listener, false);
       publishConnected();
       deps.metrics.increment('flybridge_eventsub_reconnects_total');
-      if (error) console.error(`flybridge: EventSub ${which} socket for ${userId} disconnected: ${error.message}`);
+      if (error) console.error(`flybridge: EventSub ${which} socket for ${userId} disconnected: ${safeErrorMessage(error)}`);
       if (carriesChat) {
         // twurple marks every subscription for this user dropped and re-creates them on the next
         // `session_welcome`. Arm the grace timer here: if the re-create never lands (the 429
@@ -280,7 +281,7 @@ export function startEventSub(deps: EventSubDeps): EventSubListeners {
     });
 
     listener.onSubscriptionCreateFailure((subscription, error) => {
-      console.error(`flybridge: EventSub subscription create failure for ${subscription.id}: ${error.message}`);
+      console.error(`flybridge: EventSub subscription create failure for ${subscription.id}: ${safeErrorMessage(error)}`);
       deps.metrics.increment('flybridge_eventsub_subscription_create_failures_total');
       if (isWebsocketTransportLimitError(error)) {
         deps.metrics.increment('flybridge_eventsub_transport_limit_total');

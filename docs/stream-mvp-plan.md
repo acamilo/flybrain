@@ -891,3 +891,10 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   recovery splash counts down over the stuck loop, covers the game while it acts, and reports the
   result (`apps/stage/mockups/`). Independent review: BLOCK, then fixed; round 2 approved with
   the watchdog wait fixed.
+- 2026-09-28 (bridge, unreleased): chat died for hours after an unrelated bridge outage outlived
+  both access tokens (~4 h) and the next start failed `validate` with 401 in a crash loop, with
+  both refresh tokens still good. Closes the v0.2.3 debt: on load, a stored token expired by its
+  timestamps or rejected with 401 is refreshed once through its role's provider before giving up,
+  and every refresh is persisted under its own role (serialized atomic 0600 writes), so both roles
+  survive when they are one account. Only a refresh Twitch refuses is fatal, one line pointing at
+  the runbook's re-authorize step; Twitch errors are logged without URLs, tokens or the secret.
