@@ -57,6 +57,12 @@ export interface StageOptions {
   audio: boolean;
   /** `?metrics=1` keeps the paint-stage histogram and prints it on demand. */
   metrics: boolean;
+  /**
+   * Poll `flystage-web` for the auto-recovery notice (`src/lib/recovery.ts`). On by default in
+   * `live` mode and off in `player` mode, so a fixture screenshot can never pick up a notice file
+   * that happens to exist on the machine; `?recovery=1` / `?recovery=0` force it either way.
+   */
+  recovery: boolean;
 }
 
 const THEMES: readonly StageTheme[] = ['t1', 't2', 't3'];
@@ -114,6 +120,7 @@ export function parseStageOptions(search: string, defaultFeedUrl = 'ws://127.0.0
     },
     audio: flag(params, 'audio', true),
     metrics: flag(params, 'metrics', false),
+    recovery: flag(params, 'recovery', mode === 'live'),
   };
 }
 

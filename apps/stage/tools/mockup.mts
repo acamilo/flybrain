@@ -24,6 +24,8 @@
  *     macros-center.png          wide pad with both of its columns filled
  *     macros-tab.png
  *     pad-strip.png
+ *     recovery-{countdown,acting,done,failed}-{reset,restart}.png
+ *                                the auto-recovery splash, each phase and both actions
  *
  * T1 Instrument is the chosen theme (`docs/stream-mvp-plan.md`, decisions 2026-09-15 evening), so
  * the theme sweep the first gate needed is gone: what these images are for now is the *layout* and
@@ -141,6 +143,34 @@ const MOMENTS: { name: string; type: string; label: string; detail: string; tab?
   { name: 'moment-sugar', type: 'sugar', label: 'SUGAR', detail: 'ada', tab: 'senses' },
   { name: 'moment-rollback', type: 'rollback', label: 'Rolled back to the archived frame', detail: 'try 3' },
 ];
+
+/**
+ * The recovery splash shots (`src/panels/RecoverySplash.tsx`): every phase for both actions,
+ * driven through `window.__stage.recovery` with the splash's clock pinned 18 s into the countdown,
+ * so the clock reads 0:42 on every machine. The notice is the contract's own example.
+ */
+const RECOVERY_T = 1_790_629_095;
+const RECOVERY_SHOTS = (['countdown', 'acting', 'done', 'failed'] as const).flatMap((phase) =>
+  (['reset', 'restart'] as const).map((action) => ({
+    name: `recovery-${phase}-${action}`,
+    nowS: phase === 'countdown' ? RECOVERY_T + 18 : RECOVERY_T + 63,
+    notice: {
+      v: 1,
+      id: `${RECOVERY_T}-${action}`,
+      phase,
+      action,
+      fromRung: 12,
+      fromLabel: 'MT. MOON',
+      ...(action === 'reset' ? { toRung: 11, toLabel: 'PEWTER CITY' } : {}),
+      reason: 'unrewarded',
+      loop: ['GO OBJECTIVE', 'GO WARP'],
+      stuckSeconds: 1800,
+      announcedAt: RECOVERY_T,
+      executeAt: RECOVERY_T + 60,
+      updatedAt: phase === 'countdown' ? RECOVERY_T : RECOVERY_T + 60,
+    },
+  })),
+);
 
 function run(command: string, args: string[]): Promise<void> {
   return new Promise((done, fail) => {
@@ -262,6 +292,23 @@ async function main(): Promise<void> {
       written.push(path);
       const state = await page.evaluate(() => window.__stage?.motion() ?? null);
       console.log(`  ${path}  (${String(state?.moment)} ${String(state?.momentPhase)}, ${String(state?.particles)} particles, tab ${String(state?.tab)})`);
+    }
+
+    for (const shot of RECOVERY_SHOTS) {
+      if (!wanted(shot.name)) continue;
+      await page.goto(url(baseUrl, { fixture: 'steady', t: 95, tab: 'senses' }));
+      await settle(page);
+      const shown = await page.evaluate(([notice, nowS]) => window.__stage?.recovery(notice, nowS as number) ?? null, [
+        shot.notice,
+        shot.nowS,
+      ] as const);
+      if (shown === null) throw new Error(`${shot.name}: the splash refused its notice`);
+      // The text box rises in over 320 ms (`src/theme/recovery.css`).
+      await page.waitForTimeout(500);
+      const path = resolve(outDir, `${shot.name}.png`);
+      await page.screenshot({ path, clip: FRAME });
+      written.push(path);
+      console.log(`  ${path}  (${shown.layout}: ${shown.headline} / ${shown.body} ${shown.countdown})`);
     }
 
     // Two extra review shots: the fly strip alone, at 2x, once per renderer. The strip is 800x220

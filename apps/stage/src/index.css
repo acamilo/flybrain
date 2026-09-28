@@ -3,6 +3,7 @@
 @import './theme/panels.css';
 @import './theme/rail.css';
 @import './theme/motion.css';
+@import './theme/recovery.css';
 
 /**
  * Self-hosted OFL faces. `font-display: block` with the default 3 s block period is deliberate:
