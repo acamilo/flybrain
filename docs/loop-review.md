@@ -9,8 +9,8 @@ the project."
 1. The release watchdog (`infra/bin/fly-watchdog` check 10) flags a suspected loop: few distinct
    macros, a short sequence repeating, no growth in places explored. It exports
    `fly_loop_suspected` and writes `/run/fly/wd/loop.json`. It never acts. The separate
-   `fly-loop-recover.timer` can restart only flysim after two fresh suspected probes;
-   see `infra/docs/loop-recovery.md`. This does not replace checkpoint-based review.
+   `fly-loop-recover.timer` unsticks a confirmed trap on its own: flysim restart, then milestone
+   resets (`infra/docs/loop-recovery.md`). That buys time; it does not replace checkpoint-based review.
 2. The coordinator session (Fable) checks that marker on a schedule. On a flag it pulls the
    live checkpoint read-only (`pct pull`, into `.local/checkpoints/`, never committed), and
    spawns a review agent with the trap brief: reproduce from the checkpoint with the real

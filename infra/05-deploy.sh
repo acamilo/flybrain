@@ -685,9 +685,19 @@ fi
 # ---------------------------------------------------------------------------
 log "05-deploy: converging bin/ helpers to /opt/fly/bin"
 ct_exec "$CTID" -- mkdir -p /opt/fly/bin
-for name in fly-watchdog fly-loop-recover fly-recap fly-retention fly-reset-to-milestone flypush flystage-launch flycast-launch wait-for-x wait-for-stage wait-for-health; do
+for name in fly-watchdog fly-loop-recover fly-loop-reset fly-recap fly-retention fly-reset-to-milestone flypush flystage-launch flycast-launch wait-for-x wait-for-stage wait-for-health; do
     converge_file "$CTID" "$INFRA_DIR/bin/$name" "/opt/fly/bin/$name" 0755 root:root >/dev/null
 done
+
+# The NOPASSWD surface those helpers use (config/fly-sudoers). 02-base installs it at
+# provision time; converging it here too means a release that adds a helper's line
+# (fly-loop-reset, v0.6.4) does not need a re-provision. Validated before install.
+log "05-deploy: converging config/fly-sudoers, validated before install"
+TMP_SUDOERS="/tmp/fly-sudoers.$$"
+ct_push_file "$CTID" "$INFRA_DIR/config/fly-sudoers" "$TMP_SUDOERS" 0440
+ct_exec "$CTID" -- visudo -c -f "$TMP_SUDOERS" || die "config/fly-sudoers failed visudo -c, refusing to install it"
+ct_exec "$CTID" -- install -o root -g root -m 0440 "$TMP_SUDOERS" /etc/sudoers.d/fly-watchdog
+ct_exec "$CTID" -- rm -f "$TMP_SUDOERS"
 
 # ---------------------------------------------------------------------------
 # 5. reload if anything unit-shaped changed

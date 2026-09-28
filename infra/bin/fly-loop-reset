@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# infra/bin/fly-loop-reset — the milestone step of fly-loop-recover's ladder, as root.
+#
+# fly-loop-recover runs as User=fly and reaches this through one NOPASSWD sudoers line
+# (config/fly-sudoers). It does what infra/docs/runbook.md "Restart the run from a rung"
+# does by hand for a release whose adapter already wrote the archive: stop flysim, promote
+# milestone-<N>.checkpoint with fly-reset-to-milestone, start flysim. flysim is started
+# again whether or not the reset worked, so the stream never stays down on a failure;
+# fly-reset-to-milestone copies both stores aside before it rewrites anything.
+#
+# Usage: fly-loop-reset <rung>
+set -euo pipefail
+
+: "${FLY_STATE_DIR:=/srv/fly/state}"
+: "${FLY_SERVICE:=flysim.service}"
+: "${FLY_RESET_BIN:=/opt/fly/bin/fly-reset-to-milestone}"
+
+log() { echo "fly-loop-reset: $*" >&2; }
+
+RANK="${1:-}"
+if [ "$#" -ne 1 ] || ! [[ "$RANK" =~ ^[0-9]{1,2}$ ]]; then
+    log "usage: fly-loop-reset <rung>"
+    exit 2
+fi
+if [ ! -f "${FLY_STATE_DIR}/milestone-${RANK}.checkpoint" ]; then
+    log "no milestone archive for rung ${RANK}; nothing touched"
+    exit 1
+fi
+
+log "stopping ${FLY_SERVICE} to reset to rung ${RANK}"
+systemctl stop "$FLY_SERVICE"
+status=0
+"$FLY_RESET_BIN" "$RANK" || status=$?
+[ "$status" -eq 0 ] || log "fly-reset-to-milestone ${RANK} failed (exit ${status}); starting ${FLY_SERVICE} on the state it left"
+systemctl start "$FLY_SERVICE"
+exit "$status"
