@@ -27,7 +27,7 @@ use super::executor::{
     WALK_FRAME_CEILING, walk_budget,
 };
 use super::palette::{
-    MacroId, MacroKind, Palette, SLOTS, amenity_goals, answer_key, errand, facing_nurse,
+    MacroId, MacroKind, Palette, SLOTS, amenity_goals, amenity_wanted, answer_key, errand, facing_nurse,
     healthiest_other, heal_goals, inside_center, nurse_prompt, rested_nurse, service_needed,
     listing, losing, move_slot_bound, objective_goals, party_needs_rest, party_rested,
     poke_sprite, precondition, throw_slot, untalked_objects, untalked_people, ways,
@@ -5724,4 +5724,87 @@ fn a_purchase_answers_the_price_box_once_the_cartridge_has_drawn_it() {
     world.b_to_close = u8::MAX;
     assert_eq!(run(&mut world, MacroKind::BuyBall).unwrap(), MacroAbort::Blocked);
     assert_eq!(world.bought, 0);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Row 62, review round 2: a service is not dealt off the area's ground, nor out of the rung's room
+// ---------------------------------------------------------------------------------------------
+
+/// A hurt fly with no ball and money for one, on `map` at `(x, y)`, the rung in Cerulean.
+fn hurt_on(map: u8, x: u8, y: u8) -> World {
+    let mut world = World::room().at(x, y);
+    world.map = map;
+    world.size = MapSize { width: 40, height: 36 };
+    world.warps = Vec::new();
+    world.mons[0].hp = 7;
+    world.money = 1_000;
+    world.objective = Some(Objective {
+        map: maps::CERULEAN_CITY,
+        tile: None,
+        warp: None,
+        edge: None,
+        target: None,
+    });
+    world
+}
+
+#[test]
+fn east_of_mt_moon_route_4s_centre_is_not_the_areas_errand_or_service() {
+    // B1: Route 4's east side (where the fly comes out of the mountain, hurt) and B1F's exit
+    // chamber are "in Route 4", and the centre is on the west side through B2F, which is in no
+    // area. The pad dealt `GO HEAL` there, its walk took it into B2F, and it left the pad one hop
+    // in, opposite `GO OBJECTIVE`'s road back up: a two-map ring by construction.
+    for (map, x, y, place) in [
+        (maps::ROUTE_4, 30, 10, "Route 4 east"),
+        (maps::MT_MOON_B1F, 26, 4, "B1F exit chamber"),
+    ] {
+        let mut world = hurt_on(map, x, y);
+        assert!(party_needs_rest(&mut world));
+        assert_eq!(errand(&mut world, Amenity::Center), None, "{place}: not the area's errand from here");
+        assert_eq!(amenity_wanted(&mut world, Amenity::Center), None, "{place}: nor its service");
+        assert!(amenity_goals(&mut world, Amenity::Center).is_empty(), "{place}");
+        assert!(!on_the_pad(&mut world, MacroKind::GoHeal), "{place}: GO HEAL is off the pad");
+        assert_eq!(
+            super::palette::objective_place(&mut world).map(|place| place.map),
+            Some(maps::CERULEAN_CITY),
+            "{place}: GO OBJECTIVE is the rung, not the centre behind the mountain"
+        );
+    }
+
+    // West of the mountain, and on the first floor, it is the area's centre as it was.
+    let mut world = hurt_on(maps::ROUTE_4, 12, 8);
+    world.warps = vec![Warp { x: 11, y: 5, destination_warp: 0, destination_map: maps::MT_MOON_POKECENTER }];
+    assert_eq!(amenity_wanted(&mut world, Amenity::Center), Some(maps::MT_MOON_POKECENTER));
+    assert!(on_the_pad(&mut world, MacroKind::GoHeal), "the door is a few tiles away");
+    let mut world = hurt_on(maps::MT_MOON_1F, 14, 20);
+    assert_eq!(amenity_wanted(&mut world, Amenity::Center), Some(maps::MT_MOON_POKECENTER));
+}
+
+#[test]
+fn a_service_does_not_walk_the_fly_out_of_the_rungs_room() {
+    // B2, row 58's ROM test on the branch: in the Pewter Gym with BROCK up the room, a hurt party
+    // and an empty bag put `GO HEAL` and `GO SHOP` on the pad, and both walked out of the door the
+    // fly had just come in by -- four of six arrivals bounced. Row 29's rule is the ways out's and
+    // is now the services' too.
+    let mut world = pewter_gym_doormat();
+    world.mons[0].hp = 7;
+    world.money = 1_000;
+    world.bag = Vec::new();
+    assert!(service_needed(&mut world, Amenity::Center));
+    assert!(service_needed(&mut world, Amenity::Mart));
+    assert!(!super::palette::objective_targets(&mut world).is_empty(), "BROCK is in the room");
+    assert_eq!(amenity_wanted(&mut world, Amenity::Center), None);
+    assert_eq!(amenity_wanted(&mut world, Amenity::Mart), None);
+    assert!(!on_the_pad(&mut world, MacroKind::GoHeal));
+    assert!(!on_the_pad(&mut world, MacroKind::GoShop));
+    assert!(on_the_pad(&mut world, MacroKind::GoObjective), "the walk to him is still there");
+
+    // The rule's own escape hatch: with the room's people talked to (or excluded), the services
+    // are wanted again and the centre is Pewter's.
+    for slot in [1, 2] {
+        world.talked.insert(TalkTarget::Sprite(slot));
+    }
+    assert!(super::palette::objective_targets(&mut world).is_empty());
+    assert_eq!(amenity_wanted(&mut world, Amenity::Center), Some(maps::PEWTER_POKECENTER));
+    assert_eq!(amenity_wanted(&mut world, Amenity::Mart), Some(maps::PEWTER_MART));
 }

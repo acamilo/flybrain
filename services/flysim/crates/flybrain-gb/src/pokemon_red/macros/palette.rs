@@ -877,7 +877,7 @@ pub fn errand(state: &mut dyn MacroState, kind: Amenity) -> Option<u8> {
     if kind == Amenity::Mart && state.money() < CHEAPEST_PURCHASE {
         return None;
     }
-    let map = geography::amenity_of(area, kind)?;
+    let map = amenity_in_reach(state, area, kind)?;
     // **A building this run has already been inside is an errand already discharged.** The session
     // ledger above is the errand's own record and it is the one that can be missing: it is written
     // from the frame the fly stands on the building's map, so a restore starts with it empty and
@@ -1067,7 +1067,33 @@ pub fn amenity_wanted(state: &mut dyn MacroState, kind: Amenity) -> Option<u8> {
     if !service_needed(state, kind) {
         return None;
     }
-    geography::amenity_of(area_here(state)?, kind)
+    // **The room the rung is in is not left for a service** (row 62, review round 2). The same
+    // rule row 29 gave the ways out ([`exit_tiers`]) and row 58 measured in the Pewter Gym: while
+    // the thing that earns the rung stands on this map untalked and unexcluded, nothing walks the
+    // fly out of the room. A hurt party in a gym is the common case -- its trainers are why -- and
+    // `GO HEAL` / `GO SHOP` from the gym's floor were four of its six doormat bounces. The errand
+    // above needs no such line: while it stands it *is* the objective, so the rung's target is not
+    // on this map. The escape hatch is the rule's own: a target no walk reaches is excluded for
+    // the window, `objective_targets` empties, and the service is wanted again.
+    if !objective_targets(state).is_empty() {
+        return None;
+    }
+    let area = area_here(state)?;
+    amenity_in_reach(state, area, kind)
+}
+
+/// `area`'s building of `kind`, when the route to it from the piece of ground the fly stands on
+/// stays inside the area ([`geography::route_within`]).
+///
+/// Row 62's review, round 2: Route 4's centre is on the mountain's west side, and Route 4's east
+/// side and Mt. Moon B1F's exit chamber are in Route 4's area too -- but the only road from them
+/// to that door runs through B2F, which is in no area, so the button that started the walk left
+/// the pad one hop in, opposite `GO OBJECTIVE`'s road to Cerulean. From there the centre is not
+/// this area's building; Cerulean's is one edge away, and it is its own area's.
+fn amenity_in_reach(state: &mut dyn MacroState, area: u8, kind: Amenity) -> Option<u8> {
+    let map = geography::amenity_of(area, kind)?;
+    let from = region_here(state)?;
+    geography::route_within(from, map, area).then_some(map)
 }
 
 /// Inside a building with a job to do: the tiles to face its counter person from, whatever the

@@ -665,6 +665,32 @@ pub fn amenity_of(area: u8, kind: Amenity) -> Option<u8> {
         .map(|(_, _, map)| *map)
 }
 
+/// Whether the route [`next_step`] walks from `from` to the map `to` stays inside `area` on every
+/// hop, which is what makes `to` *this area's* building from where the fly stands.
+///
+/// An area is counted by map id ([`area_of`]), and a split map's pieces can be in one area while
+/// the ground between them is not: Route 4's east side, and Mt. Moon B1F's exit chamber, are "in
+/// Route 4" and its centre is on the west side, through B2F, which is in no area at all (row 62,
+/// review round 2). A walk that has to leave the area to reach the building is not the area's
+/// errand from here -- it is the mountain crossed backwards, and the first hop off the area drops
+/// the button that started it. `true` when `from` is already on `to`; `false` when no route is
+/// known.
+pub fn route_within(from: Region, to: u8, area: u8) -> bool {
+    let mut here = from;
+    // A shortest route never revisits a piece, so it is at most as long as the table is big.
+    for _ in 0..=LINKS.len() + CONNECTIONS.len() {
+        if here.map == to {
+            return true;
+        }
+        let Some(hop) = next_step(here, to) else { return false };
+        if hop.map != to && area_of(hop.map) != Some(area) {
+            return false;
+        }
+        here = hop;
+    }
+    false
+}
+
 /// Which kind of amenity `map` *is*, when it is one.
 ///
 /// The reverse lookup, and what tells the fly it is standing in a mart rather than in a house: the
@@ -1099,6 +1125,32 @@ mod tests {
         assert_eq!(amenity_at(maps::VIRIDIAN_POKECENTER), Some(Amenity::Center));
         assert_eq!(amenity_at(maps::VIRIDIAN_GYM), None);
         assert_eq!(amenity_at(maps::VIRIDIAN_CITY), None);
+    }
+
+    #[test]
+    fn route_4s_centre_is_the_areas_only_from_the_mountains_west_side() {
+        // Row 62, review round 2: Route 4's east side and B1F's exit chamber are in Route 4's
+        // area, and the only road from them to its centre is through B2F, which is in none.
+        let centre = maps::MT_MOON_POKECENTER;
+        let area = maps::ROUTE_4;
+        assert_eq!(next_step(Region::piece(maps::ROUTE_4, EAST_SIDE), centre).map(|hop| hop.map), Some(maps::MT_MOON_B1F));
+        assert_eq!(next_step(Region::piece(maps::MT_MOON_B1F, B1F_EXIT), centre).map(|hop| hop.map), Some(maps::MT_MOON_B2F));
+        assert_eq!(area_of(maps::MT_MOON_B2F), None, "the fossil floor opens on no outdoor map");
+        assert!(!route_within(Region::piece(maps::ROUTE_4, EAST_SIDE), centre, area));
+        assert!(!route_within(Region::piece(maps::MT_MOON_B1F, B1F_EXIT), centre, area));
+        // The west side, the first floor and the three chambers a first-floor ladder reaches.
+        assert!(route_within(Region::piece(maps::ROUTE_4, WEST_SIDE), centre, area));
+        assert!(route_within(Region::whole(maps::MT_MOON_1F), centre, area));
+        for chamber in [B1F_WEST, B1F_MIDDLE, B1F_SOUTH] {
+            assert!(route_within(Region::piece(maps::MT_MOON_B1F, chamber), centre, area), "{chamber}");
+        }
+        assert!(route_within(Region::whole(centre), centre, area), "already there");
+        // A town is one piece, so every building off it is within: nothing moved for them.
+        for (town, kind) in [(maps::VIRIDIAN_CITY, Amenity::Mart), (maps::PEWTER_CITY, Amenity::Center)] {
+            let building = amenity_of(town, kind).unwrap();
+            assert!(route_within(Region::whole(town), building, town));
+            assert!(route_within(Region::whole(maps::PEWTER_GYM), maps::PEWTER_POKECENTER, maps::PEWTER_CITY));
+        }
     }
 
     #[test]
