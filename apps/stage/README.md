@@ -278,10 +278,14 @@ it reads as the cartridge's text box, not as a rail panel or an alarm:
 
 | Phase | Layout | Reset copy | Restart copy |
 |---|---|---|---|
-| `countdown` | Text box over the bottom ~40% of the game, big `M:SS` to `executeAt`, the loop and how long it was stuck. The stuck loop stays visible above it | The fly is stuck in a loop! / Rewinding to PEWTER CITY in 0:42 | … / Shaking it off in 0:42 |
-| `acting` | Covers the whole 800x720 game panel, which is frozen or blank while flysim is down; a stepped progress bar | Rewinding… / Back to PEWTER CITY | Shaking it off… / Same place, fresh start |
-| `done` | Text box, 8 s after the helper's `updatedAt` | Back at PEWTER CITY! | All shaken off! |
-| `failed` | Text box, 20 s | That didn't work / A human will take a look | same |
+| `countdown` | Text box over the bottom ~40% of the game, big `M:SS` to `executeAt`, the loop and how long it was stuck. The stuck loop stays visible above it | The fly is stuck in a loop! / Rewinding to the BOULDER BADGE milestone in 0:42 | … / Shaking it off in 0:42 |
+| `acting` | Covers the whole 800x720 game panel, which is frozen or blank while flysim is down; a stepped progress bar | Rewinding… / Back to the BOULDER BADGE milestone | Shaking it off… / Same place, fresh start |
+| `done` | Text box, 8 s after the helper's `updatedAt` | Back at the BOULDER BADGE milestone! | All shaken off! |
+| `failed` | Text box, 20 s | That didn't work / Trying something else next | same |
+
+A reset names its target by the ladder label: a place as is (`PEWTER CITY`), any other rung as
+`the BOULDER BADGE milestone`, and the rung the fly is already on as `the start of MT. MOON` (the
+ladder's first reset goes back to where it first reached that rung).
 
 **Where the notice comes from.** Not the feed: flysim is the thing being restarted. The helper
 writes `/run/fly/wd/recovery-notice.json` atomically (tmp + rename); `flystage-web`

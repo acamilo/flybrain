@@ -141,6 +141,19 @@ test('acting: covers the game while flysim is down, and gives up after a cap', (
   assert.equal(view(acting, T + 60 + RECOVERY_ACTING_MAX_S + 1), null);
 });
 
+test('a rung that is not a place reads as a milestone, and the current rung as its start', () => {
+  const badge = notice({ toRung: 11, toLabel: 'BOULDER BADGE' });
+  assert.equal(view(badge, T + 18)?.body, 'Rewinding to the BOULDER BADGE milestone in');
+  assert.equal(view({ ...badge, phase: 'acting' }, T + 63)?.body, 'Back to the BOULDER BADGE milestone');
+  assert.equal(view({ ...badge, phase: 'done', updatedAt: T + 120 }, T + 120)?.headline, 'Back at the BOULDER BADGE milestone!');
+
+  const same = notice({ toRung: 12, toLabel: 'MT. MOON' });
+  assert.equal(view(same, T + 18)?.body, 'Rewinding to the start of MT. MOON in');
+  assert.equal(view({ ...same, phase: 'done', updatedAt: T + 120 }, T + 120)?.headline, 'Back at the start of MT. MOON!');
+  assert.equal(view({ ...same, toLabel: 'BOULDER BADGE', toRung: 12, fromRung: 12 }, T + 18)?.body,
+    'Rewinding to the start of the BOULDER BADGE milestone in');
+});
+
 test('done shows about 8 s, failed a little longer, then both clear', () => {
   const done = notice({ phase: 'done', updatedAt: T + 120 });
   assert.equal(view(done, T + 120)?.headline, 'Back at PEWTER CITY!');
@@ -149,7 +162,7 @@ test('done shows about 8 s, failed a little longer, then both clear', () => {
   assert.equal(view(done, T + 120 + RECOVERY_DONE_S + 1), null);
 
   const failed = notice({ phase: 'failed', updatedAt: T + 120 });
-  assert.equal(view(failed, T + 125)?.body, 'A human will take a look');
+  assert.equal(view(failed, T + 125)?.body, 'Trying something else next');
   assert.equal(view(failed, T + 120 + RECOVERY_FAILED_S + 1), null);
 });
 

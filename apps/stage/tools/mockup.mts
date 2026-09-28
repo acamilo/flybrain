@@ -161,7 +161,7 @@ const RECOVERY_SHOTS = (['countdown', 'acting', 'done', 'failed'] as const).flat
       action,
       fromRung: 12,
       fromLabel: 'MT. MOON',
-      ...(action === 'reset' ? { toRung: 11, toLabel: 'PEWTER CITY' } : {}),
+      ...(action === 'reset' ? { toRung: 11, toLabel: 'BOULDER BADGE' } : {}),
       reason: 'unrewarded',
       loop: ['GO OBJECTIVE', 'GO WARP'],
       stuckSeconds: 1800,
