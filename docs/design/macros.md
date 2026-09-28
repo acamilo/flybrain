@@ -1694,6 +1694,26 @@ what is on the pad and reading the cartridge beside it) from the live checkpoint
   as Route 4's centre, so `HEAL` is dealt in it, and a hurt fly in Mt. Moon's first floor (whose
   area is Route 4) has `GO HEAL` to walk out to it.
 
+**Two limits on where a service is wanted** (the row's review, round 2). Both are the existing
+rules applied to the new half of the question, and both hold for the errand too.
+
+- **The building is the area's only from ground whose road to it stays in the area**
+  (`geography::route_within`). An area is counted by map id, and Route 4 is split: its east side
+  and Mt. Moon B1F's exit chamber are "in Route 4", but the only road from them to the centre on
+  the west side runs through B2F, which is in no area. So east of the mountain -- where the fly
+  arrives hurt -- `GO HEAL` walked down into B2F and left the pad there, while `GO OBJECTIVE`
+  walked back up toward Cerulean: a two-map ring by construction. The errand had the same fault
+  under `GO OBJECTIVE` itself (`errand_place` sent it to the centre behind the mountain). From
+  there Route 4's centre is not the area's; the rung is, and Cerulean's centre is one edge away
+  and its own area's. Every town is one piece, so nothing moved for them.
+- **The room the rung is in is not left for a service.** Row 29's rule (12.5), which already
+  withholds the ways out while the rung's own target stands in the room untalked and unexcluded,
+  now withholds `GO HEAL` and `GO SHOP`'s walk out as well. A hurt party in a gym is the usual
+  case -- its trainers are why -- and row 58's ROM test measured it: four of six arrivals in the
+  Pewter Gym bounced back out, two by `GO HEAL` and one by `GO SHOP`. The errand needs no such
+  line: while it stands it *is* the objective. The escape hatch is the rule's own: a target no
+  walk reaches is excluded for the window and the service is wanted again.
+
 **And `BUY BALL` reported `done` with nothing bought.** Pressed at the counter it ran 55 times from
 the Pewter checkpoint, 55 `done`, the wallet at 1,606 throughout. After the quantity the mart
 prints "POKé BALL? / That will be" and **waits for a press** (a `cont`), then prints "¥200. OK?"

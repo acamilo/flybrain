@@ -4002,3 +4002,106 @@ fn row62_go_shop_comes_back_with_no_ball_and_buy_ball_rings_up_a_ball() {
         still.bindings.iter().map(|binding| binding.name).collect::<Vec<_>>()
     );
 }
+
+/// A checkpoint from Mt. Moon B2F standing on the ladder up to B1F's exit chamber (rank 12, the
+/// party hurt), or `None`.
+fn row62_east_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_ROW62_EAST_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// Row 62, review round 2: east of Mt. Moon, `GO HEAL` is not dealt to walk a hurt fly back into
+/// the mountain.
+///
+/// **The fault** (review of the row's first round): Route 4's centre is on the mountain's west
+/// side, and Route 4's east side and B1F's exit chamber are in Route 4's area too. The only road
+/// from them to that door runs through B2F, which is in no area, so `GO HEAL` walked the fly down
+/// into B2F and left the pad there, while `GO OBJECTIVE` walked it back up toward Cerulean: a
+/// two-map ring by construction, and a hurt fly is exactly the one that comes out of the mountain.
+///
+/// The checkpoint is the live one from B2F standing on the exit chamber's ladder at (5, 7)
+/// (v0.6.4, rank 12, 28 of 85 HP). The test's own setup steps the player off the ladder and back
+/// on through the joypad, which takes it up into the exit chamber; from there it drives the stub
+/// rotation with `GO OBJECTIVE` leaned on, the road out. The claim is about the pad only: on the
+/// exit chamber and on Route 4's east side, with the party hurt, `GO HEAL` is never dealt. `main`
+/// passes it too -- it has no row for Route 4's centre at all.
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_ROW62_EAST_CHECKPOINT=.local/checkpoints/release-rank12-mtmoon-b2f-ladder.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture row62_east
+/// ```
+#[test]
+fn row62_east_of_mt_moon_go_heal_is_not_dealt_back_into_the_mountain() {
+    use flybrain_gb::emulator::buttons;
+    use flybrain_gb::pokemon_red::macros::geography::{self, Region};
+    const MT_MOON_B1F: u8 = 0x3c;
+    const MT_MOON_B2F: u8 = 0x3d;
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = row62_east_checkpoint() else {
+        eprintln!("skipped: no FLY_ROW62_EAST_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert!(run.adapter.progress().rank >= 12, "the checkpoint is on the Mt. Moon rung");
+    assert!(!run.party_rested(), "and the party is hurt");
+    let at = |run: &mut Run| {
+        flybrain_gb::pokemon_red::state::player(&mut run.gb).map(|p| (p.map, p.x, p.y))
+    };
+    assert_eq!(at(&mut run), Some((MT_MOON_B2F, 5, 7)), "on the ladder up to the exit chamber");
+
+    // Setup, not the fly: off the ladder to the right and back onto it, which climbs it.
+    for mask in [buttons::RIGHT, buttons::NONE, buttons::LEFT, buttons::NONE] {
+        for _ in 0..24 {
+            run.gb.set_buttons(mask);
+            run.gb.run_frame().expect("a frame");
+        }
+    }
+    for _ in 0..240 {
+        if at(&mut run).is_some_and(|(map, _, _)| map == MT_MOON_B1F) {
+            break;
+        }
+        run.gb.set_buttons(buttons::NONE);
+        run.gb.run_frame().expect("a frame");
+    }
+    assert_eq!(at(&mut run).map(|(map, _, _)| map), Some(MT_MOON_B1F), "up the ladder");
+
+    let east = |run: &mut Run| {
+        let Some((map, x, y)) = at(run) else { return false };
+        let grid = flybrain_gb::pokemon_red::state::map_grid(&mut run.gb).ok();
+        let region = geography::region_on(map, x, y, grid.as_ref());
+        region == Region::piece(MT_MOON_B1F, 0) || region == Region::piece(0x0f, 1)
+    };
+    let mut east_frames = 0u32;
+    let mut on_route_4 = 0u32;
+    let mut go_heal_east = 0u32;
+    let mut first: Option<(u32, Option<(u8, u8, u8)>)> = None;
+    run.force_hot = Some("macro_go_objective");
+    for frame in 0..12_000u32 {
+        run.frame();
+        if !east(&mut run) || run.party_rested() {
+            continue;
+        }
+        east_frames += 1;
+        if run.map() == ROUTE_4 {
+            on_route_4 += 1;
+        }
+        if run.layer.bound_channels().iter().any(|channel| channel == "macro_go_heal") {
+            go_heal_east += 1;
+            let here = at(&mut run);
+            first.get_or_insert((frame, here));
+        }
+    }
+    eprintln!(
+        "{:.1} brain minutes: hurt east of the mountain {east_frames} frames ({on_route_4} on Route 4), \
+         GO HEAL dealt on {go_heal_east} (first {first:?}), rank {}, route {:?}, macros {:?}",
+        run.ms / 60_000.0,
+        run.adapter.progress().rank,
+        run.route,
+        run.started
+    );
+    assert!(east_frames > 0, "the fly was never hurt on the exit chamber: {:?}", run.route);
+    assert_eq!(go_heal_east, 0, "GO HEAL dealt east of the mountain, first at {first:?}");
+}

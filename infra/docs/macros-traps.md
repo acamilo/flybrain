@@ -3134,3 +3134,16 @@ The live event log's choices against the pad the survey measured from the live c
 chosen 0 times, except `GO SHOP` (2 starts in eleven hours, both the parcel errand, dealt only
 before it was paid). None of it was the fly's choice.
 
+**Review round 2** (two blocking findings, fixed in the macros; `docs/design/macros.md` 12.26).
+(1) Route 4's centre was dealt as `GO HEAL` (and as the errand under `GO OBJECTIVE`) from Route 4's
+east side and B1F's exit chamber, both in Route 4's area, and the road to it runs through B2F, in
+no area: the button dropped one hop in, opposite the road to Cerulean. A building is now the area's
+only where the route to it stays in the area (`geography::route_within`). ROM, from the live
+B2F checkpoint stepped up the ladder: the first round deals `GO HEAL` on 642 of 2,492 hurt frames
+east of the mountain and walks back down into B2F; the fix deals it on none (`main` none, no row).
+(2) Row 58's gym test failed on the first round (6 arrivals, 4 straight back out, by `GO HEAL` and
+`GO SHOP`): a service is not wanted while the rung's own target stands in the room (row 29's rule),
+and it passes (2 arrivals, 0 out, the badge won). The live Mt. Moon B2F trap at the ladder (row 64)
+is not this mechanism: from its checkpoint all three arms stay on B2F for twenty brain minutes,
+identically, and on `main` there is no Route 4 centre to route to.
+
