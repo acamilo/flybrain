@@ -1,0 +1,458 @@
+//! SHADOW-01 end to end, on the committed toy connectome in raw mode (an explicit ROM job:
+//! `FLY_ROM`, and the workspace's `flysim` binary beside this test's).
+//!
+//! The *real* `flysim` service runs with the shadow's trace switches (`FLY_TRACE_DIR`,
+//! `FLY_TRACE_LEDGERS=1`, a hot save every second), takes sugar through its control API and is
+//! restarted once; the shadow (`fly_legacy_session::shadow::run`) follows it from its first frame.
+//! Every transition, ledger digest and live save must agree, across both processes.
+//!
+//! Then the negative controls, on copies of the same trace and spool: a work-RAM digest flipped,
+//! a sugar removed, a ledger digest flipped and a live save's bytes changed must each stop a
+//! fresh shadow with a `diverged` verdict naming the right kind, field and step.
+//!
+//! The FAFB rehearsal of the same pipeline, at stream scale, is `tools/shadow-rehearsal.sh`.
+
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use serde_json::Value;
+
+use fly_legacy_session::shadow::{self, Ended, ShadowConfig, StopFlag, verdict::Status};
+use fly_session::ExecutionMode;
+use fly_session::legacy_agent::LegacyProfileKind;
+use fly_session::legacy_parity;
+use flysim::snapshot::MacroMode;
+
+fn flysim_binary() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let release = exe.parent()?.parent()?;
+    let path = release.join("flysim");
+    path.is_file().then_some(path)
+}
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("an ephemeral port")
+        .local_addr()
+        .expect("its address")
+        .port()
+}
+
+fn http(port: u16, method: &str, path: &str, body: Option<&str>) -> Option<(u16, String)> {
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    let body = body.unwrap_or("");
+    write!(
+        stream,
+        "{method} {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .ok()?;
+    let mut text = String::new();
+    stream.read_to_string(&mut text).ok()?;
+    let status = text.split_whitespace().nth(1)?.parse().ok()?;
+    let body = text
+        .split_once("\r\n\r\n")
+        .map_or("", |(_, b)| b)
+        .to_owned();
+    Some((status, body))
+}
+
+struct Live {
+    child: Child,
+    control: u16,
+}
+
+struct LiveDirs {
+    hot: PathBuf,
+    durable: PathBuf,
+    trace: PathBuf,
+}
+
+fn start_live(binary: &Path, rom: &Path, dirs: &LiveDirs, log: &Path) -> Live {
+    let control = free_port();
+    let child = Command::new(binary)
+        .env("FLY_ROM", rom)
+        .env("FLY_DATASET", legacy_parity::toy::dir())
+        .env("FLY_STATE", &dirs.durable)
+        .env("FLY_STATE_HOT", &dirs.hot)
+        .env("FLY_FEED_BIND", format!("127.0.0.1:{}", free_port()))
+        .env("FLY_CONTROL_BIND", format!("127.0.0.1:{control}"))
+        .env("FLY_METRICS_ADDR", format!("127.0.0.1:{}", free_port()))
+        .env("FLY_MACRO_MODE", "raw")
+        .env("FLY_CHAT_ENABLED", "false")
+        .env("FLYSIM_LOOP_GAME", "pokemon-red")
+        .env("FLYSIM_LOOP_SPEED", "0")
+        .env("FLYSIM_LOOP_HOT_SECONDS", "1")
+        .env("FLYSIM_LOOP_CHECKPOINT_SECONDS", "4")
+        .env("RAYON_NUM_THREADS", "1")
+        .env("FLY_TRACE_DIR", &dirs.trace)
+        .env("FLY_TRACE_LEDGERS", "1")
+        .env_remove("FLY_TRACE")
+        .env_remove("NOTIFY_SOCKET")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(log).expect("a log"))
+        .spawn()
+        .expect("flysim starts");
+    let live = Live { child, control };
+    let deadline = Instant::now() + Duration::from_secs(240);
+    while live.brain_ms().is_none() {
+        assert!(Instant::now() < deadline, "flysim never ran");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    live
+}
+
+impl Live {
+    fn brain_ms(&self) -> Option<f64> {
+        let (status, body) = http(self.control, "GET", "/status", None)?;
+        let v: Value = serde_json::from_str(&body).ok()?;
+        (status == 200 && v["status"] == "running").then(|| v["brainMs"].as_f64())?
+    }
+
+    fn sugar(&self, ms: u32) {
+        let body = format!(r#"{{"durationMs":{ms},"by":"shadow-test","source":"operator"}}"#);
+        let (status, text) =
+            http(self.control, "POST", "/stimulate", Some(&body)).expect("the control API");
+        assert!(
+            (200..300).contains(&status),
+            "sugar refused: {status} {text}"
+        );
+    }
+
+    fn run_for(&self, brain_ms: f64) {
+        let start = self.brain_ms().expect("running");
+        while self.brain_ms().unwrap_or(start) < start + brain_ms {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn stop(mut self) {
+        let _ = Command::new("kill")
+            .args(["-TERM", &self.child.id().to_string()])
+            .status();
+        let _ = self.child.wait();
+    }
+}
+
+fn config(
+    rom: &Path,
+    root: &Path,
+    trace: &Path,
+    sources: (&Path, &Path),
+    spool: &Path,
+) -> ShadowConfig {
+    ShadowConfig {
+        trace_dir: trace.to_owned(),
+        hot_dir: sources.0.to_owned(),
+        durable_dir: sources.1.to_owned(),
+        out_dir: root.join("out"),
+        spool_dir: spool.to_owned(),
+        work_dir: root.join("work"),
+        rom_path: rom.to_owned(),
+        dataset_dir: legacy_parity::toy::dir(),
+        profile: LegacyProfileKind::Toy,
+        macro_mode: MacroMode::Raw,
+        speed: 0.0,
+        mode: ExecutionMode::InProcess,
+        agent_threads: 1,
+        required_brain_seconds: 30.0,
+        all_files: true,
+        keep_traces: true,
+        keep_spool: true,
+        exit_on_pass: false,
+        max_transitions: None,
+        spool_max_bytes: 1 << 30,
+        context_lines: 5,
+        poll: Duration::from_millis(20),
+        lag_guard: None,
+        binary_sha256: "test".to_owned(),
+        binaries: Default::default(),
+        release: String::new(),
+    }
+}
+
+fn transitions(trace: &Path) -> Vec<(PathBuf, usize)> {
+    shadow::follow::trace_files(trace)
+        .unwrap()
+        .into_iter()
+        .map(|path| {
+            let n = std::fs::read_to_string(&path)
+                .unwrap()
+                .lines()
+                .filter(|l| l.contains("\"behaviour\""))
+                .count();
+            (path, n)
+        })
+        .collect()
+}
+
+fn verdict_of(out: &Path) -> Value {
+    std::fs::read_to_string(out.join("verdict.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(Value::Null)
+}
+
+/// Copies `trace` into a new directory, applying `edit` to the first file's lines.
+fn tampered(trace: &Path, to: &Path, edit: impl Fn(usize, &mut Value) -> bool) -> u64 {
+    std::fs::create_dir_all(to).unwrap();
+    let mut step = None;
+    for (i, (path, _)) in transitions(trace).into_iter().enumerate() {
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut out = String::new();
+        let mut n = 0;
+        for line in text.lines() {
+            let mut v: Value = serde_json::from_str(line).unwrap();
+            if i == 0 && v.get("behaviour").is_some() {
+                if step.is_none() && edit(n, &mut v) {
+                    step = v["behaviour"]["step"].as_str().and_then(|s| s.parse().ok());
+                }
+                n += 1;
+            }
+            out.push_str(&v.to_string());
+            out.push('\n');
+        }
+        std::fs::write(to.join(path.file_name().unwrap()), out).unwrap();
+    }
+    step.expect("the edit applied")
+}
+
+/// The shadow on a thread of its own with its own runtime (the session's future is not `Send`).
+fn spawn_shadow(
+    config: ShadowConfig,
+    stop: StopFlag,
+) -> std::thread::JoinHandle<Result<(Ended, shadow::verdict::Verdict), String>> {
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("a runtime")
+            .block_on(shadow::run(config, stop))
+    })
+}
+
+fn diverges(
+    rom: &Path,
+    root: &Path,
+    trace: &Path,
+    spool: &Path,
+    empty: &Path,
+) -> shadow::verdict::Verdict {
+    let _ = std::fs::remove_dir_all(root.join("out"));
+    let config = config(rom, root, trace, (empty, empty), spool);
+    let stop = StopFlag::default();
+    let handle = spawn_shadow(config, stop.clone());
+    let deadline = Instant::now() + Duration::from_secs(600);
+    while !handle.is_finished() {
+        if Instant::now() > deadline {
+            stop.request();
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let (ended, verdict) = handle.join().unwrap().expect("the shadow ran");
+    assert_eq!(ended, Ended::Diverged, "{:?}", verdict.reason);
+    verdict
+}
+
+#[test]
+fn the_shadow_follows_the_real_service_and_catches_every_planted_difference() {
+    let Some(rom) = std::env::var_os("FLY_ROM").map(PathBuf::from) else {
+        eprintln!("skipping: FLY_ROM is not set (source bin/rom-env.sh)");
+        return;
+    };
+    let Some(binary) = flysim_binary() else {
+        eprintln!("skipping: no flysim binary beside this test (cargo test --workspace builds it)");
+        return;
+    };
+    // `FLY_SHADOW_TEST_DIR` keeps everything for a look afterwards.
+    let tmp = tempfile::tempdir().unwrap();
+    let kept = std::env::var_os("FLY_SHADOW_TEST_DIR").map(PathBuf::from);
+    if let Some(dir) = &kept {
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let root_path = kept.unwrap_or_else(|| tmp.path().to_owned());
+    let root = &root_path;
+    let dirs = LiveDirs {
+        hot: root.join("live/hot"),
+        durable: root.join("live/durable"),
+        trace: root.join("live/trace"),
+    };
+    let spool = root.join("shadow/spool");
+    let shadow_root = root.join("shadow");
+    let config = config(
+        &rom,
+        &shadow_root,
+        &dirs.trace,
+        (&dirs.hot, &dirs.durable),
+        &spool,
+    );
+    let out = config.out_dir.clone();
+    let stop = StopFlag::default();
+    let handle = spawn_shadow(config, stop.clone());
+
+    // Process one: a fresh fly (the stores are empty), two sugars, 25 brain seconds.
+    let live = start_live(&binary, &rom, &dirs, &root.join("flysim-1.log"));
+    live.sugar(300);
+    live.run_for(8_000.0);
+    live.sugar(700);
+    live.run_for(17_000.0);
+    live.stop();
+    // Process two: restores its own latest save, a sugar, 15 brain seconds.
+    let live = start_live(&binary, &rom, &dirs, &root.join("flysim-2.log"));
+    live.run_for(5_000.0);
+    live.sugar(450);
+    live.run_for(10_000.0);
+    live.stop();
+
+    let files = transitions(&dirs.trace);
+    assert_eq!(files.len(), 2, "one trace file per process");
+    let total: usize = files.iter().map(|(_, n)| n).sum();
+    let deadline = Instant::now() + Duration::from_secs(600);
+    loop {
+        let v = verdict_of(&out);
+        if v["compared"]["transitions"].as_u64() == Some(total as u64) || handle.is_finished() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the shadow did not catch up: {v}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    stop.request();
+    let (ended, verdict) = handle.join().unwrap().expect("the shadow ran");
+    let v = verdict_of(&out);
+    eprintln!(
+        "shadow: {ended:?} {}",
+        serde_json::to_string_pretty(&v).unwrap()
+    );
+    assert_eq!(ended, Ended::Stopped);
+    assert!(verdict.divergence.is_none());
+    assert_eq!(
+        verdict.status,
+        Status::Pass,
+        "40 brain seconds against a 30 s window"
+    );
+    assert_eq!(verdict.agreement.transitions, total as u64);
+    assert_eq!(verdict.segments_compared, 2);
+    assert!(verdict.skipped.is_empty(), "{:?}", verdict.skipped);
+    assert_eq!(verdict.agreement.sugar, 3);
+    assert_eq!(
+        verdict.ledger_checks, total as u64,
+        "a ledger digest every boundary"
+    );
+    // At least the fresh fly's startup save and both shutdown saves; the hot saves, one a wall
+    // second, add as many more as the box's speed gives.
+    assert!(
+        verdict.checkpoints.identical >= 3,
+        "live saves compared byte for byte: {:?}",
+        verdict.checkpoints
+    );
+
+    // The negative controls, each on a copy.
+    let empty = root.join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let neg = root.join("neg");
+
+    let at = tampered(&dirs.trace, &neg.join("wram/trace"), |n, v| {
+        (n == 700)
+            .then(|| v["behaviour"]["wramDigest"] = Value::String("0".repeat(64)))
+            .is_some()
+    });
+    let got = diverges(
+        &rom,
+        &neg.join("wram"),
+        &neg.join("wram/trace"),
+        &spool,
+        &empty,
+    );
+    let d = got.divergence.expect("a divergence");
+    assert_eq!((d.kind.as_str(), d.step), ("transition", Some(at)));
+    assert_eq!(d.difference.unwrap().field, "wramDigest");
+    assert!(!d.context.is_empty());
+    assert_eq!(got.status, Status::Diverged);
+
+    let at = tampered(&dirs.trace, &neg.join("ledgers/trace"), |n, v| {
+        (n == 900)
+            .then(|| v["behaviour"]["ledgersDigest"] = Value::String("0".repeat(64)))
+            .is_some()
+    });
+    let got = diverges(
+        &rom,
+        &neg.join("ledgers"),
+        &neg.join("ledgers/trace"),
+        &spool,
+        &empty,
+    );
+    let d = got.divergence.expect("a divergence");
+    assert_eq!((d.kind.as_str(), d.step), ("ledgers", Some(at)));
+
+    // A sugar the live loop applied, missing from the shadow's inputs: the brain differs from
+    // that transition on, and the comparison says where.
+    let at = tampered(&dirs.trace, &neg.join("sugar/trace"), |_, v| {
+        let had = v["behaviour"]["admissions"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty());
+        if had {
+            v["behaviour"]["admissions"] = Value::Array(Vec::new());
+            // The admissions field itself would differ first; hold it to the tampered value.
+        }
+        had
+    });
+    let got = diverges(
+        &rom,
+        &neg.join("sugar"),
+        &neg.join("sugar/trace"),
+        &spool,
+        &empty,
+    );
+    let d = got.divergence.expect("a divergence");
+    eprintln!(
+        "sugar removed at step {at}: diverged at {:?} on {:?}",
+        d.step, d.difference
+    );
+    assert_eq!(d.kind, "transition");
+    assert!(d.step.is_some_and(|s| s >= at));
+
+    // A live save whose bytes differ (its rankSinceMs moved by one ms).
+    let copy = neg.join("save/spool");
+    std::fs::create_dir_all(&copy).unwrap();
+    for entry in std::fs::read_dir(&spool).unwrap().flatten() {
+        std::fs::copy(entry.path(), copy.join(entry.file_name())).unwrap();
+    }
+    let (first, _) = transitions(&dirs.trace).remove(0);
+    let text = std::fs::read_to_string(&first).unwrap();
+    let (generation, at) = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v.get("behaviour").is_some())
+        .find_map(|v| {
+            let capture = v["operational"]["captures"].as_array()?.first()?.clone();
+            let generation: u64 = capture["checkpointId"]
+                .as_str()?
+                .strip_prefix('g')?
+                .parse()
+                .ok()?;
+            let step: u64 = v["behaviour"]["step"].as_str()?.parse().ok()?;
+            Some((generation, step))
+        })
+        .expect("a live save during the run");
+    let path = copy.join(format!("g{generation}.checkpoint"));
+    let mut checkpoint = flysim::store::load(&path).unwrap();
+    checkpoint.runtime.rank_since_ms += 1.0;
+    std::fs::write(
+        &path,
+        flysim::store::encode(&checkpoint.agent, &checkpoint.runtime).unwrap(),
+    )
+    .unwrap();
+    let got = diverges(&rom, &neg.join("save"), &dirs.trace, &copy, &empty);
+    let d = got.divergence.expect("a divergence");
+    assert_eq!((d.kind.as_str(), d.step), ("checkpoint", Some(at)));
+    assert!(d.detail.contains("rankSinceMs"), "{}", d.detail);
+}

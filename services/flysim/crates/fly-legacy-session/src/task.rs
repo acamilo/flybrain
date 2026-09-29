@@ -144,23 +144,7 @@ pub fn ledgers_of(
     ratchet: &Ratchet,
     macros: Option<&MacroLayer>,
 ) -> String {
-    let executor = match macros {
-        Some(layer) => json!({
-            "scene": layer.scene_name(),
-            "bound": layer.bound_channels(),
-            "running": layer.running(),
-            "counts": format!("{:?}", layer.counts()),
-            "nearer": layer.nearer_the_objective(),
-        }),
-        None => Value::Null,
-    };
-    json!({
-        "adapter": adapter.export_state(),
-        "ratchet": serde_json::to_value(ratchet.state).expect("serializes"),
-        "slot": ratchet.snapshot.is_some(),
-        "executor": executor,
-    })
-    .to_string()
+    flysim::frame::ledgers_string(adapter, ratchet, macros)
 }
 
 /// How the object is configured. Everything here is composition, not state.

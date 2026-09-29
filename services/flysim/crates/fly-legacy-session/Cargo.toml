@@ -11,6 +11,11 @@ description = "The live fly's composition on the session framework: the pokered-
 name = "fly_legacy_session"
 path = "src/lib.rs"
 
+# SHADOW-01: the session runtime run beside the live fly (`infra/units/flyshadow.service`).
+[[bin]]
+name = "fly-shadow"
+path = "src/bin/fly-shadow.rs"
+
 [dependencies]
 # The session framework and its legacy workers (AGENT-01, ENV-01).
 fly-session = { path = "../fly-session" }
@@ -22,7 +27,7 @@ flysim = { path = "../flysim" }
 flybrain-gb = { path = "../flybrain-gb" }
 flybrain-core = { path = "../flybrain-core" }
 serde_json = { workspace = true }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "signal"] }
 
 [dev-dependencies]
 tempfile = "3"
