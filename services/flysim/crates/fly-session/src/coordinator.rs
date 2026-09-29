@@ -336,6 +336,9 @@ pub struct Coordinator {
     /// Set by whoever asks for a normal pause, possibly while a transition is in flight.
     pause: std::sync::Arc<std::sync::atomic::AtomicBool>,
     episode: Option<EpisodeRequest>,
+    /// The rollback policy the composition declares, if any (`legacy-ratchet-rollback-v1` is
+    /// the only one defined). Without one, a task's rollback request is a task failure.
+    rollback_policy: Option<Id>,
     lifecycle_acks: Vec<(WorkerRef, DomainRequestId)>,
     stats: Stats,
     /// The ordered actions this session took, for the ordering assertions.
@@ -431,6 +434,7 @@ impl Coordinator {
             pacing: None,
             pause: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             episode: None,
+            rollback_policy: None,
             lifecycle_acks: Vec::new(),
             stats: Stats::default(),
             audit: Vec::new(),
@@ -524,6 +528,22 @@ impl Coordinator {
     /// Where each declared audio stream's next chunk may start.
     pub fn audio_positions(&self) -> BTreeMap<String, u64> {
         self.timelines.positions()
+    }
+
+    /// Declares the composition's rollback policy (`workers-v1` section 4 and `step-v1` section 6,
+    /// both amended 2026-09-23). Only `legacy-ratchet-rollback-v1` is defined. Until the rollback
+    /// sequence is wired (TASK-01), a declared rollback request pauses the session at its boundary
+    /// like a terminal one, which is safe; an undeclared one fails the epoch.
+    pub fn declare_rollback_policy(&mut self, policy: &str) -> Result<(), DomainError> {
+        if policy != fly_session_types::extensions::ROLLBACK_POLICY {
+            return Err(DomainError::invalid(format!("{policy} is not a defined rollback policy")));
+        }
+        self.rollback_policy = Some(id(policy));
+        Ok(())
+    }
+
+    pub fn rollback_policy(&self) -> Option<&Id> {
+        self.rollback_policy.as_ref()
     }
 
     pub fn episode_request(&self) -> Option<&EpisodeRequest> {
@@ -1676,6 +1696,22 @@ impl Coordinator {
                 self.fail_now(e, "task-evaluate")
             })?;
         self.audit.push(format!("evaluate:{k}"));
+        if let Some(request) = &evaluation.episode
+            && request.kind == EpisodeRequestKind::Rollback
+            && self.rollback_policy.is_none()
+        {
+            // `workers-v1` section 4 (2026-09-23): a composition that declares no rollback policy
+            // treats the request as a task failure. The brains and the world already moved, so
+            // the epoch fails rather than committing a transition whose outcome it cannot apply.
+            return Err(self.fail_now(
+                DomainError::new(
+                    ErrorCode::Unsupported,
+                    "the task asked for a rollback and this composition declares no rollback policy",
+                    MutationCertainty::Applied,
+                ),
+                "task-evaluate",
+            ));
+        }
         let mut outcomes = evaluation.outcomes.clone();
         let mut next_contexts = evaluation.next_contexts.clone();
         for agent in self.agent_ids() {

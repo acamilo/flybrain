@@ -30,6 +30,8 @@ pub mod environment;
 pub mod harness;
 pub mod launcher;
 pub mod legacy_agent;
+pub mod legacy_env;
+pub mod legacy_env_parity;
 pub mod legacy_parity;
 pub mod measure;
 pub mod media;

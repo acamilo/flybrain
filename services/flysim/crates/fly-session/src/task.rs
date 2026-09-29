@@ -208,6 +208,10 @@ pub enum Terminal {
     Counter(i64),
     /// This many transitions were evaluated.
     AfterTransitions(u64),
+    /// After this many transitions, ask for a *rollback* instead: the request a composition with
+    /// a declared rollback policy may make, and one without it must treat as a task failure
+    /// (`workers-v1` section 4, 2026-09-23). Only a test asks the counter task for this.
+    RollbackAfterTransitions(u64),
 }
 
 /// The deterministic counter task: rewards come from the arena counter each agent moved.
@@ -404,15 +408,36 @@ impl Task for CounterTask {
         let terminal = match self.terminal {
             Terminal::Never => false,
             Terminal::Counter(target) => new >= target,
-            Terminal::AfterTransitions(n) => self.transitions >= n,
+            Terminal::AfterTransitions(n) | Terminal::RollbackAfterTransitions(n) => {
+                self.transitions >= n
+            }
         };
-        // The synthetic task only ever asks for the end of the episode; `rollback` belongs to a
-        // composition that declares a rollback policy (workers-v1 section 4, 2026-09-23).
-        let episode = terminal.then(|| EpisodeRequest {
-            kind: EpisodeRequestKind::Terminal,
-            reason: id("counter-target"),
-            outcome: TypedValue::new(episode_schema(), json!({"counter": new, "transitions": self.transitions}))
+        let rollback = matches!(self.terminal, Terminal::RollbackAfterTransitions(_));
+        // The synthetic task asks for the end of the episode; `rollback` belongs to a composition
+        // that declares a rollback policy (workers-v1 section 4, 2026-09-23), and the synthetic
+        // composition declares none, so asking for one is how a test meets the refusal.
+        let episode = terminal.then(|| {
+            if rollback {
+                EpisodeRequest {
+                    kind: EpisodeRequestKind::Rollback,
+                    reason: id("stall"),
+                    outcome: fly_session_types::gameboy::RollbackRequest {
+                        slot_id: "best".to_owned(),
+                        trigger: "stall".to_owned(),
+                    }
+                    .to_typed(),
+                }
+            } else {
+                EpisodeRequest {
+                    kind: EpisodeRequestKind::Terminal,
+                    reason: id("counter-target"),
+                    outcome: TypedValue::new(
+                        episode_schema(),
+                        json!({"counter": new, "transitions": self.transitions}),
+                    )
                     .expect("a synthetic typed value fits the contract"),
+                }
+            }
         });
         Ok(Evaluation {
             outcomes,

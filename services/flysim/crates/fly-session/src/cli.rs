@@ -22,9 +22,11 @@ use std::process::ExitCode;
 use crate::agent::AgentFaults;
 use crate::environment::EnvironmentFaults;
 use crate::launcher::{
-    AgentLaunch, EnvironmentLaunch, ExecutionMode, LegacyAgentLaunch, Started, flags, serve_one,
+    AgentLaunch, EnvironmentLaunch, ExecutionMode, LegacyAgentLaunch, LegacyEnvironmentLaunch,
+    Started, flags, serve_one,
 };
 use crate::legacy_agent::LegacyProfileKind;
+use crate::legacy_env::BackendConfig;
 use crate::types::*;
 
 const USAGE: &str = "\
@@ -33,6 +35,8 @@ fly-session <command> [options]
   agent          serve one agent worker on a launcher-created endpoint
   legacy-agent   serve one legacy Game Boy agent worker (AGENT-01) on a launcher endpoint
   environment    serve the environment worker on a launcher-created endpoint
+  legacy-environment
+                 serve the legacy Game Boy environment (ENV-01) on a launcher endpoint
   measure        compare the execution modes and print the measurement table
   measure-row    measure one row and print it as JSON (one child per row)
 
@@ -54,6 +58,9 @@ Worker options (agent and environment):
   environment:  --worker ID --ports p1,p2 --step-numerator N --step-denominator N
                 [--advance-delay-ms N] [--omit-view-at-boundary N]
                 [--fail-stage-restore 0|1] [--fail-activate-restore 0|1]
+  legacy-environment:
+                --worker ID --port ID --rom PATH --rom-digest SHA256 --slots best
+                --audio-rate 48000 --audio-buffer-frames 4096 --setup-frames 1
 
 Measure options:
   --steps N            transitions per run (default 200)
@@ -83,6 +90,10 @@ pub fn main() -> ExitCode {
             .and_then(|o| serve(&command, &o)),
         "environment" => Options::parse(&rest, &[flags::COMMON, flags::ENVIRONMENT_ONLY])
             .and_then(|o| serve(&command, &o)),
+        "legacy-environment" => {
+            Options::parse(&rest, &[flags::COMMON, flags::LEGACY_ENVIRONMENT_ONLY])
+                .and_then(|o| serve(&command, &o))
+        }
         "measure" => Options::parse(&rest, &[flags::MEASURE]).and_then(|o| measure(&o)),
         "measure-row" => Options::parse(&rest, &[flags::MEASURE]).and_then(|o| measure_row(&o)),
         "--help" | "-h" | "help" => {
@@ -238,6 +249,23 @@ fn serve(role: &str, options: &Options) -> Result<(), String> {
             client_id: client_id.clone(),
             service: service.clone(),
         }),
+        "legacy-environment" => Started::LegacyEnvironment(LegacyEnvironmentLaunch {
+            session_id,
+            worker_id: options.id(flags::WORKER)?,
+            incarnation_id,
+            worker_threads: threads,
+            rom_path: options.path(flags::ROM)?,
+            backend: BackendConfig {
+                rom_digest: options.required(flags::ROM_DIGEST)?.to_owned(),
+                port_id: options.id(flags::PORT)?,
+                slots: parse_ids(options.required(flags::SLOTS)?, flags::SLOTS)?,
+                audio_sample_rate: options.u64(flags::AUDIO_RATE, 0)?,
+                audio_buffer_frames: options.u64(flags::AUDIO_BUFFER_FRAMES, 0)?,
+                setup_frames: options.u64(flags::SETUP_FRAMES, 0)?,
+            },
+            client_id: client_id.clone(),
+            service: service.clone(),
+        }),
         _ => Started::Environment(EnvironmentLaunch {
             session_id,
             worker_id: options.id(flags::WORKER)?,
@@ -292,10 +320,14 @@ fn parse_channels(value: &str) -> Result<Vec<String>, String> {
 }
 
 fn parse_ports(value: &str) -> Result<Vec<Id>, String> {
+    parse_ids(value, flags::PORTS)
+}
+
+fn parse_ids(value: &str, flag: &str) -> Result<Vec<Id>, String> {
     value
         .split(',')
         .filter(|part| !part.is_empty())
-        .map(|part| parse_id(part).map_err(|e| format!("--ports: {e}")))
+        .map(|part| parse_id(part).map_err(|e| format!("--{flag}: {e}")))
         .collect()
 }
 

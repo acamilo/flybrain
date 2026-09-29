@@ -248,6 +248,15 @@ is not the environment's `contentDigest`. The emulator answers its own bank read
   FLYSIM01's `ratchet_game` and `ratchet_frame` are today. A slot save due at a boundary
   completes before any `State.Capture` or FLYSIM01 export at that boundary (section 16).
 
+**Amendment, 2026-09-29 (ENV-01).** Two consequences of building this section, recorded in the
+[implementation guide](implementation.md) ENV-01 entry: the memory image cannot be taken with a
+plain loop of `emulator_read_mem`, because reading OAM, VRAM, the serial and timer registers,
+`IF`, `STAT` or `LY` advances binjgb's lazy synchronisation and changes what `export_state` writes
+-- the environment reads it between an export and an import of the same bytes, so slots and
+captures stay byte for byte the legacy loop's; and a `FLYSIM01` world is restored at boundary
+`emulatorFrame - 1`, its world time and audio position derived from that boundary, with the
+ratchet's snapshot as the slot `best`.
+
 ## 10. Executor `pokered-macros-v1`
 
 The Pokémon Red task (reward adapter, ladder, ratchet ledger) and its action executor (the
