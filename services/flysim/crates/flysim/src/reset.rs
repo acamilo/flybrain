@@ -32,6 +32,10 @@
 //!    talked, reached, pushed-back) are memory-only by contract
 //!    (`docs/design/macros.md` section 12.1: "a restored run offers every target once more"),
 //!    so stopping flysim is what resets those and this has nothing to do.
+//! 6. **clears the sugar journal** (`crate::journal::clear`): the journal and its rotations in the
+//!    hot store. The reset rewinds the frame counter to the rung's, so inputs stamped with the
+//!    abandoned run's frames would otherwise precede the new run's and read as its future. The
+//!    dated archive of step 1 keeps the old journal.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -160,6 +164,11 @@ pub fn reset_to_milestone(
         "reset the session ledgers: {logs} event-log files removed (the macro layer's are \
          memory-only and are reset by stopping flysim)"
     ));
+
+    // 6. The sugar journal, copied aside in step 1.
+    let journals = crate::journal::clear(hot_dir)
+        .with_context(|| format!("clearing the sugar journal in {}", hot_dir.display()))?;
+    report.push(format!("cleared the sugar journal: {journals} files removed"));
 
     Ok(report)
 }
@@ -379,6 +388,21 @@ mod tests {
         };
         state_dir(&durable, &[3, 5, 9, 11], spent);
         state_dir(&hot, &[11], spent);
+        // The abandoned run's sugar journal, rotated once.
+        let mut journal = crate::journal::SugarJournal::with_limits(&hot, 200, 3);
+        for frame in 0..4 {
+            journal.record(&crate::journal::Entry {
+                frame: 900 + frame,
+                brain_ms: 0.0,
+                input: crate::journal::Input::Sugar { duration_ms: 300.0 },
+                by: "viewer",
+                source: "test",
+                event_id: frame,
+                wall_ms: 1,
+            });
+        }
+        drop(journal);
+        assert!(crate::journal::rotation_path(&hot, 1).is_file());
         let archive = tmp.path().join("archive-20260922");
 
         let report = reset_to_milestone(&durable, &hot, 5, &archive).unwrap();
@@ -397,6 +421,11 @@ mod tests {
         assert!(!durable.join("events.jsonl").exists());
         assert!(!durable.join("events-20260921.jsonl").exists());
         assert!(!hot.join("milestone-11.checkpoint").exists());
+        // The journal is cleared, and the archive keeps it.
+        assert!(!hot.join(crate::journal::FILE_NAME).exists());
+        assert!(!crate::journal::rotation_path(&hot, 1).exists());
+        assert!(archive.join("hot").join(crate::journal::FILE_NAME).is_file());
+        assert!(report.iter().any(|line| line.starts_with("cleared the sugar journal: 4 files")), "{report:?}");
 
         // Both stores restore the rung, and the counters are back.
         for store in [Store::new(&hot, KEEP_GENERATIONS), Store::new(&durable, KEEP_GENERATIONS)] {
