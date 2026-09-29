@@ -3430,3 +3430,71 @@ button.
 `TALK` at a counter: 0 of 12 decisions on either arm. The floor `BUY BALL`: chosen 3 of 13, and
 done (paid) all 3 times. The ring: 4 mart entries in 16 brain seconds on base, one visit on the
 branch.
+
+## 2026-09-29, row 67: the Pewter Gym trainer, lost on repeat
+
+### What was live
+
+v0.6.5, macros mode, reset to rung 8 at 12:16Z and back at PEWTER CITY by 13:40. The fly
+entered the Pewter Gym (map 54) at 13:41, talked to the guide (#3) and to the Jr. Trainer
+(#2). For the next hour and a half the pad read `battle` most of the time.
+Per 3,000 events: `NEXT` 1,332, `MOVE 2` 83, `MOVE 3` 13, `MOVE 1` 0, `GO OBJECTIVE` 30, `NO` 17,
+`GO FRONTIER` 13, `TALK` 7. There was no battle-won reward, only two tile rewards on map 54. Check
+10 stayed clear.
+
+### Reproduction (the pulled checkpoint, hot generation 230739)
+
+- The checkpoint is on the walk back, not in a battle: Pewter City (18, 13), `wIsInBattle` 0,
+  `wLastBlackoutMap` `$02`, money 0, no badge, `EVENT_BEAT_PEWTER_GYM_TRAINER_0` clear. The party
+  is one Squirtle L11, 34/34: TACKLE 35/35, TAIL WHIP 30/30, BUBBLE 30/30.
+- The opponent is `wTrainerClass` `$05` (Jr. Trainer♂) #1, `wEnemyPartyCount` 2: Diglett L11 and
+  Sandshrew L11, both Ground (`wEnemyMonType1` `$04`).
+- Driven with the real palette and the live readout's measured favourite (TAIL WHIP 87%, else
+  BUBBLE), the cycle is the live one. `GO OBJECTIVE` into the gym, then `TALK` and the guide's
+  YES/NO. Then the trainer's challenge starts the battle. The own-turn pad is `MOVE 1, MOVE 2, MOVE 3`
+  on every turn, and each turn resolves in about 530 frames. Squirtle falls 34 → 29 → 24 → 19
+  → 11 → 6 → 0 while Diglett's DEFENSE falls to -6. Then `wIsInBattle` `$ff`, `wBattleResult` 1,
+  the whiteout to Pewter (13, 26) with PP back to 30, and the walk back. One battle takes about
+  4,500 frames.
+- Live, per battle (29 battles, from the event log): TAIL WHIP 155, BUBBLE 23, TACKLE 0, and 5 to 8
+  moves each. Where TAIL WHIP ran out of effect before the faint, 12.23 withheld it and the fly
+  pressed BUBBLE (`22222233`).
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 67 | a readout that favours TAIL WHIP loses every battle against a trainer it could beat; the whiteout heals the party, so PP never runs out and the ring never ends | the Pewter Gym's Jr. Trainer, Squirtle alone | `row67_the_gym_trainer_is_beaten_from_what_the_pad_deals` | **left, the fly's**: the pad offers every move with PP and an effect on every own-turn frame (0 missing in 932) and a uniform choice wins. Options for the operator below |
+| 67b | check 10 did not flag: a stray tile reward (a new gym tile on a walk back) every ~20 minutes reset `unrewarded`, and battles are not a sequence of four names | a whiteout ring with a walk in it | `lint.sh` check 10 case 8 | **fixed**: `unwon-battles` (24+ `MOVE n`, no `wildwin`/`trainer`/`badge` reward, two probes, no new ground) |
+| 67c | the no-PP ROM test asserted "more than one button" on a trainer battle whose only honest button is `MOVE 1` (12.8's backstop); it was red on main and skipped without `FLY_NOPP_CHECKPOINT` | the no-PP checkpoint | `macros_mode_ends_a_turn_with_no_move_left_on_the_cartridge` | **fixed (test)**: at least one button, and the battle ends (Struggle, 1,487 frames) |
+
+### The options, measured
+
+From the live checkpoint, 60,000 frames per arm (16.7 brain minutes), real palette. The driver
+is harness choice, not the fly's:
+
+| arm | trainer battles (L lost, W won) | trainer beaten | Brock beaten |
+| --- | --- | --- | --- |
+| live favourite (TAIL WHIP 87%), seed 1 | LLLLLLLLL | no | no |
+| live favourite, seed 2 | LLLLLLLL | no | no |
+| uniform over the pad, seeds 1 / 2 / 3 | LLW / LLLLW / LLLW | f32,940 / f46,293 / f41,030 | seed 1 |
+| BUBBLE whenever dealt | W | f12,234 | yes |
+| TACKLE whenever dealt | LLLLLW | f59,253 | no |
+| live favourite, stat-down move withheld once the target's stage is -1 or lower, seeds 1 / 2 | W / W | f9,165 / f9,304 | yes / yes |
+| the same at -2, seeds 1 / 2 | LW / LW | f17,053 / f19,033 | yes / yes |
+| the same at -3, seed 1 | LLLLLW | f54,551 | no |
+
+- **Withhold a move with no effect on this target** (12.23's rule): it already applies, and TAIL
+  WHIP has an effect until -6. The fly faints at about that turn, so the rule changes nothing here.
+- **Withhold a stat-lowering move once it has done something**: the -1 arm wins the first battle
+  on both seeds and then beats Brock. It is a pad rule about which move is good, not about what
+  the cartridge refuses, so it is a doctrine change for the operator. It would also hide GROWL,
+  SAND-ATTACK and similar moves after one use in every battle.
+- **Reward damage dealt**: this is a reward-catalog change, out of scope for loop review, and it
+  cannot be measured without the brain. Nothing in the current catalog separates BUBBLE from
+  TAIL WHIP until a battle is won, and none is.
+- **Watchdog detection plus the recovery ladder**: shipped (67b). Replayed probe by probe on the
+  live log with uniqueLocations proxied from the tile rewards, base check 10 first flags at 14:46
+  (`unrewarded`). The branch flags `unwon-battles` at 14:01, 14:16, 14:21, 14:36 and 14:41; a
+  tile reward at 14:06 and 14:26 clears one probe each. The healthy windows before the gym
+  (13 to 46 `MOVE n`, 1 to 4 wins each) are not flagged. The ladder's restart does not change the
+  readout, and a reset to PEWTER CITY replays the same gym. Only the reset to the rung below adds
+  forest battles, and whether that is enough was not measured.
