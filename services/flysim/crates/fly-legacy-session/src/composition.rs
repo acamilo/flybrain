@@ -38,6 +38,9 @@ fn grants(f: impl FnOnce(&mut Grants)) -> Grants {
     g
 }
 
+/// The transitions a service session keeps in memory for diagnosis (about a minute at 60 Hz).
+const HISTORY: usize = 4096;
+
 const COORDINATOR_CLIENT: &str = "coordinator";
 const ENV_CLIENT: &str = "legacy-world";
 const ENV_SERVICE: &str = "env.world";
@@ -407,6 +410,9 @@ impl LegacySession {
         // itself; a parity run is a measurement.
         if config.record {
             coordinator.request_commit_attachments(&[SPIKES_ATTACHMENT]);
+        } else {
+            // A service session runs indefinitely: its in-memory history stays bounded.
+            coordinator.bound_history(HISTORY);
         }
         Ok(LegacySession {
             coordinator,

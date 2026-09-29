@@ -21,6 +21,7 @@ use flybrain_core::agent::{AgentConfig, NeuralAgent};
 use flybrain_core::dataset::load_brain_dataset_from_dir;
 use flybrain_core::decoder::gameboy::gameboy_decoder_config_with_macros;
 use flybrain_core::lif::SweepPlan;
+use flybrain_gb::GameAdapter;
 use flybrain_gb::pokemon_red::PokemonRedReward;
 use flybrain_gb::ratchet::Ratchet;
 use flybrain_gb::{AdapterLedger, DEFAULT_AUDIO_FRAMES, DEFAULT_AUDIO_FREQUENCY, Emulator};
@@ -145,6 +146,7 @@ async fn session_against_legacy_per_frame() {
                 session.step().await.unwrap();
             }
             session.coordinator.metrics.clear();
+            let _ = fly_session::profile::report();
             let started = Instant::now();
             for _ in 0..frames {
                 session.step().await.unwrap();
@@ -159,6 +161,12 @@ async fn session_against_legacy_per_frame() {
                 per / legacy_per
             );
             if !paced {
+                for (name, count, mean) in fly_session::profile::report() {
+                    eprintln!(
+                        "  span {name:<22} mean {:>8.0} us  n {count}",
+                        mean.as_secs_f64() * 1e6
+                    );
+                }
                 for name in session.coordinator.metrics.names() {
                     let p = session.coordinator.metrics.percentiles(&name).unwrap();
                     eprintln!(

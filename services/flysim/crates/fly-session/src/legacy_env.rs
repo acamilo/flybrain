@@ -857,10 +857,33 @@ impl LegacyGameboyEnvironment {
         client: &flybus::Client,
         audio: Option<Vec<u8>>,
     ) -> DomainResult<(WorldObservation, Vec<(String, flybus::Artifact)>)> {
-        let frame =
-            media::seal_copy(client, FRAME_CONTENT_TYPE.to_owned(), &live.framebuffer).await?;
-        let image = memory_image(&mut live.emulator).map_err(backend_failure)?;
-        let memory = media::seal_copy(client, MEMORY_CONTENT_TYPE.to_owned(), &image).await?;
+        let image = {
+            let _span = crate::profile::span("env.image");
+            memory_image(&mut live.emulator).map_err(backend_failure)?
+        };
+        if let Some(raw) = &audio
+            && raw.len() % AUDIO_CHANNELS as usize != 0
+        {
+            return Err(backend_failure("binjgb returned half a stereo frame"));
+        }
+        let audio_f32 = audio.as_deref().map(audio_f32le);
+        // The three artifacts are independent: they are sealed concurrently, so the boundary
+        // waits for the router's round trips once rather than three times.
+        let seal_span = crate::profile::span("env.seal");
+        let (frame, memory, samples) = tokio::join!(
+            media::seal_copy(client, FRAME_CONTENT_TYPE.to_owned(), &live.framebuffer),
+            media::seal_copy(client, MEMORY_CONTENT_TYPE.to_owned(), &image),
+            async {
+                match &audio_f32 {
+                    Some(bytes) => media::seal_copy(client, AUDIO_CONTENT_TYPE.to_owned(), bytes)
+                        .await
+                        .map(Some),
+                    None => Ok(None),
+                }
+            }
+        );
+        drop(seal_span);
+        let (frame, memory, samples) = (frame?, memory?, samples?);
         let view = ViewRef {
             view_id: gameboy::VIEW_ID.to_owned(),
             produced_step: live.boundary,
@@ -876,13 +899,8 @@ impl LegacyGameboyEnvironment {
             (MEMORY_ATTACHMENT.to_owned(), memory),
         ];
         let mut chunks = Vec::new();
-        if let Some(raw) = audio {
-            if raw.len() % AUDIO_CHANNELS as usize != 0 {
-                return Err(backend_failure("binjgb returned half a stereo frame"));
-            }
+        if let (Some(raw), Some(samples)) = (audio, samples) {
             let frames = (raw.len() / AUDIO_CHANNELS as usize) as u64;
-            let samples =
-                media::seal_copy(client, AUDIO_CONTENT_TYPE.to_owned(), &audio_f32le(&raw)).await?;
             chunks.push(AudioRef {
                 stream_id: id(AUDIO_STREAM_ID),
                 first_sample: live.audio_next_sample,
@@ -1030,6 +1048,7 @@ impl LegacyGameboyEnvironment {
         let applied_from = live.boundary;
 
         // `LegacyFrame::run` and `take_frame`: the joypad, one frame, the frame it drew, its audio.
+        let frame_span = crate::profile::span("env.frame");
         live.buttons = mask;
         live.emulator.set_buttons(mask);
         live.emulator
@@ -1039,6 +1058,7 @@ impl LegacyGameboyEnvironment {
         live.framebuffer
             .copy_from_slice(live.emulator.framebuffer());
         let audio = live.emulator.take_audio_u8();
+        drop(frame_span);
         live.boundary += 1;
         live.world_time = live
             .world_time

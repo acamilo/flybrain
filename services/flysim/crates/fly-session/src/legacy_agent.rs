@@ -1005,7 +1005,9 @@ impl LegacyAgentWorker {
         let brain_ticks = accumulator.brain_ticks();
         let remainder = accumulator.remainder();
         self.transition_start_ms = agent.network.ms;
+        let ticks_span = crate::profile::span("agent.ticks");
         agent.network.step(ticks);
+        drop(ticks_span);
         if agent.network.ms != brain_ticks as f64 {
             return Err(applied(
                 ErrorCode::Internal,
@@ -1110,7 +1112,9 @@ impl LegacyAgentWorker {
         }
         let context = self.read_context(&params.next_decision_context)?;
         // The complete request and its owned artifact are validated before anything applies.
+        let read_span = crate::profile::span("agent.read_lcd");
         let frame = self.read_lcd(ctx, &params.next_input).await?;
+        drop(read_span);
 
         self.status.set_state(WorkerState::Committing);
         let agent = self.agent.as_mut().expect("initialized");
@@ -1139,7 +1143,9 @@ impl LegacyAgentWorker {
             self.transient.location = Some(location);
             self.transient.blocked_since_ms = ms;
         }
+        let spikes_span = crate::profile::span("agent.spikes");
         let spikes = spike_bitset(&agent.network.last_spike_ms, self.transition_start_ms, ms);
+        drop(spikes_span);
         // 4. Retain the next context and acknowledge k+1.
         let digest = context.digest.clone();
         self.context = Some(context);
@@ -1152,6 +1158,7 @@ impl LegacyAgentWorker {
             decision_context_digest: digest,
             telemetry: self.telemetry(),
         };
+        let _seal_span = crate::profile::span("agent.seal_spikes");
         let artifact = crate::media::seal_copy(ctx.client, SPIKES_CONTENT_TYPE.to_owned(), &spikes)
             .await
             .map_err(|e| applied(e.code, e.message))?;

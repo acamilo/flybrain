@@ -379,6 +379,8 @@ pub struct Coordinator {
     /// Leave a requested rollback for the host to apply (`apply_pending_rollback`).
     defer_rollbacks: bool,
     pending_rollback: Option<(u64, EpisodeRequest)>,
+    /// [`Coordinator::bound_history`].
+    history_limit: Option<usize>,
     lifecycle_acks: Vec<(WorkerRef, DomainRequestId)>,
     stats: Stats,
     /// The ordered actions this session took, for the ordering assertions.
@@ -498,6 +500,7 @@ impl Coordinator {
             state_format_id: None,
             defer_rollbacks: false,
             pending_rollback: None,
+            history_limit: None,
             lifecycle_acks: Vec::new(),
             stats: Stats::default(),
             audit: Vec::new(),
@@ -628,6 +631,27 @@ impl Coordinator {
     /// synthetic arena's by default, `fly-gb-env-v1` for the legacy Game Boy world (ENV-01).
     pub fn set_state_format(&mut self, state_format_id: &str) {
         self.state_format_id = Some(id(state_format_id));
+    }
+
+    /// Bounds the session's in-memory history -- the behaviour trace, the phase log, the audit
+    /// log and the latency samples -- to the newest `keep` entries each, for a session that runs
+    /// indefinitely (the live fly). Unbounded by default: a test reads all of it.
+    pub fn bound_history(&mut self, keep: usize) {
+        self.history_limit = Some(keep);
+    }
+
+    fn trim_history(&mut self) {
+        let Some(keep) = self.history_limit else { return };
+        fn trim<T>(items: &mut Vec<T>, keep: usize) {
+            if items.len() > 2 * keep {
+                items.drain(..items.len() - keep);
+            }
+        }
+        trim(&mut self.trace.transitions, keep);
+        trim(&mut self.trace.phases, keep);
+        trim(&mut self.audit, keep);
+        trim(&mut self.injection_log, keep);
+        self.metrics.truncate(keep);
     }
 
     /// Leave a rollback the task asks for pending at its boundary, for the host to apply with
@@ -2200,13 +2224,20 @@ impl Coordinator {
 
         // ---- Phase A: prepare all agents concurrently
         self.transition(Phase::Preparing(k))?;
+        let span = crate::profile::span("coord.prepare");
         let prepared = self.prepare_all(k, descriptor.step_duration).await?;
+        drop(span);
 
         // ---- Phase B: build and apply one complete batch
         self.transition(Phase::Applying(k))?;
+        let span = crate::profile::span("coord.executor");
         let controls = self.build_batch(k, &descriptor, &old_observation)?;
+        drop(span);
         let batch_id = self.batch_id(k);
+        let span = crate::profile::span("coord.advance");
         let step_result = self.advance(k, &batch_id, &controls).await?;
+        drop(span);
+        let span = crate::profile::span("coord.observe");
 
         // ---- Phase C: observe and evaluate the task once
         self.transition(Phase::Observing(k + 1))?;
@@ -2221,6 +2252,8 @@ impl Coordinator {
             .current_inspection
             .clone()
             .expect("a bootstrapped session holds O[k]'s inspection");
+        drop(span);
+        let span = crate::profile::span("coord.evaluate");
         let evaluation = self
             .task
             .evaluate_transition(&scope, &old_inspection, &new_inspection, &controls)
@@ -2260,8 +2293,10 @@ impl Coordinator {
             }
         }
 
+        drop(span);
         // ---- Phase D: commit all agent outcomes concurrently
         self.transition(Phase::Committing(k))?;
+        let commit_span = crate::profile::span("coord.commit");
         let new_views: BTreeMap<String, flybus::Artifact> = step_result
             .observation
             .sensory_views
@@ -2284,6 +2319,8 @@ impl Coordinator {
             .commit_all(k, &step_result.observation, &mut outcomes, &mut next_contexts, &new_views)
             .await?;
 
+        drop(commit_span);
+        let span = crate::profile::span("coord.boundary");
         // Only once every commit succeeded does the committed boundary move.
         self.transition(Phase::Ready(k + 1))?;
         for index in 0..self.agents.len() {
@@ -2362,6 +2399,8 @@ impl Coordinator {
             }
         }
 
+        drop(span);
+        let span = crate::profile::span("coord.trace_publish");
         let event_ids: Vec<Id> = evaluation.events.iter().map(|e| e.id.clone()).collect();
         let decisions: BTreeMap<Id, TypedValue> = prepared
             .iter()
@@ -2419,8 +2458,10 @@ impl Coordinator {
             self.pause.store(false, std::sync::atomic::Ordering::SeqCst);
             self.audit.push(format!("pause:{}", k + 1));
         }
+        drop(span);
         // The critical path: one whole transition, pacing sleep included.
         self.metrics.record("step", step_started.elapsed());
+        self.trim_history();
         Ok(StepReport { boundary: k + 1, paused, terminal })
     }
 
