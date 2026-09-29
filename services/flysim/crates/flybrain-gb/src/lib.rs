@@ -20,6 +20,7 @@ pub mod adapter;
 pub mod compatibility;
 pub mod emulator;
 mod ffi;
+pub mod image;
 pub mod macros;
 mod ordered;
 pub mod platformer;
@@ -32,6 +33,10 @@ pub use adapter::{
     adapter_for, adapter_for_with_rom_pin,
 };
 pub use compatibility::Compatibility;
+pub use image::{
+    CAPTURED, Cartridge, ImageError, ImageReader, MEMORY_IMAGE_CONTENT_TYPE, MEMORY_IMAGE_LEN,
+    MemoryImage, NOT_CAPTURED, captured,
+};
 pub use emulator::{
     DEFAULT_AUDIO_FRAMES, DEFAULT_AUDIO_FREQUENCY, Emulator, FRAMEBUFFER_LEN, GbError,
     SCREEN_HEIGHT, SCREEN_WIDTH, buttons,

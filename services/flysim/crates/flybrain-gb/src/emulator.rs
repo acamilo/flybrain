@@ -3,10 +3,9 @@
 use std::ffi::c_void;
 use std::fmt;
 
-use sha2::{Digest, Sha256};
-
 use crate::adapter::MemoryReader;
 use crate::ffi;
+use crate::image::{Cartridge, MEMORY_IMAGE_LEN, MemoryImage};
 
 /// Game Boy screen geometry, from `emulator.h`.
 pub const SCREEN_WIDTH: usize = 160;
@@ -25,10 +24,6 @@ pub const CPU_TICKS_PER_SECOND: u64 = 4_194_304;
 /// bound. The LCD is off for many nominal frame intervals after a cold boot,
 /// so there is no `NEW_FRAME` event to wait for yet.
 const MAX_FRAME_ATTEMPTS: u32 = 120;
-
-/// Bytes in one ROM bank (`$4000`), which is how [`Emulator::read_rom_bank`]
-/// turns a bank number and a CPU address into an offset in the cartridge image.
-const ROM_BANK_BYTES: usize = 0x4000;
 
 /// Audio frequency flysim runs the emulator at. binjgb resamples internally to
 /// whatever is requested, so this is only a default.
@@ -144,9 +139,9 @@ pub struct Emulator {
     /// The shim owns its own padded copy behind the handle and does not hand it
     /// back, so this is a second one. It is read-only from here: nothing in this
     /// workspace writes a ROM byte, and the bank-addressed read is the only
-    /// reason it is kept.
-    rom: std::sync::Arc<[u8]>,
-    rom_sha256: [u8; 32],
+    /// reason it is kept. The same [`Cartridge`] an image-backed executor holds
+    /// (MEM-01), so a bank read is one rule over one set of bytes on both sides.
+    rom: Cartridge,
     audio_frequency: u32,
     /// Raw binjgb samples drained since the last [`Emulator::take_audio`].
     pending_audio: Vec<u8>,
@@ -178,8 +173,7 @@ impl Emulator {
         debug_assert_eq!(unsafe { ffi::fly_gb_frame_buffer_size() }, FRAMEBUFFER_LEN);
         Ok(Self {
             gb,
-            rom: rom.into(),
-            rom_sha256: Sha256::digest(rom).into(),
+            rom: Cartridge::new(rom),
             audio_frequency,
             pending_audio: Vec::new(),
             cache: FrameCache::new(),
@@ -263,14 +257,45 @@ impl Emulator {
     /// No bank register is written and the emulator's state does not move: this
     /// is a read of bytes the process already owns.
     pub fn read_rom_bank(&self, bank: u8, address: u16) -> Option<u8> {
-        let offset = match address {
-            0x0000..=0x3fff => usize::from(address),
-            0x4000..=0x7fff => {
-                usize::from(bank) * ROM_BANK_BYTES + usize::from(address) - ROM_BANK_BYTES
-            }
-            _ => return None,
-        };
-        self.rom.get(offset).copied()
+        self.rom.read_bank(bank, address)
+    }
+
+    /// The cartridge this emulator runs, as the executor's ROM asset holds it.
+    pub fn cartridge(&self) -> Cartridge {
+        self.rom.clone()
+    }
+
+    /// The boundary memory image: the CPU address space in one bulk read
+    /// (`legacy-gameboy-v1` section 8, MEM-01).
+    ///
+    /// For every memory address ([`crate::image::CAPTURED`]) byte *i* is what
+    /// [`Emulator::read_uncached`] returns for *i* now, and so what
+    /// [`Emulator::read_wram`] returns for it anywhere between this frame and
+    /// the next: the per-frame cache is only ever filled from the same read, and
+    /// nothing between two frames moves the emulator. The register windows
+    /// (VRAM, OAM, I/O) read [`crate::image::NOT_CAPTURED`], because binjgb's
+    /// read of a register runs a catch-up that moves the exported state.
+    ///
+    /// Read-only: the emulator's exported state is byte-identical before and
+    /// after, and a run read in bulk every frame is frame-for-frame identical to
+    /// one never read (`tests/rom_memory_image.rs`). The per-frame cache is
+    /// neither consulted nor filled.
+    pub fn read_memory_image(&self) -> MemoryImage {
+        let mut image = MemoryImage::zeroed();
+        self.read_memory_image_into(&mut image);
+        image
+    }
+
+    /// [`Emulator::read_memory_image`] into an image the caller already owns,
+    /// so a boundary's read allocates nothing.
+    pub fn read_memory_image_into(&self, image: &mut MemoryImage) {
+        debug_assert_eq!(unsafe { ffi::fly_gb_memory_image_size() }, MEMORY_IMAGE_LEN);
+        let out = image.as_mut_bytes();
+        let code =
+            unsafe { ffi::fly_gb_read_memory_image(self.gb, out.as_mut_ptr(), MEMORY_IMAGE_LEN) };
+        // The only refusals are a null buffer and a wrong size, and both are
+        // ruled out by the type.
+        assert_eq!(code, 0, "fly_gb_read_memory_image refused a {MEMORY_IMAGE_LEN}-byte buffer");
     }
 
     /// Sample rate of the raw buffer, as binjgb configured it.
@@ -345,12 +370,7 @@ impl Emulator {
     /// SHA-256 of the ROM bytes as supplied, lowercase hex. This is the
     /// `romSha256` half of the checkpoint compatibility string.
     pub fn rom_sha256(&self) -> String {
-        let mut hex = String::with_capacity(64);
-        for byte in self.rom_sha256 {
-            use fmt::Write;
-            let _ = write!(hex, "{byte:02x}");
-        }
-        hex
+        self.rom.sha256_hex()
     }
 
     /// Emulated CPU ticks since boot.

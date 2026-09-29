@@ -113,6 +113,7 @@ fn v6_checkpoint() -> Vec<u8> {
         },
     };
     let runtime = RuntimeState {
+        reinforcements: None,
         generation: 41,
         wall_ms: 1_790_000_000_000,
         rom_sha256: flybrain_gb::pokemon_red::SUPPORTED_ROM.to_string(),

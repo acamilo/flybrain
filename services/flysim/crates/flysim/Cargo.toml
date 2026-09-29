@@ -31,6 +31,8 @@ cuda = ["flybrain-core/cuda"]
 flybrain-core = { path = "../flybrain-core" }
 flybrain-gb = { path = "../flybrain-gb" }
 flybus = { path = "../flybus" }
+# The FLYSIM01 store and the sugar journal, shared with the session runtime (STATE-02).
+flysim-store = { path = "../flysim-store" }
 
 anyhow = "1.0"
 axum = { version = "0.8", features = ["ws"] }
@@ -55,6 +57,9 @@ unicode-normalization = "0.1"
 # The legacy profile's pinned identities (`tests/legacy_profile_identity.rs`): test-only, so the
 # service itself does not link the session types.
 fly-session-types = { path = "../fly-session-types" }
+# AGENT-01's worker checked against this loop's FLY_TRACE (`tests/agent_trace_parity.rs`):
+# test-only as well. fly-session does not depend on flysim, so this is no cycle.
+fly-session = { path = "../fly-session" }
 futures-util = "0.3"
 # `default-features = false` drops the remote-reference resolver (and with it reqwest and a
 # TLS stack): `packages/feed/src/schema.json` is self-contained, so nothing has to be fetched.

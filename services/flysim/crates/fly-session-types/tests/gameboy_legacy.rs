@@ -348,3 +348,44 @@ fn the_extension_methods_check_their_scope() {
     assert_eq!(SLOTS_CAPABILITY, "gameboy-slots-v1");
     assert_eq!(ROLLBACK_CAPABILITY, ROLLBACK_POLICY);
 }
+
+/// `legacy-rate-role-id-v1`: every accepted name is its own roleId and maps back; every refused
+/// name has none. The TypeScript twin reads the same file.
+#[test]
+fn the_rate_role_mapping_is_the_identity_on_the_id_grammar_and_refuses_the_rest() {
+    let file = fixtures::load("gameboy-rate-roles.json").expect("gameboy-rate-roles.json");
+    assert_eq!(file["mapping"].as_str(), Some(gameboy::RATE_ROLE_MAPPING));
+    let accepted = file["accepted"].as_array().expect("accepted");
+    assert!(!accepted.is_empty());
+    for case in accepted {
+        let name = case["name"].as_str().expect("name");
+        let role_id = case["roleId"].as_str().expect("roleId");
+        assert_eq!(gameboy::rate_role_id(name).expect(name), role_id, "{name}");
+        assert_eq!(gameboy::rate_role_name(role_id).expect(role_id), name, "{role_id} maps back");
+    }
+    for case in file["refused"].as_array().expect("refused") {
+        let name = case["name"].as_str().expect("name");
+        assert!(gameboy::rate_role_id(name).is_err(), "{name:?} must have no roleId");
+        assert!(gameboy::rate_role_name(name).is_err(), "{name:?} is no roleId either");
+    }
+    // The FAFB tracked list fits AgentGraph.rateRoles as it stands: <= 64, unique, in order.
+    let tracked: Vec<&str> = file["fafbTrackedRoles"]
+        .as_array()
+        .expect("fafbTrackedRoles")
+        .iter()
+        .map(|v| v.as_str().expect("a role name"))
+        .collect();
+    let ids = gameboy::rate_role_ids(tracked.iter().copied()).expect("the FAFB roles map");
+    assert_eq!(ids, tracked);
+    // Every decoder channel is a ChannelName, and every ChannelName is an Id, so a macro
+    // channel's role is its own roleId too.
+    for role in &tracked {
+        if role.starts_with("macro_") {
+            assert!(gameboy::is_channel_name(role));
+        }
+    }
+    // The list bound and uniqueness are the contract's, not the mapping's convenience.
+    let many: Vec<String> = (0..65).map(|i| format!("role_{i}")).collect();
+    assert!(gameboy::rate_role_ids(many.iter().map(String::as_str)).is_err());
+    assert!(gameboy::rate_role_ids(["command_0", "command_0"]).is_err());
+}

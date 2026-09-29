@@ -1,0 +1,5174 @@
+{
+  "format": "fly-session/legacy-env-golden-v1",
+  "script": "toy-cart-fresh-240",
+  "records": [
+    {
+      "index": 0,
+      "op": "initialize",
+      "boundary": "0",
+      "engineFrame": "1",
+      "worldTime": {
+        "numerator": "0",
+        "denominator": "1"
+      },
+      "mask": null,
+      "frame": "cdff586e1c1656586617e610d276b3db933e76ad27b7a79148237427ee8a7a5f",
+      "memory": "b0a9731b864ef62903d94fd5ff2b39d476e1538cef1d462d1dde38f4f0289686",
+      "wram": "0ba149ce666205c7c800d970694d8c1bfd3c6d501f77e89044c547206a322067",
+      "audio": null,
+      "state": null
+    },
+    {
+      "index": 1,
+      "op": "advance",
+      "boundary": "1",
+      "engineFrame": "2",
+      "worldTime": {
+        "numerator": "8572265625",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "ae8b59e34dfc614749c6a047ced955771319208885814b2d2e4d0dc7ea892984",
+      "memory": "9a9e12c0b052ca3817470bc339cb4627f73cba265f6db376da84f6655cac9bc1",
+      "wram": "93b320bf9ff276d4fc80bb6a7fd5fb3d116501b8799e2e9aefe2d7f453a04687",
+      "audio": {
+        "firstSample": "0",
+        "frames": 803,
+        "digest": "0ec5b46c11264d7018f7cb4fcd6edb28e89ac0b729cfd33b05f15ee4bfc7a835",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 2,
+      "op": "advance",
+      "boundary": "2",
+      "engineFrame": "3",
+      "worldTime": {
+        "numerator": "8572265625",
+        "denominator": "256"
+      },
+      "mask": 8,
+      "frame": "c391eaf32fbd4a6a2313ba1c977df87487af0225937691471354b420788ae920",
+      "memory": "0bd47bbb81bab5b493789f392da880b1516aff2d96394dd683a2fc416d34d9e1",
+      "wram": "5856ffe6bc26bc0391ebd1930f95d527c1e3f082769c5f3fbc4ca3eee81250aa",
+      "audio": {
+        "firstSample": "803",
+        "frames": 804,
+        "digest": "e498c7f43dac939c8f513b443f5f68af9565122c182174e4714ce8c414e4eb03",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 3,
+      "op": "advance",
+      "boundary": "3",
+      "engineFrame": "4",
+      "worldTime": {
+        "numerator": "25716796875",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "517d9684f496617473bfa8ccdec4fc8ff317a9f123561d3c68ad171c4c8c15b2",
+      "memory": "b7a9889c1fed0b1050adf7a358d95fe65d97a60d846211db544059d7ede225e4",
+      "wram": "43451960631b8f93a7876d0ea3c1d1e921eabd0c3b9137f3487aae2cc8c55dec",
+      "audio": {
+        "firstSample": "1607",
+        "frames": 804,
+        "digest": "227af1e52e044e53937c06612b4495e78b2489e1c1e1ec3742c35e9262673678",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 4,
+      "op": "advance",
+      "boundary": "4",
+      "engineFrame": "5",
+      "worldTime": {
+        "numerator": "8572265625",
+        "denominator": "128"
+      },
+      "mask": 8,
+      "frame": "4db5a943f50ddb98d009be22c468c43713b0bd5e2f235c914e61c6a2a9c08f99",
+      "memory": "07f40beccf02e0de3507d0d7a628295eb5cbe949e3b0dcca51c0c166da19a08d",
+      "wram": "c495ba41e55df80105ab60334afd63afca43fbb85c259fc13134b0cd6022a237",
+      "audio": {
+        "firstSample": "2411",
+        "frames": 803,
+        "digest": "fd2d3a6e81bb54df8788d5d62d2c69eaea6385a2fdf7dd6d8d7b284ff08384b5",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 5,
+      "op": "advance",
+      "boundary": "5",
+      "engineFrame": "6",
+      "worldTime": {
+        "numerator": "42861328125",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "2f695f5ffac753a184a0cae34b5778688aac5509878b8ea1a4108ca2ca1c6b7d",
+      "memory": "93a4db8ce38b7de5c4f0fcb812591c8a02b3fd9e56a89642a03f610de6c03ea5",
+      "wram": "9fa4af63f339bf8980db378e09cc7d7f8a5891913f2316f7b2bf1c0c4ddd878c",
+      "audio": {
+        "firstSample": "3214",
+        "frames": 804,
+        "digest": "1569572ae20874c071030fd672fc7f8ba514cd7f728570d57520aaa3cbea58f3",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 6,
+      "op": "advance",
+      "boundary": "6",
+      "engineFrame": "7",
+      "worldTime": {
+        "numerator": "25716796875",
+        "denominator": "256"
+      },
+      "mask": 1,
+      "frame": "55b65b34e18e43d5c6db69a577403a322bbe824a46482cd0248c5bc0f4db67fa",
+      "memory": "149854e34a32ffa79aca26a318ace928722f1643bba429620bdce0f98fb818a5",
+      "wram": "299abe94613acdad71eff9c301ed9346b48218ef0669054a1ebb084bc7244c99",
+      "audio": {
+        "firstSample": "4018",
+        "frames": 804,
+        "digest": "9eefc80e45d4f62d08cb3eacee8c171630fbe18494eac916a75b94cb2b855a53",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 7,
+      "op": "advance",
+      "boundary": "7",
+      "engineFrame": "8",
+      "worldTime": {
+        "numerator": "60005859375",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "85f7361cacb6ebe14a6a4930b1e43949713a59179d0e9efc73d2bd759ee597e4",
+      "memory": "30a5b5341a9cb53066b4a0f2a1aea655a6c7ad57180d91fa4a263b8d0a3dcacd",
+      "wram": "57433f9fc527fed6edce04d19fe0cff41b40778a2cdeaa74df1f186fe3fe8f80",
+      "audio": {
+        "firstSample": "4822",
+        "frames": 803,
+        "digest": "3a8a8270aaad2fe615b89a90c2191978b8c7e8d9204c5a1445de304301611a19",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 8,
+      "op": "advance",
+      "boundary": "8",
+      "engineFrame": "9",
+      "worldTime": {
+        "numerator": "8572265625",
+        "denominator": "64"
+      },
+      "mask": 1,
+      "frame": "3ad1bb083cba14943f4081c74c667c914e9c08b97eb6e76bd6d501c03b50f317",
+      "memory": "b674764e8259bc02ed5163a4a2832c1b8749e6b4467d913f9d457dcfae55dc92",
+      "wram": "73f909b4902c6827de0153b719d03c9fff6a1fed7668d7b0a777cf06a8f91716",
+      "audio": {
+        "firstSample": "5625",
+        "frames": 804,
+        "digest": "4a9aca2ae720af8036f7a958f6a382fc517fc4fbdc367d63de5985b903b79336",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 9,
+      "op": "advance",
+      "boundary": "9",
+      "engineFrame": "10",
+      "worldTime": {
+        "numerator": "77150390625",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "7e2144cedf0dcd6eacdebd3306b3262288013f6416b33f9497735d05f4b51d70",
+      "memory": "f053c4f7fd59303a498b767564eca9b383a0666c08a2605ee25ef5e4bb620e6c",
+      "wram": "b379117d38667d157d9be8f731b464046c15320e4841d24a67be7dd73c9b1ae4",
+      "audio": {
+        "firstSample": "6429",
+        "frames": 804,
+        "digest": "4e9e7fb90da92c2a8c2e819ab96daf60f9c4aa7e129d2c5beb2b30842c3a4b0d",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 10,
+      "op": "advance",
+      "boundary": "10",
+      "engineFrame": "11",
+      "worldTime": {
+        "numerator": "42861328125",
+        "denominator": "256"
+      },
+      "mask": 1,
+      "frame": "32326467932ab56f861a01daadfccdb102ef8a3e565657fbc55d6222d03ada25",
+      "memory": "b5ac45fdcb167cabe0219e0f27f09ac54032a8b97294eea6f8331b204f154e8c",
+      "wram": "2a04fb594c6f81b7765aa804f3b7cd4eee10f11af4fa6a8b500f787e42134f2a",
+      "audio": {
+        "firstSample": "7233",
+        "frames": 803,
+        "digest": "369e1e472a25a08741e8243d4c39de407e9fa31123e434924d674fc3c7c1459a",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 11,
+      "op": "advance",
+      "boundary": "11",
+      "engineFrame": "12",
+      "worldTime": {
+        "numerator": "94294921875",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "0525949510d3d85c0703416240093fdd6514434b9ee328964eeb55432b96fc41",
+      "memory": "eb776ee7e74b4b304b93b1a55a225a88f739eb7a9277a3224737846c65e3105c",
+      "wram": "6cae4061da252a2a80b5d56303a8f604fdcffb2fbf5fddf6131969e8b93a5bef",
+      "audio": {
+        "firstSample": "8036",
+        "frames": 804,
+        "digest": "c74d73c1b78074330c4fe093f44386c1dd189c34e21e6ede66510252f331dc8d",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 12,
+      "op": "advance",
+      "boundary": "12",
+      "engineFrame": "13",
+      "worldTime": {
+        "numerator": "25716796875",
+        "denominator": "128"
+      },
+      "mask": 4,
+      "frame": "43556abc8ba06dd840619f37f81cdd5ed02aa23e0430daa4ec909c1ee92e4044",
+      "memory": "eaafed21fdd048ecd61aeac9add7fa52804e24c71a85d174e25dd094e388faaa",
+      "wram": "062acd59080b0b3f6510f28b594bb4b6454675dec0a2ca6d8407fd6bc565cc7f",
+      "audio": {
+        "firstSample": "8840",
+        "frames": 804,
+        "digest": "15f5a6625080b536ea81afd03d44dc74215af5d4e08f456b3789d940d61f5c55",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 13,
+      "op": "advance",
+      "boundary": "13",
+      "engineFrame": "14",
+      "worldTime": {
+        "numerator": "111439453125",
+        "denominator": "512"
+      },
+      "mask": 4,
+      "frame": "efc792276c1275617a18b7d7e536879a5f279a2e038ed43f31a311f421636a59",
+      "memory": "af9b78dd579925bf3b3eb750323b6686b2ed385a0fc7d81d6d52ff375007bbc4",
+      "wram": "61ed22a03bf5da17a09289e7ff56cee05fe18b0be472a643ce972a35ff5f85da",
+      "audio": {
+        "firstSample": "9644",
+        "frames": 803,
+        "digest": "2e027a1192a309b9e666ef9fde1ae57dcb8c44d670f9b62b2eb794c7a7a3abf1",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 14,
+      "op": "advance",
+      "boundary": "14",
+      "engineFrame": "15",
+      "worldTime": {
+        "numerator": "60005859375",
+        "denominator": "256"
+      },
+      "mask": 4,
+      "frame": "84a7056520757fd6bb83213ef01fec4e5d205b70f7bdee0ddd35aefb0ee954c7",
+      "memory": "b711dc80b235d4f249ef106f5cd7802cbca28b66df378d16194eb7427143da55",
+      "wram": "a59aa5cc1de814b999a0e7405776621e48ca081eec53e90915f87fb0ad246162",
+      "audio": {
+        "firstSample": "10447",
+        "frames": 804,
+        "digest": "d804a2d98e95558ce1d5737a1c2729de9012af61bf6de26eb8fd0a2be8efca67",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 15,
+      "op": "advance",
+      "boundary": "15",
+      "engineFrame": "16",
+      "worldTime": {
+        "numerator": "128583984375",
+        "denominator": "512"
+      },
+      "mask": 4,
+      "frame": "46ffe557906a6b0f735c657995377a2c4ea0cc14fddaa984d438e7208a648d39",
+      "memory": "93adba83b3d8bd820aa03d48122b31f5e7972a46c85e591b12c953949688bbf9",
+      "wram": "963b3d0f4b007d2053a98dfe1a64360f552258ef00103a29141143672fd58347",
+      "audio": {
+        "firstSample": "11251",
+        "frames": 803,
+        "digest": "26f123b0ef86328e574faba07b0a102f34cb275a8f960f9ae3369819069e0fc1",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 16,
+      "op": "advance",
+      "boundary": "16",
+      "engineFrame": "17",
+      "worldTime": {
+        "numerator": "8572265625",
+        "denominator": "32"
+      },
+      "mask": 4,
+      "frame": "e480cfba81346c628c443de3308eb0fc6574cb8a8efb92086420064dafc1c9f5",
+      "memory": "fafcd989f272cbd7267ab195854abede9849159b84e69dfbb34ec29fc416f680",
+      "wram": "a0d3ec727fd4fd2e834f8be7219e3a6e470b0db019415706152333e569d8dc97",
+      "audio": {
+        "firstSample": "12054",
+        "frames": 804,
+        "digest": "43c07cbc82f9ffa058b315b5d1533e19c3a2c22edcd60d0628a1689abf53ad4a",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 17,
+      "op": "advance",
+      "boundary": "17",
+      "engineFrame": "18",
+      "worldTime": {
+        "numerator": "145728515625",
+        "denominator": "512"
+      },
+      "mask": 4,
+      "frame": "bd2d96681e9a17bb01829f45565fb76c898176d84b5755670d68708b373602fe",
+      "memory": "1e549dda59037fb72430a0919c0fa7d03af958290b442c0c6b56e15b6730a710",
+      "wram": "28dcac035334b30a22c345bd97d0aa135f40a35eca4f06788bbcc0df9cd3c845",
+      "audio": {
+        "firstSample": "12858",
+        "frames": 804,
+        "digest": "0ea89aebda20ad5d380de0edc9c73dd4fd9208fe26d791171d16694135fcc78d",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 18,
+      "op": "advance",
+      "boundary": "18",
+      "engineFrame": "19",
+      "worldTime": {
+        "numerator": "77150390625",
+        "denominator": "256"
+      },
+      "mask": 4,
+      "frame": "1a3e5749c74a9f3443b79f2fe65c57e37ccaf5c4de5a44b8f3153bb2505d7f26",
+      "memory": "10219f267f71fda09f2f22e3bebf885e5e78b816d5bd17e9d22689134462a770",
+      "wram": "9c894fa65732409091e9fc159e688fad03bfcb7a5ac3f268fec78035a2d33a62",
+      "audio": {
+        "firstSample": "13662",
+        "frames": 803,
+        "digest": "69ac7a5d5ed3404bd78eabcfc9e9336d469a2f1076c9e08ba65d97e2f2b95d5e",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 19,
+      "op": "advance",
+      "boundary": "19",
+      "engineFrame": "20",
+      "worldTime": {
+        "numerator": "162873046875",
+        "denominator": "512"
+      },
+      "mask": 4,
+      "frame": "68f717267372032b63a6076f44a63b91c31b1049d85e92a567b951496929b921",
+      "memory": "fa46c2157b28ea940b5e4760673ba6371386d3179240c5ce83646c02a906298d",
+      "wram": "4f8abe428f0fa4818776b2f632e1202f682672890677ba6596b149bed8dd8634",
+      "audio": {
+        "firstSample": "14465",
+        "frames": 804,
+        "digest": "350a0c16fbbc7658ff932c75da2f9c612dc32709e65a669905d08319950e66f7",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 20,
+      "op": "advance",
+      "boundary": "20",
+      "engineFrame": "21",
+      "worldTime": {
+        "numerator": "42861328125",
+        "denominator": "128"
+      },
+      "mask": 4,
+      "frame": "20c3a130b5ae2beb7815bdff76a2a495142f5fb7fadb4f2eea461dc1ab2f14ba",
+      "memory": "ce983beba7f13b489a59e398e1e401c161840a1804fac2d469d67b7400f05295",
+      "wram": "699871b9d964ecff582654959aa1e34a9249449e5ac8d100d19a8d3642abb0b4",
+      "audio": {
+        "firstSample": "15269",
+        "frames": 804,
+        "digest": "4060cd2371a867ecfd9ad9040e9e8b94f9439857bf8687ca33e1d30879361c4b",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 21,
+      "op": "advance",
+      "boundary": "21",
+      "engineFrame": "22",
+      "worldTime": {
+        "numerator": "180017578125",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "1b5d0e132833cf4c638def1160561585cadc91ad31f37049cd1dffc46df64157",
+      "memory": "0306270efb9e580c507b783f39327a67895b292dac60e481142551df8e32c88e",
+      "wram": "07bf8600d435ceb57a110cebfd21dd4831f27d456615508745fe9bc39cc928c7",
+      "audio": {
+        "firstSample": "16073",
+        "frames": 803,
+        "digest": "332fa5b628c519dee0c2fe508e40371f3e9068ccb1ff9c535a2a8813e7ad91e0",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 22,
+      "op": "advance",
+      "boundary": "22",
+      "engineFrame": "23",
+      "worldTime": {
+        "numerator": "94294921875",
+        "denominator": "256"
+      },
+      "mask": 8,
+      "frame": "fbc72371aaf008d91add1fef4987a513d58589e1e050a50d5a215b631f85c055",
+      "memory": "158a086ec48250b07baf5331b2cbfe527c1e9079e1a7b1d17eef18dfee656965",
+      "wram": "9d46deba729e1efb3efabb568210c4960cb874f239d7cabb6c7a9b24d9fe6482",
+      "audio": {
+        "firstSample": "16876",
+        "frames": 804,
+        "digest": "4671cd66d1a76e31d9e6911e65502eff416b8889572e151e86b4ff48ca550407",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 23,
+      "op": "advance",
+      "boundary": "23",
+      "engineFrame": "24",
+      "worldTime": {
+        "numerator": "197162109375",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "b050b0ec00c51e0085d9e2525343254133d673a01975351ffd10de16638d6ecc",
+      "memory": "6c2d2790c0117d72572ef41ee691a085e57a196f038ba4b2ca07c59137ffe12c",
+      "wram": "286bca08f100ab6bf60b440703459ae3fca30378ac5c718ee9b5b629875de3fb",
+      "audio": {
+        "firstSample": "17680",
+        "frames": 804,
+        "digest": "839c771d7a514dbf533b3e4dcfb6baadf52beace23b09517995c321fbd26e825",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 24,
+      "op": "advance",
+      "boundary": "24",
+      "engineFrame": "25",
+      "worldTime": {
+        "numerator": "25716796875",
+        "denominator": "64"
+      },
+      "mask": 8,
+      "frame": "de9cc7c4c263136f62b4da7eb4dd65fbbb1125232f3248a195de3f6fed59aab6",
+      "memory": "f72182171e32fe4fa4c994ca9fe08af46db77e117f67d7314b36f63c9e938b2b",
+      "wram": "07aacb020eab56d46b42474b5265a03f118176ddabcb45ac6a1e565cb1b04dcc",
+      "audio": {
+        "firstSample": "18484",
+        "frames": 803,
+        "digest": "79296a1e1854bec8ffbd292c6bcf0ebf0b5b83a50237cc25abecf682a93e06fb",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 25,
+      "op": "advance",
+      "boundary": "25",
+      "engineFrame": "26",
+      "worldTime": {
+        "numerator": "214306640625",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "c6d09ca052f3e21982da216bae98d2fd3d3c588b325cb27f8bd17abd599243cf",
+      "memory": "353ee19a2eb64204e7cb9d109fc692ad88da1fb2972a0773d2281589290b5029",
+      "wram": "6f0fdec1c4879b20b83761cc1b58294f65ab46ec72e0d5d1264ae4dfed430f7f",
+      "audio": {
+        "firstSample": "19287",
+        "frames": 804,
+        "digest": "9d53f22af68650198f415f49cbfdb4d6441d6b749a42184bd98ed38077bc7d41",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 26,
+      "op": "advance",
+      "boundary": "26",
+      "engineFrame": "27",
+      "worldTime": {
+        "numerator": "111439453125",
+        "denominator": "256"
+      },
+      "mask": 8,
+      "frame": "debc5a0a4712def5eaa8f95a9014f258c4e0f6cc3319d562d426f757269e5f85",
+      "memory": "033043ab5455398cb5f0ea3bced4a3ba409ef97bd2280c8a55966736627fc696",
+      "wram": "a694d38db7a58ed60a033cd84a8f877e546906f425e052f53e993b8f7ed03aeb",
+      "audio": {
+        "firstSample": "20091",
+        "frames": 804,
+        "digest": "36668a8b01598751686e21ed4ffdec506a049d907cc938e8e495627206a3f8a5",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 27,
+      "op": "advance",
+      "boundary": "27",
+      "engineFrame": "28",
+      "worldTime": {
+        "numerator": "231451171875",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "22882827b8b6e95e5c4594bfa746daff156b228e0d2c6cdea9bc59443f9d51c2",
+      "memory": "a375ce4b4f7a4f3a0855bb99d032d18ed7d3de8aa0ffafd0cfa7438cf5feac48",
+      "wram": "c9f3892d4530861ababd661dddd5a4bb121ebeb56216e56d5165edaddd456d8c",
+      "audio": {
+        "firstSample": "20895",
+        "frames": 803,
+        "digest": "124cc44a4bc56d885f525327903a6beb74cdc6b1f048073c87068bda491b32d1",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 28,
+      "op": "advance",
+      "boundary": "28",
+      "engineFrame": "29",
+      "worldTime": {
+        "numerator": "60005859375",
+        "denominator": "128"
+      },
+      "mask": 8,
+      "frame": "ddd6645f0d798231bd892aa38e12eeee34aaa73c3a8ad7f4064a36409cbee596",
+      "memory": "15f3c7654d99740badd1fa53a187a868db1b29e6de3eb0522f2ed542348c5f9d",
+      "wram": "24cda2fd2de2226aca415ccc800f4f3243d5a57d4bab75d86d334755190b5e32",
+      "audio": {
+        "firstSample": "21698",
+        "frames": 804,
+        "digest": "680ac1f5c07e0297ebf299e2457d7106f9e1624bcb1984d0438ffe05edabd674",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 29,
+      "op": "advance",
+      "boundary": "29",
+      "engineFrame": "30",
+      "worldTime": {
+        "numerator": "248595703125",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "48938f83b17eb573ab340182ea70e6ee14e0d18369e76dd8f78fda4455cacbdb",
+      "memory": "a5c1356fea320ff56637108f5d8a481489d03078e1a8d9be0989ea01c56a7dcc",
+      "wram": "aef2e51914a7076ebb8ed84bef179851cfcf5f18964a5a5b768614bc8a040e29",
+      "audio": {
+        "firstSample": "22502",
+        "frames": 804,
+        "digest": "8d5b74670990cbd4148181315bd08e7c8c499132224a51110498085f79cebbcc",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 30,
+      "op": "advance",
+      "boundary": "30",
+      "engineFrame": "31",
+      "worldTime": {
+        "numerator": "128583984375",
+        "denominator": "256"
+      },
+      "mask": 8,
+      "frame": "8d846d263b0f171ea8c5adc6dc7e2bc036abcfedee7d1f9d44c849541c3024a3",
+      "memory": "ec870ea08344fc9adb4b0522e0906701b55b00305f8261a0bf387120b41e7202",
+      "wram": "6d424492644267cbabb0f2ba6124f6233e0441a58cfef6c71fb96df1eb19bf6b",
+      "audio": {
+        "firstSample": "23306",
+        "frames": 803,
+        "digest": "dc0d209aba398de449373af8736ff8b295b87c0b342335ab09aa4137a184a01c",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 31,
+      "op": "advance",
+      "boundary": "31",
+      "engineFrame": "32",
+      "worldTime": {
+        "numerator": "265740234375",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "64768d7167e34d306ba9083bb1dc7e65e6123b634079787faa19d0ef3798de86",
+      "memory": "5df84a2cb48ac24e72a5ea063f24caeca2e929bbdc368306a6adf856dc07f381",
+      "wram": "fd666c21dabe652d5a961e8b85ff4c93367d5519f588d860fbb4ba1ccf549ea4",
+      "audio": {
+        "firstSample": "24109",
+        "frames": 804,
+        "digest": "a280e35809a823b4944e39524e6e9e52fad557acc3270b8aed10a0da24d51868",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 32,
+      "op": "save-slot",
+      "boundary": "31",
+      "engineFrame": "32",
+      "worldTime": {
+        "numerator": "265740234375",
+        "denominator": "512"
+      },
+      "mask": null,
+      "frame": "64768d7167e34d306ba9083bb1dc7e65e6123b634079787faa19d0ef3798de86",
+      "memory": "5df84a2cb48ac24e72a5ea063f24caeca2e929bbdc368306a6adf856dc07f381",
+      "wram": "fd666c21dabe652d5a961e8b85ff4c93367d5519f588d860fbb4ba1ccf549ea4",
+      "audio": null,
+      "state": "a92187ebda5a7ea77d82a40566678177b8e29208b61de01e2fb6e0fb569c690e"
+    },
+    {
+      "index": 33,
+      "op": "advance",
+      "boundary": "32",
+      "engineFrame": "33",
+      "worldTime": {
+        "numerator": "8572265625",
+        "denominator": "16"
+      },
+      "mask": 1,
+      "frame": "a050ca382016f826839cbe4c25040e24c8c225a254da33b943c7c92f6e4fc037",
+      "memory": "97028f96be04ea022ce16d48ba4dc64e4cac3a9a3cbd3ae19a90fad7f92ff4e3",
+      "wram": "00f25d551cb2d5eaa17851ecad457e19b5933308f447ad6d52f5c3c65cf97c81",
+      "audio": {
+        "firstSample": "24913",
+        "frames": 803,
+        "digest": "9e652e66d5af99bd92fa81e1397a99fc788cfcb859665a80c35bc3283d03acf0",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 34,
+      "op": "advance",
+      "boundary": "33",
+      "engineFrame": "34",
+      "worldTime": {
+        "numerator": "282884765625",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "d8139b0db41c1f39c72be87e25a23b40472057aa93c737a3f8f66b269952fa1d",
+      "memory": "dd327e9082a24a5e89aff3d1dc2b9add47521e89602a093fa6f1d989138149df",
+      "wram": "5270455eb61d0ada3eaf41e3f6624614c49cc65c3fe8057953902e1935974b93",
+      "audio": {
+        "firstSample": "25716",
+        "frames": 804,
+        "digest": "ad4b3044606c12be195655ed248f78529d668244ff0eabd215ac189e45e75982",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 35,
+      "op": "advance",
+      "boundary": "34",
+      "engineFrame": "35",
+      "worldTime": {
+        "numerator": "145728515625",
+        "denominator": "256"
+      },
+      "mask": 1,
+      "frame": "9bbefd79b32433a4e8b0428da0459326afe7efdf010d3ced5d5a17d14d180fa0",
+      "memory": "b0e753fe027d0bbf711b071bb954d6b46153b01772f9fc4005f048261edcff5a",
+      "wram": "1b43d2faf5682a9a74c185b96ae1a3e8cb8c4f55de26572171b97c0eb680b3c8",
+      "audio": {
+        "firstSample": "26520",
+        "frames": 804,
+        "digest": "f211c35083b190a5a48c2dd75b9070cefe484f254a3ace31bbcc4e81ac76e977",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 36,
+      "op": "advance",
+      "boundary": "35",
+      "engineFrame": "36",
+      "worldTime": {
+        "numerator": "300029296875",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "bb6238215feb130d609fe9f7e78217861b2121ec4cfaee6f36ad64eac3dde799",
+      "memory": "941492dc804fecb7934b1ff5428ea105a5bec4fb7e029483b55a3fcde83579e8",
+      "wram": "bdeca712b01ffda68acd4a3a56f8bdf1494d030d06fb0f370d2fbd83eea8657b",
+      "audio": {
+        "firstSample": "27324",
+        "frames": 803,
+        "digest": "fb68b8c5c95d2fa32f459b682b52a0f771f9f3562d8af5e4bf99a797bdc8a2f1",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 37,
+      "op": "advance",
+      "boundary": "36",
+      "engineFrame": "37",
+      "worldTime": {
+        "numerator": "77150390625",
+        "denominator": "128"
+      },
+      "mask": 1,
+      "frame": "1af800af522b08b0e5a4b12e9f22d77b7def8b29ff1592d37c4b3e82fab2f0a6",
+      "memory": "645597cf42aeacd81199de7403daeecd0b485bc25497122df782d8cc16c2caea",
+      "wram": "45acecb148b4a974cc16ff6f5c255274e749ddb9ff5b2916b2ac24a9ca87968d",
+      "audio": {
+        "firstSample": "28127",
+        "frames": 804,
+        "digest": "eabd869537112808adc0b427a1ea032ae012b07ecf478a025163fbcd23e8aca3",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 38,
+      "op": "advance",
+      "boundary": "37",
+      "engineFrame": "38",
+      "worldTime": {
+        "numerator": "317173828125",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "c1ea74658fd50c82ff511669d69f2c138745c645e6e5e31cc73508bca41058e7",
+      "memory": "56f851d1f82f151451d838845aed1ceea92dc1cd533592bada0b5a9c08da7ff2",
+      "wram": "7878fcca297a5cdf853dd733bf4368851a70bcb411b976a6b41e19fd84cf0971",
+      "audio": {
+        "firstSample": "28931",
+        "frames": 804,
+        "digest": "88adc0fb2f75d8d9aec35afe3a76c9784f0a308b9bcd2acf473f14a7064c0f8b",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 39,
+      "op": "advance",
+      "boundary": "38",
+      "engineFrame": "39",
+      "worldTime": {
+        "numerator": "162873046875",
+        "denominator": "256"
+      },
+      "mask": 1,
+      "frame": "dfebb4ab61b3df55c695afc7f14ac2e046c4ae61c2177b7fe5d9121a0980dd47",
+      "memory": "a61fd1c8a22f629fbfbe2731cf300ef794077c021e9cdb02412a78ab578b4850",
+      "wram": "4746b44bb5f8888ea83e4eaa659244946afdb8c13e1bca1dcda3c743332be90c",
+      "audio": {
+        "firstSample": "29735",
+        "frames": 803,
+        "digest": "317678d9330c86d2d21bbb6ff9640311b244fb01c4a916b8dbf91bb9b48a552f",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 40,
+      "op": "advance",
+      "boundary": "39",
+      "engineFrame": "40",
+      "worldTime": {
+        "numerator": "334318359375",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "26ca74ae737a7a9a789d7489aadc31f3c1b47b71ffced1d437a8250037a9b58f",
+      "memory": "20fbf7c81d6e45e4233a3f444053507ff4f3e5b131822a5bad74dd938aee57f1",
+      "wram": "499a57c4a43835a1f5e4155b5fd01014a3a0576c74d2ca42a2f3a2004e7b4ef6",
+      "audio": {
+        "firstSample": "30538",
+        "frames": 804,
+        "digest": "00cb17fd1bdbbe0ee9ed166d36e9a3ff500bd73130dc51d6c9701cac57099046",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 41,
+      "op": "advance",
+      "boundary": "40",
+      "engineFrame": "41",
+      "worldTime": {
+        "numerator": "42861328125",
+        "denominator": "64"
+      },
+      "mask": 1,
+      "frame": "039e8af968520b3444adb52a93d624a8767a3d58b34bcdca7e60cf6c24ea4986",
+      "memory": "75af082f5b27235260369d8b8cb0bb447b4576042c350ed43fc3d57798c89547",
+      "wram": "515153bfe02a44731c6400a2fa08c1e2d7f24636daca798bcff160cbeb886212",
+      "audio": {
+        "firstSample": "31342",
+        "frames": 804,
+        "digest": "58d3219564d0f37b78dddc47256292eea6a38773b144d5f37aa5277fbd76899b",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 42,
+      "op": "advance",
+      "boundary": "41",
+      "engineFrame": "42",
+      "worldTime": {
+        "numerator": "351462890625",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "18f4c2289b95e3fd6295569af945e328697f4197c8920adc3a10c084fbb53c56",
+      "memory": "1bc85d39240d2535f8c9986e7365dfa77e469deb22e81accdce87c227e3cc498",
+      "wram": "ff785c2649cd8bcfc8c02fa174f6408c44f97973a8b4b84a5f46ff9382751316",
+      "audio": {
+        "firstSample": "32146",
+        "frames": 803,
+        "digest": "32cbfff29f236651e5beaa3e45f98364d5953504daf3da652c89db5439d884e3",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 43,
+      "op": "advance",
+      "boundary": "42",
+      "engineFrame": "43",
+      "worldTime": {
+        "numerator": "180017578125",
+        "denominator": "256"
+      },
+      "mask": 1,
+      "frame": "200056b02ca588f5e40fa1ed7f050205e74d051518e9bf1b25450acfc5bf51ea",
+      "memory": "9ee9601706eeb26396c5181539a607ff80bbbac78c89e4ab63e86135b2635711",
+      "wram": "dec8114b939629fb3b4d99f87759c9f07dd80d235e8f67b7fe816b9b1f6e5bf9",
+      "audio": {
+        "firstSample": "32949",
+        "frames": 804,
+        "digest": "1932e97cff89034a85c0d5ff2ecea2ffe1208b5aac9daa72f5776ba856958d74",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 44,
+      "op": "advance",
+      "boundary": "43",
+      "engineFrame": "44",
+      "worldTime": {
+        "numerator": "368607421875",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "2fcd46f1b520b7949e9063c4e4d74d781e3e906d6358e70fa5fd149bb0d19d06",
+      "memory": "723b77fe10b2fa3d660f5b11edf682d22d28e3926f7c9ee31962dc387dc1d90c",
+      "wram": "3cac711f86972c7bbcad5619e40898699336bfe7217f291bf8fe004921095ec1",
+      "audio": {
+        "firstSample": "33753",
+        "frames": 804,
+        "digest": "cfbaf05cdf2c153eaa4acb96626575b8b63e02eb39eb9cc98abde9b4a97359db",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 45,
+      "op": "advance",
+      "boundary": "44",
+      "engineFrame": "45",
+      "worldTime": {
+        "numerator": "94294921875",
+        "denominator": "128"
+      },
+      "mask": 1,
+      "frame": "8c9572abe7d6b4ce97bcffe58c3ea372a72ebeed778098e32eb41048edd8d560",
+      "memory": "8121cfb25deaaa2b5f52ce7c367b344a548ce0f409ccae533689f8f7256503ac",
+      "wram": "be72108bb43518a7e13ea615bc641f6f5bdf7e3e81f438cf66808ac384dc16a9",
+      "audio": {
+        "firstSample": "34557",
+        "frames": 803,
+        "digest": "3d68f22866262054afa6a540633b5d3e4d41600700299f9901433e696a1a5d34",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 46,
+      "op": "advance",
+      "boundary": "45",
+      "engineFrame": "46",
+      "worldTime": {
+        "numerator": "385751953125",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "7f22d8431f7c21182ec14bcf1bf4db85585074597797a0e08c981c0fc8b3f9a3",
+      "memory": "34900c7b8e673057f80ad2129aacf6ac1096295f0d226489ba11bf443d6e7659",
+      "wram": "67d93c6cc8c62481e281fa7538d518c27af6fc34d5027696553b19ab283d18b0",
+      "audio": {
+        "firstSample": "35360",
+        "frames": 804,
+        "digest": "7d411cc947545532c5d60b64498f20d4406bb2472dd6a6a149463c8288cbec53",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 47,
+      "op": "advance",
+      "boundary": "46",
+      "engineFrame": "47",
+      "worldTime": {
+        "numerator": "197162109375",
+        "denominator": "256"
+      },
+      "mask": 1,
+      "frame": "60b84b3d90588daa7fc7b319d1f107902214ce3c3e52381371dbf4284c10660d",
+      "memory": "bb9465f5f3afa6eb40612585efae4b247cb7ad24763a1f647be7ac428bcdcc30",
+      "wram": "0d7dccaa4f517c91ddff224869a288d499f0be872da311ef075ba330af8f07fe",
+      "audio": {
+        "firstSample": "36164",
+        "frames": 804,
+        "digest": "7e1617cb92203a8aaf818567752d7142dc68fff2cd9cffb12ba3eae980cd9f70",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 48,
+      "op": "advance",
+      "boundary": "47",
+      "engineFrame": "48",
+      "worldTime": {
+        "numerator": "402896484375",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "7f22d8431f7c21182ec14bcf1bf4db85585074597797a0e08c981c0fc8b3f9a3",
+      "memory": "a46dd10f60ba550bd726185bc3480a590ef6502b14697f811844e3f2cf84d7f8",
+      "wram": "56bee67b4adfa5818fc538f3bf68088312269d770ef8f934eba2920d52158894",
+      "audio": {
+        "firstSample": "36968",
+        "frames": 803,
+        "digest": "3cff5a6ac4aa0e0b53dc5dfb8a93210c7369b8a179d298f941d317440efddcaa",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 49,
+      "op": "advance",
+      "boundary": "48",
+      "engineFrame": "49",
+      "worldTime": {
+        "numerator": "25716796875",
+        "denominator": "32"
+      },
+      "mask": 1,
+      "frame": "60b84b3d90588daa7fc7b319d1f107902214ce3c3e52381371dbf4284c10660d",
+      "memory": "477f008624dc3267441139f5dc137cd753cac8c6821066a15dcd31cb64d518b1",
+      "wram": "72afca59f6a4d06f404b7bbd4ac3373e88e22fa4a5f83eec73a59720be8c5db8",
+      "audio": {
+        "firstSample": "37771",
+        "frames": 804,
+        "digest": "20d60a7d7dafde50631c5b1b2d50080e2d788f5933e9c8ac0c8f29da566a76c6",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 50,
+      "op": "advance",
+      "boundary": "49",
+      "engineFrame": "50",
+      "worldTime": {
+        "numerator": "420041015625",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "7f22d8431f7c21182ec14bcf1bf4db85585074597797a0e08c981c0fc8b3f9a3",
+      "memory": "470dfd8175c846fa6e3adf68c277bb0eea9f671241544b2dc60f24bc2550752f",
+      "wram": "5e8b5a9fa3a836649e4846352b9b2585f897fbe2dccac9075de3d99af32bcb94",
+      "audio": {
+        "firstSample": "38575",
+        "frames": 804,
+        "digest": "eedba30e8e9fb2754d74d0d3fdf858a2d4be7ee91c48b001815c306461c3d1aa",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 51,
+      "op": "advance",
+      "boundary": "50",
+      "engineFrame": "51",
+      "worldTime": {
+        "numerator": "214306640625",
+        "denominator": "256"
+      },
+      "mask": 2,
+      "frame": "d4c715ee576697b4a4820bca4d01a5d292bd3e9478175662483fda6f091b9999",
+      "memory": "4f5712e8617498cad630e9872aa7d97aa3588d32d8256dd19d7f158cd1a77211",
+      "wram": "10d14d0058535ba7c18f1ebf9e7b04558eb1cea66aab83db471744c7e5598889",
+      "audio": {
+        "firstSample": "39379",
+        "frames": 803,
+        "digest": "5aa85922cb6719b9720fc03589081ad88367c523a3736eca6eb65fde1c83fd1f",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 52,
+      "op": "advance",
+      "boundary": "51",
+      "engineFrame": "52",
+      "worldTime": {
+        "numerator": "437185546875",
+        "denominator": "512"
+      },
+      "mask": 2,
+      "frame": "a4fb8fdb51c58b199452d45fe8176e69f17713c7fb5524852c18ec16829d21ac",
+      "memory": "914c02db5181aadffedc7adf34258ae49118c8ecb1479cfabbbafa7e7964a25f",
+      "wram": "039b4a0d24cf31e79eece9ca6d227b349e3a01f1c77650ea2914ee187ed53c22",
+      "audio": {
+        "firstSample": "40182",
+        "frames": 804,
+        "digest": "1fd28d74bff7738e70d18bc33d8c5c7fd6bb0a1a4a9bc66238ddd0e615f34154",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 53,
+      "op": "advance",
+      "boundary": "52",
+      "engineFrame": "53",
+      "worldTime": {
+        "numerator": "111439453125",
+        "denominator": "128"
+      },
+      "mask": 2,
+      "frame": "59466412ed8adbe2da60d11091ef7e1b460a712c3964b734fe79d174b0509721",
+      "memory": "5063e6176a7ce3ce6e9dcd595e32d1dc36c984abfaa441c0e5b55c739ee89f97",
+      "wram": "c6ba1291867dcb23fc75dca9ad792ea4c733a277ca754536640ea9dad655399d",
+      "audio": {
+        "firstSample": "40986",
+        "frames": 803,
+        "digest": "3a1c19e0d6e224f00f74fe8c11f5d3857bcedd4f04bb98dc3e6ab66d3537db9f",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 54,
+      "op": "advance",
+      "boundary": "53",
+      "engineFrame": "54",
+      "worldTime": {
+        "numerator": "454330078125",
+        "denominator": "512"
+      },
+      "mask": 2,
+      "frame": "02f57878f15f64f4dbb64dce297ef8b666693162bc5cf635a2ec56d15bba24b7",
+      "memory": "e0b89149c66487aec516d56098240444254b9cda80c15126de03b6df9cb30f62",
+      "wram": "b0acb846630aafbe133e5ccb8a8e9861c071fb3efae5ae89fe34ceaeffdb9685",
+      "audio": {
+        "firstSample": "41789",
+        "frames": 804,
+        "digest": "6b75e18c8d11c23b04e4e84fdafa7f0ea56ed9a6e49625854a3d647dbd967be0",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 55,
+      "op": "advance",
+      "boundary": "54",
+      "engineFrame": "55",
+      "worldTime": {
+        "numerator": "231451171875",
+        "denominator": "256"
+      },
+      "mask": 2,
+      "frame": "cef6896edb6076ae9d0291bfc16ee62817d967d07d0c2a9619c36645f3518fc0",
+      "memory": "788334a803d9c7d2e0aa5ae653ced8c39694805721ad12f5cc1a61c0e61d984d",
+      "wram": "8586e560e733fae81d454b2043542c46e8a9ec7d10ad6f8e1d45fde50a5fc3d9",
+      "audio": {
+        "firstSample": "42593",
+        "frames": 804,
+        "digest": "7788378e33ebacbd96a8b70344a1b806318634e572ebac7518cf2dfabb59e9bf",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 56,
+      "op": "advance",
+      "boundary": "55",
+      "engineFrame": "56",
+      "worldTime": {
+        "numerator": "471474609375",
+        "denominator": "512"
+      },
+      "mask": 2,
+      "frame": "cdc5b08a6e0b2da69e4fe9cd961ca73b2828809caadda13c9e127264e5374465",
+      "memory": "9a8fd94eef73eab427cf2ca0eabb20dc60bb32747b708360d739f159ca3d0604",
+      "wram": "61e9cbe5eecb25d7a1961e82b7af0d23a0008cce1ea29d6bf2f8bc2facf1ec34",
+      "audio": {
+        "firstSample": "43397",
+        "frames": 803,
+        "digest": "07ff7aed5004ecf5ad4ec873babc9b11c34c0b3fbc8a702e599fb9f327969fa0",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 57,
+      "op": "advance",
+      "boundary": "56",
+      "engineFrame": "57",
+      "worldTime": {
+        "numerator": "60005859375",
+        "denominator": "64"
+      },
+      "mask": 2,
+      "frame": "f606666cc532cf8be17672bc1fd43ca7928b6d1ff5c54be611d0d4ae52ee1041",
+      "memory": "74fe3bb37a458e9c7227b4276dda2d7eb5976677fc0452785d2c44a84e46f050",
+      "wram": "2951398b9ca06155ca990b0d62a95fe7a73f4d92498a02a80c19d97d411e8a50",
+      "audio": {
+        "firstSample": "44200",
+        "frames": 804,
+        "digest": "970a7108de1a9dc7b554e85458fd0dc4549a38ebc293dff5115c9b997b84714c",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 58,
+      "op": "advance",
+      "boundary": "57",
+      "engineFrame": "58",
+      "worldTime": {
+        "numerator": "488619140625",
+        "denominator": "512"
+      },
+      "mask": 2,
+      "frame": "94ba53bf422817d8dc5b142a554366e3baa4ea20df596ba2a62f97e07769e89b",
+      "memory": "d6d45b23d05cc429eca0963f07ec321352352644e5b0b34f495d113d76d2ea24",
+      "wram": "ffa2427f9f9dc3f3e2cede7aa31b2fe85d18871fc5443fa60bd2ff71d3c5815d",
+      "audio": {
+        "firstSample": "45004",
+        "frames": 804,
+        "digest": "2649c25e80850f9ce23e5740906e04160de143f917a4fb7403abc6e85ea1e5be",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 59,
+      "op": "advance",
+      "boundary": "58",
+      "engineFrame": "59",
+      "worldTime": {
+        "numerator": "248595703125",
+        "denominator": "256"
+      },
+      "mask": 2,
+      "frame": "918304a0428502b5c0aafd48e5f4c617351f72c39d95a9d857c1f48cc374eabd",
+      "memory": "1608ecf40fefd125f07afa2c80872b0e6c214165e7cb68fe70ecdaaf6676ac97",
+      "wram": "4ff4c74f1ca0c8665848ae57014f2ebe187bd84681619afdd43f6742705269b6",
+      "audio": {
+        "firstSample": "45808",
+        "frames": 803,
+        "digest": "49b275884c84d178613be73c2670d2626196c68bbcb6cd577f33879270eefc8a",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 60,
+      "op": "advance",
+      "boundary": "59",
+      "engineFrame": "60",
+      "worldTime": {
+        "numerator": "505763671875",
+        "denominator": "512"
+      },
+      "mask": 32,
+      "frame": "fff758141fce2432c52d471c1ea3d934bc7783d50fb1e1c06d3b4158373eb56b",
+      "memory": "f5bda201499ef79e7f882e987fe69633ff7718b33dc752de5b1ab2c4deb20fb7",
+      "wram": "229c617d30d9ffad29b7d9546391cc07d50647a8e419afb434afbc7f8e082560",
+      "audio": {
+        "firstSample": "46611",
+        "frames": 804,
+        "digest": "f6abf425ee4f961a1f59c5f19e2200fe04f4b6ffc07ffd95a205cf78c1705138",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 61,
+      "op": "advance",
+      "boundary": "60",
+      "engineFrame": "61",
+      "worldTime": {
+        "numerator": "128583984375",
+        "denominator": "128"
+      },
+      "mask": 32,
+      "frame": "15677644545269f92cd30cfe2ea852717316221746cc2c803d23d76a3ef85a6d",
+      "memory": "c4a35e9282c6117da57993d978e833205fe899ff9b6e73c2d902c5676a5478a4",
+      "wram": "6ecd448b6d3dc9477eb5507b8328d15032a32ea120dc75d40b9fff1f0e5a6c03",
+      "audio": {
+        "firstSample": "47415",
+        "frames": 804,
+        "digest": "5ddbd4b9571935219bb9003a94110d335d63c84ed568aa859149cb0a65329e0a",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 62,
+      "op": "advance",
+      "boundary": "61",
+      "engineFrame": "62",
+      "worldTime": {
+        "numerator": "522908203125",
+        "denominator": "512"
+      },
+      "mask": 32,
+      "frame": "e0777dce09d2b3f902ce43e5d560ef35e4fd4292f7caa185cc7366b44fdc5860",
+      "memory": "6e757543fb47c8794f51bc80d87f46fe4c471f5fc7e80687300c33b90e6a284d",
+      "wram": "acb6c9b1338c426e45dd340355a61ceae16581fc2246215752c417f3c131f588",
+      "audio": {
+        "firstSample": "48219",
+        "frames": 803,
+        "digest": "bfa5a937a3e5c2997f864a1673aaad9843c47c44184ecbf97f6e5781963009c7",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 63,
+      "op": "advance",
+      "boundary": "62",
+      "engineFrame": "63",
+      "worldTime": {
+        "numerator": "265740234375",
+        "denominator": "256"
+      },
+      "mask": 32,
+      "frame": "1221b3e645e05869bd9fb35b5316f37b4307982bf1af683eb7c39af87f2a2967",
+      "memory": "e62ba70f20c055c3f6372a11c9024d8ae49ef27a21b53a0a4e411a9e68610999",
+      "wram": "90fe2e842a21aba9d3f543342e31752278d902ff5ec5a97d74c048f0c8e3b804",
+      "audio": {
+        "firstSample": "49022",
+        "frames": 804,
+        "digest": "0b42a6d8c333c0e654b045047a00930273013a78e9921eb64d6e7cfb721065bf",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 64,
+      "op": "advance",
+      "boundary": "63",
+      "engineFrame": "64",
+      "worldTime": {
+        "numerator": "540052734375",
+        "denominator": "512"
+      },
+      "mask": 32,
+      "frame": "29ae4b3c474123931c1eaede26b60ca3bf1a43bfe6c892dcfc4b63020c80f336",
+      "memory": "6fbc45db1bdeb540bf19be9f2e8c31398b6480880183572b4aa90cde3646c163",
+      "wram": "308c16046bdedfcb401396eba12c900d0439b096b1a14c7f928d483c6fca65a3",
+      "audio": {
+        "firstSample": "49826",
+        "frames": 804,
+        "digest": "b18741e06b07ec4a438539f3b98a6261798939cae33d0d837520e1e67c8fce9d",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 65,
+      "op": "advance",
+      "boundary": "64",
+      "engineFrame": "65",
+      "worldTime": {
+        "numerator": "8572265625",
+        "denominator": "8"
+      },
+      "mask": 32,
+      "frame": "0db81ebf53100bec4af3862a3dcf53afd3ad736e1ac7acb408f44d957469e999",
+      "memory": "e3a2bcb7844adc70d67f3a03e52c514b050811e835a5cdd17b7cc09fc6016c26",
+      "wram": "5c8929e4a2ab28b74f441c6c4fd84defd107fed09923dd21dd1f346c7a8cbe97",
+      "audio": {
+        "firstSample": "50630",
+        "frames": 803,
+        "digest": "e716165669c63128f28c5a387d6901cb9a37f85b85b5f2f8f68db4c81dd9a659",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 66,
+      "op": "advance",
+      "boundary": "65",
+      "engineFrame": "66",
+      "worldTime": {
+        "numerator": "557197265625",
+        "denominator": "512"
+      },
+      "mask": 32,
+      "frame": "4d250a37833494955379cf48826c510b2a0cdf23eb0c00f71b9972fad25aedff",
+      "memory": "3d994f4a3408f4ce53a8e3d820d3a3f0f97ad354fda6c42887ea5e150d7618ea",
+      "wram": "fdf6fc94eea410530fdb560032dfdd292d22d627796bb81638dcace9f693ceba",
+      "audio": {
+        "firstSample": "51433",
+        "frames": 804,
+        "digest": "7c299662c8e60c477a1bcbfe9beafd1dd1c5f017b2cacbd652ae601a50c90cc3",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 67,
+      "op": "advance",
+      "boundary": "66",
+      "engineFrame": "67",
+      "worldTime": {
+        "numerator": "282884765625",
+        "denominator": "256"
+      },
+      "mask": 32,
+      "frame": "5882156c8cfc0a882eae507c6b9b0533f93b8113a698bc4a2577004e74e4c783",
+      "memory": "b477e731620c0b66e0eae19449aba284472a00613f51b4606e0a02b3a932956f",
+      "wram": "2b471b93355842bc6ddca559956ca31ba81735f093a315fe18b66624774ee53f",
+      "audio": {
+        "firstSample": "52237",
+        "frames": 804,
+        "digest": "966530b70fafcd67c0702c4a1341df7046e2b40595583d6b83ba24afea75126c",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 68,
+      "op": "advance",
+      "boundary": "67",
+      "engineFrame": "68",
+      "worldTime": {
+        "numerator": "574341796875",
+        "denominator": "512"
+      },
+      "mask": 32,
+      "frame": "bf868c6b0804c3323c0ce6b47d0d4a30d8943c891e7f83b59ca14664b402fb9b",
+      "memory": "03436fa95f904c860ca4b2ca0384966cd5d4d50dad9093c33e9b7b1f44378eb5",
+      "wram": "3349831fa3bff77c82ce40e8c21307b60b91fdb2aef9821d39d3043afd960df8",
+      "audio": {
+        "firstSample": "53041",
+        "frames": 803,
+        "digest": "580423a592269e4b8b6b80b511f0863a0b537b7950375f8c27b424cc15a6f30b",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 69,
+      "op": "advance",
+      "boundary": "68",
+      "engineFrame": "69",
+      "worldTime": {
+        "numerator": "145728515625",
+        "denominator": "128"
+      },
+      "mask": 32,
+      "frame": "1513da252d2c50920d65848a905a028d6fdcc7c544c55dd8a16e0ff94b0de3b6",
+      "memory": "ed77bfe41c4494c5e176ae50082eebcc2d642b3f8581947e18263f9def2ca181",
+      "wram": "ad98163a1e70adaee793fc0071fbd1b454314c93fd3a05a2f165d4353884d0d1",
+      "audio": {
+        "firstSample": "53844",
+        "frames": 804,
+        "digest": "3897f02ea8bafae2cb6c4d50a824a2fd9d42b9f061b12d19fe71873100890b7e",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 70,
+      "op": "advance",
+      "boundary": "69",
+      "engineFrame": "70",
+      "worldTime": {
+        "numerator": "591486328125",
+        "denominator": "512"
+      },
+      "mask": 20,
+      "frame": "bd99a5fcf17c2892fff090db1a3280917dd4355be5bfc63550fa71a98f911e2b",
+      "memory": "39ef6939ac716e21578e6082d885e3067c21da7d9de3e2f521d8add065ea7a9b",
+      "wram": "c727af123d968426d84c84d15fa86a582941c66d716fa581c538adb0221e8fc6",
+      "audio": {
+        "firstSample": "54648",
+        "frames": 804,
+        "digest": "aa5d0eb33e9e981b953deaca808ac1446daa05831f3e8bdd98b4cda616e04014",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 71,
+      "op": "advance",
+      "boundary": "70",
+      "engineFrame": "71",
+      "worldTime": {
+        "numerator": "300029296875",
+        "denominator": "256"
+      },
+      "mask": 20,
+      "frame": "2254a74263113c999f8fb23968f7a25925728d6da267fcdf19df725c9b9f6409",
+      "memory": "16b928cc470b11376eed155f5fe37c75f3885e4ba8c2d72b734ef9121dac1d70",
+      "wram": "914357fe6563d531bf6d8f49a03471e0b39a547f54543b272eee45a4b3b454f9",
+      "audio": {
+        "firstSample": "55452",
+        "frames": 803,
+        "digest": "6e8465c9e38ed37bfce1ce933d9776dfb35a24bba9493eaa70fa95a750b07058",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 72,
+      "op": "advance",
+      "boundary": "71",
+      "engineFrame": "72",
+      "worldTime": {
+        "numerator": "608630859375",
+        "denominator": "512"
+      },
+      "mask": 20,
+      "frame": "fe296bd399c71d25516fd32fd21de38c26b9fdd738e8057210dffa915383a9f7",
+      "memory": "2a9500f1ab72744852f1fb515f6d203a02d7a9fa04ada524ec5fcb8108cbc23b",
+      "wram": "926cefe3cbcc066e32a5bc7f6163e9134fc168edead57abe4514778035dc28c7",
+      "audio": {
+        "firstSample": "56255",
+        "frames": 804,
+        "digest": "3e0bf8c60822b177e7a0e7b80e5cb84d0d5aa1ff2cd8859cf39403b0b035c8ff",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 73,
+      "op": "advance",
+      "boundary": "72",
+      "engineFrame": "73",
+      "worldTime": {
+        "numerator": "77150390625",
+        "denominator": "64"
+      },
+      "mask": 20,
+      "frame": "b271a7a59f177591a8b2c6e59b4b60af9f96322b149d2e20d8b0af640b6b75ef",
+      "memory": "efb91d59754b84aebc5293e997b1b794ba3ee5cd1da52575192fc2603ea72288",
+      "wram": "9d50789b14c199c929b81224697ac367ac4f1afed5d74e4213b512bd3a045ce7",
+      "audio": {
+        "firstSample": "57059",
+        "frames": 803,
+        "digest": "34998a2e7a86a7e937a7fa9857b66b926723a999fca8c8f969b5ed7b7a5db1c5",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 74,
+      "op": "advance",
+      "boundary": "73",
+      "engineFrame": "74",
+      "worldTime": {
+        "numerator": "625775390625",
+        "denominator": "512"
+      },
+      "mask": 20,
+      "frame": "94f44b0ec7dc130be97b3bc24bc312229fcce89f4c95f1a309d0e455cf70b9ab",
+      "memory": "ba59f5843d11b38a17985023abd0896762e0af9872492f693db003d839ceee16",
+      "wram": "1ed1ebf12e5c6d0b95252df02eb1b2db74bb25379bced1b43f7b2329e3b45d9d",
+      "audio": {
+        "firstSample": "57862",
+        "frames": 804,
+        "digest": "bfe12c81279cab0bc80cec788f66c4530534dc7e2d7c8279669023dd2462990d",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 75,
+      "op": "advance",
+      "boundary": "74",
+      "engineFrame": "75",
+      "worldTime": {
+        "numerator": "317173828125",
+        "denominator": "256"
+      },
+      "mask": 20,
+      "frame": "c00087978e31a8f87b88aca80ca87c43937ea4cc2cd438d464603e4a3d5a2192",
+      "memory": "9ab17a2d3a311a59e0af7747e7a6eca3c977da85f76a956f7d3d1a8d4feee50e",
+      "wram": "2b46f3060c9df31241e15743e16c46c603b26f93b1a0ceb2023aab5076d0bd76",
+      "audio": {
+        "firstSample": "58666",
+        "frames": 804,
+        "digest": "064f977956e6ecb9229d03a9000ca4c8bcfe791d7c24571b813bdea838c0c4b7",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 76,
+      "op": "advance",
+      "boundary": "75",
+      "engineFrame": "76",
+      "worldTime": {
+        "numerator": "642919921875",
+        "denominator": "512"
+      },
+      "mask": 20,
+      "frame": "86db5e819c85c9122f7399a39a4fb377f8ae7d77bca3428b16d8c9b584fd7e05",
+      "memory": "fa945e44826ff38244df712ab7b8c3a4ce442d942f8fdc051c7febd9a851611f",
+      "wram": "13c3194703d58a23bca6d3954e8fe6e97e72ff7fdfaba14302fc0bd15a2dad2c",
+      "audio": {
+        "firstSample": "59470",
+        "frames": 803,
+        "digest": "86540831af57c98b92bb656575e9e1a65ff7053e951bc4f835742dd7d81a9279",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 77,
+      "op": "advance",
+      "boundary": "76",
+      "engineFrame": "77",
+      "worldTime": {
+        "numerator": "162873046875",
+        "denominator": "128"
+      },
+      "mask": 20,
+      "frame": "9eb66851792fce5daf4f13d2db560445cc824cc5ded6498acf7406bdb41c692f",
+      "memory": "99e2afbf271916bcf877eca2d1f2f06750a61bcb3bbc3987fe35f419669e60d9",
+      "wram": "bae05a83c6b576e97b97a948e8b33383b3c839e8656f1a08c46e76225b7d833c",
+      "audio": {
+        "firstSample": "60273",
+        "frames": 804,
+        "digest": "b54181adce480b2b8aab95ac9d87194ab5ed8c9503b093d20c73226b947b2644",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 78,
+      "op": "advance",
+      "boundary": "77",
+      "engineFrame": "78",
+      "worldTime": {
+        "numerator": "660064453125",
+        "denominator": "512"
+      },
+      "mask": 20,
+      "frame": "8f19aa8bd0bdbe67a990d40012572411c0afbbefa63f41ca9832977ea5546095",
+      "memory": "365c9ae122d75f90e36a609ca7349ffe3216247c3218e7d1dd14cf1e076bc6a7",
+      "wram": "15a97ba1c7a266110fe273d277857af115e037eee1839c321a33b7572fd29033",
+      "audio": {
+        "firstSample": "61077",
+        "frames": 804,
+        "digest": "4270810d1077e482ed828374858afd72330e29edae89f271785c5ae9bfba1b03",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 79,
+      "op": "advance",
+      "boundary": "78",
+      "engineFrame": "79",
+      "worldTime": {
+        "numerator": "334318359375",
+        "denominator": "256"
+      },
+      "mask": 20,
+      "frame": "ba1656c2c20fd461a15a422031b4708584ed391a44a771379f462fa0cf9a34ee",
+      "memory": "de15152610404213f0a79dc8eb913d3b8d2a047ae86c9f5637fc9f56bc44a938",
+      "wram": "1bfb81ddc750ff932e7abbb00d697ae978088179f910d56af9bb105d44b8cb7f",
+      "audio": {
+        "firstSample": "61881",
+        "frames": 803,
+        "digest": "d7961c8d954250a46fa7489322fec8374f9dd89f80785f8b7139cad0c123416d",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 80,
+      "op": "advance",
+      "boundary": "79",
+      "engineFrame": "80",
+      "worldTime": {
+        "numerator": "677208984375",
+        "denominator": "512"
+      },
+      "mask": 20,
+      "frame": "0a2037e89376b7a5989b04e4c2fabcd80cb3452eb5be9c589258455b0095e253",
+      "memory": "24959dbfc1d242cce7b0d8e16232b80b873cb066dac645c3eb9a51190d50f27f",
+      "wram": "993d3c2a0a9279e30a5f90c34a58c04f242898712569ee1104f655e024e5440c",
+      "audio": {
+        "firstSample": "62684",
+        "frames": 804,
+        "digest": "ccaaed0253befbde98e63209d4023ee1b61bd1abf0d599ede4ca7ba1720990b4",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 81,
+      "op": "advance",
+      "boundary": "80",
+      "engineFrame": "81",
+      "worldTime": {
+        "numerator": "42861328125",
+        "denominator": "32"
+      },
+      "mask": 20,
+      "frame": "62285807ba56f3d33805d75acd53fba78005f7f2a47b52195c99d5a97bb6d88a",
+      "memory": "415a008e623637889ecdd0911fecd8011c05d95043145c1ca31f0199b7b3ae19",
+      "wram": "e68eb2211c9c184148e9f655ccfdfc10cde1a8c23dfeede9c43a85df277a9d27",
+      "audio": {
+        "firstSample": "63488",
+        "frames": 804,
+        "digest": "d7fba9fba28c84d0290ecb814fd092247d601aac95c4f8c8e356f74aa763f114",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 82,
+      "op": "advance",
+      "boundary": "81",
+      "engineFrame": "82",
+      "worldTime": {
+        "numerator": "694353515625",
+        "denominator": "512"
+      },
+      "mask": 20,
+      "frame": "ae38a20fe906437541241276c612fb4ce067be783f02ca4ab32252c0de4d1d76",
+      "memory": "5429fbea77dfa1eebee1388685f477e6e8dafa9edb17cee565afa070c34dbacd",
+      "wram": "c08b1a05d9138ea71788add2071e1d8d4e2e2461bc6d1eae451f0e96d966ba2b",
+      "audio": {
+        "firstSample": "64292",
+        "frames": 803,
+        "digest": "ebae567257556b6710677dcaeba474b6c1e782ba81206a0f320c4cf48f708811",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 83,
+      "op": "advance",
+      "boundary": "82",
+      "engineFrame": "83",
+      "worldTime": {
+        "numerator": "351462890625",
+        "denominator": "256"
+      },
+      "mask": 20,
+      "frame": "60a8c224d4b27f0a444413b3b3df048da39b792378b125dabd1aad6875c2a167",
+      "memory": "d69a60d163b1e54d53540c00905a87146e71827a7b975f191acf9821ffc8c8a9",
+      "wram": "466867c2dded8e78e68cb354e35e0ba624622f57464c932676268544551d5ecc",
+      "audio": {
+        "firstSample": "65095",
+        "frames": 804,
+        "digest": "ff276fa90c7bacd71f3952ac45b7334d51446d9f486207965313dcada9664a8a",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 84,
+      "op": "advance",
+      "boundary": "83",
+      "engineFrame": "84",
+      "worldTime": {
+        "numerator": "711498046875",
+        "denominator": "512"
+      },
+      "mask": 20,
+      "frame": "2e932f1dbb6e50bc5a2066087a9aa13a9d3f5b5d12ad57a670493881a30a1631",
+      "memory": "7361aaea414d38b0ec806119d6866d0c012feb994d33fa851bdc56fc220feead",
+      "wram": "568a7415214043f00a59f4b9046cee3a5b4e7730f6be02c0adc1ce93a517f5ca",
+      "audio": {
+        "firstSample": "65899",
+        "frames": 804,
+        "digest": "aefac76e15751791e4f33013e36d9441ea5ad303987aaa2e08658add0acc23ba",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 85,
+      "op": "advance",
+      "boundary": "84",
+      "engineFrame": "85",
+      "worldTime": {
+        "numerator": "180017578125",
+        "denominator": "128"
+      },
+      "mask": 20,
+      "frame": "8fff969b08bf57e097cffb8f5432e2f19aed168812905b6dea868720c8f38728",
+      "memory": "3fdd1cfb572e1a0f267c2a49f76d7e96d3ba7b6ab4363ab3b2625cc2765f9e70",
+      "wram": "2c22c48f4d47705dc072c2f70b158a9260c6a3772b33ca347ba39c6790782b8c",
+      "audio": {
+        "firstSample": "66703",
+        "frames": 803,
+        "digest": "a204face53ae2a8e36400fd5c72917e82c3fe91bf10d65fade03f3d9b350fd7c",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 86,
+      "op": "advance",
+      "boundary": "85",
+      "engineFrame": "86",
+      "worldTime": {
+        "numerator": "728642578125",
+        "denominator": "512"
+      },
+      "mask": 20,
+      "frame": "97959e848da5f9cf084b147986a65e58cc8f53746a7c9ca85738ebe3ef46d2d8",
+      "memory": "1e8bef004656ccc9b1cd6ca10edfee5c15909562b4ad592ca773c1ca0f849039",
+      "wram": "b4efcc1054310f917cb0238ad7e79ac2f1450f07ce8ad216875682d2c3151f0b",
+      "audio": {
+        "firstSample": "67506",
+        "frames": 804,
+        "digest": "2c45d37b81da5b1d653e2096b98522cef6fa293aaa13b99ab0bfe3916f7a60e2",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 87,
+      "op": "advance",
+      "boundary": "86",
+      "engineFrame": "87",
+      "worldTime": {
+        "numerator": "368607421875",
+        "denominator": "256"
+      },
+      "mask": 20,
+      "frame": "ab054f1211fc9cd7156ae7ca53d59f33ce5086d33a8cd964adfd0e8fb356f287",
+      "memory": "8571e36159896ed6e1250a73af0c5d03323ad28d6c1d8105491db323a9bc1260",
+      "wram": "1fabe0679663fe3afed28e186126606dfd310d51c22a7070f55cd4941724a1fe",
+      "audio": {
+        "firstSample": "68310",
+        "frames": 804,
+        "digest": "9623758ae4668323d9330e48548413c01f1cf75cae1678d82ea688a1013f2946",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 88,
+      "op": "advance",
+      "boundary": "87",
+      "engineFrame": "88",
+      "worldTime": {
+        "numerator": "745787109375",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "1efe9b02b9dc66a69207c7e8c2529c4d2127ab9fd4e09e16c8c9c1656c2a3d27",
+      "memory": "1a8fe4a588b2ab36dfa3724aa524f8cdcda18035cadee3b3f019aed11433752b",
+      "wram": "9573a5ef1e3ceb8066909e10810d47b32a7a611d81b9d4c845c965ee1b18d1c7",
+      "audio": {
+        "firstSample": "69114",
+        "frames": 803,
+        "digest": "aaf200e1e6fcf00c270aad5b7fb53afce36fcb27b62a396f4cf04bbc2b59250c",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 89,
+      "op": "advance",
+      "boundary": "88",
+      "engineFrame": "89",
+      "worldTime": {
+        "numerator": "94294921875",
+        "denominator": "64"
+      },
+      "mask": 1,
+      "frame": "bd2a22aa0f38308dd76e14102fc987dc85fc9a8e24569c6511313fa96295bca4",
+      "memory": "e9c9df36958cd0dba6abb7553db372cb56686aeb6748c6ffabd7234506378d4e",
+      "wram": "20b68949965c022d450a0543c15ed56a5f71243d1a4958070afea7d1832a662e",
+      "audio": {
+        "firstSample": "69917",
+        "frames": 804,
+        "digest": "eea21ff75b390ec28306eb65f9f59acf7cb721812f96f4b150ea00b3ded492c0",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 90,
+      "op": "advance",
+      "boundary": "89",
+      "engineFrame": "90",
+      "worldTime": {
+        "numerator": "762931640625",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "64f577029bc0a1662682f3aaebd6a38c50293b23f67c45c15eb51f3141158860",
+      "memory": "90c85465fd606d80c5e18101aacb851257be7ff3dbdf8a3b58e95535b27c1e93",
+      "wram": "9e3df7942d9ab22092b212c2b8a120111120bcbb9776f4d5d132470982dc1969",
+      "audio": {
+        "firstSample": "70721",
+        "frames": 803,
+        "digest": "e88b09017a673add6c12ca5e252342423cb67e9fd714a3ad51d520be40c092e8",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 91,
+      "op": "advance",
+      "boundary": "90",
+      "engineFrame": "91",
+      "worldTime": {
+        "numerator": "385751953125",
+        "denominator": "256"
+      },
+      "mask": 1,
+      "frame": "c47ad1b65520de092657d1d9f430db280c734c9233812eb9572b25f94196bd66",
+      "memory": "4d3f070c39780805dd58109c3bd59eeae71474b11bccbf435bb0b34274f2e8b5",
+      "wram": "31a922f6a8eae12a21de93eae820d1882858895978f73c38e3ae054159877c3e",
+      "audio": {
+        "firstSample": "71524",
+        "frames": 804,
+        "digest": "48f74f86221d5498af12557c8287865f972e4e57e3396f12de286655f5c458de",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 92,
+      "op": "advance",
+      "boundary": "91",
+      "engineFrame": "92",
+      "worldTime": {
+        "numerator": "780076171875",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "b3932485be7c2a61d3d30e1d8a0f68ce3ced806dc20e2f6c0457dc595264d3cf",
+      "memory": "7a13b38cbbc0bfc434b3350ce02541bb3abe87679296842d220de25105c98fb1",
+      "wram": "f3fc8a77841f77675a1dfcdd952629eadfa59c4a0111170272da632492eef3dd",
+      "audio": {
+        "firstSample": "72328",
+        "frames": 804,
+        "digest": "688a260c694075061aa034e89d0c59b05520858ddf7d8b8874c4928246a83c2a",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 93,
+      "op": "rollback",
+      "boundary": "91",
+      "engineFrame": "92",
+      "worldTime": {
+        "numerator": "780076171875",
+        "denominator": "512"
+      },
+      "mask": null,
+      "frame": "64768d7167e34d306ba9083bb1dc7e65e6123b634079787faa19d0ef3798de86",
+      "memory": "5df84a2cb48ac24e72a5ea063f24caeca2e929bbdc368306a6adf856dc07f381",
+      "wram": "fd666c21dabe652d5a961e8b85ff4c93367d5519f588d860fbb4ba1ccf549ea4",
+      "audio": null,
+      "state": null
+    },
+    {
+      "index": 94,
+      "op": "advance",
+      "boundary": "92",
+      "engineFrame": "93",
+      "worldTime": {
+        "numerator": "197162109375",
+        "denominator": "128"
+      },
+      "mask": 1,
+      "frame": "a050ca382016f826839cbe4c25040e24c8c225a254da33b943c7c92f6e4fc037",
+      "memory": "97028f96be04ea022ce16d48ba4dc64e4cac3a9a3cbd3ae19a90fad7f92ff4e3",
+      "wram": "00f25d551cb2d5eaa17851ecad457e19b5933308f447ad6d52f5c3c65cf97c81",
+      "audio": {
+        "firstSample": "73132",
+        "frames": 803,
+        "digest": "c512fd3b011093e7e63eba2b6731b070c4db7f705dde422f8dceeccc8e0a2122",
+        "discontinuity": true
+      },
+      "state": null
+    },
+    {
+      "index": 95,
+      "op": "advance",
+      "boundary": "93",
+      "engineFrame": "94",
+      "worldTime": {
+        "numerator": "797220703125",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "d8139b0db41c1f39c72be87e25a23b40472057aa93c737a3f8f66b269952fa1d",
+      "memory": "dd327e9082a24a5e89aff3d1dc2b9add47521e89602a093fa6f1d989138149df",
+      "wram": "5270455eb61d0ada3eaf41e3f6624614c49cc65c3fe8057953902e1935974b93",
+      "audio": {
+        "firstSample": "73935",
+        "frames": 804,
+        "digest": "ef1e16b1ed6dff5e22c0134f0789f2fbc298d0483a7b3ff2f42eb764390a6249",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 96,
+      "op": "advance",
+      "boundary": "94",
+      "engineFrame": "95",
+      "worldTime": {
+        "numerator": "402896484375",
+        "denominator": "256"
+      },
+      "mask": 1,
+      "frame": "9bbefd79b32433a4e8b0428da0459326afe7efdf010d3ced5d5a17d14d180fa0",
+      "memory": "b0e753fe027d0bbf711b071bb954d6b46153b01772f9fc4005f048261edcff5a",
+      "wram": "1b43d2faf5682a9a74c185b96ae1a3e8cb8c4f55de26572171b97c0eb680b3c8",
+      "audio": {
+        "firstSample": "74739",
+        "frames": 804,
+        "digest": "090b5ac661f87c6b9cdc88071bd97193db757a8a58df086edd63ac04f45a8eed",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 97,
+      "op": "advance",
+      "boundary": "95",
+      "engineFrame": "96",
+      "worldTime": {
+        "numerator": "814365234375",
+        "denominator": "512"
+      },
+      "mask": 2,
+      "frame": "13edd4761d31e910ae1c9c7b7bc9050074d5bb82ae02f0ae4d7ebd8e3d4f88c1",
+      "memory": "ae39993a273d2e153c15cd0357c4d8d2f02a8d183741c44bdd6ce5224ea4596c",
+      "wram": "432819e20364e12af5f53f48feeaa144540f82d299b15fd785b4a7027253ff13",
+      "audio": {
+        "firstSample": "75543",
+        "frames": 803,
+        "digest": "d85d6796c3870b7a485a464bbe9a74e8b92a5c4f9fd3a238d57ff594d9353996",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 98,
+      "op": "advance",
+      "boundary": "96",
+      "engineFrame": "97",
+      "worldTime": {
+        "numerator": "25716796875",
+        "denominator": "16"
+      },
+      "mask": 2,
+      "frame": "05e1b148120b5aff1b54bb9bca27b5a9a54ccf18ba01e0a13e70b40ec74edcc3",
+      "memory": "cc02c49782995cca6e105514b64619b2a1ba91470b0c0cb786fbda818a95b628",
+      "wram": "a0c7e35457b8acbeb32ecb963a09104d624915eaacf18958c5d5fecc9ca6eee2",
+      "audio": {
+        "firstSample": "76346",
+        "frames": 804,
+        "digest": "8df95a14944c844c3e3c17cce8274fa89174740bec9b63d397791c7388a50e8f",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 99,
+      "op": "advance",
+      "boundary": "97",
+      "engineFrame": "98",
+      "worldTime": {
+        "numerator": "831509765625",
+        "denominator": "512"
+      },
+      "mask": 2,
+      "frame": "11930e74f515e54416d1b06fed058fb8a945b1d83f17770dd9a117612b097ac1",
+      "memory": "44c0e3b78ecab86c566edddf303f47e807e3b373a42745f0f4dea7049ebe9033",
+      "wram": "99ec77578a5c0b4aaab2edc2f4c04b392b88d4943fb66f60dcb9e843e9e4f94f",
+      "audio": {
+        "firstSample": "77150",
+        "frames": 804,
+        "digest": "fec5f924386ee95a7415623f1add3a400ef368af26f391a0157f2282100bce67",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 100,
+      "op": "advance",
+      "boundary": "98",
+      "engineFrame": "99",
+      "worldTime": {
+        "numerator": "420041015625",
+        "denominator": "256"
+      },
+      "mask": 2,
+      "frame": "f3a9b39efd9da389c8c4670f8c9417adb7134e1203dec8c31698ec9c8b0725da",
+      "memory": "300c633c3e9e94b5b34419abdd3377ee11cda1c6baf2381fd784354b734df11d",
+      "wram": "c3a2d9ec0203289d78bc18143dbcb879a13996f87355364473d04e7e976051d0",
+      "audio": {
+        "firstSample": "77954",
+        "frames": 803,
+        "digest": "33ecb3b830725fe0c9e2be763d11a6ef43ed140ca7a1c15cd51d2bd21b54fca3",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 101,
+      "op": "advance",
+      "boundary": "99",
+      "engineFrame": "100",
+      "worldTime": {
+        "numerator": "848654296875",
+        "denominator": "512"
+      },
+      "mask": 2,
+      "frame": "297ec4e8d6bb142ca1afb7e84e0966c183286c82e896bffe769fe4759bad9bd6",
+      "memory": "ea57cc63510ce7e81f4aa483fda950bc306f16d11d4d86974bc06c59f299e001",
+      "wram": "5a9deb34b6a73eb49245b091dcf79ea351cab2068272841ad044c77913b3867d",
+      "audio": {
+        "firstSample": "78757",
+        "frames": 804,
+        "digest": "bd1587e1ec6ed5634fd939c4324a895c1b2633958d16837ade9e64a0c5bd1884",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 102,
+      "op": "advance",
+      "boundary": "100",
+      "engineFrame": "101",
+      "worldTime": {
+        "numerator": "214306640625",
+        "denominator": "128"
+      },
+      "mask": 2,
+      "frame": "9b4a0ceba85861be44628384b3a20a449ef5a444b9d5635d9f36f534484b1369",
+      "memory": "d9dea79f1f96450d59ee3e53c6ee31337f4ace4aa9a7fd264ff2f0a410c12cd6",
+      "wram": "78c6093b304f15c8201f37114348baefbc54808939c0f5268232e291541b0295",
+      "audio": {
+        "firstSample": "79561",
+        "frames": 803,
+        "digest": "6428acc97d8a7dc3247f28bbebb46d5490f51533ab1234f6ea85ac753fe98383",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 103,
+      "op": "advance",
+      "boundary": "101",
+      "engineFrame": "102",
+      "worldTime": {
+        "numerator": "865798828125",
+        "denominator": "512"
+      },
+      "mask": 2,
+      "frame": "79125cfff561c5d7ecc107d2477e80f1b2fe6dae15a9f2723ba339869eae9866",
+      "memory": "bfa8cf645d5e56515e0c3660d397df9df72a6ba8577cb7ab0bd5151415c9f9c1",
+      "wram": "efd42aac00968f22f1034de5539d966ccc0ea102baadd3c037cd7d729f847dd5",
+      "audio": {
+        "firstSample": "80364",
+        "frames": 804,
+        "digest": "7b9544cb038bc8c4094408d94b2809237942809411ec2e12e9add722c12ee0a4",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 104,
+      "op": "advance",
+      "boundary": "102",
+      "engineFrame": "103",
+      "worldTime": {
+        "numerator": "437185546875",
+        "denominator": "256"
+      },
+      "mask": 2,
+      "frame": "1a6dbc6daaad597c3b0e3b7776dc2e4198a1df4e6a344376a97b14bf290366e2",
+      "memory": "0ac70893163dc9809ded8c1c783a5eaa7f41b5e29c72094802a00c21a7cbb6b6",
+      "wram": "14ed197c70ca361faf758f655373e0a96ceddaf1cb50d96af75a148b893968e5",
+      "audio": {
+        "firstSample": "81168",
+        "frames": 804,
+        "digest": "0c73f234e5ffc390a725402e19fa675ee3012776d75407dbfd0be849f52a8be6",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 105,
+      "op": "advance",
+      "boundary": "103",
+      "engineFrame": "104",
+      "worldTime": {
+        "numerator": "882943359375",
+        "denominator": "512"
+      },
+      "mask": 2,
+      "frame": "6a3acc16cdbe2c78dfea0d0bb1a4bbd12e1c7eb9e23ce44dffb524662a329972",
+      "memory": "9233c8cab1653a22f76db7a96cf03aed9bfa8f6cf5df8040123ebc4c78360fd0",
+      "wram": "6b6932a48ac08ff524df4c1e220920f7725a24bdbdac387e5b4d076e21bf4924",
+      "audio": {
+        "firstSample": "81972",
+        "frames": 803,
+        "digest": "ecadea8ff12d1ee90b7d4b0d89002bedde69b75b9a472492457b38223f201829",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 106,
+      "op": "advance",
+      "boundary": "104",
+      "engineFrame": "105",
+      "worldTime": {
+        "numerator": "111439453125",
+        "denominator": "64"
+      },
+      "mask": 2,
+      "frame": "d92786aebd34ea7c95d581feb55571b0841165df66e68e3e046e24b4d0af02e0",
+      "memory": "c0a1cb5275ba4869fbfb9dd4a3a3d46d81c4c238555ee213d1b3cad491ea6876",
+      "wram": "2a481482f2fc57000619bb93d0b9d468de30f8356249da9bb89ee47b7f399d96",
+      "audio": {
+        "firstSample": "82775",
+        "frames": 804,
+        "digest": "75bc8dfb5d00b0910538123b0d0d4e96cbefa6b1e66630d69390faec7ddcf6c5",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 107,
+      "op": "advance",
+      "boundary": "105",
+      "engineFrame": "106",
+      "worldTime": {
+        "numerator": "900087890625",
+        "denominator": "512"
+      },
+      "mask": 2,
+      "frame": "4ccd7cbe5d64fb10b904ce3d13b951bec9b603d02ff9df414d6aaa0e38ec936e",
+      "memory": "1fe06d861cee472c161c10b3f5da80457fbfbd64c920f29bf1e9f8b0203dd573",
+      "wram": "54f0d9527cf9b5d6d3cd0013690bf5c2e661fe5179bd3852ea52a1825fd6bcf9",
+      "audio": {
+        "firstSample": "83579",
+        "frames": 804,
+        "digest": "e87ca8faf6a461ac1b6e0d72e52ac6aa3cabfc2ff53bdf40d0efcc8695016bd0",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 108,
+      "op": "advance",
+      "boundary": "106",
+      "engineFrame": "107",
+      "worldTime": {
+        "numerator": "454330078125",
+        "denominator": "256"
+      },
+      "mask": 2,
+      "frame": "cceb4a06c70ab88f3c26612b867d23916adbb6bc4eee4e1946dbddda31485c4a",
+      "memory": "8012778fe6bd3cdcbdeb788e91a78892dcbdf7bf87cca3a327adf3d37701d644",
+      "wram": "041dddc5d9a79fe68f9a1d26e34f6fcb9aa697beae42025d03f73a1d5c223482",
+      "audio": {
+        "firstSample": "84383",
+        "frames": 803,
+        "digest": "5cb6ac13eae15a9096f60e0d51ac5de4f2b87a48196ace3b45e335f9029d4d96",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 109,
+      "op": "advance",
+      "boundary": "107",
+      "engineFrame": "108",
+      "worldTime": {
+        "numerator": "917232421875",
+        "denominator": "512"
+      },
+      "mask": 2,
+      "frame": "187b7fa1af9f93756b1fd218095aae84db62b8f59d11826843a30c61971b646e",
+      "memory": "5cc1624d609a68acdaeab83a937b9de07a490eb5497f39aae14fda562a27be2b",
+      "wram": "996d2b1506bc23aaca250af34150396376d4ba5592a0781cd68070265b134fb7",
+      "audio": {
+        "firstSample": "85186",
+        "frames": 804,
+        "digest": "f914ca15059e46ebf92f889b9955e076d35b70c447870b0984782ee9937d4f05",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 110,
+      "op": "advance",
+      "boundary": "108",
+      "engineFrame": "109",
+      "worldTime": {
+        "numerator": "231451171875",
+        "denominator": "128"
+      },
+      "mask": 0,
+      "frame": "4dd179e5822678033fab2e35fa8b4bc0f3b581c54a42d7e8f6eb270fd7634f45",
+      "memory": "4c95201ffb5685d837869e490e5ea3c2af031e6a033121993ebd0901f607fe36",
+      "wram": "ab651131088f592d62dcf426c4a7f1f85219ff4c4471dd4c72f6c3fc2c1ce7cf",
+      "audio": {
+        "firstSample": "85990",
+        "frames": 804,
+        "digest": "898aa6ba07d05b63e3cc9da9722bc6949890db422980a8382491304e572b30dd",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 111,
+      "op": "advance",
+      "boundary": "109",
+      "engineFrame": "110",
+      "worldTime": {
+        "numerator": "934376953125",
+        "denominator": "512"
+      },
+      "mask": 0,
+      "frame": "473ac086638974777ee5288fcbaaff865b9f493805bc183ee95ea8cff55ea758",
+      "memory": "dc430c35c47cd73f195664459d8fe3b3e0bb7f789993e4beb96b96051a4acff7",
+      "wram": "c1b67ded2a74f6e2154f0b9fc47ec451aa743c82642b5af11605adb6bcdd815c",
+      "audio": {
+        "firstSample": "86794",
+        "frames": 803,
+        "digest": "f12ffa021a8f9acf48ebcd521be053348fc4466337ff5fc5ac8d7afefb81944e",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 112,
+      "op": "advance",
+      "boundary": "110",
+      "engineFrame": "111",
+      "worldTime": {
+        "numerator": "471474609375",
+        "denominator": "256"
+      },
+      "mask": 0,
+      "frame": "88da2958f9061fd1a4f5f89bd6545dcf0096162361168c1c420ea26ab9f33f34",
+      "memory": "eef01a4277c135a7a511337f618f79a8d68005ab6569246ba7b843932dd40741",
+      "wram": "866a7ffece680753602470757c6adde2f3c3dc460398dcddd03053c38003bb66",
+      "audio": {
+        "firstSample": "87597",
+        "frames": 804,
+        "digest": "0b6dd0dec19a72d7737acbac1d154a16a595c1b346f0ce0c5bc9940a44b7b465",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 113,
+      "op": "advance",
+      "boundary": "111",
+      "engineFrame": "112",
+      "worldTime": {
+        "numerator": "951521484375",
+        "denominator": "512"
+      },
+      "mask": 0,
+      "frame": "292d6d4254750b04c6390442c59a2582956c66fae1597966aa62f7348d76693c",
+      "memory": "8046124d52adb2c68683c47333de7ebfcc748d03ad4f3770844fea0d8aadc9e9",
+      "wram": "d1bd4acd3eadf4c127b0d91f180f2918315df0d7625817123564e4a4fe8b74c6",
+      "audio": {
+        "firstSample": "88401",
+        "frames": 804,
+        "digest": "a6a22229bb9f61d4aff285768d59ba0eb3eb024b6a612a97cb2993b9bede4b5a",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 114,
+      "op": "advance",
+      "boundary": "112",
+      "engineFrame": "113",
+      "worldTime": {
+        "numerator": "60005859375",
+        "denominator": "32"
+      },
+      "mask": 0,
+      "frame": "58dbe732d569dffe051a1059d1a606f4ccfefee87de30b8c86229795dc0aa681",
+      "memory": "6432bced3526f1f41ba767ae374ba1c7b41669ed98c13ae1088cfc941c31dfe0",
+      "wram": "a91e24f9c002b0ef7788b7c75eabb30d8ef9a83821c67319e9de39cdfb4eacaf",
+      "audio": {
+        "firstSample": "89205",
+        "frames": 803,
+        "digest": "ddf3023b99991e3ff7b5bb10b1bfb1bb58ec2179d110ade3bc8f85f65d72ba72",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 115,
+      "op": "advance",
+      "boundary": "113",
+      "engineFrame": "114",
+      "worldTime": {
+        "numerator": "968666015625",
+        "denominator": "512"
+      },
+      "mask": 0,
+      "frame": "40adbd462bbcbf282a88aa01d88064dbc59a13f35a5873bb1d66101e08fc766c",
+      "memory": "b51e6f7c6b1561db44bc6d49ab6866e131120cad909b8895a9b6876c62915492",
+      "wram": "daceffaeebf7a3a7a1084359a7203a15f83e5492a2b90bad53a0c941aba052ec",
+      "audio": {
+        "firstSample": "90008",
+        "frames": 804,
+        "digest": "fb7f140cc458322595aa889ebf2c66da4ec1ec7d9982ecf8bae0157a653416b1",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 116,
+      "op": "advance",
+      "boundary": "114",
+      "engineFrame": "115",
+      "worldTime": {
+        "numerator": "488619140625",
+        "denominator": "256"
+      },
+      "mask": 0,
+      "frame": "9fd6d39a48df49b2d2aff8cfde1c9ca8a91e5cbb62792697d6539cb38d470061",
+      "memory": "0b222b25cdfdd5fe4b77a53f3d68160da6a7b1506a99236eff91d9dec040a55d",
+      "wram": "fda291bec9f491040968e66085e941a9cf065996291b6a4253bc7e56ef21957f",
+      "audio": {
+        "firstSample": "90812",
+        "frames": 804,
+        "digest": "9538e50079a78e5ab5e8e3647df96914dd295204008d0dfabc6d776c57f3f6ad",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 117,
+      "op": "advance",
+      "boundary": "115",
+      "engineFrame": "116",
+      "worldTime": {
+        "numerator": "985810546875",
+        "denominator": "512"
+      },
+      "mask": 0,
+      "frame": "66a67f956f7b92865c88f7c97585644218aa5f98bbad8a78936a0c9a2f4003de",
+      "memory": "b9ad39c34ee06efdeb2c067663cff2b107ff48b0332b5b5ca9a8f573ec5305cf",
+      "wram": "38627e02917c67466329d172898416c01b05fc41928a66f9967ee1a669f3e524",
+      "audio": {
+        "firstSample": "91616",
+        "frames": 803,
+        "digest": "4f3f1acb7757ceb681c4942a1d5a8dd158bd262d8659f700c018898839415958",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 118,
+      "op": "advance",
+      "boundary": "116",
+      "engineFrame": "117",
+      "worldTime": {
+        "numerator": "248595703125",
+        "denominator": "128"
+      },
+      "mask": 0,
+      "frame": "884e653fee8f8fc4ff945b85d00a5a5a6d719287d1c3f059c05936ef8ba7f401",
+      "memory": "f657b7b8bb2e1e8536aa011ff3686092620bae43cab0a9aff74cde8f6e749dd8",
+      "wram": "fa815cba37acde7bfac485c07b84e6f5ca1b720832ec1f3f2a4f0d20066b5a04",
+      "audio": {
+        "firstSample": "92419",
+        "frames": 804,
+        "digest": "c779eea20a736bd766f2c1269116ec98ac6adfb9d839a48a62227f08dd82b850",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 119,
+      "op": "advance",
+      "boundary": "117",
+      "engineFrame": "118",
+      "worldTime": {
+        "numerator": "1002955078125",
+        "denominator": "512"
+      },
+      "mask": 4,
+      "frame": "7ae87833a076ba0a75acc854385758ecaa3ef8eb65d4648af4ec9e841df7a8b3",
+      "memory": "846260c7acfd710c9cd213b73ddd204445673917d27ed3db4525e68f965731ed",
+      "wram": "28877bcd41f0ac192984d53268a61c58c23b7469878a4323547391df45e103b8",
+      "audio": {
+        "firstSample": "93223",
+        "frames": 803,
+        "digest": "147320f1d9dc1668c59f0e3160991d5079d0a38c769a5c01595e4e7b5a957043",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 120,
+      "op": "advance",
+      "boundary": "118",
+      "engineFrame": "119",
+      "worldTime": {
+        "numerator": "505763671875",
+        "denominator": "256"
+      },
+      "mask": 4,
+      "frame": "91625c79cf8417f0c8271748eebec4259f395b3aaed9b111c57f55c64bfe2188",
+      "memory": "6b1c5d501dabbbae93220bf709efcfc31585bff1516f8f0f44d3c4e65e3d4ebd",
+      "wram": "bcc7ef9c4b855090a40b1716bab837eebb2b81b54b3e219bad57463ba4ae6495",
+      "audio": {
+        "firstSample": "94026",
+        "frames": 804,
+        "digest": "0ae6ab43cd26a8e6f172dc7659e2099fc53c32fa26612b1294876de8b1242653",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 121,
+      "op": "advance",
+      "boundary": "119",
+      "engineFrame": "120",
+      "worldTime": {
+        "numerator": "1020099609375",
+        "denominator": "512"
+      },
+      "mask": 4,
+      "frame": "0ed96aa8f9e282b0fdb37d0e43c904c4db48b83de64d95647cac0ed3cc801668",
+      "memory": "98eace8be45a7482bd34d70f0b47cfc4a8e5574b64cd70fe2f05215815ee881e",
+      "wram": "bae99940100bcfcec1d6108b9a5d4495f953c6abbf375028776ec0b06e1c0018",
+      "audio": {
+        "firstSample": "94830",
+        "frames": 804,
+        "digest": "9342022d42c2ac06e68caec11e2f4803e5da0c0fe20ddbd8cf45253fad74f828",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 122,
+      "op": "advance",
+      "boundary": "120",
+      "engineFrame": "121",
+      "worldTime": {
+        "numerator": "128583984375",
+        "denominator": "64"
+      },
+      "mask": 4,
+      "frame": "ce8d99fc9faa68c2cf164ed4ecb8da6296b14cf3c85b34b2567e55bde44802aa",
+      "memory": "de4e8944fafcfdcbcf4062a5bdbea570fc3bac3a5849b09c1b5881388426087e",
+      "wram": "def66f2f3a293b2c0b6eac202448d4f7ee4b1bb89b17428a26e18f2feca9180c",
+      "audio": {
+        "firstSample": "95634",
+        "frames": 803,
+        "digest": "850498ccb014cdb07b05659fa1cb89359bc67b5d5420db5710775e8bfeab7bf4",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 123,
+      "op": "advance",
+      "boundary": "121",
+      "engineFrame": "122",
+      "worldTime": {
+        "numerator": "1037244140625",
+        "denominator": "512"
+      },
+      "mask": 4,
+      "frame": "4753fc53f7c1eea686729673e2f56105bfe210e3fa47cd6f269c530a4f2e5265",
+      "memory": "b7b27a365b9c65a647d68013f7bc79ee490cc0bc5ac91cdf27c9ce5f5de0bb7e",
+      "wram": "66378d77566d831f0f71472062bee6362359d67221e981586cfb5b2f5958dba6",
+      "audio": {
+        "firstSample": "96437",
+        "frames": 804,
+        "digest": "0a11e1e89b67579d928ed8bc9e773470dd31bfa5bd3e81f103a3c4d36c3b45e7",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 124,
+      "op": "capture",
+      "boundary": "121",
+      "engineFrame": "122",
+      "worldTime": {
+        "numerator": "1037244140625",
+        "denominator": "512"
+      },
+      "mask": null,
+      "frame": "4753fc53f7c1eea686729673e2f56105bfe210e3fa47cd6f269c530a4f2e5265",
+      "memory": "b7b27a365b9c65a647d68013f7bc79ee490cc0bc5ac91cdf27c9ce5f5de0bb7e",
+      "wram": "66378d77566d831f0f71472062bee6362359d67221e981586cfb5b2f5958dba6",
+      "audio": null,
+      "state": "25d098571f764336fe0f3a8e63438e749596f53a4065ccc6071868802172bd9d"
+    },
+    {
+      "index": 125,
+      "op": "restore",
+      "boundary": "121",
+      "engineFrame": "122",
+      "worldTime": {
+        "numerator": "1037244140625",
+        "denominator": "512"
+      },
+      "mask": null,
+      "frame": "4753fc53f7c1eea686729673e2f56105bfe210e3fa47cd6f269c530a4f2e5265",
+      "memory": "b7b27a365b9c65a647d68013f7bc79ee490cc0bc5ac91cdf27c9ce5f5de0bb7e",
+      "wram": "66378d77566d831f0f71472062bee6362359d67221e981586cfb5b2f5958dba6",
+      "audio": null,
+      "state": null
+    },
+    {
+      "index": 126,
+      "op": "advance",
+      "boundary": "122",
+      "engineFrame": "123",
+      "worldTime": {
+        "numerator": "522908203125",
+        "denominator": "256"
+      },
+      "mask": 4,
+      "frame": "cb83fd5fd54c4c80cc18d5c2ccb4256a6a0ceda285a98d3871044dc34a735d02",
+      "memory": "bef8a8a62edaf64f1953a862d250726486f768f9f97881a23479b17749399515",
+      "wram": "efee7a7a0f3badf16b7fce7ae11d8999de39b686d6f0ad56986c5696d68b9285",
+      "audio": {
+        "firstSample": "97241",
+        "frames": 803,
+        "digest": "79fdfe1e50a31e055889aab577f10352f1d0e0d33b2e44f388237abd7011ee01",
+        "discontinuity": true
+      },
+      "state": null
+    },
+    {
+      "index": 127,
+      "op": "advance",
+      "boundary": "123",
+      "engineFrame": "124",
+      "worldTime": {
+        "numerator": "1054388671875",
+        "denominator": "512"
+      },
+      "mask": 4,
+      "frame": "9c7f2f6e72b663645ba38d633eab081b71a3e25e8b3ba4750b05f3c3da64a37c",
+      "memory": "c73aa5dd06a7423858bcdcca34dab68843be8c0655fd86e8398487d00abbf7d2",
+      "wram": "90c56df68c8c7ce34e761b95ea70ac2d931085cdf7bac66d8c649e581c094d5a",
+      "audio": {
+        "firstSample": "98044",
+        "frames": 804,
+        "digest": "2f3a0352d53bdbcd707e26a6ecd69349f3c8387d3ed373fe08d520737e91e3e2",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 128,
+      "op": "advance",
+      "boundary": "124",
+      "engineFrame": "125",
+      "worldTime": {
+        "numerator": "265740234375",
+        "denominator": "128"
+      },
+      "mask": 4,
+      "frame": "a6bd164c63f378de1e421153d18cad8eeeaef9f9037a18c2bfb9813638461b00",
+      "memory": "8a5f54b1194f669514f618b3263768066e2dfb39cbc9389a2088231af8efad6d",
+      "wram": "b526aa6e8b5774928791f5ee651c47412be7343691cff1fab0cfcbc6fe2172fe",
+      "audio": {
+        "firstSample": "98848",
+        "frames": 803,
+        "digest": "1d84ceb7c06c5eeabdd2818c5c884e1d0076dc8c93fdc8b9a8f72568489f789a",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 129,
+      "op": "advance",
+      "boundary": "125",
+      "engineFrame": "126",
+      "worldTime": {
+        "numerator": "1071533203125",
+        "denominator": "512"
+      },
+      "mask": 4,
+      "frame": "3a4f7fae899e298447aafdd2842706333528140cf3feaa8736cad9b3a53b43bf",
+      "memory": "72482b14272df75e409d8a1f856558dc2fd456815922d7392873a7f54932ca9e",
+      "wram": "ee25aba1d64aabbc320a783b7c93f23a08806f04c08f53a7591ddab256714281",
+      "audio": {
+        "firstSample": "99651",
+        "frames": 804,
+        "digest": "ae20f5812643041835dc71a6cdfc06d56f2ceb87b31ba9ff62f83cc1bbc6e9a4",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 130,
+      "op": "advance",
+      "boundary": "126",
+      "engineFrame": "127",
+      "worldTime": {
+        "numerator": "540052734375",
+        "denominator": "256"
+      },
+      "mask": 4,
+      "frame": "cff49c018fabdabb8bf8865b115318be45c8cd4d2fbaed86c5d9d9840fd2ba3a",
+      "memory": "4d72b66a02730d044657296959e03153d79d2208ab6fbb06cfb78863edd08120",
+      "wram": "6cd75b8ef8ebfabd2e93d403e54f8134b6107cea1ab64ce60347d832ac0b7764",
+      "audio": {
+        "firstSample": "100455",
+        "frames": 804,
+        "digest": "7b963d935ee4da11a9c09f23a79f1cc0d543b3cd3e3a2a892d15b89cd4b2dca1",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 131,
+      "op": "advance",
+      "boundary": "127",
+      "engineFrame": "128",
+      "worldTime": {
+        "numerator": "1088677734375",
+        "denominator": "512"
+      },
+      "mask": 4,
+      "frame": "8b8df5c47f9c25ebd8f6bf0dfe862821aeebc120652aef6b505bcf5b12304d6c",
+      "memory": "ba7cf3073d974e767ee9548c0dafb419cf674b5ad9856d0f32fb978907044377",
+      "wram": "5ae362e5ae73633924bc0c5886234eb7834070c677f4f827030e5c876adb8d1b",
+      "audio": {
+        "firstSample": "101259",
+        "frames": 803,
+        "digest": "7076517dedcb038afd6a0a80350e75d45a12dc01ffe85f8bf9c56f2810dbbe08",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 132,
+      "op": "advance",
+      "boundary": "128",
+      "engineFrame": "129",
+      "worldTime": {
+        "numerator": "8572265625",
+        "denominator": "4"
+      },
+      "mask": 4,
+      "frame": "d4b48bc9ead761594d5f194f26efb73aa047d400e49e5a02f7ef7cf5bf78e9ec",
+      "memory": "ff768a1ec139900aad4d0f25446334e1847ed9e010b1f0d91a1ad1ccf36398a0",
+      "wram": "9a37c09bda87e6e5dcdd19cc31ed951c0978cd103eb7a6270846039228740bcf",
+      "audio": {
+        "firstSample": "102062",
+        "frames": 804,
+        "digest": "365532c5e1b451b1412059796b0ba6d17c6e6f16a6d57400afdef0f51e78120f",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 133,
+      "op": "advance",
+      "boundary": "129",
+      "engineFrame": "130",
+      "worldTime": {
+        "numerator": "1105822265625",
+        "denominator": "512"
+      },
+      "mask": 17,
+      "frame": "d1072a80db98b52d16e09b4b56e313edd7ca705f605ff30e6447fc7ff22ab6ca",
+      "memory": "cd560595e81211c69246e0e5d3d4112f333eb366f10f161766248dcc3b1dd6ad",
+      "wram": "5f6863ef1fc87d1bbb6fb1f918f230ed9530db669537aa9dcdac078da5710230",
+      "audio": {
+        "firstSample": "102866",
+        "frames": 804,
+        "digest": "00eb1d89368d2551ddd4aab61e2d7b28301bb7ebd58ab5963b27277ae696f0c4",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 134,
+      "op": "advance",
+      "boundary": "130",
+      "engineFrame": "131",
+      "worldTime": {
+        "numerator": "557197265625",
+        "denominator": "256"
+      },
+      "mask": 17,
+      "frame": "d22d55daaa8422af5b73ea5f2fcaa3cc78375641005fdd2d807e117ba1fd3c99",
+      "memory": "819072b04101ca8eaeb7b06043401dcd4f3d0a290beca04a26d5a8d1be991fa9",
+      "wram": "d32fe3bc98d5c8c22b70285b03cf723768fe34af0fa7017808ad770187169807",
+      "audio": {
+        "firstSample": "103670",
+        "frames": 803,
+        "digest": "1f108ce3fac8d7c6574cf259edf5f0580cab4e21bea034a22415adfd38760304",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 135,
+      "op": "advance",
+      "boundary": "131",
+      "engineFrame": "132",
+      "worldTime": {
+        "numerator": "1122966796875",
+        "denominator": "512"
+      },
+      "mask": 17,
+      "frame": "52420f37551bea49cbcb7af3733f51c365a0f6a2709cdc4d191a6b7e07b7dfdb",
+      "memory": "f8016aa21b88be29066516a10ad811cc1f330c7872a9088c80f1647db80af65d",
+      "wram": "04fd47f1b438fc8138f7345d686182ea5a62ccff2a215bc0b55181cbaf98a8c8",
+      "audio": {
+        "firstSample": "104473",
+        "frames": 804,
+        "digest": "1a071ecc5b7dd1aabd2b8091298c04cef6ad41b3db3d11b5fb9445a2ad03b4c5",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 136,
+      "op": "advance",
+      "boundary": "132",
+      "engineFrame": "133",
+      "worldTime": {
+        "numerator": "282884765625",
+        "denominator": "128"
+      },
+      "mask": 17,
+      "frame": "767a91003b2c8d0258535db504b4416f9fbd9300d195cf9f9266de30a7335da3",
+      "memory": "b7ddafb6160111a31f48580ecdfa888c91a823fbfb2940bad1c637f42a6c8fe6",
+      "wram": "7f770b4708eb1e8eb5a339997baaf316d49d9304e2b2408ac36e2f96c5f576a4",
+      "audio": {
+        "firstSample": "105277",
+        "frames": 804,
+        "digest": "9f556750e92fce6542ffc3159eb3f392b08d861007df56378e7381f79a258b18",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 137,
+      "op": "advance",
+      "boundary": "133",
+      "engineFrame": "134",
+      "worldTime": {
+        "numerator": "1140111328125",
+        "denominator": "512"
+      },
+      "mask": 17,
+      "frame": "1fe46f585daf0da15f0e886aad88c813d5f545593bdc580a10d15301abf11073",
+      "memory": "df5d5f2f0e94da51dcd67a351e8307c4e49299111bc882d991a19ade0fafcf0e",
+      "wram": "5c11076edc0cc49fd818de8d9de2b0d144ea587473cedc20217bf4e7ac3c9abc",
+      "audio": {
+        "firstSample": "106081",
+        "frames": 803,
+        "digest": "397e493aecf9893ef4c5b2d742a75673b5708f62087443601c80eeb27e5af5be",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 138,
+      "op": "advance",
+      "boundary": "134",
+      "engineFrame": "135",
+      "worldTime": {
+        "numerator": "574341796875",
+        "denominator": "256"
+      },
+      "mask": 17,
+      "frame": "ab863e28a688c4be1bf003ee87a75b5358ff4e9bf3626c7a1efcb7caea81d7b8",
+      "memory": "351c61184b4a0b2030eff53b714bbc3a6dfe0fe5f51f35cddb1b2383ff884f15",
+      "wram": "3f8a2ad5312e1b1e43e0e33c5ac52a98625e2aac91cdd8d8cc0e20742e551175",
+      "audio": {
+        "firstSample": "106884",
+        "frames": 804,
+        "digest": "c73245fcc8d75d47dbb3f9feb4822f1d10162c67395678e39a330373f24ecc05",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 139,
+      "op": "advance",
+      "boundary": "135",
+      "engineFrame": "136",
+      "worldTime": {
+        "numerator": "1157255859375",
+        "denominator": "512"
+      },
+      "mask": 17,
+      "frame": "92bacdddb791da4b6ee8cff9cfb0e2bf33cbede33e809d003cb06f408ed3c457",
+      "memory": "fcbf381fd1f7fb5083e8dd6a0c79242ebde8b7f0b1fdb9544abaf1a8ab96b5bd",
+      "wram": "abc9000f1470627d75cddddf6209d5cc2f9e41f7378f0c40f8f9a79961ed29ea",
+      "audio": {
+        "firstSample": "107688",
+        "frames": 804,
+        "digest": "ba1561d9104f5d99f0805626a87b85cc627758b53ca6b66be74775126d5e6271",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 140,
+      "op": "advance",
+      "boundary": "136",
+      "engineFrame": "137",
+      "worldTime": {
+        "numerator": "145728515625",
+        "denominator": "64"
+      },
+      "mask": 17,
+      "frame": "5d93b95a0338362e1142ad3d43e8650deb1fb5622d4b1ed0a78d508b54f35f6d",
+      "memory": "1d70f0aa1b6e6c6c9ee8616a9635d40145fcdef2ebfb09b523e4bcfb839c13e6",
+      "wram": "fa95563ded3400c9428dd8469b3ebd9deeab38b7a506d15a2873741c66fedf46",
+      "audio": {
+        "firstSample": "108492",
+        "frames": 803,
+        "digest": "4c6dbbbbf091c76201302c2ad1a7c10138aca4cc9fd0c0660218abd7d1a241cf",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 141,
+      "op": "advance",
+      "boundary": "137",
+      "engineFrame": "138",
+      "worldTime": {
+        "numerator": "1174400390625",
+        "denominator": "512"
+      },
+      "mask": 17,
+      "frame": "144301124eaebc8c750a252227dd759f39fe199f58a0ba6c60f0f1e03302303b",
+      "memory": "9cdaa55c8023a273823545a665c2aae1bd6b60588593d98428572260cac90c73",
+      "wram": "0fd6a7aecc16e7da4a903ab34d58394dcf4ba12814d15b1064d407a0cf63cb52",
+      "audio": {
+        "firstSample": "109295",
+        "frames": 804,
+        "digest": "62d6189671d988589d38d1d00a420f34945e585652c60b50d603e941dfb7be89",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 142,
+      "op": "advance",
+      "boundary": "138",
+      "engineFrame": "139",
+      "worldTime": {
+        "numerator": "591486328125",
+        "denominator": "256"
+      },
+      "mask": 17,
+      "frame": "ae89e6e64586e6d7b0405aef8ea2d833767955f94b21897b92563c4c1a46370a",
+      "memory": "47b8550f20bb31f734992e85f5834828e5dafed6ffcfd9dd3141f910529f0e70",
+      "wram": "45bbe99dabb8a24d016d29451a418c483f94c6df07036b312789553b5bd6199d",
+      "audio": {
+        "firstSample": "110099",
+        "frames": 803,
+        "digest": "ca77cebd9e97cf47c7ba6a055bf28889eedbc59703acc3caee24530cc88f4f97",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 143,
+      "op": "advance",
+      "boundary": "139",
+      "engineFrame": "140",
+      "worldTime": {
+        "numerator": "1191544921875",
+        "denominator": "512"
+      },
+      "mask": 17,
+      "frame": "b11d93574717d72faaeb3b80e8d1fe5fa70f7737a3227b7921febf159f741000",
+      "memory": "88b91cd80c78087435f3fba149efb8ce519539dfa7fd501ef57eda6f6d28f2f6",
+      "wram": "2a330d848a68a8dd84ee4bc6e24eca4ed26d1746b1a8780819cefdf9130efb6e",
+      "audio": {
+        "firstSample": "110902",
+        "frames": 804,
+        "digest": "fb13b5f1e4d68c7937a7d03a3a1c8a6ef6a8716b7494fc5756fe451fcff43683",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 144,
+      "op": "advance",
+      "boundary": "140",
+      "engineFrame": "141",
+      "worldTime": {
+        "numerator": "300029296875",
+        "denominator": "128"
+      },
+      "mask": 17,
+      "frame": "9c8ada350809adeef48a8b10eec0ac9f0af64473318a2eaca88ccd718380e978",
+      "memory": "983f389df63ee2f13ee3e8e8b23e5611ecab007d954f4e774de3624d13acb81b",
+      "wram": "d71b6b6035536775860c68e7638f7ecae9f824e4a539d5eece04aa47144443ae",
+      "audio": {
+        "firstSample": "111706",
+        "frames": 804,
+        "digest": "d8ed6168b92a52fa05a9593b33ef84dd2bd4aa5288e0e71bc95046bcb4152217",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 145,
+      "op": "advance",
+      "boundary": "141",
+      "engineFrame": "142",
+      "worldTime": {
+        "numerator": "1208689453125",
+        "denominator": "512"
+      },
+      "mask": 17,
+      "frame": "235e61ea550863f9d4e6b30ac32e9075dab7db69995642f95e2eb274a5d8f353",
+      "memory": "056d7c6aa418d7df4e7ff7615fc03bcff78d49f2a88dc83b173fcec14c6a559f",
+      "wram": "b6d28f9010f8c77f9cab83a8166c2eaf8337ad45138ef8482a46cd545dc716aa",
+      "audio": {
+        "firstSample": "112510",
+        "frames": 803,
+        "digest": "9af77ad3c5eb5297b9857aa4c7469f42e5ffd51916adccf13fe249a630f7901d",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 146,
+      "op": "advance",
+      "boundary": "142",
+      "engineFrame": "143",
+      "worldTime": {
+        "numerator": "608630859375",
+        "denominator": "256"
+      },
+      "mask": 17,
+      "frame": "512bcf2fbe031cbf38159f98ccdec0b56fda9ede8dbf8fc5459b571bc1c9e7e6",
+      "memory": "1a56a5b04c1539139f78e132add526c9b49b8c2d795d7ab8e16a2a3cd369072f",
+      "wram": "248c6690584c7531f05aa9c6c8d3712436b2b2bb377b54471c621183e7a4be8b",
+      "audio": {
+        "firstSample": "113313",
+        "frames": 804,
+        "digest": "0f84a0dd4b6ae35ccd8efbe0ab4631650c2627db753c3d5d01c4748e2c81c7b8",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 147,
+      "op": "advance",
+      "boundary": "143",
+      "engineFrame": "144",
+      "worldTime": {
+        "numerator": "1225833984375",
+        "denominator": "512"
+      },
+      "mask": 17,
+      "frame": "1852caaabc7c4a244d78885be7d1eb35e87bee7d75991940244b8f15df56ad88",
+      "memory": "8f82ea028216240adf490768416d7099b838d469a931854c278e02a9f2b72eff",
+      "wram": "7647d57084bec91c9abe4c19470c161e7490d5fee6838d12cb388fac6e566c19",
+      "audio": {
+        "firstSample": "114117",
+        "frames": 804,
+        "digest": "eb145960195216290ce25018a5b54fc1044fc73ff12ad10bc59cb61f321163e1",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 148,
+      "op": "advance",
+      "boundary": "144",
+      "engineFrame": "145",
+      "worldTime": {
+        "numerator": "77150390625",
+        "denominator": "32"
+      },
+      "mask": 17,
+      "frame": "c9c70ec1f20817ac74a1155aba06eb180f7fe874cc19a95de7f8bee5b4169fe7",
+      "memory": "98622128d785112f10af09a630682cf3afc7bd6374ef9462824d9cc9d8309c07",
+      "wram": "399e066c6c0b7fe5c06f597aadbfc153a67d4da218874a6cfdb5e2555b5e4771",
+      "audio": {
+        "firstSample": "114921",
+        "frames": 803,
+        "digest": "76e1b8a9a06987efc59202bda1b215c6a64306be5606ba3e76569a61045da502",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 149,
+      "op": "advance",
+      "boundary": "145",
+      "engineFrame": "146",
+      "worldTime": {
+        "numerator": "1242978515625",
+        "denominator": "512"
+      },
+      "mask": 17,
+      "frame": "ce98a8837fbfd123efa1d89679901dc605c8ae58885004a1e00f6c9550cf6c46",
+      "memory": "231e4be21b3c68dbadc227ac7a23a6fcff77597d43d891b9696d7a62d7d8028d",
+      "wram": "662c86fc41aa3294b3ce426b13f2c8d4cda493db3cc57b3915fbf72160f4894f",
+      "audio": {
+        "firstSample": "115724",
+        "frames": 804,
+        "digest": "d1364ccfee9372a56f440f9f60f81a6dacb0e1abab8041e3bad5c9b57589f24e",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 150,
+      "op": "advance",
+      "boundary": "146",
+      "engineFrame": "147",
+      "worldTime": {
+        "numerator": "625775390625",
+        "denominator": "256"
+      },
+      "mask": 17,
+      "frame": "a7086cbef2215382fc0f102e90ad6f993a5ad26ce8064d9483c34287b604bfba",
+      "memory": "cf050c959710c3feebfc09944430dc88ae6c869234ef2ae83029104f3991bfa8",
+      "wram": "f1e3274affb20eee09d68b9d661e248e934cea04e6ca83d8e9665f6769eb7b7e",
+      "audio": {
+        "firstSample": "116528",
+        "frames": 804,
+        "digest": "f5cbb65ab9497a44f7413f06045f03758427e5635a530238f359ebc5ff0e2654",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 151,
+      "op": "advance",
+      "boundary": "147",
+      "engineFrame": "148",
+      "worldTime": {
+        "numerator": "1260123046875",
+        "denominator": "512"
+      },
+      "mask": 17,
+      "frame": "3d67728cc436ae35ce5ee0c58c6e3cb44f0d78f97f5631776dee137434870193",
+      "memory": "b4fd63b3f171d261814e57630e2a95d9ec4a9a3a4217d095dde779cb29181780",
+      "wram": "164c401651b19cde741b0b693c559721c3d4588416c34ca058544be58f2e869d",
+      "audio": {
+        "firstSample": "117332",
+        "frames": 803,
+        "digest": "cc13ae2e50319b7f7cf199a03c3fbae80c5fb391fb57383b0292a234862e2028",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 152,
+      "op": "advance",
+      "boundary": "148",
+      "engineFrame": "149",
+      "worldTime": {
+        "numerator": "317173828125",
+        "denominator": "128"
+      },
+      "mask": 17,
+      "frame": "8c873a220dd0595035c8e2f78c08a078fb0a344972f91f66ac7632880e7435b8",
+      "memory": "50c44b727914319d7cf305432886d0455f3bd448a590a3e2f3a9316404c96b7b",
+      "wram": "24a228956b643b29178d518bbbdb2eeba5fa64ca730e53db1cb77229a6b80f18",
+      "audio": {
+        "firstSample": "118135",
+        "frames": 804,
+        "digest": "b7532f2c14a68bbce8c8ab792dc96415bf92296c0c80ec55f0b2da7010e3a66a",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 153,
+      "op": "advance",
+      "boundary": "149",
+      "engineFrame": "150",
+      "worldTime": {
+        "numerator": "1277267578125",
+        "denominator": "512"
+      },
+      "mask": 17,
+      "frame": "56be3ce3506612fdcd666c55f0567c54679c53733d0359d4538814ab93766e9e",
+      "memory": "228832b613569eeaf2fceaf4fd66d1a2f3324c1d66d91cc476e940082d7f88cb",
+      "wram": "d32fc85cfd57d8826877709e392692ec6403f49bee89bcc9229451aabaf17b54",
+      "audio": {
+        "firstSample": "118939",
+        "frames": 804,
+        "digest": "fa0ee9720cda97ee03b5359db9a002f0bbfc0339e602f0d1713e3f643ec18c4e",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 154,
+      "op": "advance",
+      "boundary": "150",
+      "engineFrame": "151",
+      "worldTime": {
+        "numerator": "642919921875",
+        "denominator": "256"
+      },
+      "mask": 17,
+      "frame": "5ea5e0f43635435fac0db17de68914e2b20ed665f03b2322679d20e3dd680a01",
+      "memory": "dc51dc83c3bb1cffd4019a443de63fd94255e724d488c086ca73caebf320ae69",
+      "wram": "7db42a4799ca665a4517bae2887198f8ab28b7b53a047029b67d0993d163916f",
+      "audio": {
+        "firstSample": "119743",
+        "frames": 803,
+        "digest": "16edb44154e45724d73f10f2387895f1117bf35e79de2c2f18be22ae666c19cf",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 155,
+      "op": "advance",
+      "boundary": "151",
+      "engineFrame": "152",
+      "worldTime": {
+        "numerator": "1294412109375",
+        "denominator": "512"
+      },
+      "mask": 32,
+      "frame": "4e352ebb684dad61e5a44acc1af45a6db5a457f08847d0e5a9fcfab272f898d1",
+      "memory": "6560b06eda267804944cbc8c79f66bafde47ca4ef9bc890d5721876f98c33b37",
+      "wram": "e768e38afd8f69c68e7b9967bcf16c5a92cc63c5afc349278057d6983c20e369",
+      "audio": {
+        "firstSample": "120546",
+        "frames": 804,
+        "digest": "6d422f3c0f34718b66c8cbebac62b48b37691f4848567a8db8cb86d2931b6ede",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 156,
+      "op": "rollback",
+      "boundary": "151",
+      "engineFrame": "152",
+      "worldTime": {
+        "numerator": "1294412109375",
+        "denominator": "512"
+      },
+      "mask": null,
+      "frame": "64768d7167e34d306ba9083bb1dc7e65e6123b634079787faa19d0ef3798de86",
+      "memory": "5df84a2cb48ac24e72a5ea063f24caeca2e929bbdc368306a6adf856dc07f381",
+      "wram": "fd666c21dabe652d5a961e8b85ff4c93367d5519f588d860fbb4ba1ccf549ea4",
+      "audio": null,
+      "state": null
+    },
+    {
+      "index": 157,
+      "op": "advance",
+      "boundary": "152",
+      "engineFrame": "153",
+      "worldTime": {
+        "numerator": "162873046875",
+        "denominator": "64"
+      },
+      "mask": 32,
+      "frame": "753c140971ee4e9a32a1520a665ef9b0f9f7e1fa169df19d2f1b056d306aa456",
+      "memory": "99913ac75f748592be33444558d3c6de09be550d33a6cc18f7873a96022982bf",
+      "wram": "8ed70c3d6a69e080cf326a85e21af3d33dabb1b48bbfea89ee9e63136e35fa1a",
+      "audio": {
+        "firstSample": "121350",
+        "frames": 803,
+        "digest": "aecf4827e2035a6d56371df636cd43fd5130ed0b3e8051a788941fc9763ce142",
+        "discontinuity": true
+      },
+      "state": null
+    },
+    {
+      "index": 158,
+      "op": "advance",
+      "boundary": "153",
+      "engineFrame": "154",
+      "worldTime": {
+        "numerator": "1311556640625",
+        "denominator": "512"
+      },
+      "mask": 32,
+      "frame": "22f1be54f37f199dcaeec1060e2e09e3a22fd5164699bc053ea0920ae7ada08c",
+      "memory": "dde0f4e61c121e197d4ab73c5e88b97d88a5ce70e65121b6685d6ea1b7c0f10a",
+      "wram": "cf90552f0e41f35efe50a321cd34868f55178c0618318ad8b147307700b85947",
+      "audio": {
+        "firstSample": "122153",
+        "frames": 804,
+        "digest": "2a812dfb115c16689fbbb658dd9e59eaa09a01ffd1c2b5673f8646453c53001c",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 159,
+      "op": "advance",
+      "boundary": "154",
+      "engineFrame": "155",
+      "worldTime": {
+        "numerator": "660064453125",
+        "denominator": "256"
+      },
+      "mask": 32,
+      "frame": "48d2bb3924667d51dab00774d733c87e71f5116ac97a25a3c8f918a1864045a6",
+      "memory": "fe821bd102e3c68719afaa3e692dd4bcd25137e38f1f37d43235002436673090",
+      "wram": "310f01c088dba3ad815660043bd9258ef49eec536988870fde71dae14a279ca1",
+      "audio": {
+        "firstSample": "122957",
+        "frames": 804,
+        "digest": "c3c7a8dbd207153974809031d3b3d3b613cb8c199c86f77a9a354e19318c27d8",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 160,
+      "op": "advance",
+      "boundary": "155",
+      "engineFrame": "156",
+      "worldTime": {
+        "numerator": "1328701171875",
+        "denominator": "512"
+      },
+      "mask": 32,
+      "frame": "656fdd04a80de28316c851dac094ef299232c26ca0e2262b0665cf1aa024ee15",
+      "memory": "c9d50ef1267888680c843391f2a65f70920a66aeb7973fd50050fb2e5519e27f",
+      "wram": "80bffa19b111cb702883eec1480718895117c14fb84a8f82cf1981dfc53c3abd",
+      "audio": {
+        "firstSample": "123761",
+        "frames": 803,
+        "digest": "0eecda99c7411659e67f73e1e8aa50e041a0138be8e6b2a6a0ffb9645f107ec6",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 161,
+      "op": "advance",
+      "boundary": "156",
+      "engineFrame": "157",
+      "worldTime": {
+        "numerator": "334318359375",
+        "denominator": "128"
+      },
+      "mask": 32,
+      "frame": "e1963ddc2736e66231b0ecc309e1d2becdabb34723181ac9856be2ab24c4c41e",
+      "memory": "d067395e9f5e81ff806d7fd6b7e70b7cbdd90d752df4e5eb741e35d067260913",
+      "wram": "6e1859a7671e677868a0366b4bd7eb527edb0ecbd9befff509e7cc638bd1ba29",
+      "audio": {
+        "firstSample": "124564",
+        "frames": 804,
+        "digest": "5ec744ab5757901c40783e2aa896063febf7391a9d56102dfd6b653832c3ba43",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 162,
+      "op": "advance",
+      "boundary": "157",
+      "engineFrame": "158",
+      "worldTime": {
+        "numerator": "1345845703125",
+        "denominator": "512"
+      },
+      "mask": 32,
+      "frame": "858ad41eeb5588db26891ef3d4e9ae896fc05c7dfe0c7115bbf91d886afff4e6",
+      "memory": "0bcac811b589f14287de16b489c90654cd10e3668acf35b277ec819f2cc68ca5",
+      "wram": "9a1444f58a03ff2b0d992daade02bef2437323d67f0bd305cd3849835a7b310e",
+      "audio": {
+        "firstSample": "125368",
+        "frames": 804,
+        "digest": "11b12292d21f365203da8b3b9c793850130320a10500a29ec16fc245adc26d50",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 163,
+      "op": "advance",
+      "boundary": "158",
+      "engineFrame": "159",
+      "worldTime": {
+        "numerator": "677208984375",
+        "denominator": "256"
+      },
+      "mask": 32,
+      "frame": "3f2b3e1bf955431affb925d5189b1ac826546fba973d4934a6f288b3de55dd1c",
+      "memory": "eb126d76c6ce673c28e5675ebd0fb932cb248124b06eaaa21754689c2ecd0e6e",
+      "wram": "41c2ec7fa6f02c25ebb7b5e977732161bbd66106621783d7fc77a7d1bf29c5df",
+      "audio": {
+        "firstSample": "126172",
+        "frames": 803,
+        "digest": "8747077774b224a8f49926f28cd5c6991c4724a77a0e77f51e399d838b42aba6",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 164,
+      "op": "advance",
+      "boundary": "159",
+      "engineFrame": "160",
+      "worldTime": {
+        "numerator": "1362990234375",
+        "denominator": "512"
+      },
+      "mask": 32,
+      "frame": "3b9cf500bdc56a25d6fdcfb9ff23956b2e21a7bf1434fdb84ea3a080176bbeda",
+      "memory": "18d4413cf635d3f357cc0b35ecfb93e62b5c83089452fa038a691c6680cbd45e",
+      "wram": "8dc22eb8d28728267804426c31e30e498d4544de7532180afe575a52d940d40d",
+      "audio": {
+        "firstSample": "126975",
+        "frames": 804,
+        "digest": "8d5db9a5f9f9ca252c0a45a9595e39091696d03509650d657f59120981e48bd0",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 165,
+      "op": "advance",
+      "boundary": "160",
+      "engineFrame": "161",
+      "worldTime": {
+        "numerator": "42861328125",
+        "denominator": "16"
+      },
+      "mask": 32,
+      "frame": "838c3852e2722710c38cc5cd0c2548d6fdf239639c8153543cfe89db85e2fd6d",
+      "memory": "e3a243eeded545df442e2eb3adc038a01138a123cec3fe4be146725baa0e914a",
+      "wram": "81045e99cf5b1f048a0a8b03ce5130a874ef0b6abc434f250c6bb15f01075e9e",
+      "audio": {
+        "firstSample": "127779",
+        "frames": 804,
+        "digest": "2b845cf30ea40244a43fef5b760068e9ce088df2a30b59049620532ab2abd2d6",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 166,
+      "op": "advance",
+      "boundary": "161",
+      "engineFrame": "162",
+      "worldTime": {
+        "numerator": "1380134765625",
+        "denominator": "512"
+      },
+      "mask": 32,
+      "frame": "6790e130d466b993be26933ec3557bbbd8ed9c5f3ac839248b43d30943535844",
+      "memory": "437e46cea00c641a95627fb236005b7dd3bc13b54f566be50f37af33f1ae2027",
+      "wram": "047dfc8fcc0863eb747dc285a68077036f1bf16e3cb46fb2fcd365968aa35f4b",
+      "audio": {
+        "firstSample": "128583",
+        "frames": 803,
+        "digest": "d5c945227a1bd3915460da453ab67dd14357d6cacb607ed9775c964b7f656995",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 167,
+      "op": "advance",
+      "boundary": "162",
+      "engineFrame": "163",
+      "worldTime": {
+        "numerator": "694353515625",
+        "denominator": "256"
+      },
+      "mask": 32,
+      "frame": "c89ca281fc5391c04a1c95b7017be6f7ab9adc8144fe28fc602b414229e2eb89",
+      "memory": "16757275422c7ea7563f576d0d2bd3e13185c5befaeff60ee191fb6bbcd6c2c3",
+      "wram": "1d3bc2c0411dec7ae3307e439f6f354d18251ad74a34c1cbd2f78c84c722dfcf",
+      "audio": {
+        "firstSample": "129386",
+        "frames": 804,
+        "digest": "e226b22af55b34585c1c9b20515c538f3321c9e76d94f3c69135608b57a8cb5a",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 168,
+      "op": "advance",
+      "boundary": "163",
+      "engineFrame": "164",
+      "worldTime": {
+        "numerator": "1397279296875",
+        "denominator": "512"
+      },
+      "mask": 32,
+      "frame": "776f611745ae470495c5af28b16885b291f329af636df20705613af8902e6ac5",
+      "memory": "83f2a128e5760a5558443f167019f67110c60cdb95388a181a665a4eabc8b80b",
+      "wram": "c625e96526a82a12c54f1d8608384b72d9fb077d7e15ebd2292be9f4e7fb9663",
+      "audio": {
+        "firstSample": "130190",
+        "frames": 804,
+        "digest": "7cc762a2142a99f673c6c6cc4e9ce8a6248d7c9bc900d74573b6a37a6951c107",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 169,
+      "op": "advance",
+      "boundary": "164",
+      "engineFrame": "165",
+      "worldTime": {
+        "numerator": "351462890625",
+        "denominator": "128"
+      },
+      "mask": 32,
+      "frame": "7ca327d262c35979d4f59df433605ea1d38af54c2520bbdb55b018e59aa1a370",
+      "memory": "fc56574365456b7529bf63cd9d2460727e168e3db875664618b34b30504b3c0a",
+      "wram": "ca815a6b85a1ff5ecc12e2c6278a376f7fe4139d6076180aafd2c33eb5d3044d",
+      "audio": {
+        "firstSample": "130994",
+        "frames": 803,
+        "digest": "b0aa78a6da307538099dd4ab6d19a90b18bccfc491172ba4c81d3715e1d04410",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 170,
+      "op": "advance",
+      "boundary": "165",
+      "engineFrame": "166",
+      "worldTime": {
+        "numerator": "1414423828125",
+        "denominator": "512"
+      },
+      "mask": 0,
+      "frame": "da9f31833723501e8f9b7e49e9ff20f3f29fb868299c56c8665a48f11ddf541b",
+      "memory": "956a35f0f626308cdf40d3d3ba410f36b71e725a7d7fb056b7eea0c57c32b9a8",
+      "wram": "6712dc8ac2aefc58789966ebef9da93eb8dad099aa8f944ce15a45d376ff1570",
+      "audio": {
+        "firstSample": "131797",
+        "frames": 804,
+        "digest": "4e3462f327c1b237d0de7b8819ef878419006542431cae779b823b1d38e598b5",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 171,
+      "op": "advance",
+      "boundary": "166",
+      "engineFrame": "167",
+      "worldTime": {
+        "numerator": "711498046875",
+        "denominator": "256"
+      },
+      "mask": 0,
+      "frame": "dcceb4875a447ac7cc594aa55c3c5d32ecfd7ac0cad4d99978dda00509911c6c",
+      "memory": "1e4b8cfa3be8d375e13d74b052b8d85cf25577db7ecb188a7ac759eb377905d6",
+      "wram": "0f6f1dd14ce27852c4d4e46b250d230ab6aba2a40bd196180d3866e097317d48",
+      "audio": {
+        "firstSample": "132601",
+        "frames": 804,
+        "digest": "9882003fedcf44fd9852523f1d2f1d156c9a28de655e0861ee783ae336e36580",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 172,
+      "op": "advance",
+      "boundary": "167",
+      "engineFrame": "168",
+      "worldTime": {
+        "numerator": "1431568359375",
+        "denominator": "512"
+      },
+      "mask": 0,
+      "frame": "ac1a88b5ade80700b0bcee43bfd4f6aacdd146af6893fb8f86564cb6716688a7",
+      "memory": "e5ad32d46a6fc46b1e01903a42a4306b750f5a40ee3036c4a37df3e6cef1ff3a",
+      "wram": "9698529419254ffeb37f26fe46de10c7afa41103d839d118c472eb6d6463ec3b",
+      "audio": {
+        "firstSample": "133405",
+        "frames": 803,
+        "digest": "d3e372d5394db2fdcaaf80cabe8a1f3c79f95ce2f56eeab07253f060e8a73afe",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 173,
+      "op": "advance",
+      "boundary": "168",
+      "engineFrame": "169",
+      "worldTime": {
+        "numerator": "180017578125",
+        "denominator": "64"
+      },
+      "mask": 0,
+      "frame": "b30c33051b4ab4f4d7f29222a290a680b53f752dd05000a72ec738319de33967",
+      "memory": "6fadb3c5f5bad99f3113578f62aebbafbd0aca1c1162b9a38a381ced0cb65425",
+      "wram": "87cb8e7bbca4c18337a07277b31c68ae464d0bec5877844cccbef8aa81029c5d",
+      "audio": {
+        "firstSample": "134208",
+        "frames": 804,
+        "digest": "1e9dce77279255e5abe55f1c2be73ae20b7df97b5e8efd0b1bdd2885c23cd82a",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 174,
+      "op": "advance",
+      "boundary": "169",
+      "engineFrame": "170",
+      "worldTime": {
+        "numerator": "1448712890625",
+        "denominator": "512"
+      },
+      "mask": 0,
+      "frame": "04a24628cb2b0daf4fa5a3a72a121e025ee9b99cf5039a45bc399825e5f2f939",
+      "memory": "9a17563de2d5088374144578480c3cd462b0a17f56823d793911d221ab3a8ab0",
+      "wram": "ec7bd0f711173e3da9f1c272c6e4115ef642446dfc0968c9b58891fca96a1021",
+      "audio": {
+        "firstSample": "135012",
+        "frames": 803,
+        "digest": "0ab60937e0902c0f1d7232b68056d84169714659e588e1745df1ab064f8e3bcd",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 175,
+      "op": "advance",
+      "boundary": "170",
+      "engineFrame": "171",
+      "worldTime": {
+        "numerator": "728642578125",
+        "denominator": "256"
+      },
+      "mask": 0,
+      "frame": "5615f00a2f8b8ac91b235854acef4b261c3207da0bbf1af65083ed0c38b511cd",
+      "memory": "0e7a272b6f9c4827b9d2c2332eb561ef0f0a2e6f25731184302a1deacb4e29b9",
+      "wram": "630859191a19f572b45760cf52cfd45f1677d49828aae359a57b42172abb4032",
+      "audio": {
+        "firstSample": "135815",
+        "frames": 804,
+        "digest": "050beae5ab7efb7786f1163bf535e74d867454b29fd45610cfacc01881eea6d3",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 176,
+      "op": "advance",
+      "boundary": "171",
+      "engineFrame": "172",
+      "worldTime": {
+        "numerator": "1465857421875",
+        "denominator": "512"
+      },
+      "mask": 0,
+      "frame": "642d0e87ee3004c8f640ef7663de5169f1670ecb11d121b86d299a79622e009a",
+      "memory": "fd57cfa692d5b081a12cb7a1cf3d059921f563a56d83fac7b32d1e2230a5144e",
+      "wram": "09662f60776c325917920b68df31ae5f93c4511fb7eb06492dac41e507c82630",
+      "audio": {
+        "firstSample": "136619",
+        "frames": 804,
+        "digest": "5d1615579fe81ca872ec7f0f50f539beffd07418d97eae47a96a295554633e1d",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 177,
+      "op": "advance",
+      "boundary": "172",
+      "engineFrame": "173",
+      "worldTime": {
+        "numerator": "368607421875",
+        "denominator": "128"
+      },
+      "mask": 0,
+      "frame": "8d4b7fdc73357fc7195f9492d8b26f6ef6155cb0c136953b9dde66459d318e4f",
+      "memory": "b2b01af52e6d875cdaa43f9438a5beae6a6b733b9616886bbf7ba67fafe600c1",
+      "wram": "7f8cd2cf7dfe0fb6f8d072c604c790132f4c52cfe666da904b7ac400e61accff",
+      "audio": {
+        "firstSample": "137423",
+        "frames": 804,
+        "digest": "bd4c9b8407847f7a45c0b7368f72782052b7e0a05fc5c339b2699abc177d8f01",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 178,
+      "op": "advance",
+      "boundary": "173",
+      "engineFrame": "174",
+      "worldTime": {
+        "numerator": "1483001953125",
+        "denominator": "512"
+      },
+      "mask": 0,
+      "frame": "137dd530a6480a8d62682affd3534dc615852ccdfc84c7cb892c3fa3e042fecb",
+      "memory": "01899aafc113ecab1d11e8990ba7f8d530d426493953d66bc1ff6fe2b09a5067",
+      "wram": "5ecfa57889df577d5ba12a0937f58a2e9d33bd8b8c51f7a32dc65d9b22309964",
+      "audio": {
+        "firstSample": "138227",
+        "frames": 803,
+        "digest": "019a5679e4b2fd1107d920c2b65355de9eba5a34075ef5583dd8bf410ad86bf6",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 179,
+      "op": "advance",
+      "boundary": "174",
+      "engineFrame": "175",
+      "worldTime": {
+        "numerator": "745787109375",
+        "denominator": "256"
+      },
+      "mask": 0,
+      "frame": "2ca3ed99830800a8b597eed9b4b24706f46afcfc26c37fd3320c26d24cbd0a84",
+      "memory": "c8e9d4ff67374016ec913b88ee82b51f104fe5849f9acb0510d03d1c54dd5840",
+      "wram": "7bc3b1bd9860bda60f8fbad1a3d06b406f057ae9cdbb4fcfbe2fe9ac2f8fc535",
+      "audio": {
+        "firstSample": "139030",
+        "frames": 804,
+        "digest": "586a84eefaf6239eabd6597e623cfc7af93f78b52033f47bba584dce9bd5af3e",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 180,
+      "op": "advance",
+      "boundary": "175",
+      "engineFrame": "176",
+      "worldTime": {
+        "numerator": "1500146484375",
+        "denominator": "512"
+      },
+      "mask": 0,
+      "frame": "1c0c3bf36035f19167719a3f9cdf99919c6e0a4c988b865b0d7903ec1dda5bf3",
+      "memory": "4aab8018861ceeffa1ec9601c4886118cf6dce8e39a7eb44536cd20f0014c31d",
+      "wram": "bad793a7731fae5935bcc45ab23f7b507c360723a54d2805d75a2f94ded14a45",
+      "audio": {
+        "firstSample": "139834",
+        "frames": 804,
+        "digest": "bd89219b6722406878a24ca42aca1beeb451c8ec1d64fa5ec2819fdcffb1cbdf",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 181,
+      "op": "advance",
+      "boundary": "176",
+      "engineFrame": "177",
+      "worldTime": {
+        "numerator": "94294921875",
+        "denominator": "32"
+      },
+      "mask": 0,
+      "frame": "d3e5d0dc16a361c78a2193305fb8ad61bf302e9eeb031b443b07e68be910b259",
+      "memory": "2c0618c688772debb4a5eef3de6b5214192ea0279373344df341e7d048665866",
+      "wram": "fde24867a82dd20e3c0f276d3c331f2c385418866f7132e11c876fdf263fe381",
+      "audio": {
+        "firstSample": "140638",
+        "frames": 803,
+        "digest": "4504e975319194bee04c05f1794199909b502dd92afc49f9924e2ade75fe978f",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 182,
+      "op": "advance",
+      "boundary": "177",
+      "engineFrame": "178",
+      "worldTime": {
+        "numerator": "1517291015625",
+        "denominator": "512"
+      },
+      "mask": 0,
+      "frame": "e8fa5ebd8ce0b4bf35fee136518bb7394627f0557e7fc81ff236c60922ad9745",
+      "memory": "cd0df3df4eeb879cbe217b769bd0f5e625ddcab38e5b345e09d9ab7eb90cba6f",
+      "wram": "a1c0417ea338897f845eb9a069ee5c39f57d80d25684581b61edca01917f2147",
+      "audio": {
+        "firstSample": "141441",
+        "frames": 804,
+        "digest": "7da2184f72a64c59e7c6de97c000b7e9661a3d96cb550b182625a17821e92d26",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 183,
+      "op": "advance",
+      "boundary": "178",
+      "engineFrame": "179",
+      "worldTime": {
+        "numerator": "762931640625",
+        "denominator": "256"
+      },
+      "mask": 0,
+      "frame": "07ce9fd3dc974d48760f07fa4561bb5440ef969a7e538300c169b457594a0153",
+      "memory": "1a8fabf7867d4b3f2143630bdd2c76b1cc0813aa9b967c4fe1bc62b12095b810",
+      "wram": "0983485f650d1e6c2bc9654dbe475a7ae5d90e5d8608cf37692e20b88fa7433d",
+      "audio": {
+        "firstSample": "142245",
+        "frames": 803,
+        "digest": "48f54fa9559aa50e1ecfccd6fd731787ff352ea4424e35241137d744d89c8e8c",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 184,
+      "op": "advance",
+      "boundary": "179",
+      "engineFrame": "180",
+      "worldTime": {
+        "numerator": "1534435546875",
+        "denominator": "512"
+      },
+      "mask": 0,
+      "frame": "53a6da17e11a4439ef47ded75f059af8155f07511dc9d369cd93c456221dd4e4",
+      "memory": "4ccd8a816fcaa9abc07bc542d94b10aaba72ae56c0035867984980547821e7fb",
+      "wram": "71aa010e693ce96ead3ca7176f8efb11fac9cf7d4ec8e7eac9c744642af0abf3",
+      "audio": {
+        "firstSample": "143048",
+        "frames": 804,
+        "digest": "f344f760f85a65e922f430bc4de48adf201dc8231a367cf9722d8a2b1000dc2b",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 185,
+      "op": "advance",
+      "boundary": "180",
+      "engineFrame": "181",
+      "worldTime": {
+        "numerator": "385751953125",
+        "denominator": "128"
+      },
+      "mask": 8,
+      "frame": "3520cd7e27556968aee9ecee57df8b1a5bbcbed90626d563e0150dfaecc85965",
+      "memory": "3e899894aa240293d4f3a46f29291522753ebf24d6ba69ef0145c697cb60953d",
+      "wram": "98faf9f58a802c3b07a444119f261a9d84c9fe5f7d8b86bb7064dcf997b6c690",
+      "audio": {
+        "firstSample": "143852",
+        "frames": 804,
+        "digest": "9a6915c6c2fa7a982ddfff2087821e1d9f8d2556af0cb7c9639dafc7099fd585",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 186,
+      "op": "advance",
+      "boundary": "181",
+      "engineFrame": "182",
+      "worldTime": {
+        "numerator": "1551580078125",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "53a50210db831d20c781fc40e822559e99ac1839423c7214739fe646edaa833e",
+      "memory": "df34dd78a84e87f6e34e032c3de0480872c786b0b6ae174eda4389073ef2ad6d",
+      "wram": "eb8eb48fd3f1c0a93ca5f06d190cd2eae33a46d5df33d927245d55509cedf217",
+      "audio": {
+        "firstSample": "144656",
+        "frames": 803,
+        "digest": "96b093d5bf6168add9b2c7629fd036703da9ef4fc579eca2bc2f083b6e1199b0",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 187,
+      "op": "save-slot",
+      "boundary": "181",
+      "engineFrame": "182",
+      "worldTime": {
+        "numerator": "1551580078125",
+        "denominator": "512"
+      },
+      "mask": null,
+      "frame": "53a50210db831d20c781fc40e822559e99ac1839423c7214739fe646edaa833e",
+      "memory": "df34dd78a84e87f6e34e032c3de0480872c786b0b6ae174eda4389073ef2ad6d",
+      "wram": "eb8eb48fd3f1c0a93ca5f06d190cd2eae33a46d5df33d927245d55509cedf217",
+      "audio": null,
+      "state": "eceb68ba5c8c6ba1ba4833766a468bdef834dec57d8795aa4d329a53b97cedbc"
+    },
+    {
+      "index": 188,
+      "op": "rollback",
+      "boundary": "181",
+      "engineFrame": "182",
+      "worldTime": {
+        "numerator": "1551580078125",
+        "denominator": "512"
+      },
+      "mask": null,
+      "frame": "53a50210db831d20c781fc40e822559e99ac1839423c7214739fe646edaa833e",
+      "memory": "df34dd78a84e87f6e34e032c3de0480872c786b0b6ae174eda4389073ef2ad6d",
+      "wram": "eb8eb48fd3f1c0a93ca5f06d190cd2eae33a46d5df33d927245d55509cedf217",
+      "audio": null,
+      "state": null
+    },
+    {
+      "index": 189,
+      "op": "advance",
+      "boundary": "182",
+      "engineFrame": "183",
+      "worldTime": {
+        "numerator": "780076171875",
+        "denominator": "256"
+      },
+      "mask": 8,
+      "frame": "548df337e7d6185a9c2537b48bd42ef9ede7cb25b3ae8d1c9ad6cbe082ee717f",
+      "memory": "a18803e7f49347897f0a1cba651983d53ba40502fa4b364c8d592e422bdc9ba3",
+      "wram": "a82ebb24578ecce93955f87a0f240f3b41bd1d1b52700b935c95d8d2b6f697bc",
+      "audio": {
+        "firstSample": "145459",
+        "frames": 804,
+        "digest": "9e55cd8d2ceff3608f32eab1ba9df5186885ebf7d3859cd1b2acabdc2903a107",
+        "discontinuity": true
+      },
+      "state": null
+    },
+    {
+      "index": 190,
+      "op": "advance",
+      "boundary": "183",
+      "engineFrame": "184",
+      "worldTime": {
+        "numerator": "1568724609375",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "13058c26459c4909c8dcb7645083d61675a520ae26461d9d183abefdc0a9282d",
+      "memory": "e98db1a1b7f342ae26415a26d738c7cbe37e1a084c1c2c12afc61e1899c79c92",
+      "wram": "8a3cd7bc86943ad99084b1fe420c7c81623a4b051886d8fe38d64d87f517e62d",
+      "audio": {
+        "firstSample": "146263",
+        "frames": 804,
+        "digest": "821e77f45560567a2bf7dd4d5d54aa8d6c2bbc38300cb6940481afa5b5c23b18",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 191,
+      "op": "advance",
+      "boundary": "184",
+      "engineFrame": "185",
+      "worldTime": {
+        "numerator": "197162109375",
+        "denominator": "64"
+      },
+      "mask": 8,
+      "frame": "b4a8d96dc16dcfc6ac7cae71e43b96863117177577abf7cb2f72dbc0e81364c7",
+      "memory": "e41355a82cf4b39d0bc33616e4f010f37893b1f97ec817c40c52852bc6207e8d",
+      "wram": "2a916fbdfb4cb5f94299eac4e04a70c1183231df65cb7dfa207b312ff451c66e",
+      "audio": {
+        "firstSample": "147067",
+        "frames": 803,
+        "digest": "cb2c6e8d7afbffd00e713825a2b25db15aaeb31b9e8e0cfda794880c5c333316",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 192,
+      "op": "advance",
+      "boundary": "185",
+      "engineFrame": "186",
+      "worldTime": {
+        "numerator": "1585869140625",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "c40d9409de1693dec77fb788f2ed6b5b5d5e24954e82feab6b69becbe14179cd",
+      "memory": "1888ace3c14cb099e550b13a361eec9ccd665f3053e76ce516a2618e31b41e73",
+      "wram": "9af982ef521366e4cb33d5f0a85354963075716ca3228421455ac74ac853c31f",
+      "audio": {
+        "firstSample": "147870",
+        "frames": 804,
+        "digest": "98ddb8e2f2293c198a8d3a82aed6ffa0a07bfc156eb7c865d71d407493f29cc7",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 193,
+      "op": "advance",
+      "boundary": "186",
+      "engineFrame": "187",
+      "worldTime": {
+        "numerator": "797220703125",
+        "denominator": "256"
+      },
+      "mask": 8,
+      "frame": "70688798b946e301195645495b30f225f73e51301de3e3ced9422ffa901345cb",
+      "memory": "44c8552edcd1b433686738c9256073dabc5768a30371c06cd3b7b954101244ad",
+      "wram": "49e92231dd03bb89472789b84086421d7e5efa22e51de87e28038103b234db35",
+      "audio": {
+        "firstSample": "148674",
+        "frames": 803,
+        "digest": "5b63691641c288c4b4e1af275fadecbec79a2fbb90699165b4c5ff41bc2b81ae",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 194,
+      "op": "advance",
+      "boundary": "187",
+      "engineFrame": "188",
+      "worldTime": {
+        "numerator": "1603013671875",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "39801c72df6d19efd63feba9f39675256fc41761e5122e7cef14ab716b7dba22",
+      "memory": "32b6d3282b21800bf026064885647a9567e57ceb174432b0dbb71f9d8cb7e75b",
+      "wram": "69092e9a8ede10457018edd9386313214db5d4329c2c6de54132fec346a253ca",
+      "audio": {
+        "firstSample": "149477",
+        "frames": 804,
+        "digest": "bce9da5622ee111f529451e576cc6aac704a7c36c0e878c081592561cf7cb6af",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 195,
+      "op": "advance",
+      "boundary": "188",
+      "engineFrame": "189",
+      "worldTime": {
+        "numerator": "402896484375",
+        "denominator": "128"
+      },
+      "mask": 8,
+      "frame": "b3fa87634c5a8810a0952c5cc141fa02d21b28344fb7286b24a76b17b70b97c0",
+      "memory": "ebd7db66a5c807f4b5a61a29bc949f34c0bc45a39a756869628ef73b3253b571",
+      "wram": "187c1441e67c64c4bfd62ba6bd12491d0fc4bf86d3b8d033fbd64d07de99b08a",
+      "audio": {
+        "firstSample": "150281",
+        "frames": 804,
+        "digest": "7c75b7c7ea056a3fd1dc03ad7242bbd23132b7d064a92f5f20fc4008122911d0",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 196,
+      "op": "advance",
+      "boundary": "189",
+      "engineFrame": "190",
+      "worldTime": {
+        "numerator": "1620158203125",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "4259a86dece8fba61c9fdecbd72961ea9c1b0bbee17022e3386324cf4310e486",
+      "memory": "c700dd0a9e2ee351a4c42534b74fdd9c172a965cbd88b017a38c8b6de1921db5",
+      "wram": "ba18f7c0c8cda7412e64952bf30c574736efa10c3235fa684d3d3b03c39ab2b2",
+      "audio": {
+        "firstSample": "151085",
+        "frames": 803,
+        "digest": "6d957c5877d6c729a8b8719b07b89d685c6cf2e04e904f533948bcecf9177078",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 197,
+      "op": "advance",
+      "boundary": "190",
+      "engineFrame": "191",
+      "worldTime": {
+        "numerator": "814365234375",
+        "denominator": "256"
+      },
+      "mask": 8,
+      "frame": "0578f3afea601bb050a32076fb626b0349ccbf10b5a6144abf10ee09105a1ce6",
+      "memory": "79d3798cd77e79a363e3364ab1c05929065530569b524acedb5b58e239049721",
+      "wram": "bbeebd23e2004f74a024b609b198cc596e9c8b650e2bd0e6991dfeaad50ae888",
+      "audio": {
+        "firstSample": "151888",
+        "frames": 804,
+        "digest": "138998cbde95cd69b46055142871473f32b98b2ed5a8fc374548ff2aa25c7efc",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 198,
+      "op": "advance",
+      "boundary": "191",
+      "engineFrame": "192",
+      "worldTime": {
+        "numerator": "1637302734375",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "0e7819724dd54c89f90fd85deaa891fb82d2edd325e0c23018ca73d3095b4435",
+      "memory": "2d06eaf1de62ff744a4aa16dc657d6af5c071727c749cd821da32c3ec28bc91d",
+      "wram": "eae713cf0222ca2cfaceeb77f44fb52d7012ad9884b0545d2b97d81761fe7e31",
+      "audio": {
+        "firstSample": "152692",
+        "frames": 804,
+        "digest": "fd0489e2ba31a5688f493b284028dd26988831713931065a1cdb509070432cfe",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 199,
+      "op": "advance",
+      "boundary": "192",
+      "engineFrame": "193",
+      "worldTime": {
+        "numerator": "25716796875",
+        "denominator": "8"
+      },
+      "mask": 8,
+      "frame": "156ba76c4775c10937039ec74ab181b32747e56811b8faf4448672f0ac505a6b",
+      "memory": "49d44390cb6381ef9c5d1520b522ef378ff9087669047f3a7d221edc503dd4c7",
+      "wram": "1662fd2ee13b06b8dac9c2efaed2fe78ede441815257c13719ddd3a98e17ee55",
+      "audio": {
+        "firstSample": "153496",
+        "frames": 803,
+        "digest": "f212a656a54587bca013728f3f075e7dd99c1475632d99cc91c492edaf8206af",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 200,
+      "op": "advance",
+      "boundary": "193",
+      "engineFrame": "194",
+      "worldTime": {
+        "numerator": "1654447265625",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "0904f8f1d625c12cf0532f0bc6bd412158660918df7466436397b458587a4f9b",
+      "memory": "db1f0603a68a42e08262b79d78fc98657b2614d48a05de502815561b0b9d1058",
+      "wram": "ada336e932af820388833209a489f19508ff1ad8633b5e63080f7bacff11de6b",
+      "audio": {
+        "firstSample": "154299",
+        "frames": 804,
+        "digest": "1e1a23140d851144eb2197e8fb718aa30b24c84f74b7b3eed329bb4ff98b7b18",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 201,
+      "op": "advance",
+      "boundary": "194",
+      "engineFrame": "195",
+      "worldTime": {
+        "numerator": "831509765625",
+        "denominator": "256"
+      },
+      "mask": 8,
+      "frame": "ece1e3d022b097fdea91d62eb879f06e156a2a613c462473e2a1da35dcf1d332",
+      "memory": "3a0ba40870d9fa1c4ca7f01f4ec13d9e608212d057040a425e4636b05942f1d4",
+      "wram": "e7a3d8c2a08456067412f40e658ccd42ca53f5b988cfcb2b7855b42d11f60abe",
+      "audio": {
+        "firstSample": "155103",
+        "frames": 804,
+        "digest": "831e5583a013b9a53c10eff9c25619f54b93bca68bd67802abdc8bd4912316c3",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 202,
+      "op": "advance",
+      "boundary": "195",
+      "engineFrame": "196",
+      "worldTime": {
+        "numerator": "1671591796875",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "12df6484dcb1804ae862f4337129ef5af0a4ca4a8468e4a49dee65f35b123dbf",
+      "memory": "db8e4b16f60de6cd322d85251ae18879ae592ca0f9ab338d76094ff0216d9fe4",
+      "wram": "650104c4e26c0ce5a5c661f41c49cc76690317fa90fbb7f2f778ab77aaa10b30",
+      "audio": {
+        "firstSample": "155907",
+        "frames": 803,
+        "digest": "6bff3890191119aa9405c8ecf1d349cd88c857574e6650ccf7e93d33cf743546",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 203,
+      "op": "advance",
+      "boundary": "196",
+      "engineFrame": "197",
+      "worldTime": {
+        "numerator": "420041015625",
+        "denominator": "128"
+      },
+      "mask": 8,
+      "frame": "ee7c3ce7e021086feb4773ff45e8fb9b2feb1b3d5e90333fb0d9981b4ea306f1",
+      "memory": "43367e1d96780dddfde72eaa7f2533817885b44446714f8b871207ab4c59062a",
+      "wram": "16affdc887ae6ab3226b048e038746bf378971fbbce90618f8b41c1147eb6b03",
+      "audio": {
+        "firstSample": "156710",
+        "frames": 804,
+        "digest": "e9b97afd48acb089c7d9b2e9a8018e45c47edb95cc8135e669ea748c8addbb57",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 204,
+      "op": "advance",
+      "boundary": "197",
+      "engineFrame": "198",
+      "worldTime": {
+        "numerator": "1688736328125",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "26f0b75df6674e3df6fd62d29dd4dc55752e3b05fdbbfc5850cab3e28cb96285",
+      "memory": "2bcfcb1240dc114a1ce06f3a93192ac9dc09454e239540a7ebdb14129b7fc442",
+      "wram": "768b97568ed2c11c2cd36150a874927e427bc55396e84149bde0832dfb88b46e",
+      "audio": {
+        "firstSample": "157514",
+        "frames": 804,
+        "digest": "eb4d5565ac86c1b9780bcdc6448a666c36992797fb0750258a1c0514499e69ca",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 205,
+      "op": "advance",
+      "boundary": "198",
+      "engineFrame": "199",
+      "worldTime": {
+        "numerator": "848654296875",
+        "denominator": "256"
+      },
+      "mask": 8,
+      "frame": "070b78b62de183d7270e8dd5d609cac5baa25cf7990f7fc786b8f4069374fd66",
+      "memory": "6b134910b534affdc25848e14f47815834797e26c0a78882cf36b34ffcc23ce4",
+      "wram": "1bd9f0184b38eee91b4a980a8eca84958b4373fca904c989a08ddc5049848afb",
+      "audio": {
+        "firstSample": "158318",
+        "frames": 803,
+        "digest": "d88a090c40810c09f5f1fb51b2181d7522aad06a875e464b53f153aa38047083",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 206,
+      "op": "advance",
+      "boundary": "199",
+      "engineFrame": "200",
+      "worldTime": {
+        "numerator": "1705880859375",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "9acd3e040056d43fe1f1ef83417bc5fab487235db5011b1b4dc5e2ddd8ef5738",
+      "memory": "593c0e0ed2137fe1683726dc9783706e7edc3290176b900e0c12ec49aa1b3116",
+      "wram": "c596d5ba664d46aceaf1dceb162523db94ead09a325480277a6332924b6f89e6",
+      "audio": {
+        "firstSample": "159121",
+        "frames": 804,
+        "digest": "1fa9e1d0e23b93cc774082b8f8da4ba0d1fd8392083b5c69a0a797fa2ace726a",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 207,
+      "op": "advance",
+      "boundary": "200",
+      "engineFrame": "201",
+      "worldTime": {
+        "numerator": "214306640625",
+        "denominator": "64"
+      },
+      "mask": 1,
+      "frame": "8d5950e22b3cc0730f9e06fb61fbed0be0f4189abec6304eaf22511e2be586fa",
+      "memory": "4cdcc64176452001359cdb15312dc6376af8abbda99990252919f9b7b2d559f7",
+      "wram": "ad90606b6e2214b92f19b681779a5f4bc0a1980cfe7f13785a82f0e5e646735b",
+      "audio": {
+        "firstSample": "159925",
+        "frames": 804,
+        "digest": "4a6f59bf2088c1318a135f804e3e65a53582278afe57352fa8bf5e14b3cff39d",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 208,
+      "op": "advance",
+      "boundary": "201",
+      "engineFrame": "202",
+      "worldTime": {
+        "numerator": "1723025390625",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "91b83e3540d1d45ad18df668cd082ba5cb0b8dec5bdc93be129497ef7b9037a3",
+      "memory": "2c9c26db7638d4b8c2bcc1f8f3b3178cbee22c57e97241e63ffea03409ecf4f0",
+      "wram": "baae0d745a85483dd09b35539e3fbe411ec3b71c553ea85991e6c01f0eccf1df",
+      "audio": {
+        "firstSample": "160729",
+        "frames": 803,
+        "digest": "73edc1fc4e89e8cabb94be970bc9ba00ef52fcf107a094063bb6ce6d1d91261e",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 209,
+      "op": "advance",
+      "boundary": "202",
+      "engineFrame": "203",
+      "worldTime": {
+        "numerator": "865798828125",
+        "denominator": "256"
+      },
+      "mask": 1,
+      "frame": "074e2a99fe0958f3ed098775329a4da4fef1d0c0d753a3139204899c864e911e",
+      "memory": "bc69ee60755d86476f35952b3b5f9b95a43a3b03098a20742871180717166850",
+      "wram": "dbda4bd3ece56b9f40fefa8319bf1ea0e98bc3b82cbef28972550c7808f1e80d",
+      "audio": {
+        "firstSample": "161532",
+        "frames": 804,
+        "digest": "8fd7227d0f3eb97163b040f6947904fa1878196ee2505f895fdffab9f511cc47",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 210,
+      "op": "advance",
+      "boundary": "203",
+      "engineFrame": "204",
+      "worldTime": {
+        "numerator": "1740169921875",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "6f13c04473521a0fc23c2f373da8eea8e9917198d448d3b51c9febf6ac2ec172",
+      "memory": "c8fa1595204597b959a235f984ec56f31a1751796269f12c4d9d396add7d9b0d",
+      "wram": "f0170356ccf561cf2fa6a3f968f685908494577245fcbe7151c1c7721f0d2259",
+      "audio": {
+        "firstSample": "162336",
+        "frames": 804,
+        "digest": "c12673f832858a901c3456983c239f92ded85d481dd97fe3fa1531882c7f2573",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 211,
+      "op": "advance",
+      "boundary": "204",
+      "engineFrame": "205",
+      "worldTime": {
+        "numerator": "437185546875",
+        "denominator": "128"
+      },
+      "mask": 8,
+      "frame": "57d6df661171ac464e878f0637cf8d9d0505dc4a965cbee3d3d6047442262edb",
+      "memory": "1f3ab45354a5791290f0f2ab0300340e2a64b3f84b90212c65bba4a2baabcb45",
+      "wram": "60a2bd0ffedc0ba67b66707c1b59d97722c2acfad565478b40933542ddf35695",
+      "audio": {
+        "firstSample": "163140",
+        "frames": 803,
+        "digest": "9747a18d3e8d252d58f3093a56202d94f0e34c5d49a223559f107f0a8be45fee",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 212,
+      "op": "advance",
+      "boundary": "205",
+      "engineFrame": "206",
+      "worldTime": {
+        "numerator": "1757314453125",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "6cba02dbf825145cc07806d2dc3ade17e6b088647f99936b9a909560e9cf7647",
+      "memory": "98bc367c3f7de356a95d9cefd0557e8ff244092c7320c7c89e85ff972faa4c2c",
+      "wram": "c1fb67f1b975243ead0203e119035aa4e8af9f7011623cd79c87e6a477c3c239",
+      "audio": {
+        "firstSample": "163943",
+        "frames": 804,
+        "digest": "b00cbeef1cd8df726f8e9b4c0360636479ab1a27574ffecd084fc28a2299ba81",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 213,
+      "op": "advance",
+      "boundary": "206",
+      "engineFrame": "207",
+      "worldTime": {
+        "numerator": "882943359375",
+        "denominator": "256"
+      },
+      "mask": 8,
+      "frame": "2924ff348e30d714820a2ebb9c22048a956a352ef60bbbbf4c7f274844494737",
+      "memory": "1897def9cc5190fe7e3ba62402277b20eb3fa5694ddfdf4ab38048b61751add6",
+      "wram": "4bd5fb590562145197c0e507bc9afceac842990ed7bbf165ff066f56a3d114f5",
+      "audio": {
+        "firstSample": "164747",
+        "frames": 804,
+        "digest": "da18fca7f1634592903fbfa24a6825ae449a6fec733f8ff373833e151a103a1d",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 214,
+      "op": "advance",
+      "boundary": "207",
+      "engineFrame": "208",
+      "worldTime": {
+        "numerator": "1774458984375",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "dcafa4cd7c189c8f04b910f4ee20134c8af34f1bc31981e1eb0d3b398791861a",
+      "memory": "310a7a0ebed04427fe109280abb5bb3dcece6bb89a7b42ba50442cf651357600",
+      "wram": "37120708b99fe73d33afa7c7c502ba395486b8c2ef596a3f8b9548c31596b889",
+      "audio": {
+        "firstSample": "165551",
+        "frames": 803,
+        "digest": "c297e697cfa91c814f00771f56febed08ee389b830139c36112849a097241933",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 215,
+      "op": "advance",
+      "boundary": "208",
+      "engineFrame": "209",
+      "worldTime": {
+        "numerator": "111439453125",
+        "denominator": "32"
+      },
+      "mask": 8,
+      "frame": "5b8dc52d943d4f8aa8923102ae1c13065d605e07d4802b8fa54eb94ecffb5652",
+      "memory": "48a08f4f9910877e81efe8f3986b51194295b421dceac83defbfad99f1777d44",
+      "wram": "2e0ed8f605a733ae2e72d938141caf56e81054f2c1a3e823cd93ecb0c4109748",
+      "audio": {
+        "firstSample": "166354",
+        "frames": 804,
+        "digest": "39937480b66da113de6d4f750bb5ffa9b74fb9a21d544e3afd677a54520250de",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 216,
+      "op": "advance",
+      "boundary": "209",
+      "engineFrame": "210",
+      "worldTime": {
+        "numerator": "1791603515625",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "9d703c7edd72a2229a2b743b56ec9bbec2cfdd6b12749aabf39ebb8c8f426b65",
+      "memory": "95ab525dfae1953924648f5447c485ceafc4b37fe22be549e9e9ca12cca135cb",
+      "wram": "51bbddaaa741b3549d15426326738991e5b3b70eda73c9bfd86270ac9e0c0421",
+      "audio": {
+        "firstSample": "167158",
+        "frames": 804,
+        "digest": "80b1c90f11c7a209ebe76d769abb468849b90eba284428bd37d9e14d79316e9b",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 217,
+      "op": "advance",
+      "boundary": "210",
+      "engineFrame": "211",
+      "worldTime": {
+        "numerator": "900087890625",
+        "denominator": "256"
+      },
+      "mask": 8,
+      "frame": "bae7a850b57436877d832fce14a91c157b45565494db416b177053a5fc7bb307",
+      "memory": "a2612f54c5717b9ba309fab61b6cc990d3bc348e5f1ab63bf312c61edb226a0d",
+      "wram": "b3425b7786cd55dfec7e0a1de7bbb9bd6731093adea7fe41471181a31339576a",
+      "audio": {
+        "firstSample": "167962",
+        "frames": 803,
+        "digest": "ad89f1cb7fe3fc36bf3f9617073d852a815c5ee1ef1b8a98fdc7a2ff1c6cb127",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 218,
+      "op": "advance",
+      "boundary": "211",
+      "engineFrame": "212",
+      "worldTime": {
+        "numerator": "1808748046875",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "e68dc063f6e0a89b1b17d58c6e0db3d2feafb17128fb0c391a8def1968d367ad",
+      "memory": "60f94e284cfbcad6c91e063654b8330c33edcc8b412e7c052b8a2f9b7caf417d",
+      "wram": "968cbb1c2395ba97cf0132b738ff64eb8a526d5eccdfa7321255268ffed69e07",
+      "audio": {
+        "firstSample": "168765",
+        "frames": 804,
+        "digest": "357f34515b9739bc2a37673012eececc3081677ca828b279108dde21687541cc",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 219,
+      "op": "advance",
+      "boundary": "212",
+      "engineFrame": "213",
+      "worldTime": {
+        "numerator": "454330078125",
+        "denominator": "128"
+      },
+      "mask": 8,
+      "frame": "07d6b8fd7e97c484c25b8fa15e627b2c98efdab11a9a0749808d493d142e93f1",
+      "memory": "43b24046bef5decdc10b02217f5e1ebbe5ab75b102eb977e85cdf356f3a2a21c",
+      "wram": "1f157737327429e63a3efd39bfb776b31e948791ed92ac73be297d7aa67e0d0b",
+      "audio": {
+        "firstSample": "169569",
+        "frames": 804,
+        "digest": "78ff3b9ec9b2af746fd911882857d5569904208f2f99ee3edc2168206c12bc45",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 220,
+      "op": "advance",
+      "boundary": "213",
+      "engineFrame": "214",
+      "worldTime": {
+        "numerator": "1825892578125",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "52f14f58fc744bdc0933caa91267ad63a33b70be09df5556a55bbf6488961f22",
+      "memory": "c3b46e07b3f591abae1c84f011daec47a600dfeff5b422daef42a335170da8f5",
+      "wram": "c13b0cd5619e195dc391b475c1e160122b668bb33777664131afc650af2844cd",
+      "audio": {
+        "firstSample": "170373",
+        "frames": 803,
+        "digest": "52cbe558c8cd29b90ac9b4771ee1b45a5069279a70c2f1061e42787b337a36b4",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 221,
+      "op": "advance",
+      "boundary": "214",
+      "engineFrame": "215",
+      "worldTime": {
+        "numerator": "917232421875",
+        "denominator": "256"
+      },
+      "mask": 8,
+      "frame": "7c3593bf3fbe546145a4a91d40857b0e89bcda6051ebfe6efd17b48c2af685b8",
+      "memory": "3719174749289aaea1b6524eca37deb9a2a475d4660b5c361453b8094a6dae9c",
+      "wram": "b8a252b8900d7c2447f8e9d4d3ba6a577237dcd2b013981746a7dd263033957f",
+      "audio": {
+        "firstSample": "171176",
+        "frames": 804,
+        "digest": "46a52103cb3eef1a48e4790cce247b5d06dad07f7b26ef7a1304c1f0cc00cc15",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 222,
+      "op": "advance",
+      "boundary": "215",
+      "engineFrame": "216",
+      "worldTime": {
+        "numerator": "1843037109375",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "3417b86f160ff0097576a0ce6979bc618d4e41b7e58f386cd6b491bd946ac48c",
+      "memory": "e582974d8ea5cbad75436716e44f5c440c8a11080c5614315e5a9abd2e4a2223",
+      "wram": "9ce4abdbdb579cd2801e75e03705691e3225f94a19b956afdfa742f0394c3154",
+      "audio": {
+        "firstSample": "171980",
+        "frames": 803,
+        "digest": "51d4a66cdd3fa8211a5d67d1e5cb8ee6333acec4b4c91fe2b7d01712135ff8f3",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 223,
+      "op": "advance",
+      "boundary": "216",
+      "engineFrame": "217",
+      "worldTime": {
+        "numerator": "231451171875",
+        "denominator": "64"
+      },
+      "mask": 8,
+      "frame": "96bab8734c98ff2fe825c654f99156cd95f852fc1caf342c4aef051a3ec14257",
+      "memory": "31e35b20005979cd127e6b816813538ff9cdd2e15490f2a1eaf724c6d94ee3a7",
+      "wram": "b9c4811fa190e9e3e2ac3ad6d1dd995d6cc63b4a0e6ec39c93d4156620adaf2b",
+      "audio": {
+        "firstSample": "172783",
+        "frames": 804,
+        "digest": "78ec1d9692b2d5cfe19e16b564e1cf9b34f189018fac1e91ba3979e0d397d212",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 224,
+      "op": "advance",
+      "boundary": "217",
+      "engineFrame": "218",
+      "worldTime": {
+        "numerator": "1860181640625",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "2e5be93785f5459d3a67da26b4c97b2a7485c6b3f6e238d15d29c0c97102b68f",
+      "memory": "3b7c6403e7b4d47e6968222a6d6f6af55666fb10a0d9907d8368375b7253b74a",
+      "wram": "364907dee8ac984fe8278064ad7d0fc0a0e3d97705bffbc18bedf24f8c41b91a",
+      "audio": {
+        "firstSample": "173587",
+        "frames": 804,
+        "digest": "2430e425ae288d9b0caff3d5378f747d9b141a44153972e61bf4f99cf099216f",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 225,
+      "op": "advance",
+      "boundary": "218",
+      "engineFrame": "219",
+      "worldTime": {
+        "numerator": "934376953125",
+        "denominator": "256"
+      },
+      "mask": 8,
+      "frame": "e8c911372daba1b8377be98ed4c238414627ad8e3387a61f207db85ec38085df",
+      "memory": "8ed66752b7947f30ded32b98883608f5ced5a384422c965b54d1df07c2faefaa",
+      "wram": "d13fd05b034e300516600b1afc3dbb97430ea0ed85a953818f2999ebf5f06159",
+      "audio": {
+        "firstSample": "174391",
+        "frames": 803,
+        "digest": "093cb74db3fd5cac12b0fc383474518f20424c555a62deb90f5fc5db5fdd3d43",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 226,
+      "op": "advance",
+      "boundary": "219",
+      "engineFrame": "220",
+      "worldTime": {
+        "numerator": "1877326171875",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "4ff2d73ab463610decf56c5ab38cf31f9e190fe5bc0da1fe678f82dde5a2d785",
+      "memory": "74e5accaced6d49a56dc8371e922c6d12e3793ce830d8f24285e18b363760f77",
+      "wram": "b672393631b1a59ec2d3aaedbb563768b70740da8564e47d34ec758ef06a917c",
+      "audio": {
+        "firstSample": "175194",
+        "frames": 804,
+        "digest": "db67338441c1d47572e54512236c38af964499a271b55a73f7b92a2b79fcd0c9",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 227,
+      "op": "advance",
+      "boundary": "220",
+      "engineFrame": "221",
+      "worldTime": {
+        "numerator": "471474609375",
+        "denominator": "128"
+      },
+      "mask": 8,
+      "frame": "abc90ba2d5a5471e6f6f80ce4f93cde6ca3d96dab73c80849bdc75e7651b5a55",
+      "memory": "c807a5d4e91b45d4302a108d39b2be697190fd0704b753134088d06e05ecde6a",
+      "wram": "108b03e3174aa54b23abaca97509ae0f8db49cf3c2831fd883f900be29d0cf64",
+      "audio": {
+        "firstSample": "175998",
+        "frames": 804,
+        "digest": "229e46b29e48a23e6161faa45b47cfd8f37ac9974e2ad0df03a3cb75fb0ee592",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 228,
+      "op": "advance",
+      "boundary": "221",
+      "engineFrame": "222",
+      "worldTime": {
+        "numerator": "1894470703125",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "6cbc4ced50947d45172bf9f2e6e8e312b8a1b13459d3e96e2aff699bc8695d79",
+      "memory": "c1b97c3158010f6170d7d6e087fba6ba03834caa4da3aea6d79ad560fdc82c0f",
+      "wram": "0d2b3b8dbaa5230131cca87ed55c3995f403544d0f4eac6f866ad2891dd75110",
+      "audio": {
+        "firstSample": "176802",
+        "frames": 803,
+        "digest": "f5309aed3895dfaaa04f3b7b473a3f3fc8f6fe30684f0a3398450abefb7424c4",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 229,
+      "op": "advance",
+      "boundary": "222",
+      "engineFrame": "223",
+      "worldTime": {
+        "numerator": "951521484375",
+        "denominator": "256"
+      },
+      "mask": 8,
+      "frame": "68eb1f49572f2225bac13f5c2509c6bbf9bbff622322a7d518f4655cde4415d8",
+      "memory": "61c6a18cb2da5d3ad373bf32afbe8e8eb2ea7b7ac7d18c8f1e5d185b4cb5a036",
+      "wram": "0767b53465401e5f91e86a7c14210a4bbbb821c40a234e767cf4f170f8420456",
+      "audio": {
+        "firstSample": "177605",
+        "frames": 804,
+        "digest": "31619ea327219af52629fb51bf128eb65ef42661e4b7d2eea191efc8f3d5b347",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 230,
+      "op": "advance",
+      "boundary": "223",
+      "engineFrame": "224",
+      "worldTime": {
+        "numerator": "1911615234375",
+        "denominator": "512"
+      },
+      "mask": 8,
+      "frame": "2b825f6a37dbaa90752a2590fe23dec97b779e2b264996c3a096cb3738bf2a00",
+      "memory": "45e385eb2d13662ad8fa41e6b55548150ac5fb1316795a65395352203a7a57c0",
+      "wram": "b9103097929e71c6211077ba7efde39776c3824ae3ac4e95c135a29b45cb240b",
+      "audio": {
+        "firstSample": "178409",
+        "frames": 804,
+        "digest": "43ec1876f340c1afe463844b9dbc5e1b2ceff067aab8aab93cf4421fca2fe3ae",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 231,
+      "op": "advance",
+      "boundary": "224",
+      "engineFrame": "225",
+      "worldTime": {
+        "numerator": "60005859375",
+        "denominator": "16"
+      },
+      "mask": 1,
+      "frame": "44868a9fab3aa5f1d64ea98bdc59bb3a97e4e74d35bd9ecedf2d10c3e9cc24dc",
+      "memory": "eea0fdc4b6a058944977c1c11c57ab809ca97d743690837929aaf44377418303",
+      "wram": "257ae63d75a13ea9c7568ba61d88747d790e122ee4d5656c10adb81ba18979b9",
+      "audio": {
+        "firstSample": "179213",
+        "frames": 803,
+        "digest": "1c25f7cc4d44a719d37a9f50448b0b2536321b7b0a096e006917c0411f650825",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 232,
+      "op": "advance",
+      "boundary": "225",
+      "engineFrame": "226",
+      "worldTime": {
+        "numerator": "1928759765625",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "4a6b0b8f1651f2b995fb3341775b7c19413d619067a1106e27cd836fe63215a7",
+      "memory": "7838e9e6994596f21d222d0b6fd932678a0d653f25267ba20b36aab2f06adba7",
+      "wram": "c69a64737dbc7e5f120a21b1ff2753894cfed0caf289212ab05a4bd1b7f31e90",
+      "audio": {
+        "firstSample": "180016",
+        "frames": 804,
+        "digest": "45704fe8ebbd203812a55333ac9b96077ebba5dc497cac377754c1fd4384f26c",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 233,
+      "op": "advance",
+      "boundary": "226",
+      "engineFrame": "227",
+      "worldTime": {
+        "numerator": "968666015625",
+        "denominator": "256"
+      },
+      "mask": 1,
+      "frame": "1c66ad5994268f84439344a38fb56ce6b0c607c50dccac42b75af23fb6746982",
+      "memory": "c11eef9cfca12cf1758e478484ce8575e71c4f4fd28cedc8315847c44b97ed51",
+      "wram": "2fc8aa8a856e17120c7edd70ad2197baef472b61bd474eb1cbe6b6e3ff921e2a",
+      "audio": {
+        "firstSample": "180820",
+        "frames": 803,
+        "digest": "cee59c93553a44aefc5d50a1fb86fb56a23d87f68ed333434cc8010a15840c1a",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 234,
+      "op": "advance",
+      "boundary": "227",
+      "engineFrame": "228",
+      "worldTime": {
+        "numerator": "1945904296875",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "117c3284f558d98cc13268a44246e8056776f273777fc7585b3d3be68148bc08",
+      "memory": "3ce2abd2154d3961bfa762819a94caefdcb30730d23dc565a60ed9651fe3bd81",
+      "wram": "96613217eec68543765ee18bcd3900ac89b2a31ff681efcf1fba24471195c157",
+      "audio": {
+        "firstSample": "181623",
+        "frames": 804,
+        "digest": "225810db5c0c0cb9eba08027d481ed70da6dec4dc0d5c5a357a4ebe796ab52e1",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 235,
+      "op": "advance",
+      "boundary": "228",
+      "engineFrame": "229",
+      "worldTime": {
+        "numerator": "488619140625",
+        "denominator": "128"
+      },
+      "mask": 1,
+      "frame": "55d3f0e40df508cb2b276d69e14819f2ee715dfc215dd452caac2f3fd1bab7f3",
+      "memory": "fab7e93ca09fbcc71beb2b9dcc02da0558e4921dd4a8cf045fad8c0078bd5426",
+      "wram": "03b63a57c24174c5f57fe73bc3fadb8319864cdcf775f784347256647a27b225",
+      "audio": {
+        "firstSample": "182427",
+        "frames": 804,
+        "digest": "3a06e2cda33e4ef9ee5bcde97bc5dc00f6921463ae4c0014976d8bd2fa9f5443",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 236,
+      "op": "advance",
+      "boundary": "229",
+      "engineFrame": "230",
+      "worldTime": {
+        "numerator": "1963048828125",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "156a5367bd9d102d2e5a7a4d5a0ba713bb306b24db99d281d8285334f9dfb8f9",
+      "memory": "56a8b1f90777f739b992039d77ee29afdf34d4c97f30c40a6913e0568ecba039",
+      "wram": "6aa9c4f2fe72c2addb985c04c63530884b689d5e34865a65e4cfbf905e8010ff",
+      "audio": {
+        "firstSample": "183231",
+        "frames": 803,
+        "digest": "9041427190941643394de42da12ec97baa5c4a12b567e8810dd447ea41bf86ab",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 237,
+      "op": "advance",
+      "boundary": "230",
+      "engineFrame": "231",
+      "worldTime": {
+        "numerator": "985810546875",
+        "denominator": "256"
+      },
+      "mask": 1,
+      "frame": "07cdcf90c8d7df6db86c75969bfc8ac0c4ce677d76d9aad6bf53a601b284dca0",
+      "memory": "bdff6dc52856af939b14ee246a67cdf8c9170d2e5915220fbdf5a4cc9b815d8e",
+      "wram": "dfbed1886a0382f5b6c7f2ef06662a9666793095bca815c350c7a90213b6f0f9",
+      "audio": {
+        "firstSample": "184034",
+        "frames": 804,
+        "digest": "ca6ca5ca4dea7c3449a6a327af8fb7ea7991bd549d3b244c1dd023362cc3a56c",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 238,
+      "op": "advance",
+      "boundary": "231",
+      "engineFrame": "232",
+      "worldTime": {
+        "numerator": "1980193359375",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "3b72039392ba6f02876cbf434c22db0dcbb2a858695c0e05540a97302132c739",
+      "memory": "c70db510bc307cf4bf018f3bc69e72183428c5a97cb107cdb7d69225f9da0ee4",
+      "wram": "955b0c56c5a562493e37eaf581db116ca4e2b57f88ded65e619b7916a2b7f082",
+      "audio": {
+        "firstSample": "184838",
+        "frames": 804,
+        "digest": "ede04638634c936d1996249e790249934663f0b3235be679511db30218cb78aa",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 239,
+      "op": "advance",
+      "boundary": "232",
+      "engineFrame": "233",
+      "worldTime": {
+        "numerator": "248595703125",
+        "denominator": "64"
+      },
+      "mask": 1,
+      "frame": "ac9d0d530d12fb871d5c5718e035cfc46c528d134a2026235a578bc67b590390",
+      "memory": "4c424ffa8ac949c4b9215499934dd52fdb415637ccc0583cdde378abd2e1ea83",
+      "wram": "0f6cdbdc254134c98da7de674d37f8a7cc361d195a2fc1e661fd6133e41b54bd",
+      "audio": {
+        "firstSample": "185642",
+        "frames": 803,
+        "digest": "9afd24f3a993fae8e194e89d268010ea821929ff60ac3ca2f1f361d54fe1e2d9",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 240,
+      "op": "advance",
+      "boundary": "233",
+      "engineFrame": "234",
+      "worldTime": {
+        "numerator": "1997337890625",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "2ffff14f93c6629ae9e9319e54b65a08c1a3d8ba04d69f2b5153fc2746e6fcc9",
+      "memory": "2996e482cf5f9b3c984b904be55b685d4fc129e5b571c04075cea82701239bdf",
+      "wram": "91078469ab75ffcbcec9cf8dc3e64776d92680355226b123391a222de8009d2f",
+      "audio": {
+        "firstSample": "186445",
+        "frames": 804,
+        "digest": "c4a17a49b2953746b49170db533c0cf5f20bb91486716420f9f7abd176b2551c",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 241,
+      "op": "advance",
+      "boundary": "234",
+      "engineFrame": "235",
+      "worldTime": {
+        "numerator": "1002955078125",
+        "denominator": "256"
+      },
+      "mask": 1,
+      "frame": "8bc0766900ca93bf0fca0b42ca8b064e1bc4338fdb8bcd869161f75923013452",
+      "memory": "52738f1d5363a06dc91f3e4815d2b29d59ab2b8904290a077718a5ba3430c378",
+      "wram": "985cef65ab9bdf1d5e1f15212a02e997a19dc1b962f792fd5a345f5948ed6b97",
+      "audio": {
+        "firstSample": "187249",
+        "frames": 804,
+        "digest": "21b149830c8692d22e6950c95ea415160f79418215697a9471a4cbd30e23321f",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 242,
+      "op": "advance",
+      "boundary": "235",
+      "engineFrame": "236",
+      "worldTime": {
+        "numerator": "2014482421875",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "21a440c21fd380cf0042b654859d49e6d1f5c4a07baad75dce602bde572fb3ec",
+      "memory": "817e6ccc557162a46c2859a08da60eacbdaa44eee9c22867eb604a699ef76507",
+      "wram": "8e6a6ccaf60f5d936365f85c93cddea592498c3a092970594f166e62ebe90b8e",
+      "audio": {
+        "firstSample": "188053",
+        "frames": 803,
+        "digest": "d3757bc2d306bc0d42ac773d42177a9ab3734dda0c812024121e333d92dc7a1b",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 243,
+      "op": "advance",
+      "boundary": "236",
+      "engineFrame": "237",
+      "worldTime": {
+        "numerator": "505763671875",
+        "denominator": "128"
+      },
+      "mask": 1,
+      "frame": "2c2f98b57a3e88cceaac5c4a68fd103edc98b51efcd39403e22b86ac8f2c2edf",
+      "memory": "f509524ebe1ed45a938cf7c6ec94f89f9f499c769f5921edf7d6f7f8a6c0b1aa",
+      "wram": "63e0af376d6a1a777bac6fb85340bf9cec1974e5d0efaa8f1ddc4c8353d01845",
+      "audio": {
+        "firstSample": "188856",
+        "frames": 804,
+        "digest": "0496951b6a6f152e0294307fb752b981bceb3b8b823d8de2ef1e842b06e997ed",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 244,
+      "op": "advance",
+      "boundary": "237",
+      "engineFrame": "238",
+      "worldTime": {
+        "numerator": "2031626953125",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "5d9b77421e31cca94f089a76a25d1c2c24ec41eb40138b0ef3eb664976fea216",
+      "memory": "144a8aeedc8eafb292af7417fd6261f2128c23835aec4796603da76d1b8c2002",
+      "wram": "082f6e49f3a33ae0bcd2ca0d957b7c151b5f19833225f02ce7f72334b322636e",
+      "audio": {
+        "firstSample": "189660",
+        "frames": 804,
+        "digest": "51a70ceadee657639c9d4f89f7c2684ed54ccd6f7c9176ccc6dd2126b1953611",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 245,
+      "op": "advance",
+      "boundary": "238",
+      "engineFrame": "239",
+      "worldTime": {
+        "numerator": "1020099609375",
+        "denominator": "256"
+      },
+      "mask": 1,
+      "frame": "3c0ad627bd3b9c21199b03341f4153eaf2309e0a672c703cdfe108afe9415b9e",
+      "memory": "ca6ebffb428e626b2e4f6c4233930b2db3d9a642b9dfc2a3c0e27be2fec2dc94",
+      "wram": "4c504f444d0e4120279d7307f1f1b94235c99f1ba700bd0d67a3d920c64b8cdb",
+      "audio": {
+        "firstSample": "190464",
+        "frames": 803,
+        "digest": "40ad8f7090f296163ad39a52ecc221868b69c97db369490cf15297d6787aa6c3",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 246,
+      "op": "advance",
+      "boundary": "239",
+      "engineFrame": "240",
+      "worldTime": {
+        "numerator": "2048771484375",
+        "denominator": "512"
+      },
+      "mask": 1,
+      "frame": "f4d236c0185298ae2898aeb56b879a4fa452824fc3e9186ed9bfdc7b38f7d2f7",
+      "memory": "1697c388a4308e510ce19f6ec63d65088065496ec96190177b7950e237af9df3",
+      "wram": "1f2d58cf5b760af0010d94520650c3319a2cd201fbb09443dc7dab71e50f50c0",
+      "audio": {
+        "firstSample": "191267",
+        "frames": 804,
+        "digest": "d0fec4462e6dd7e42e371225b7372ddbe55a44d38e78ecf4534c22a0a61c3204",
+        "discontinuity": false
+      },
+      "state": null
+    },
+    {
+      "index": 247,
+      "op": "advance",
+      "boundary": "240",
+      "engineFrame": "241",
+      "worldTime": {
+        "numerator": "128583984375",
+        "denominator": "32"
+      },
+      "mask": 1,
+      "frame": "3c0ad627bd3b9c21199b03341f4153eaf2309e0a672c703cdfe108afe9415b9e",
+      "memory": "c6e9a785399e0e9386b01acb3ab3421b381282736f08dcdea313ada4c48b7842",
+      "wram": "d34426d040a0162851e78b564935a8470b647bc1b270e580d0194bec028e1eb9",
+      "audio": {
+        "firstSample": "192071",
+        "frames": 804,
+        "digest": "7707656b2b52437a2e2ef4a3ddd8d7d0f66a32282802a57af5ef7fdb6bafb084",
+        "discontinuity": false
+      },
+      "state": null
+    }
+  ]
+}

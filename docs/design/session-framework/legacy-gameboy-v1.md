@@ -125,7 +125,8 @@ interface GameboyReadoutContext {
 ```
 
 `ChannelName` is `^[a-z][a-z0-9_]{0,63}$`. Decoder channel and rate-role names carry `_`, so
-they are not `Id`s. The context is what the task hands the decoder with each Prepare (the
+they are not `Id`s (corrected 2026-09-23, AGENT-01: they are; see the section 13 amendment).
+The context is what the task hands the decoder with each Prepare (the
 `initialDecisionContext`, then every `nextDecisionContext`). `bound` is an ordered subset of the
 composition's `macroChannels`.
 
@@ -168,7 +169,8 @@ interface GameboyMemoryInspection {
 }
 ```
 
-- **The image.** Byte *i* is what `fly_gb_read_mem(i)` returns at this boundary, which is
+- **The image.** (Amended 2026-09-29, below: the register windows are not captured.) Byte *i*
+  is what `fly_gb_read_mem(i)` returns at this boundary, which is
   what every task and executor read in the legacy loop sees through the per-frame read cache.
   It is a listed bus attachment, content type `application/octet-stream`. Its digest is optional,
   because it is a transient live artifact ([state-media-v1](state-media-v1.md) section 1). At
@@ -185,6 +187,38 @@ interface GameboyMemoryInspection {
   image never carries ROM banks beyond the ones the CPU has mapped.
 - **Retention.** The coordinator keeps O[k]'s image until transition k→k+1 has been evaluated.
   The executor reads it in Phase B, and the task reads old and new images in Phase C.
+
+**Amendment, 2026-09-29 (MEM-01).** The image captures the address space's *memory*, not its
+*registers*. The two proofs this section demands contradicted each other for three windows: a
+read of VRAM (`$8000-$9FFF`), OAM (`$FE00-$FE9F`) or I/O with the APU and wave RAM
+(`$FF00-$FF7F`) goes through binjgb's lazy catch-up (`ppu_synchronize`, `timer_synchronize`,
+`serial_synchronize`, `intr_synchronize`, `apu_synchronize`) before it answers. The catch-up
+rewrites the subsystem's sync bookkeeping, so the exported state changes. On a boot run it
+changed on 104 to 105 of 105 sampled boundaries for each window. A full 65,536-byte read
+through `emulator_read_mem` is therefore not read-only by the state-comparison test. The amended
+rule:
+
+- **Captured**: `$0000-$7FFF` (ROM as mapped), `$A000-$FDFF` (cartridge RAM, work RAM and its
+  echo), `$FEA0-$FEFF` (the unused block) and `$FF80-$FFFF` (high RAM and `IE`). Byte *i* is
+  exactly what `fly_gb_read_mem(i)` returns at this boundary. binjgb reads each of these
+  straight out of an array, with no catch-up.
+- **Not captured**: the three register windows above. They read `$FF` (binjgb's
+  `INVALID_READ_BYTE`), and the shim does not call `emulator_read_mem` for them.
+- **Unchanged**: the artifact is still 65,536 bytes in address order,
+  `application/octet-stream`, with an optional digest. `gameboy-memory-inspection-v1` is
+  therefore unchanged, and so are its schema digest and the contract digest.
+- **Why no task or executor loses anything**: none of them reads a register window. The Pokémon
+  adapter, scene detector and macro engine read WRAM, HRAM and ROM only. MEM-01's equivalence
+  harness (flysim `tests/rom_memory_image.rs`) counts every address the image-backed arm reads
+  over 27,000 frames from nine checkpoints and finds no read outside the captured ranges. A future
+  task that needs a register must amend this section first. A register cannot be captured
+  read-only through this shim.
+
+The shim function is `fly_gb_read_memory_image(gb, out, 65536)`, and in Rust it is
+`Emulator::read_memory_image{,_into}`. The executor's reader is `flybrain_gb::ImageReader`,
+which pairs a `MemoryImage` with a `Cartridge`. `Cartridge::verified` refuses a ROM whose SHA-256
+is not the environment's `contentDigest`. The emulator answers its own bank reads through the same
+`Cartridge::read_bank`.
 
 ## 9. Environment
 
@@ -213,6 +247,22 @@ interface GameboyMemoryInspection {
   It runs no frame. Every slot is part of the environment's `State.Capture` payload, as
   FLYSIM01's `ratchet_game` and `ratchet_frame` are today. A slot save due at a boundary
   completes before any `State.Capture` or FLYSIM01 export at that boundary (section 16).
+
+**Amendment, 2026-09-29 (ENV-01).** Two consequences of building this section, recorded in the
+[implementation guide](implementation.md) ENV-01 entry: ~~the memory image cannot be taken with a
+plain loop of `emulator_read_mem`, because reading OAM, VRAM, the serial and timer registers,
+`IF`, `STAT` or `LY` advances binjgb's lazy synchronisation and changes what `export_state` writes
+-- the environment reads it between an export and an import of the same bytes, so slots and
+captures stay byte for byte the legacy loop's;~~ and a `FLYSIM01` world is restored at boundary
+`emulatorFrame - 1`, its world time and audio position derived from that boundary, with the
+ratchet's snapshot as the slot `best`.
+
+*Struck 2026-09-29 (ENV-01 review, R1).* The first consequence is superseded by section 8's MEM-01
+amendment of the same day: the register windows are not captured and read `$FF`, so the image is
+MEM-01's one bulk read with no export/import guard around it, read-only by construction
+(`legacy_env::memory_image`). With it the service's traces still reproduce every frame, WRAM and
+slot-state digest (rollback 3,199, climb 3,156, r58 11,043 transitions), because the legacy
+adapter and macros never read VRAM, OAM or I/O.
 
 ## 10. Executor `pokered-macros-v1`
 
@@ -351,6 +401,79 @@ stale files.
 valid `Id`s, while `AgentGraph.rateRoles` and `AgentTelemetry.rates[].roleId` are `Id`s. The
 mapping belongs to the agent adapter. This contract does not choose it.
 
+**Amendment, 2026-09-23 (AGENT-01): the rate-role mapping `legacy-rate-role-id-v1`.** The
+premise above is wrong. The session `Id` grammar is `^[a-z0-9][a-z0-9._-]{0,63}$`
+([session RPC](ipc-v1.md) section 1, `flybus::wire::is_id`, `isId` in `@flybrain/session-types`),
+and it admits `_`. Every role `data/fafb-v783` declares, including the 31 `macro_*` populations
+merged after the fingerprint, and every role the kernel tracks, is already an `Id`; so is every
+`ChannelName`, whose grammar is a subset. The mapping is therefore the identity:
+
+- a legacy rate-role name `n` is published as `roleId = n` when `n` is an `Id`, and a `roleId`
+  names the rate role of the same spelling. The mapping is reversible by construction;
+- a name that is not an `Id` has no `roleId`. The agent refuses to initialize over a dataset
+  that tracks one (`INCOMPATIBLE_STATE`), rather than invent an encoding no consumer could read
+  back. No shipped dataset has one;
+- the published list keeps the kernel's tracked-role order and its bounds: at most 64
+  (`MAX_RATE_ROLES`, the kernel's role bitmask) and unique. On `fafb-v783` it is 45 roles.
+
+`gameboy::rate_role_id`, `rate_role_name` and `rate_role_ids` in `fly-session-types`, and
+`rateRoleId`, `rateRoleName` and `rateRoleIds` in `@flybrain/session-types`, implement it.
+`fixtures/gameboy-rate-roles.json` holds both languages to the same accepted and refused names and
+records the FAFB tracked list, which `fly-session`'s gated FAFB test recomputes from the
+committed dataset. The mapping changes no schema, digest or fixture digest.
+
+**Amendment, 2026-09-23 (AGENT-01): what the legacy agent reports and captures.** These are
+agent-adapter choices that the sections above leave open. `LegacyAgentWorker`
+(`fly-session/src/legacy_agent.rs`) implements them:
+
+- *Seed.* The kernel version `lif-1ms-f64-v2` hashes the LIF seed. Every seed except the legacy
+  default `22222` gives a different kernel version, so the profile pins the seed.
+  `Agent.Initialize` refuses any other seed (`INCOMPATIBLE_STATE`) before it builds a model. The
+  coordinator of this composition passes `22222`. It does not use a seed derived under
+  [seed-derivation-v1](seed-derivation-v1.md).
+- *Learning telemetry.* `AgentTelemetry.learning` requires `changed <= updates`. The legacy
+  counters mean something else, so they map as follows. `updates` is the number of reinforcement
+  calls the agent has applied: one per commit while the rule is enabled, zero sums included.
+  `changed` is the legacy `plasticity.updates`: the reinforcements that moved at least one gain.
+  `signal` is `plasticity.signal`. The legacy per-synapse count (`LearningStats.changed`, the
+  gains away from 1.0) is not carried. It can still be read from a captured state.
+  `stimulusRemainingMs` is the network's `reward_remaining` after the operation.
+  *Amended 2026-09-29 (AGENT-01 rebase):* `FLYSIM01` records `plasticity.updates` but not the
+  reinforcement calls. An agent imported from a `FLYSIM01` agent state therefore starts
+  `updates` at that state's `plasticity.updates`, which is a lower bound on the calls made. Starting
+  it at zero makes the first telemetry violate `changed <= updates`: on the live fly `changed` is
+  in the thousands. `legacy_parity::legacy_reinforcements` is the rule. The import that ENV-01
+  or STATE-01 ships must apply it.
+- *Spikes.* Each `Agent.Commit` reply carries the attachment `telemetry.spikes`, with content type
+  `application/x-fly-spike-bitset`. It uses the legacy feed's layout: bit *i* is neuron *i*,
+  `ceil(neurons/8)` bytes. It covers the transition's ticks: a neuron is set when its last spike
+  is at or after the brain time before that transition's Prepare ticked. The mapping of bit
+  *i* is the graph's `indexDigest`.
+- *Graph.* `datasetDigest` is the SHA-256 of the schema-1 fingerprint string. `indexDigest` is the
+  SHA-256 of `fly-session/legacy-agent-index-v1`, the fingerprint, the neuron count and every
+  `macro_*` population's members. The macro populations are the profile's declared
+  `macro-roles-outside-fingerprint` exception. Two datasets that relabel them differently
+  therefore get the same fingerprint and different index digests.
+- *Initialize.* The readout transient starts as it does in a fresh legacy process: no held
+  channel, no last location, and a blocked window from 0 ms. `initialDecisionContext.location`
+  is **not** taken as the last location. The legacy loop reads a location only at the end of a
+  frame, so the window first restarts on it at the first commit, as it does in the legacy loop.
+- *Capture.* The `State.Capture` payload is a `flybrain-core` checkpoint envelope with magic
+  `FLYAGT01`. Its manifest and chunks are exactly `agent_to_chunks`, with the frame remainder
+  taken from the session accumulator, as `Sim::checkpoint` does. It adds one `session` member: the
+  accumulator, the context, the profile, the seed, the reinforcement count, the macro channels
+  and the decoder configuration digest. It does not carry the readout transient (section 14). It
+  is not FLYSIM01. Writing a FLYSIM01 export from it and from the environment's state is still
+  STATE-01/ENV-01 work (section 16).
+- *Restore.* `State.StageRestore` builds a replacement network over the same dataset, imports
+  the state and refuses any mismatch between the state's clock and the accumulator.
+  `ActivateRestore` then installs the state and resets the readout transient, as a fresh legacy
+  process does. The visual drive is the restored `visualDrive` chunk. Legacy `try_restore`
+  instead re-projects the saved framebuffer, and the two are the same values (the parity
+  harness compares the full state after a restore).
+- *Decision.* `macro` is the first channel in the context's `bound` order that the decode holds.
+  This is the channel the legacy macro layer's `asked` would start.
+
 ## 14. Restore `legacy-transient-reset`
 
 The legacy composition declares that a restore (a FLYSIM01 load today, and any group restore
@@ -427,6 +550,45 @@ current `flysim` reads, under the unchanged compatibility string. The deploy gat
 (`--print-compatibility`) and `fly-reset-to-milestone` keep working on those files. A FLYSESS1
 checkpoint may be written beside it, but it is not what a restore selects until RETIRE-01
 says so.
+
+**Amendment, 2026-09-29 (STATE-02).** Six readings of this section, fixed by building it
+([implementation guide](implementation.md) STATE-02):
+
+- *"A FLYSIM01 envelope that the current `flysim` reads" means the same bytes.* The session
+  runtime writes through the legacy loop's own encoder and store, which now live in the crate
+  `flysim-store` that both link. For the same state it writes the same bytes, and it keeps the
+  same generations, `manifest.json`, `milestone-<N>` archives, rotation and restore order. The
+  owners of the fields are: the agent (the seven agent chunks, the remainder), the environment
+  (`emulator`, `framebuffer`, `emulatorFrame`, `buttons`, `romHash`, and slot `best` as
+  `ratchetGame` and `ratchetFrame`), the task (`reward`, `ratchet`) and the host (`generation`,
+  `wallMs`, `compatibility`, `speed`, `rankSinceMs`, `lastEventId`); the agent's reinforcement
+  count, `reinforcements`, is new (below).
+- *The milestone archive is per process, as in the legacy loop.* A rank climb is archived when
+  the rank is above every rank *this process* has archived. After a restart, the first climb
+  rewrites `milestone-<rank>` even if an older process had archived that rank. That is the
+  legacy behaviour, and the reset tools rely on the newest archive of a rung.
+- *A restore is the legacy restore, candidate for candidate.* The candidate order is hot latest,
+  hot previous, durable latest, durable previous, then the archives by descending rank. The gate
+  is the cartridge and the compatibility decision. A refusal at any step, including a
+  participant's `State.StageRestore`, moves to the next candidate. If every candidate fails, the
+  runtime does not start. The world applies the recorded `buttons` on restore, as
+  `LegacyFrame::restore` does, so a file whose emulator state disagrees with its own `buttons`
+  restores to the same state in both runtimes, not to the file's bytes.
+- *The visual drive after a `FLYSIM01` import is the framebuffer's projection* (a correction to
+  section 13's *Restore*, "the two are the same values"). They are the same on stream
+  checkpoints. On the row 65 yard survey checkpoint they are not: the first transition's rates
+  and spikes differed from the legacy loop's. The import therefore carries the framebuffer in
+  the agent payload (chunk `inputFrame`), and `State.StageRestore` installs it after the import,
+  as `LegacyFrame::restore` does. A worker's own capture carries no such chunk and restores
+  exactly.
+- *`learning.updates` is carried in `FLYSIM01`.* This corrects section 13's *Learning telemetry*
+  amendment, which started every import at `plasticity.updates` and so dropped the count on
+  every round trip. Both runtimes count reinforcement calls the same way and write the count
+  as the optional manifest member `reinforcements`. A file without it (every file from before
+  2026-09-29) starts at `plasticity.updates` once.
+- *The sugar journal is the shadow run's input record.* It gets a per-process boot header, is
+  rotated at 4 MiB with three kept files, and `fly-reset-to-milestone` clears it
+  (`flysim-store::journal`). It is not a checkpoint and nothing restores from it.
 
 ## 17. PROF-02b: MaleCNS bundles (later)
 

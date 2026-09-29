@@ -439,8 +439,12 @@ dependencies = [
 name = "fly-session"
 version = "0.1.1"
 dependencies = [
+ "flate2",
  "fly-session-types",
+ "flybrain-core",
+ "flybrain-gb",
  "flybus",
+ "flysim-store",
  "serde_json",
  "tempfile",
  "tokio",
@@ -500,10 +504,12 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "fly-session",
  "fly-session-types",
  "flybrain-core",
  "flybrain-gb",
  "flybus",
+ "flysim-store",
  "futures-util",
  "jsonschema",
  "serde",
@@ -517,6 +523,19 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-normalization",
+]
+
+[[package]]
+name = "flysim-store"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "flybrain-core",
+ "flybrain-gb",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

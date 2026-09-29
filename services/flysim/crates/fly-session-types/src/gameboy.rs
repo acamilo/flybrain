@@ -414,6 +414,60 @@ pub fn extension_set_digest() -> String {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Rate roles: `legacy-rate-role-id-v1` (amendment 2026-09-23, AGENT-01)
+
+/// The name of the mapping from a legacy rate-role name to `AgentGraph.rateRoles` /
+/// `AgentTelemetry.rates[].roleId`.
+///
+/// `legacy-gameboy-v1` section 13 left this to AGENT-01 on the premise that the legacy names
+/// (`command_0`, `macro_go_item`, `steer_left`, ...) are not `Id`s. They are: the session `Id`
+/// grammar is `^[a-z0-9][a-z0-9._-]{0,63}$` (`ipc-v1` section 1), which admits `_`, and every
+/// role `data/fafb-v783` declares or the kernel tracks matches it. So the mapping is the identity
+/// on the `Id` grammar, trivially reversible, and a name outside the grammar is not mapped at
+/// all: the agent refuses to initialize on such a dataset rather than invent an encoding that
+/// no consumer could read back. `fixtures/gameboy-rate-roles.json` pins it in both languages.
+pub const RATE_ROLE_MAPPING: &str = "legacy-rate-role-id-v1";
+
+/// The `roleId` a legacy rate-role name is published under: the name itself, when it is an
+/// `Id`. Anything else is refused.
+pub fn rate_role_id(name: &str) -> Result<String> {
+    if is_id(name) {
+        Ok(name.to_owned())
+    } else {
+        err(format!(
+            "{RATE_ROLE_MAPPING}: rate role {name:?} is not an Id (^[a-z0-9][a-z0-9._-]{{0,63}}$) and has no roleId"
+        ))
+    }
+}
+
+/// The legacy rate-role name a `roleId` stands for: the inverse of [`rate_role_id`].
+pub fn rate_role_name(role_id: &str) -> Result<String> {
+    if is_id(role_id) {
+        Ok(role_id.to_owned())
+    } else {
+        err(format!("{RATE_ROLE_MAPPING}: {role_id:?} is not a roleId"))
+    }
+}
+
+/// Maps a tracked-role list, in order, and holds it to `AgentGraph.rateRoles`' own bounds:
+/// at most 64 (`MAX_RATE_ROLES`, the kernel's role bitmask) and unique.
+pub fn rate_role_ids<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<Vec<String>> {
+    let ids = names
+        .into_iter()
+        .map(rate_role_id)
+        .collect::<Result<Vec<String>>>()?;
+    if ids.len() > crate::workers::MAX_RATE_ROLES {
+        return err(format!(
+            "{RATE_ROLE_MAPPING}: {} tracked rate roles; AgentGraph.rateRoles holds at most {}",
+            ids.len(),
+            crate::workers::MAX_RATE_ROLES
+        ));
+    }
+    require_unique(ids.iter().map(String::as_str), "rateRoles")?;
+    Ok(ids)
+}
+
+// ---------------------------------------------------------------------------------------------
 // Scalars and helpers
 
 /// `ChannelName`: a decoder channel or rate-role name, `^[a-z][a-z0-9_]{0,63}$`.

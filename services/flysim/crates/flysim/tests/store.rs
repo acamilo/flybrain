@@ -67,6 +67,7 @@ fn agent_state() -> flybrain_core::agent::AgentState {
 
 fn checkpoint(generation: u64, frame: u64, rom: &str, compatibility: &str) -> Vec<u8> {
     let runtime = RuntimeState {
+        reinforcements: None,
         generation,
         wall_ms: 1_757_000_000_000 + generation,
         rom_sha256: rom.to_string(),

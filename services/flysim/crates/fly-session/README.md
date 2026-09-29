@@ -47,6 +47,9 @@ Ready(k) ─ Prepare all agents concurrently ───────────�
 | `cli` | The binary's subcommands: `agent`, `environment`, `measure` |
 | `state` | The durable checkpoint store over `FLYSESS1`: compatibility, generations, the bounded writer |
 | `harness` | The runnable composition: router, the flies, one arena, one coordinator |
+| `legacy_env` | ENV-01: the legacy Game Boy environment worker over binjgb -- the one-frame setup scaffold, the joypad batch, `f32le` audio, the per-boundary memory image, `gameboy-slots-v1`, the capture payload and the world's half of `FLYSIM01` |
+| `legacy_env_parity` | ENV-01's parity harness: the toy cartridge, recorded scripts, the emulator driven directly in `LegacyFrame` order, the worker driven over the bus, and the replay of the service's own `FLY_TRACE` |
+| `legacy_checkpoint` | STATE-02: the legacy composition's `FLYSIM01` checkpoints -- the export from the agent's and the world's capture payloads plus the task's and the host's halves, the import back (with the `learning.updates` rule), the legacy store policy (generations, hot/durable intervals, milestone archives) and the restore selection over the live store. The store code is the `flysim-store` crate, shared with `flysim` |
 
 ## Execution modes and the launcher
 
@@ -88,6 +91,7 @@ A separate-process participant is a subcommand of this crate's one binary, which
 ```sh
 fly-session agent       --socket S --store-root D --client-id C --service N --threads T ...
 fly-session environment --socket S --store-root D --client-id C --service N --threads T ...
+fly-session legacy-environment ... --worker ID --port p1 --rom PATH --rom-digest SHA256 --slots best
 fly-session measure     --steps 300 --agents 1,2,4
 ```
 

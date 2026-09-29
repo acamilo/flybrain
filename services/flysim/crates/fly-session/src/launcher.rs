@@ -30,6 +30,8 @@ use flybus::{Client, ClientConfig, Router, ServiceConfig, Transport, UnixListene
 
 use crate::agent::{AgentConfig, AgentFaults, FakeAgentWorker};
 use crate::environment::{CounterEnvironment, EnvironmentConfig, EnvironmentFaults};
+use crate::legacy_agent::{LegacyAgentConfig, LegacyAgentWorker, LegacyProfileKind};
+use crate::legacy_env::{BackendConfig, LegacyEnvironmentConfig, LegacyGameboyEnvironment};
 use crate::rpc::WorkerRef;
 use crate::types::*;
 use crate::worker::{StatusCell, WorkerHandle, serve};
@@ -253,6 +255,44 @@ pub struct EnvironmentLaunch {
     /// Where this world counts the frames it renders, with the same process caveat.
     pub renders: crate::media::RenderCounter,
     pub faults: EnvironmentFaults,
+    pub client_id: String,
+    pub service: String,
+}
+
+/// What one legacy agent participant (AGENT-01) is started with.
+///
+/// Everything crosses a process boundary as argv, like the synthetic agent's configuration: a
+/// dataset directory, the profile it serves and the composition's macro channels. The seed,
+/// the profile `AssetRef` and the first frame arrive in `Agent.Initialize`, not here.
+#[derive(Clone, Debug)]
+pub struct LegacyAgentLaunch {
+    pub session_id: Id,
+    pub agent_id: Id,
+    pub port_id: Id,
+    pub incarnation_id: Id,
+    pub worker_threads: usize,
+    pub dataset_dir: PathBuf,
+    pub profile: LegacyProfileKind,
+    /// `executor.macroChannels` in composition order; empty in raw mode.
+    pub macro_channels: Vec<String>,
+    pub client_id: String,
+    pub service: String,
+}
+
+/// What the legacy Game Boy environment participant (ENV-01) is started with.
+///
+/// Everything crosses a process boundary as argv: the cartridge's path (read-only, outside the
+/// checkout, never identity) and the backend configuration it must be -- the cartridge digest,
+/// the port, the declared slots and the audio configuration. `Environment.Initialize` must name
+/// exactly that configuration's `AssetRef`.
+#[derive(Clone, Debug)]
+pub struct LegacyEnvironmentLaunch {
+    pub session_id: Id,
+    pub worker_id: Id,
+    pub incarnation_id: Id,
+    pub worker_threads: usize,
+    pub rom_path: PathBuf,
+    pub backend: BackendConfig,
     pub client_id: String,
     pub service: String,
 }
@@ -581,6 +621,38 @@ impl Launcher {
         }
     }
 
+    /// Starts one legacy agent (AGENT-01), in the launcher's configured mode, and identifies it.
+    pub async fn launch_legacy_agent(
+        &mut self,
+        spec: LegacyAgentLaunch,
+    ) -> Result<WorkerIdentity, DomainError> {
+        let threads = self.budget.allocate(&spec.agent_id, spec.worker_threads)?;
+        let identity = WorkerIdentity {
+            session_id: spec.session_id.clone(),
+            client_id: spec.client_id.clone(),
+            service: spec.service.clone(),
+            worker_id: spec.agent_id.clone(),
+            incarnation_id: spec.incarnation_id.clone(),
+            role: Role::Agent,
+            port_id: Some(spec.port_id.clone()),
+            worker_threads: threads,
+        };
+        let started = self
+            .start_participant(&identity, Started::LegacyAgent(spec.clone()), threads)
+            .await;
+        match started {
+            Ok(worker) => {
+                let identity = worker.identity.clone();
+                self.workers.insert(spec.agent_id.clone(), worker);
+                Ok(identity)
+            }
+            Err(e) => {
+                self.budget.release(&spec.agent_id);
+                Err(e)
+            }
+        }
+    }
+
     /// Starts the environment, in the launcher's configured mode, and identifies it.
     pub async fn launch_environment(
         &mut self,
@@ -599,6 +671,39 @@ impl Launcher {
         };
         let started = self
             .start_participant(&identity, Started::Environment(spec.clone()), threads)
+            .await;
+        match started {
+            Ok(worker) => {
+                let identity = worker.identity.clone();
+                self.workers.insert(spec.worker_id.clone(), worker);
+                Ok(identity)
+            }
+            Err(e) => {
+                self.budget.release(&spec.worker_id);
+                Err(e)
+            }
+        }
+    }
+
+    /// Starts the legacy Game Boy environment (ENV-01), in the launcher's configured mode, and
+    /// identifies it.
+    pub async fn launch_legacy_environment(
+        &mut self,
+        spec: LegacyEnvironmentLaunch,
+    ) -> Result<WorkerIdentity, DomainError> {
+        let threads = self.budget.allocate(&spec.worker_id, spec.worker_threads)?;
+        let identity = WorkerIdentity {
+            session_id: spec.session_id.clone(),
+            client_id: spec.client_id.clone(),
+            service: spec.service.clone(),
+            worker_id: spec.worker_id.clone(),
+            incarnation_id: spec.incarnation_id.clone(),
+            role: Role::Environment,
+            port_id: None,
+            worker_threads: threads,
+        };
+        let started = self
+            .start_participant(&identity, Started::LegacyEnvironment(spec.clone()), threads)
             .await;
         match started {
             Ok(worker) => {
@@ -690,8 +795,22 @@ impl Launcher {
                 let status = endpoint.status();
                 (serve(client, service, endpoint), status)
             }
+            Started::LegacyAgent(spec) => {
+                let endpoint =
+                    LegacyAgentWorker::new(legacy_agent_config(spec, identity.worker_threads));
+                let status = endpoint.status();
+                (serve(client, service, endpoint), status)
+            }
             Started::Environment(spec) => {
                 let endpoint = CounterEnvironment::new(environment_config(spec));
+                let status = endpoint.status();
+                (serve(client, service, endpoint), status)
+            }
+            Started::LegacyEnvironment(spec) => {
+                let endpoint = LegacyGameboyEnvironment::new(legacy_environment_config(
+                    spec,
+                    identity.worker_threads,
+                ));
                 let status = endpoint.status();
                 (serve(client, service, endpoint), status)
             }
@@ -1250,6 +1369,17 @@ pub(crate) mod flags {
     pub const OMIT_AUDIO_AT_BOUNDARY: &str = "omit-audio-at-boundary";
     pub const OVERLAPPING_AUDIO_AT_BOUNDARY: &str = "overlapping-audio-at-boundary";
 
+    pub const DATASET: &str = "dataset";
+    pub const PROFILE: &str = "profile";
+    pub const MACRO_CHANNELS: &str = "macro-channels";
+
+    pub const ROM: &str = "rom";
+    pub const ROM_DIGEST: &str = "rom-digest";
+    pub const SLOTS: &str = "slots";
+    pub const AUDIO_RATE: &str = "audio-rate";
+    pub const AUDIO_BUFFER_FRAMES: &str = "audio-buffer-frames";
+    pub const SETUP_FRAMES: &str = "setup-frames";
+
     pub const MODE: &str = "mode";
     pub const AGENTS: &str = "agents";
     pub const STEPS: &str = "steps";
@@ -1281,6 +1411,8 @@ pub(crate) mod flags {
         FAIL_STAGE_RESTORE,
         FAIL_ACTIVATE_RESTORE,
     ];
+    /// What only a legacy agent (AGENT-01) is given.
+    pub const LEGACY_AGENT_ONLY: &[&str] = &[AGENT, PORT, DATASET, PROFILE, MACRO_CHANNELS];
     /// What only the environment is given, media options included.
     pub const ENVIRONMENT_ONLY: &[&str] = &[
         WORKER,
@@ -1296,6 +1428,17 @@ pub(crate) mod flags {
         OVERLAPPING_AUDIO_AT_BOUNDARY,
         FAIL_STAGE_RESTORE,
         FAIL_ACTIVATE_RESTORE,
+    ];
+    /// What only the legacy Game Boy environment (ENV-01) is given.
+    pub const LEGACY_ENVIRONMENT_ONLY: &[&str] = &[
+        WORKER,
+        PORT,
+        ROM,
+        ROM_DIGEST,
+        SLOTS,
+        AUDIO_RATE,
+        AUDIO_BUFFER_FRAMES,
+        SETUP_FRAMES,
     ];
     /// What a measurement run or one of its row children is given.
     pub const MEASURE: &[&str] = &[MODE, AGENTS, STEPS, WARMUP_STEPS, WORKER_THREADS, MODES];
@@ -1313,14 +1456,18 @@ fn arg(name: &str, value: impl std::fmt::Display) -> (String, String) {
 #[derive(Clone, Debug)]
 pub(crate) enum Started {
     Agent(AgentLaunch),
+    LegacyAgent(LegacyAgentLaunch),
     Environment(EnvironmentLaunch),
+    LegacyEnvironment(LegacyEnvironmentLaunch),
 }
 
 impl Started {
     pub(crate) fn subcommand(&self) -> &'static str {
         match self {
             Started::Agent(_) => "agent",
+            Started::LegacyAgent(_) => "legacy-agent",
             Started::Environment(_) => "environment",
+            Started::LegacyEnvironment(_) => "legacy-environment",
         }
     }
 
@@ -1350,6 +1497,17 @@ impl Started {
                 }
                 args
             }
+            Started::LegacyAgent(spec) => vec![
+                arg(flags::SESSION, &spec.session_id),
+                arg(flags::AGENT, &spec.agent_id),
+                arg(flags::PORT, &spec.port_id),
+                arg(flags::INCARNATION, &spec.incarnation_id),
+                arg(flags::DATASET, spec.dataset_dir.display()),
+                arg(flags::PROFILE, spec.profile.label()),
+                // An empty list is raw mode; the flag is always written so the parser never
+                // has to guess which one a missing flag meant.
+                arg(flags::MACRO_CHANNELS, spec.macro_channels.join(",")),
+            ],
             Started::Environment(spec) => {
                 let mut args = vec![
                     arg(flags::SESSION, &spec.session_id),
@@ -1387,6 +1545,18 @@ impl Started {
                 }
                 args
             }
+            Started::LegacyEnvironment(spec) => vec![
+                arg(flags::SESSION, &spec.session_id),
+                arg(flags::WORKER, &spec.worker_id),
+                arg(flags::INCARNATION, &spec.incarnation_id),
+                arg(flags::PORT, &spec.backend.port_id),
+                arg(flags::ROM, spec.rom_path.display()),
+                arg(flags::ROM_DIGEST, &spec.backend.rom_digest),
+                arg(flags::SLOTS, spec.backend.slots.join(",")),
+                arg(flags::AUDIO_RATE, spec.backend.audio_sample_rate),
+                arg(flags::AUDIO_BUFFER_FRAMES, spec.backend.audio_buffer_frames),
+                arg(flags::SETUP_FRAMES, spec.backend.setup_frames),
+            ],
         }
     }
 }
@@ -1405,6 +1575,18 @@ pub(crate) fn agent_config(spec: &AgentLaunch, worker_threads: usize) -> AgentCo
     }
 }
 
+pub(crate) fn legacy_agent_config(spec: &LegacyAgentLaunch, worker_threads: usize) -> LegacyAgentConfig {
+    LegacyAgentConfig {
+        session_id: spec.session_id.clone(),
+        agent_id: spec.agent_id.clone(),
+        incarnation_id: spec.incarnation_id.clone(),
+        worker_threads,
+        dataset_dir: spec.dataset_dir.clone(),
+        profile: spec.profile,
+        macro_channels: spec.macro_channels.clone(),
+    }
+}
+
 pub(crate) fn environment_config(spec: &EnvironmentLaunch) -> EnvironmentConfig {
     EnvironmentConfig {
         session_id: spec.session_id.clone(),
@@ -1416,6 +1598,20 @@ pub(crate) fn environment_config(spec: &EnvironmentLaunch) -> EnvironmentConfig 
         observation_delay_steps: spec.observation_delay_steps,
         renders: spec.renders.clone(),
         faults: spec.faults.clone(),
+    }
+}
+
+pub(crate) fn legacy_environment_config(
+    spec: &LegacyEnvironmentLaunch,
+    worker_threads: usize,
+) -> LegacyEnvironmentConfig {
+    LegacyEnvironmentConfig {
+        session_id: spec.session_id.clone(),
+        worker_id: spec.worker_id.clone(),
+        incarnation_id: spec.incarnation_id.clone(),
+        worker_threads,
+        rom_path: spec.rom_path.clone(),
+        backend: spec.backend.clone(),
     }
 }
 
@@ -1441,9 +1637,19 @@ pub(crate) async fn serve_one(
             service,
             FakeAgentWorker::new(agent_config(spec, worker_threads)),
         ),
+        Started::LegacyAgent(spec) => serve(
+            client,
+            service,
+            LegacyAgentWorker::new(legacy_agent_config(spec, worker_threads)),
+        ),
         Started::Environment(spec) => {
             serve(client, service, CounterEnvironment::new(environment_config(spec)))
         }
+        Started::LegacyEnvironment(spec) => serve(
+            client,
+            service,
+            LegacyGameboyEnvironment::new(legacy_environment_config(spec, worker_threads)),
+        ),
     })
 }
 
@@ -1528,6 +1734,36 @@ mod flag_tests {
         }
     }
 
+    fn legacy_agent_launch() -> LegacyAgentLaunch {
+        LegacyAgentLaunch {
+            session_id: id("demo"),
+            agent_id: id("fly-a"),
+            port_id: id("p1"),
+            incarnation_id: id("fly-a-inc-1"),
+            worker_threads: 1,
+            dataset_dir: PathBuf::from("/nonexistent/legacy-toy"),
+            profile: LegacyProfileKind::Toy,
+            macro_channels: vec!["macro_talk".to_owned()],
+            client_id: "worker-fly-a".to_owned(),
+            service: "agent.fly-a".to_owned(),
+        }
+    }
+
+    fn legacy_environment_launch() -> LegacyEnvironmentLaunch {
+        let mut backend = BackendConfig::legacy(&"ab".repeat(32));
+        backend.slots = vec![id("best"), id("spare")];
+        LegacyEnvironmentLaunch {
+            session_id: id("demo"),
+            worker_id: id("world"),
+            incarnation_id: id("world-inc-1"),
+            worker_threads: 1,
+            rom_path: PathBuf::from("/nonexistent/cartridge"),
+            backend,
+            client_id: "environment".to_owned(),
+            service: "env.world".to_owned(),
+        }
+    }
+
     /// Both halves of the command line name the same constants, and this proves it for every
     /// argument a launch can produce: a flag the launcher writes that the parser does not
     /// accept would be a silently ignored option, which is what the parser now refuses.
@@ -1539,6 +1775,14 @@ mod flag_tests {
                 [flags::COMMON, flags::ENVIRONMENT_ONLY],
             ),
             (Started::Agent(agent_launch()), [flags::COMMON, flags::AGENT_ONLY]),
+            (
+                Started::LegacyAgent(legacy_agent_launch()),
+                [flags::COMMON, flags::LEGACY_AGENT_ONLY],
+            ),
+            (
+                Started::LegacyEnvironment(legacy_environment_launch()),
+                [flags::COMMON, flags::LEGACY_ENVIRONMENT_ONLY],
+            ),
         ] {
             let arguments = started.arguments();
             assert!(!arguments.is_empty());

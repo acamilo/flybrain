@@ -1,0 +1,332 @@
+{
+  "description": "legacy-rate-role-id-v1 (legacy-gameboy-v1 section 13, amendment 2026-09-23, AGENT-01): the roleId of a legacy rate-role name is the name itself when it matches the session Id grammar, and a name outside it has no roleId. fafbTrackedRoles is the rate-role list the kernel tracks on data/fafb-v783 in network order (AgentGraph.rateRoles order); fly-session's gated test recomputes it from the committed dataset. Both languages must map every accepted name to itself and back, and refuse every refused name.",
+  "mapping": "legacy-rate-role-id-v1",
+  "idPattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+  "fafbTrackedRoles": [
+    "backward",
+    "command_0",
+    "command_1",
+    "command_2",
+    "command_3",
+    "command_4",
+    "command_5",
+    "command_6",
+    "command_7",
+    "forward",
+    "proboscis",
+    "reward_pam",
+    "steer_left",
+    "steer_right",
+    "macro_go_objective",
+    "macro_go_out",
+    "macro_go_warp",
+    "macro_go_route",
+    "macro_go_item",
+    "macro_go_npc",
+    "macro_go_frontier",
+    "macro_go_shop",
+    "macro_go_heal",
+    "macro_talk",
+    "macro_menu",
+    "macro_next",
+    "macro_yes",
+    "macro_no",
+    "macro_close",
+    "macro_confirm",
+    "macro_back",
+    "macro_move_1",
+    "macro_move_2",
+    "macro_move_3",
+    "macro_move_4",
+    "macro_switch",
+    "macro_item",
+    "macro_throw_ball",
+    "macro_run",
+    "macro_buy_potion",
+    "macro_buy_ball",
+    "macro_buy_antidote",
+    "macro_buy_repel",
+    "macro_heal",
+    "macro_leave"
+  ],
+  "accepted": [
+    {
+      "name": "backward",
+      "roleId": "backward"
+    },
+    {
+      "name": "command_0",
+      "roleId": "command_0"
+    },
+    {
+      "name": "command_1",
+      "roleId": "command_1"
+    },
+    {
+      "name": "command_2",
+      "roleId": "command_2"
+    },
+    {
+      "name": "command_3",
+      "roleId": "command_3"
+    },
+    {
+      "name": "command_4",
+      "roleId": "command_4"
+    },
+    {
+      "name": "command_5",
+      "roleId": "command_5"
+    },
+    {
+      "name": "command_6",
+      "roleId": "command_6"
+    },
+    {
+      "name": "command_7",
+      "roleId": "command_7"
+    },
+    {
+      "name": "forward",
+      "roleId": "forward"
+    },
+    {
+      "name": "proboscis",
+      "roleId": "proboscis"
+    },
+    {
+      "name": "reward_pam",
+      "roleId": "reward_pam"
+    },
+    {
+      "name": "steer_left",
+      "roleId": "steer_left"
+    },
+    {
+      "name": "steer_right",
+      "roleId": "steer_right"
+    },
+    {
+      "name": "macro_go_objective",
+      "roleId": "macro_go_objective"
+    },
+    {
+      "name": "macro_go_out",
+      "roleId": "macro_go_out"
+    },
+    {
+      "name": "macro_go_warp",
+      "roleId": "macro_go_warp"
+    },
+    {
+      "name": "macro_go_route",
+      "roleId": "macro_go_route"
+    },
+    {
+      "name": "macro_go_item",
+      "roleId": "macro_go_item"
+    },
+    {
+      "name": "macro_go_npc",
+      "roleId": "macro_go_npc"
+    },
+    {
+      "name": "macro_go_frontier",
+      "roleId": "macro_go_frontier"
+    },
+    {
+      "name": "macro_go_shop",
+      "roleId": "macro_go_shop"
+    },
+    {
+      "name": "macro_go_heal",
+      "roleId": "macro_go_heal"
+    },
+    {
+      "name": "macro_talk",
+      "roleId": "macro_talk"
+    },
+    {
+      "name": "macro_menu",
+      "roleId": "macro_menu"
+    },
+    {
+      "name": "macro_next",
+      "roleId": "macro_next"
+    },
+    {
+      "name": "macro_yes",
+      "roleId": "macro_yes"
+    },
+    {
+      "name": "macro_no",
+      "roleId": "macro_no"
+    },
+    {
+      "name": "macro_close",
+      "roleId": "macro_close"
+    },
+    {
+      "name": "macro_confirm",
+      "roleId": "macro_confirm"
+    },
+    {
+      "name": "macro_back",
+      "roleId": "macro_back"
+    },
+    {
+      "name": "macro_move_1",
+      "roleId": "macro_move_1"
+    },
+    {
+      "name": "macro_move_2",
+      "roleId": "macro_move_2"
+    },
+    {
+      "name": "macro_move_3",
+      "roleId": "macro_move_3"
+    },
+    {
+      "name": "macro_move_4",
+      "roleId": "macro_move_4"
+    },
+    {
+      "name": "macro_switch",
+      "roleId": "macro_switch"
+    },
+    {
+      "name": "macro_item",
+      "roleId": "macro_item"
+    },
+    {
+      "name": "macro_throw_ball",
+      "roleId": "macro_throw_ball"
+    },
+    {
+      "name": "macro_run",
+      "roleId": "macro_run"
+    },
+    {
+      "name": "macro_buy_potion",
+      "roleId": "macro_buy_potion"
+    },
+    {
+      "name": "macro_buy_ball",
+      "roleId": "macro_buy_ball"
+    },
+    {
+      "name": "macro_buy_antidote",
+      "roleId": "macro_buy_antidote"
+    },
+    {
+      "name": "macro_buy_repel",
+      "roleId": "macro_buy_repel"
+    },
+    {
+      "name": "macro_heal",
+      "roleId": "macro_heal"
+    },
+    {
+      "name": "macro_leave",
+      "roleId": "macro_leave"
+    },
+    {
+      "name": "up",
+      "roleId": "up"
+    },
+    {
+      "name": "down",
+      "roleId": "down"
+    },
+    {
+      "name": "left",
+      "roleId": "left"
+    },
+    {
+      "name": "right",
+      "roleId": "right"
+    },
+    {
+      "name": "a",
+      "roleId": "a"
+    },
+    {
+      "name": "b",
+      "roleId": "b"
+    },
+    {
+      "name": "start",
+      "roleId": "start"
+    },
+    {
+      "name": "select",
+      "roleId": "select"
+    },
+    {
+      "name": "kenyon",
+      "roleId": "kenyon"
+    },
+    {
+      "name": "mbon",
+      "roleId": "mbon"
+    },
+    {
+      "name": "visual_l1",
+      "roleId": "visual_l1"
+    },
+    {
+      "name": "descending",
+      "roleId": "descending"
+    },
+    {
+      "name": "motor",
+      "roleId": "motor"
+    },
+    {
+      "name": "sensory",
+      "roleId": "sensory"
+    },
+    {
+      "name": "7th.role-x",
+      "roleId": "7th.role-x"
+    },
+    {
+      "name": "0",
+      "roleId": "0"
+    },
+    {
+      "name": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+      "roleId": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+    }
+  ],
+  "refused": [
+    {
+      "name": "Command_0",
+      "why": "uppercase"
+    },
+    {
+      "name": "_command",
+      "why": "leading underscore"
+    },
+    {
+      "name": "-x",
+      "why": "leading hyphen"
+    },
+    {
+      "name": "",
+      "why": "empty"
+    },
+    {
+      "name": "steer left",
+      "why": "space"
+    },
+    {
+      "name": "macro_é",
+      "why": "non-ASCII"
+    },
+    {
+      "name": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+      "why": "65 characters"
+    }
+  ]
+}

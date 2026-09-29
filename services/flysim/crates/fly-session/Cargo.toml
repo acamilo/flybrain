@@ -23,6 +23,17 @@ path = "src/bin/fly-session.rs"
 # Everything else this crate needs is std or Tokio.
 fly-session-types = { path = "../fly-session-types" }
 flybus = { path = "../flybus" }
+# AGENT-01: the legacy agent worker is an adapter over the existing neural core (LIF kernel,
+# plasticity, retina, fixed readout, checkpoint chunks). Pure Rust, no emulator.
+# ENV-01: the legacy Game Boy environment worker drives the binjgb emulator through
+# flybrain-gb's safe wrapper, and flybrain-core's frozen envelope layout reads and writes the
+# world's half of a FLYSIM01 checkpoint.
+flybrain-core = { path = "../flybrain-core" }
+flybrain-gb = { path = "../flybrain-gb" }
+# The toy connectome fixture is written as gzipped `.binz` arrays, the dataset loader's format.
+flate2 = { workspace = true }
+# STATE-02: the FLYSIM01 store and the sugar journal, the same code the legacy loop writes with.
+flysim-store = { path = "../flysim-store" }
 
 serde_json = { workspace = true }
 # `rt-multi-thread` is not only for the tests: a worker process and a dedicated-thread
