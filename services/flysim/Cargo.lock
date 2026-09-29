@@ -439,14 +439,23 @@ dependencies = [
 name = "fly-legacy-session"
 version = "0.1.1"
 dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
  "fly-session",
  "flybrain-core",
  "flybrain-gb",
  "flybus",
  "flysim",
+ "futures-util",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
+ "toml",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

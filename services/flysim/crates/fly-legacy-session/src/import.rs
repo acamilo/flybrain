@@ -124,6 +124,9 @@ pub async fn import_flysim01(
     coordinator
         .resume()
         .map_err(|e| format!("resuming the import: {}", e.error.message))?;
+    // The joypad on the restored boundary, as the legacy `LegacyFrame::restore` installs it: what
+    // a feed header reports until the executor applies its first mask (SERVE-01).
+    task.set_mask(checkpoint.runtime.buttons);
     Ok(Imported {
         boundary,
         epoch: new_epoch.clone(),

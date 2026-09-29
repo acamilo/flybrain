@@ -27,7 +27,7 @@ use flysim::snapshot::MacroMode;
 use crate::task::{PokeredConfig, PokeredTask, TaskRecord};
 use fly_session::legacy_checkpoint::{
     AgentImport, CheckpointerConfig, LegacyCapture, LegacyCheckpointer, RankChange, SaveKind,
-    SaveReport, now_wall_ms,
+    SaveReport, SaveTicket, now_wall_ms,
 };
 use flysim::store::Checkpoint;
 use std::time::Instant;
@@ -149,6 +149,25 @@ pub async fn boot(
     config: LegacyConfig,
     store: &StoreConfig,
 ) -> Result<(LegacySession, Boot), String> {
+    let (mut session, boot) = boot_unsaved(root, config, store).await?;
+    // `Sim::boot`: a durable save of the state the process starts from, then the intervals.
+    session.save(SaveKind::Durable).await?;
+    session
+        .checkpointer_mut()
+        .expect("attached")
+        .start_intervals(Instant::now());
+    Ok((session, boot))
+}
+
+/// [`boot`] up to the store: the restore (or the fresh start) with the store attached, but no
+/// startup save yet and the intervals not started. The service host (SERVE-01) writes its boot
+/// events first, so the startup save records their watermark as the legacy one does, and then
+/// takes the save and starts the intervals itself.
+pub async fn boot_unsaved(
+    root: &Path,
+    config: LegacyConfig,
+    store: &StoreConfig,
+) -> Result<(LegacySession, Boot), String> {
     let hot = flysim::store::Store::new(&store.hot_dir, store.keep_generations);
     let durable = flysim::store::Store::new(&store.durable_dir, store.keep_generations);
     let candidates = flysim::store::restore_order(&hot, &durable);
@@ -208,7 +227,7 @@ pub async fn boot(
             }
         }
     }
-    let (mut session, boot) = match outcome {
+    let (session, boot) = match outcome {
         Some(pair) => pair,
         None if candidates.is_empty() => {
             let mut session = LegacySession::start(&root.join("fresh"), config).await?;
@@ -229,12 +248,6 @@ pub async fn boot(
             ));
         }
     };
-    // `Sim::boot`: a durable save of the state the process starts from, then the intervals.
-    session.save(SaveKind::Durable).await?;
-    session
-        .checkpointer_mut()
-        .expect("attached")
-        .start_intervals(Instant::now());
     Ok((session, boot))
 }
 
@@ -535,9 +548,23 @@ impl LegacySession {
         self.checkpointer.as_mut()
     }
 
-    /// One save of the committed boundary, written by the checkpointer's writer thread; waits for
-    /// the commit, so a caller that goes on to read the store finds it.
-    pub async fn save(&mut self, kind: SaveKind) -> Result<SaveReport, String> {
+    /// The feed event log's watermark the next save records (`lastEventId`): the restored
+    /// file's until a host that keeps a feed event log sets its own.
+    pub fn last_event_id(&self) -> u64 {
+        self.last_event_id
+    }
+
+    /// The service host's event log watermark, recorded by every save from now on as the legacy
+    /// loop records `log.next_id() - 1` (SERVE-01).
+    pub fn set_last_event_id(&mut self, last_event_id: u64) {
+        self.last_event_id = last_event_id;
+    }
+
+    /// One save of the committed boundary, queued on the checkpointer's writer thread without
+    /// waiting for it: the capture is taken now (so it is this boundary), the encoding and the
+    /// fsyncs happen off the loop, and the ticket resolves when the writer committed it. This is
+    /// the legacy loop's `checkpoint` (SERVE-01); [`LegacySession::save`] waits.
+    pub async fn save_queued(&mut self, kind: SaveKind) -> Result<SaveTicket, String> {
         self.saves += 1;
         let (boundary, world, agents) = self
             .coordinator
@@ -555,7 +582,13 @@ impl LegacySession {
         };
         let last_event_id = self.last_event_id;
         let checkpointer = self.checkpointer.as_mut().ok_or("no store is attached")?;
-        let ticket = checkpointer.save(kind, capture, last_event_id, now_wall_ms())?;
+        checkpointer.save(kind, capture, last_event_id, now_wall_ms())
+    }
+
+    /// One save of the committed boundary, written by the checkpointer's writer thread; waits for
+    /// the commit, so a caller that goes on to read the store finds it.
+    pub async fn save(&mut self, kind: SaveKind) -> Result<SaveReport, String> {
+        let ticket = self.save_queued(kind).await?;
         ticket
             .reply
             .await
