@@ -535,10 +535,14 @@ starts from the live fly's own save through the ordinary group restore
 
 - The world is ENV-01's `WorldState::from_flysim01` at `k = emulatorFrame - 1`, staged on a
   replacement world.
-- The agent is the checkpoint's agent state in the worker's own capture: AGENT-01's
-  `legacy_state_payload`, with `learning.updates` started at `plasticity.updates` and the
-  checkpoint id and boundary written in.
-- The task is the adapter state and the ratchet state.
+- The agent is the checkpoint's agent state in the worker's own capture format: STATE-02's
+  `legacy_checkpoint::agent_payload`. It carries the file's reinforcement count and the file's
+  framebuffer as the next input, and its ids come from the file.
+- The task is STATE-02's ledger `{reward, ratchet, slotFilled}`.
+
+A session boots from the live stores the way `Sim::boot` does: the legacy candidate order, the
+legacy gate, the next candidate on any refusal, then a startup durable save. See the
+implementation guide's TASK-01 entry.
 
 This section's resets then apply, and nothing else. The executor is fresh and observes the restored
 image once, at the restored brain time. The agent's readout transient is a fresh process's. The

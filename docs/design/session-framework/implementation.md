@@ -371,12 +371,28 @@ framework, from a fresh start or from a FLYSIM01 checkpoint.
   `preStepStimulations` and reports every admission applied or aborted. `Coordinator::import`
   installs a checkpoint of another format as a session's start. Step details (`StepDetails`) are
   kept for a parity run.
-- **FLYSIM01 as the start** (`fly-legacy-session::import`). This is the import AGENT-01 and ENV-01
-  left open. The world, agent and task halves go into each participant's own capture format, and
-  the ordinary group restore installs them: stage, validate, activate, `Paused(k)`, resume. The
-  world is replaced by a fresh one first, because ENV-01 stages only on a replacement. The context
-  the agent resumes with is computed from the checkpoint's own memory image, and the coordinator
-  holds the task to it after the install (`Task::restored`).
+- **FLYSIM01 as the start** (`fly-legacy-session::import`, on STATE-02's
+  `legacy_checkpoint::{halves, agent_payload, world_payload}`). The world, agent and task halves
+  go into each participant's own capture format, and the ordinary group restore installs them:
+  stage, validate, activate, `Paused(k)`, resume. The world is replaced by a fresh one first,
+  because ENV-01 stages only on a replacement. The context the agent resumes with is computed
+  from the checkpoint's own memory image, and the coordinator holds the task to it after the
+  install (`Task::restored`). The task ledger is STATE-02's `{reward, ratchet, slotFilled}`.
+- **The store and the boot** (`fly-legacy-session::composition`, on STATE-02's
+  `LegacyCheckpointer`).
+  - `boot` is `Sim::boot`. It restores from the live hot and durable stores in the legacy
+    candidate order, holding each candidate to the legacy gate. Any refusal falls to the next
+    candidate; each attempt runs on a session of its own, because a refused install fences its
+    session. It is a fresh start when the stores are empty. After either, the startup durable
+    save is written and the intervals start.
+  - `advance` keeps the declared boundary order: the slot save (inside the step), the milestone
+    archive on a rank climb, the rollback (deferred by the coordinator until the host has
+    captured), a durable save after a rollback, then the interval saves.
+  - `shutdown_save` is the legacy shutdown's durable save.
+  - The session runtime writes no sugar journal yet: its admission is the coordinator's, and the
+    journal's boot header needs the edge.
+  - `lastEventId` carries the restored file's watermark; the runtime has no feed event log
+    before EDGE-01.
 - **Sugar** (`fly-legacy-session::admission`). flysim's `RateLimiter` and clamp run unchanged,
   against the last commit's `stimulusRemainingMs` (one commit stale). An admission waits for the
   next cut.
