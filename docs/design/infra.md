@@ -555,7 +555,7 @@ into this project.
 
 | What | Where | Mode |
 |---|---|---|
-| source of truth | `pass twitch/<channel>-key`, `twitch/<platformer-channel>-key`, `twitch/helix-client-id`, `twitch/helix-client-secret`, `twitch/fly-pokemon-bot-token` | WSL box only |
+| source of truth | `pass twitch/<channel>-key`, `twitch/<platformer-channel>-key`, `twitch/<app>-client-id`, `twitch/<app>-client-secret`, `twitch/<bot>-token` | WSL box only |
 | stream key, in CT | `/etc/fly/creds/twitch-key.cred` | `root:root 0400`, dir `0700` |
 | bridge app creds, in CT | `/etc/fly/creds/twitch-app.cred` | `root:root 0400` |
 | bridge refresh tokens | `/var/lib/fly/bridge/tokens.json` | `fly:fly 0600` |
