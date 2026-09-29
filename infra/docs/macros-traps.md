@@ -3294,3 +3294,79 @@ them. A repetition budget keyed on the fly's own starts was considered and not b
 about the choice, not knowledge in a macro, and it would turn a ring into a wait or a wander
 without adding the missing fact. Those rings stay guarded outside the fly: the watchdog, the
 recovery ladder, and the ROM road tests.
+
+## 2026-09-29, row 65: the release merge's Mt. Moon door ring, and the Cerulean badge house's yard
+
+### What was found
+
+Not live: both came from the row-64 review, before v0.6.5 shipped (`docs/design/macros.md` 12.29).
+
+- **The merge.** On the staging tree (rows 63, 62 and 64 merged), row 59's ROM test
+  `the_fly_goes_into_mt_moon_from_the_live_route_4_checkpoint` crossed Route 4's west doors 34
+  times against a bound of 25. Any two of the three rows pass (3 to 18).
+- **The yard.** The row-64 route survey, seed 7: `GO OUT` in the Cerulean badge house took its back
+  door onto Cerulean (9, 9). That is the door tile of a closed yard of 33 tiles. The pad stayed empty
+  from f40,753 to the end of the run, about 32,000 frames.
+
+### Reproduction
+
+- Row 59's test on the staging tree, traced: arrive on 1F's mouth (14, 35), `GO OUT` or `GO HEAL`
+  out, arrive on Route 4 (18, 6), `GO ROUTE` or `GO OBJECTIVE` back in. Each leg takes 70 to 80
+  frames, and there were 17 round trips. `GO HEAL` walks a hurt fly back to the mouth from deep in
+  the cave. `GO OUT`'s tier-3 fallback deals the mouth itself, because on 1F Route 4 is visited and
+  not toward the rung. The test's stub rotation was swept over eight offsets on the staging tree:
+  24 to 44 crossings, three of the eight over the bound. The count depends on where the rotation
+  stands when the fly arrives, and that is why the pairs passed.
+- The yard came back on the staging tree with seed 99 (`FLY_PROBE_CATCH=route FLY_PROBE_RNG=99`
+  from `FLY_ROW64_CHECKPOINT`). It was saved at f31178, when the fly stood on the door, as
+  `survey-rank15-row65-yard.checkpoint` (`FLY_ROW65_YARD_CHECKPOINT`, not committed). The
+  per-frame trace of an underfoot fallback that used row 64's step-off shows the fly stepping
+  left and back right onto (9, 9). No warp fires, because the tile is no door tile and a sideways
+  step has no carpet in front.
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 65 | `GO OUT`'s "a room has to be leavable" fallback deals the way back out of a cave floor whose road on is a ladder, one step from the arrival tile. Route 4's side walks straight back in | Mt. Moon 1F's mouth. `GO HEAL` (row 62) brings a hurt fly back to it | `a_floor_whose_way_on_is_a_passage_deals_no_go_out_back_the_way_it_came`, row 59's ROM test on the merged tree | **fixed**: no tier-3 `GO OUT` while an unrested passage leads toward the objective |
+| 65b | the exit walks set a step-fired door underfoot aside while any other exit is listed, reachable or not | a closed yard whose one door the fly stands on | `a_door_underfoot_is_taken_when_no_other_way_out_can_be_walked_to`, `row65_the_fly_leaves_the_cerulean_badge_houses_back_yard` | **fixed**: fall back on it once every listed goal has failed the route search |
+| 65c | a warp whose own tile is no door fires only through `ExtraWarpCheck`. On the OVERWORLD tileset that needs a warp carpet in front, so row 64's sideways step-off does nothing | the badge house's back door | `a_door_underfoot_that_fires_on_a_bump_is_bumped_and_not_stepped_off`, `a_warp_carpet_in_front_is_marked_where_extra_warp_check_reads_it` | **fixed**: the grid marks carpets on the maps whose check reads them. A walk takes a warp underfoot by bumping toward one when it can |
+| 65d | Cerulean was one node while its ground is two pieces. The badge house was off the graph, so its two doors were one door to `GO OUT`, the nearest | the house entered by either door | `cerulean_is_a_town_and_a_yard_and_the_badge_houses_back_door_is_the_yards` | **fixed**: the house on `LINKS`, and the yard as a `SPLIT` piece |
+| 65e | on a split map, the other pieces' doors and edges are candidates. Each `no route` refusal from the small piece rests that exit for the whole map | out of the yard, the town's exits resting: an empty pad outside the front door for the rest of the window (survey, seed 3) | `a_way_out_on_another_piece_of_a_split_map_is_not_a_way_out_of_this_one` | **fixed**: `path::exits` keeps the fly's own piece. A door no piece lists is not claimed |
+| 65f | the 12.28 guarantee read the tile the walk settled on, so a same-map teleport would read as a way out that did not fire | the Saffron Gym's pads, Silph Co. (not reached) | `a_same_map_teleport_is_somewhere_the_way_out_took_the_fly` | **fixed**: `blocked` only while the fly still stands where it settled |
+| 65g | the frontier's exhausted mark is per map, so a fly that has covered the yard marks all of Cerulean | the yard, after the fly has stood on all of it | -- | **left, named**: the yard is now reached only when the objective has no route through the front door, and a restart clears the mark |
+| 65h | a hurt fly on 1F's mouth has `GO HEAL` out, and on Route 4 has `GO HEAL` and the cave side by side | row 62's service while the party is below full | -- | **left, the fly's**: both lead somewhere real (row 62 round 2, the same tug) |
+
+### Before and after
+
+Row 59's ROM test on the stub rotation, over eight rotation offsets (0, 5, 11, 17, 23, 29, 37, 41):
+
+| tree | crossings | pass |
+| --- | --- | --- |
+| staging `release/v0.6.5` `19d295d` | 34 28 24 24 44 24 24 24 | 5 of 8 |
+| row 65, road rule off (piece filter on) | 10 19 19 23 21 25 19 27 | 6 of 8 |
+| row 65, piece filter off (road rule on) | 4 4 18 13 6 4 8 8 | 8 of 8 |
+| row 65 | 2 4 4 4 4 4 7 5 | 8 of 8 |
+
+At offset 0, which is the test as it ships, the result is 34 before and 2 after. Every run reached
+Mt. Moon.
+
+The same checkpoint on the uniform route survey (72,000 frames, seeds 7, 11, 12345, 99) gives base
+20, 8, 19, 20 against branch 14, 16, 5, 6. The branch's remaining crossings are row 65h.
+
+`row65_the_fly_leaves_the_cerulean_badge_houses_back_yard` (`FLY_ROW65_YARD_CHECKPOINT`, 24,000
+frames, stub rotation):
+
+- staging: never leaves the yard, with an empty pad for 21,448 frames running. **Fails.**
+- branch: in the town at f266, then the gym, Pallet after a whiteout and on. The pad is never empty
+  in the yard. **Passes.**
+
+Each of 65b through 65e alone lets this rotation out of the yard, so the ROM test does not separate
+them; the unit mutants do. The route survey from the yard checkpoint (six seeds, 36,000 frames)
+gives these results:
+
+- **staging**: every seed is back on the door by f2,560, through the house and out of its back door
+  again, with an empty pad from there to the end of the run.
+- **65b and 65c, no split**: a house-and-yard door ring, `GO ROUTE` bumping in and `GO OUT` taking
+  the back door out, hundreds of times.
+- **65b to 65d**: out, but seed 3 then stands outside the front door with an empty pad for the rest
+  of the window (65e).
+- **branch**: all six leave with no empty pad, and three win the Cascade Badge.

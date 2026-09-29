@@ -1777,7 +1777,7 @@ roles and the compatibility string are untouched.
 
 ### 12.28 A ladder underfoot is taken by stepping off it, a ledge is a hop one way, and a way out that goes nowhere is not done (2026-09-28, row 64)
 
-(12.26 and 12.27 are rows 62 and 63, on their own branches.) Live on v0.6.2/v0.6.4 at rank 12
+(12.26 and 12.27 are rows 62 and 63.) Live on v0.6.2/v0.6.4 at rank 12
 (MT. MOON), from 2026-09-26 to 09-28: about 750 macros per ten brain minutes, all `done`, no reward
 and no new ground. They were `GO OBJECTIVE` (61%) and `GO WARP`, 27 frames each. Forty-eight flysim
 restarts did not clear it. A milestone reset bought a few hours before it came back.
@@ -1786,8 +1786,10 @@ The pulled checkpoint has the fly on **Mt. Moon B2F (5, 7)**, the ladder up to B
 which is the one road on. It reproduces the ring with the ledgers empty; nothing needs rebuilding.
 
 - **A ladder fires at the end of a step onto it, and at no other time.** `CheckWarpsNoCollision`
-  runs after a step completes. A bump into the wall beside a warp fires only at a map's edge off the
-  overworld (`ExtraWarpCheck` uses `IsPlayerFacingEdgeOfMap` for every tileset but the overworld's).
+  runs after a step completes. A bump while standing on a warp fires only where `ExtraWarpCheck`
+  agrees: `IsPlayerFacingEdgeOfMap` on most tilesets, the cave's among them, and
+  `IsWarpTileInFrontOfPlayer` (a warp carpet in front) on the OVERWORLD, SHIP, SHIP_PORT and
+  PLATEAU tilesets and on Rocket Hideout B1F/B2F/B4F and Rock Tunnel 1F (12.29).
   The fly had come down the ladder and was standing on it. `GO OBJECTIVE`, whose first hop is B1F's
   exit chamber, and `GO WARP`, whose second tier is the same ladder, both aimed at the tile
   underfoot. Both settled there for twenty frames, pressed nothing, and reported `done`. That is
@@ -1836,6 +1838,80 @@ fly: the watchdog, the recovery ladder, and the ROM road tests from each trap's 
 
 The decoder, the reward catalog, the adapter version, the roles and the compatibility string are
 untouched. Nothing presses for the fly.
+
+### 12.29 A floor whose way on is a passage is not left backwards, and a yard's one door is taken from where the fly stands (2026-09-29, row 65)
+
+Two findings of the row-64 review, both on the road the release was about to put the live fly on.
+
+**The merge.** Rows 62, 63 and 64 together crossed Route 4's west doors 34 times in row 59's ROM
+test (bound 25; any two of them 3 to 18). The ring, traced: the fly arrives on Mt. Moon 1F's mouth
+(14, 35) and `GO OUT` or `GO HEAL` takes it straight back out; on Route 4 (18, 6) `GO ROUTE` or
+`GO OBJECTIVE` takes it straight back in, 70 to 80 frames a leg. `GO HEAL` (row 62, dealt on 1F
+whenever the party is below full) is what brings a hurt fly back to that tile again and again,
+but the leg that makes it a ring was older: `GO OUT`'s "a room has to be leavable" fallback. On
+1F the exit is Route 4, ground the run has walked and not toward the rung, so the fallback dealt
+it, one step from where the fly arrives. Which two rows were merged decided mostly where the
+stub rotation stood when the fly arrived; the ring was there in all three. Swept over eight
+rotation offsets the three-way tree crosses 24 to 44 times (three of eight over the bound).
+
+- **A floor whose way on is a passage deals no `GO OUT` fallback** (`palette::ways`). While a
+  passage no ledger is resting leads toward the objective, the fly is on a floor of the road and
+  the way out is not the only way anywhere. It is `GO WARP`'s rule ("a floor that has its own
+  front door deals no staircase fallback") the other way round. The escape hatch is the blocked
+  window: a ladder no walk reaches rests, and the mouth is a way out again. A hurt party keeps its
+  way out under the button that says why, `GO HEAL`. Tiers one and two are untouched: a way out
+  into somewhere new, or toward the objective (an errand to the centre outside), is still dealt.
+
+After: 2 to 7 crossings over the same eight offsets, all eight in the cave. The residual is
+`GO HEAL` itself: a hurt fly on the mouth walks out toward the centre, and on Route 4 the pad has
+the centre and the cave side by side. Both lead somewhere real, and which one is pressed is the
+fly's (row 62's round-2 note on the same tug).
+
+**The yard.** In the review's seed-7 survey `GO OUT` in the Cerulean badge house (`$e6`) took its
+back door, (2, 0), onto Cerulean (9, 9): the door tile of a closed yard of 33 tiles whose only
+way out is that door. The pad was empty from there to the end of the survey, 32,000 frames, with
+`GO ROUTE` and `GO ITEM` refused `no route` whenever they came back. Reproduced with seed 99 on
+the release tree, and saved there as a checkpoint. Four facts, each missing:
+
+- **A door underfoot is the way out when nothing else of its kind can be walked to.** The exit
+  walks set a step-fired warp underfoot aside while any other exit is listed, reachable or not
+  (row 13's rule, for a fly that has just come down a staircase). Now they fall back on it after
+  every listed goal has failed the route search.
+- **Where the tile in front is a warp carpet, the door is taken by a bump.** The back door's own
+  tile is no door tile, so it fires only through `ExtraWarpCheck`, and on the OVERWORLD tileset
+  that asks for a carpet tile in front (`data/tilesets/warp_carpet_tile_ids.asm`). Row 64's step
+  off and back on, sideways, was measured on the cartridge to do nothing here. The decoded grid
+  marks the carpets on the maps whose `ExtraWarpCheck` reads them, and a walk whose goal is a warp
+  underfoot presses toward one when it can (`CheckWarpsCollision`); a ladder is still stepped off.
+- **Cerulean is two pieces.** Row 59's flood found the yard and left it off because the house was
+  not on the map graph. The house is on it now (both doors), and the yard is a piece of Cerulean
+  whose one neighbour is the house: from the house the road is the front door, so `GO OUT` no
+  longer takes the back one.
+- **On a map in pieces, a way out on another piece is not a way out of here** (`path::exits`).
+  From the yard, every door and edge of the town was a candidate for the route search to refuse,
+  and each refusal rested that exit for the whole map: in a survey, the fly that got out stood
+  outside the front door with an empty pad for the rest of the window. A door no piece lists
+  (Cerulean Cave's mouth, the off-graph houses on Route 2) is not claimed either way. Route 4's
+  sides and Mt. Moon's chambers get the same rule.
+
+From the yard checkpoint on the stub rotation, the base never leaves (an empty pad for 21,448 of
+24,000 frames in a row); the branch is in the town on frame 266 and at the gym after. The route
+survey from the same checkpoint, six seeds (1, 2, 3, 5, 7, 99) of 36,000 frames: all six leave
+with no empty pad, and three win the Cascade Badge.
+
+**And the guarantee reads where the fly stands** (the review's note on 12.28). A `Settle` on a way
+out is `blocked` only while the fly is still on the tile it settled on: a warp that moves it on its
+own map (the Saffron Gym's pads, Silph Co.'s) took it somewhere.
+
+**Limit, named.** The frontier's exhausted mark (12.14) is per map. A fly in the yard that has
+stood on all of it gets `GO FRONTIER` refused and the whole of Cerulean marked, for the session,
+though the town's frontier is not exhausted. The yard is now reached only when the objective has
+no route through the front door; a restart clears the mark.
+
+Nothing ranks a button or presses for the fly: a fallback is withheld where a passage leads on,
+a door is taken the way the cartridge takes it, and the map graph says what the ground says. The
+decoder, the reward catalog, the adapter version, the roles and the compatibility string are
+untouched.
 
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
