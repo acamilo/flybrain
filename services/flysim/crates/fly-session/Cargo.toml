@@ -32,6 +32,8 @@ flybrain-core = { path = "../flybrain-core" }
 flybrain-gb = { path = "../flybrain-gb" }
 # The toy connectome fixture is written as gzipped `.binz` arrays, the dataset loader's format.
 flate2 = { workspace = true }
+# STATE-02: the FLYSIM01 store and the sugar journal, the same code the legacy loop writes with.
+flysim-store = { path = "../flysim-store" }
 
 serde_json = { workspace = true }
 # `rt-multi-thread` is not only for the tests: a worker process and a dedicated-thread

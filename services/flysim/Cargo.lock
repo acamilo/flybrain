@@ -444,6 +444,7 @@ dependencies = [
  "flybrain-core",
  "flybrain-gb",
  "flybus",
+ "flysim-store",
  "serde_json",
  "tempfile",
  "tokio",
