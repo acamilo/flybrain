@@ -23,6 +23,11 @@ path = "src/bin/fly-session.rs"
 # Everything else this crate needs is std or Tokio.
 fly-session-types = { path = "../fly-session-types" }
 flybus = { path = "../flybus" }
+# ENV-01: the legacy Game Boy environment worker drives the binjgb emulator through
+# flybrain-gb's safe wrapper, and flybrain-core's frozen envelope layout reads and writes the
+# world's half of a FLYSIM01 checkpoint. (AGENT-01 adds flybrain-core for the agent as well.)
+flybrain-core = { path = "../flybrain-core" }
+flybrain-gb = { path = "../flybrain-gb" }
 
 serde_json = { workspace = true }
 # `rt-multi-thread` is not only for the tests: a worker process and a dedicated-thread

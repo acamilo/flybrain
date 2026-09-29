@@ -440,6 +440,8 @@ name = "fly-session"
 version = "0.1.1"
 dependencies = [
  "fly-session-types",
+ "flybrain-core",
+ "flybrain-gb",
  "flybus",
  "serde_json",
  "tempfile",
