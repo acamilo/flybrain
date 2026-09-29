@@ -25,6 +25,12 @@ use flybrain_core::decoder::gameboy::gameboy_decoder_config_with_macros;
 use flysim::snapshot::MacroMode;
 
 use crate::task::{PokeredConfig, PokeredTask, TaskRecord};
+use fly_session::legacy_checkpoint::{
+    AgentImport, CheckpointerConfig, LegacyCapture, LegacyCheckpointer, RankChange, SaveKind,
+    SaveReport, now_wall_ms,
+};
+use flysim::store::Checkpoint;
+use std::time::Instant;
 
 fn grants(f: impl FnOnce(&mut Grants)) -> Grants {
     let mut g = Grants::default();
@@ -79,6 +85,157 @@ pub struct LegacySession {
     backend: BackendConfig,
     /// Which generation of the world is running: 1 is the one the session started.
     world_generation: u32,
+    /// The legacy store policy, once attached ([`LegacySession::attach_store`]).
+    checkpointer: Option<LegacyCheckpointer>,
+    saves: u64,
+    /// The feed event log's watermark the saves record: the restored file's, carried over (the
+    /// session runtime has no feed event log of its own before EDGE-01).
+    last_event_id: u64,
+}
+
+/// Where the legacy store lives and how often it is written (the service's `[paths]` and
+/// `[loop]`).
+#[derive(Clone, Debug)]
+pub struct StoreConfig {
+    pub hot_dir: PathBuf,
+    pub durable_dir: PathBuf,
+    pub keep_generations: usize,
+    pub hot_seconds: f64,
+    pub checkpoint_seconds: f64,
+    pub speed: f64,
+}
+
+/// This build's legacy compatibility string (`flysim --print-compatibility`): the kernel, the
+/// adapter, the profile's dataset fingerprint, the plasticity rule and the pokered symbols. It is
+/// the restore gate and what every save records (`legacy-gameboy-v1` section 12).
+pub fn compatibility_of(config: &LegacyConfig) -> String {
+    let adapter = flybrain_gb::pokemon_red::PokemonRedReward::new();
+    let profile = config.profile.profile();
+    flybrain_gb::Compatibility {
+        neural_kernel_version: gameboy::KERNEL_VERSION,
+        adapter: flybrain_gb::GameAdapter::id(&adapter),
+        dataset_fingerprint: &profile.dataset_fingerprint,
+        plasticity_version: gameboy::PLASTICITY_VERSION,
+        pokered_commit: &flybrain_gb::GameAdapter::symbol_provenance(&adapter),
+    }
+    .string()
+}
+
+/// How a session came up.
+#[derive(Debug)]
+pub enum Boot {
+    /// No checkpoint in either store: a fresh fly, warmed up.
+    Fresh,
+    /// A candidate restored, after `skipped` were refused.
+    Restored {
+        candidate: flysim::store::Candidate,
+        skipped: Vec<(flysim::store::Candidate, String)>,
+        migrated_from: Option<String>,
+        imported: crate::import::Imported,
+    },
+}
+
+/// `Sim::boot` on the session runtime: restore from the live FLYSIM01 stores in the legacy order
+/// (hot latest, hot previous, durable latest, durable previous, milestone archives by rank), each
+/// candidate held to the legacy gate (`RestoreGate`: the cartridge and the compatibility decision
+/// with `FLY_ACCEPT_ADAPTERS`), falling to the next on *any* refusal -- unreadable, gated, or
+/// refused by a participant's `State.StageRestore` or the task. A refused install fences its
+/// session, so each attempt runs on a session of its own (a directory under `root` each). No
+/// candidate at all is a fresh start; candidates that all fail are an error, as the legacy loop
+/// refuses to start a fresh fly over them. Either way the store is attached and the startup
+/// durable save is written, and the intervals run from then.
+pub async fn boot(
+    root: &Path,
+    config: LegacyConfig,
+    store: &StoreConfig,
+) -> Result<(LegacySession, Boot), String> {
+    let hot = flysim::store::Store::new(&store.hot_dir, store.keep_generations);
+    let durable = flysim::store::Store::new(&store.durable_dir, store.keep_generations);
+    let candidates = flysim::store::restore_order(&hot, &durable);
+    let rom = std::fs::read(&config.rom_path)
+        .map_err(|e| format!("the cartridge {}: {e}", config.rom_path.display()))?;
+    let adapter = flybrain_gb::pokemon_red::PokemonRedReward::new();
+    let gate = fly_session::legacy_checkpoint::RestoreGate::from_env(
+        &sha256_hex(&rom),
+        &compatibility_of(&config),
+        flybrain_gb::GameAdapter::migrates_from(&adapter),
+    );
+    let mut skipped: Vec<(flysim::store::Candidate, String)> = Vec::new();
+    let mut outcome = None;
+    for (attempt, candidate) in candidates.iter().enumerate() {
+        let checkpoint = match flysim::store::load(&candidate.path) {
+            Ok(checkpoint) => checkpoint,
+            Err(e) => {
+                skipped.push((candidate.clone(), format!("{e:#}")));
+                continue;
+            }
+        };
+        let migrated_from = match gate.check(&checkpoint) {
+            Ok(from) => from,
+            Err(reason) => {
+                skipped.push((candidate.clone(), reason));
+                continue;
+            }
+        };
+        let mut session =
+            LegacySession::start(&root.join(format!("attempt-{attempt}")), config.clone()).await?;
+        let installed = match session.bootstrap().await {
+            Ok(()) => session.import_checkpoint(&checkpoint, &id("e2")).await,
+            Err(e) => Err(e),
+        };
+        match installed {
+            Ok(imported) => {
+                let rank = session.task.rank();
+                session.attach_store(store)?;
+                session
+                    .checkpointer_mut()
+                    .expect("attached")
+                    .restored(rank, imported.rank_since_ms);
+                outcome = Some((
+                    session,
+                    Boot::Restored {
+                        candidate: candidate.clone(),
+                        skipped: std::mem::take(&mut skipped),
+                        migrated_from,
+                        imported,
+                    },
+                ));
+                break;
+            }
+            Err(reason) => {
+                session.stop().await;
+                skipped.push((candidate.clone(), reason));
+            }
+        }
+    }
+    let (mut session, boot) = match outcome {
+        Some(pair) => pair,
+        None if candidates.is_empty() => {
+            let mut session = LegacySession::start(&root.join("fresh"), config).await?;
+            session.bootstrap().await?;
+            session.attach_store(store)?;
+            (session, Boot::Fresh)
+        }
+        None => {
+            let reasons: Vec<String> = skipped
+                .iter()
+                .map(|(candidate, reason)| format!("{}: {reason}", candidate.origin))
+                .collect();
+            return Err(format!(
+                "every one of the {} checkpoint candidates failed to load; refusing to start a \
+                 fresh run over them:\n{}",
+                candidates.len(),
+                reasons.join("\n")
+            ));
+        }
+    };
+    // `Sim::boot`: a durable save of the state the process starts from, then the intervals.
+    session.save(SaveKind::Durable).await?;
+    session
+        .checkpointer_mut()
+        .expect("attached")
+        .start_intervals(Instant::now());
+    Ok((session, boot))
 }
 
 /// One transition as a parity run sees it.
@@ -250,6 +407,9 @@ impl LegacySession {
             session_id,
             backend,
             world_generation: 1,
+            checkpointer: None,
+            saves: 0,
+            last_event_id: 0,
         })
     }
 
@@ -266,14 +426,29 @@ impl LegacySession {
         Ok(())
     }
 
+    /// The agent's identity as an import stamps it.
+    pub fn agent_import(&self) -> AgentImport {
+        let (macro_channels, _) = channels_and_hold(self.config.macro_mode);
+        AgentImport {
+            agent_id: self.config.agent_id.clone(),
+            profile: self.config.profile.profile().asset,
+            seed: fly_session::legacy_parity::LEGACY_SEED,
+            macro_channels,
+        }
+    }
+
+    /// This build's legacy compatibility string ([`compatibility_of`]).
+    pub fn compatibility(&self) -> String {
+        compatibility_of(&self.config)
+    }
+
     /// Installs a FLYSIM01 checkpoint as this session's start (after [`LegacySession::bootstrap`],
     /// before any transition): the world is replaced by a fresh one (the environment stages a
     /// restore only on a replacement, as every group restore does), then [`crate::import`] runs
     /// the group install and the session resumes at the checkpoint's boundary.
-    pub async fn import_flysim01(
+    pub async fn import_checkpoint(
         &mut self,
-        bytes: &[u8],
-        checkpoint_id: &Id,
+        checkpoint: &Checkpoint,
         epoch: &Id,
     ) -> Result<crate::import::Imported, String> {
         if self.world_generation != 1 {
@@ -303,13 +478,13 @@ impl LegacySession {
             .replace_participant(&id(ENV_WORKER), world)
             .map_err(|e| format!("replacing the world: {}", e.error.message))?;
         let rom = self.rom.clone();
+        let agent = self.agent_import();
         let imported = crate::import::import_flysim01(
             &mut self.coordinator,
             &self.task,
-            bytes,
+            checkpoint,
             &rom,
-            &self.config.agent_id,
-            checkpoint_id,
+            &agent,
             self.backend.audio_sample_rate,
             epoch,
         )
@@ -317,21 +492,148 @@ impl LegacySession {
         if self.config.record {
             self.coordinator.disable_pacing();
         }
+        self.last_event_id = checkpoint.runtime.last_event_id;
         Ok(imported)
     }
 
-    /// One transition, with its details when recorded.
-    pub async fn step(&mut self) -> Result<Step, String> {
+    /// Decodes FLYSIM01 bytes and installs them ([`LegacySession::import_checkpoint`]).
+    pub async fn import_flysim01(
+        &mut self,
+        bytes: &[u8],
+        epoch: &Id,
+    ) -> Result<crate::import::Imported, String> {
+        let checkpoint = flysim::store::decode(bytes).map_err(|e| format!("FLYSIM01: {e:#}"))?;
+        self.import_checkpoint(&checkpoint, epoch).await
+    }
+
+    // -- the store (STATE-02) ------------------------------------------------------------------
+
+    /// Attaches the legacy store policy (`LegacyCheckpointer`): FLYSIM01 generations in the hot
+    /// and durable stores, milestone archives, the legacy intervals. Rollbacks are deferred from
+    /// here on, so a milestone capture lands between the boundary's slot save and its rollback.
+    pub fn attach_store(&mut self, store: &StoreConfig) -> Result<(), String> {
+        let checkpointer = LegacyCheckpointer::open(CheckpointerConfig {
+            hot_dir: store.hot_dir.clone(),
+            durable_dir: store.durable_dir.clone(),
+            keep_generations: store.keep_generations,
+            hot_seconds: store.hot_seconds,
+            checkpoint_seconds: store.checkpoint_seconds,
+            compatibility: self.compatibility(),
+            speed: store.speed,
+            slot_id: id(crate::task::SLOT),
+        })?;
+        self.checkpointer = Some(checkpointer);
+        self.coordinator.defer_rollbacks(true);
+        Ok(())
+    }
+
+    pub fn checkpointer(&self) -> Option<&LegacyCheckpointer> {
+        self.checkpointer.as_ref()
+    }
+
+    pub fn checkpointer_mut(&mut self) -> Option<&mut LegacyCheckpointer> {
+        self.checkpointer.as_mut()
+    }
+
+    /// One save of the committed boundary, written by the checkpointer's writer thread; waits for
+    /// the commit, so a caller that goes on to read the store finds it.
+    pub async fn save(&mut self, kind: SaveKind) -> Result<SaveReport, String> {
+        self.saves += 1;
+        let (boundary, world, agents) = self
+            .coordinator
+            .capture_payloads(&parse_id(&format!("legacy-save-{}", self.saves))?)
+            .await
+            .map_err(|e| format!("capture ({}): {}", e.detail, e.error.message))?;
+        let [(_, agent)] = <[(Id, Vec<u8>); 1]>::try_from(agents)
+            .map_err(|_| "the legacy composition has exactly one agent".to_owned())?;
+        let (task, _slot_filled) = self.task.task_half();
+        let capture = LegacyCapture {
+            boundary,
+            agent_payload: agent,
+            world_payload: world,
+            task,
+        };
+        let last_event_id = self.last_event_id;
+        let checkpointer = self.checkpointer.as_mut().ok_or("no store is attached")?;
+        let ticket = checkpointer.save(kind, capture, last_event_id, now_wall_ms())?;
+        ticket
+            .reply
+            .await
+            .map_err(|_| "the checkpoint writer stopped".to_owned())?
+    }
+
+    /// One transition and what the legacy loop does at the boundary it reaches, in the declared
+    /// order (`legacy-gameboy-v1` sections 4 and 16): the slot save (inside the step), the
+    /// milestone archive when the rank climbed (`Sim::track_rank`), the rollback, a durable save
+    /// after it, then the interval saves (`checkpoint_if_due`).
+    pub async fn advance(&mut self) -> Result<(Step, Vec<SaveReport>), String> {
         let report = self
             .coordinator
             .step()
             .await
             .map_err(|e| format!("step ({} at {}): {}", e.detail, e.phase, e.error.message))?;
-        Ok(Step {
-            report,
-            details: self.coordinator.take_details(),
-            records: self.task.take_records(),
-        })
+        let mut saves = Vec::new();
+        if self.checkpointer.is_some() {
+            let rank = self.task.rank();
+            let ms = self.task.brain_ms();
+            let change = self
+                .checkpointer
+                .as_mut()
+                .expect("attached")
+                .observe_rank(rank, ms);
+            if let Some(RankChange::Climbed(rank)) = change {
+                saves.push(self.save(SaveKind::Milestone(rank)).await?);
+            }
+        }
+        let rolled_back = self
+            .coordinator
+            .apply_pending_rollback()
+            .await
+            .map_err(|e| {
+                format!(
+                    "rollback ({} at {}): {}",
+                    e.detail, e.phase, e.error.message
+                )
+            })?;
+        if self.checkpointer.is_some() {
+            if rolled_back {
+                saves.push(self.save(SaveKind::Durable).await?);
+            }
+            let due = self
+                .checkpointer
+                .as_mut()
+                .expect("attached")
+                .due(Instant::now());
+            if let Some(kind) = due {
+                saves.push(self.save(kind).await?);
+            }
+        }
+        Ok((
+            Step {
+                report,
+                details: self.coordinator.take_details(),
+                records: self.task.take_records(),
+            },
+            saves,
+        ))
+    }
+
+    /// One transition, with its details when recorded ([`LegacySession::advance`] without the
+    /// saves it reports).
+    pub async fn step(&mut self) -> Result<Step, String> {
+        self.advance().await.map(|(step, _)| step)
+    }
+
+    /// A durable save, as the legacy loop takes on shutdown, then the store's writer is closed.
+    pub async fn shutdown_save(&mut self) -> Result<Option<SaveReport>, String> {
+        if self.checkpointer.is_none() {
+            return Ok(None);
+        }
+        let report = self.save(SaveKind::Durable).await?;
+        if let Some(checkpointer) = self.checkpointer.as_mut() {
+            checkpointer.close();
+        }
+        Ok(Some(report))
     }
 
     pub async fn stop(mut self) {

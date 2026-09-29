@@ -30,6 +30,7 @@ use serde_json::{Value, json};
 use fly_session::fly_session_types::gameboy::{
     self, ChannelsDecision, Location, MemoryInspection, ReadoutContext, RollbackRequest,
 };
+use fly_session::legacy_checkpoint::TaskHalf;
 use fly_session::task::{
     ActionExecutor, Bootstrap, Evaluation, Inspection, RollbackEvaluation, Task,
 };
@@ -38,7 +39,7 @@ use flybrain_core::decoder::gameboy::to_button_mask;
 use flybrain_gb::adapter::GameAdapter;
 use flybrain_gb::emulator::FRAMEBUFFER_LEN;
 use flybrain_gb::pokemon_red::PokemonRedReward;
-use flybrain_gb::ratchet::{Ratchet, RatchetState, Snapshot};
+use flybrain_gb::ratchet::{Ratchet, Snapshot};
 use flybrain_gb::{AdapterLedger, Cartridge, ImageReader, MemoryImage};
 use flysim::config::Config;
 use flysim::macros::{MacroEvent, MacroLayer, macro_layer};
@@ -60,10 +61,12 @@ fn schema(name: &str) -> SchemaRef {
     SchemaRef::new(name, 1, &digest).expect("a task-local schema reference is valid")
 }
 
-/// The task ledger's schema: the adapter state and the ratchet's (FLYSIM01's `reward` and
-/// `ratchet`).
+/// The task ledger's schema: STATE-02's `TaskHalf` ledger `{reward, ratchet, slotFilled}` --
+/// FLYSIM01's `reward` and `ratchet`, and whether the environment's slot `best` holds the
+/// ratchet's snapshot. Nothing else: the executor's ledgers and the adapter's transient
+/// observations are not captured (`legacy-transient-reset`).
 pub fn ledger_schema() -> SchemaRef {
-    schema("pokered.ledger.v1")
+    schema("pokered-task-ledger-v1")
 }
 /// The executor's capture: a marker only, because its state is transient (section 10, "Capture").
 pub fn executor_schema() -> SchemaRef {
@@ -269,25 +272,34 @@ impl PokeredTask {
         self.lock().ledgers()
     }
 
-    /// The ledger a FLYSIM01 checkpoint carries for the task: its `reward` and `ratchet`, and
-    /// whether it holds a ratchet snapshot (which the environment's slot `best` now holds).
-    pub fn ledger_from_flysim01(
-        reward: &Value,
-        ratchet: &RatchetState,
-        has_slot: bool,
-    ) -> TypedValue {
-        TypedValue::new(
-            ledger_schema(),
-            json!({
-                "adapter": reward,
-                "ratchet": serde_json::to_value(ratchet).expect("the ratchet state serializes"),
-                "slot": has_slot,
-                "evaluations": 0,
-                "issued": 0,
-                "lastSourceStep": 0,
-            }),
+    /// The ledger of a task half (STATE-02's `TaskHalf`, FLYSIM01's `reward` and `ratchet`), with
+    /// whether the ratchet holds a snapshot (which the environment's slot `best` now holds).
+    pub fn ledger_of(half: &TaskHalf, slot_filled: bool) -> TypedValue {
+        TypedValue::new(ledger_schema(), half.to_ledger(slot_filled))
+            .expect("a ledger fits the contract")
+    }
+
+    /// The task's half of a FLYSIM01 export at the committed boundary, and whether the slot is
+    /// filled.
+    pub fn task_half(&self) -> (TaskHalf, bool) {
+        let inner = self.lock();
+        (
+            TaskHalf {
+                reward: inner.adapter.export_state(),
+                ratchet: inner.ratchet.state,
+            },
+            inner.ratchet.snapshot.is_some(),
         )
-        .expect("a ledger fits the contract")
+    }
+
+    /// The brain time of the last transition (its Prepare's clock), in ms: `network.ms`.
+    pub fn brain_ms(&self) -> f64 {
+        self.lock().ms
+    }
+
+    /// The adapter's ladder rank now (`Sim::track_rank` reads it after each transition).
+    pub fn rank(&self) -> u32 {
+        self.lock().adapter.progress().rank
     }
 
     /// The context a restore of `ledger` onto the boundary `image` shows at brain time `ms`: what
@@ -718,19 +730,8 @@ impl Task for TaskFace {
     }
 
     fn capture(&self) -> DomainResult<TypedValue> {
-        let inner = self.0.lock();
-        TypedValue::new(
-            ledger_schema(),
-            json!({
-                "adapter": inner.adapter.export_state(),
-                "ratchet": serde_json::to_value(inner.ratchet.state).expect("serializes"),
-                "slot": inner.ratchet.snapshot.is_some(),
-                "evaluations": inner.evaluations,
-                "issued": inner.issued,
-                "lastSourceStep": inner.last_source_step,
-            }),
-        )
-        .map_err(|e| DomainError::invalid(e.0))
+        let (half, slot_filled) = self.0.task_half();
+        Ok(PokeredTask::ledger_of(&half, slot_filled))
     }
 
     fn validate_restore(&self, state: &TypedValue) -> DomainResult<()> {
@@ -743,7 +744,6 @@ impl Task for TaskFace {
     fn install_restore(&mut self, epoch: &Id, state: &TypedValue) -> DomainResult<()> {
         let mut inner = self.0.lock();
         let (adapter, ratchet) = parse_ledger(&inner, state)?;
-        let number = |key: &str| state.value.get(key).and_then(Value::as_u64).unwrap_or(0);
         inner.adapter = adapter;
         inner.ratchet = ratchet;
         // `legacy-transient-reset`: a fresh executor, nothing running, empty ledgers.
@@ -751,9 +751,9 @@ impl Task for TaskFace {
         inner.current = None;
         inner.open = None;
         inner.epoch = epoch.clone();
-        inner.evaluations = number("evaluations");
-        inner.issued = number("issued");
-        inner.last_source_step = number("lastSourceStep");
+        inner.evaluations = 0;
+        inner.issued = 0;
+        inner.last_source_step = 0;
         Ok(())
     }
 
@@ -776,34 +776,25 @@ fn parse_ledger(inner: &Inner, state: &TypedValue) -> DomainResult<(PokemonRedRe
             "the captured ledger is not a pokered-macros-v1 ledger",
         ));
     }
-    let mut adapter = PokemonRedReward::new();
-    let reward = state
+    let half = TaskHalf::from_ledger(&state.value).map_err(state_error)?;
+    let slot_filled = state
         .value
-        .get("adapter")
-        .ok_or_else(|| state_error("the ledger has no adapter"))?;
-    if !reward.is_null() {
+        .get("slotFilled")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| state_error("the ledger has no slotFilled"))?;
+    // `LegacyFrame::restore`'s order: the adapter (unless the file has none), then the ratchet
+    // bounded by the adapter's ladder.
+    let mut adapter = PokemonRedReward::new();
+    if !half.reward.is_null() {
         adapter
-            .import_state(reward)
+            .import_state(&half.reward)
             .map_err(|e| state_error(format!("adapter: {e}")))?;
     }
-    let ratchet_state: RatchetState = serde_json::from_value(
-        state
-            .value
-            .get("ratchet")
-            .cloned()
-            .ok_or_else(|| state_error("the ledger has no ratchet"))?,
-    )
-    .map_err(|e| state_error(format!("ratchet: {e}")))?;
-    let slot = state
-        .value
-        .get("slot")
-        .and_then(Value::as_bool)
-        .ok_or_else(|| state_error("the ledger has no slot flag"))?;
     let mut ratchet = Ratchet::with_policy(adapter.recovery_policy());
     ratchet
         .import(
-            Some(ratchet_state),
-            slot.then(slot_marker),
+            Some(half.ratchet),
+            slot_filled.then(slot_marker),
             adapter.rank_ladder().len(),
         )
         .map_err(|e| state_error(format!("ratchet: {e}")))?;
@@ -907,7 +898,7 @@ impl ActionExecutor for ExecutorFace {
 
 /// Brain time in ms from the executor's clock: exact whole nanoseconds of whole milliseconds.
 pub fn clock_ms(clock: &RationalNs) -> DomainResult<f64> {
-    if clock.denominator != 1 || clock.numerator % 1_000_000 != 0 {
+    if clock.denominator != 1 || !clock.numerator.is_multiple_of(1_000_000) {
         return Err(DomainError::invalid(
             "the executor clock is not a whole number of milliseconds",
         ));

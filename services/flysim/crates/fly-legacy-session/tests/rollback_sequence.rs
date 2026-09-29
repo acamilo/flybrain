@@ -468,7 +468,7 @@ async fn run(mode: ExecutionMode) {
         vec![(3, 1), (6, 1)],
         "the trace carries the boundary actions"
     );
-    let seen = seen.lock().unwrap();
+    let seen = std::mem::take(&mut *seen.lock().unwrap());
     let (boundary, restored) = seen.restored.clone().expect("the task rolled back");
     assert_eq!(boundary, 6);
     assert_eq!(

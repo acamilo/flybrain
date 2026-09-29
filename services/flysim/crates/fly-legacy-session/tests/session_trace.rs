@@ -262,7 +262,7 @@ async fn run_session(
         .unwrap_or_else(|e| panic!("Ready(0): {e}"));
     if let Start::Checkpoint(bytes) = start {
         session
-            .import_flysim01(bytes, &id("flysim01"), &id("e2"))
+            .import_flysim01(bytes, &id("e2"))
             .await
             .unwrap_or_else(|e| panic!("the FLYSIM01 import: {e}"));
     }
@@ -474,6 +474,199 @@ async fn fafb_service_trace_checkpoints() {
                 started.elapsed(),
             );
         }
+    }
+}
+
+/// Runs `frames` transitions of a booted session with the store attached, recording the
+/// session's `FLY_TRACE` behaviours, ledgers and bound sets, and every save it took.
+async fn run_booted(
+    session: &mut LegacySession,
+    frames: usize,
+) -> (Run, Vec<fly_session::legacy_checkpoint::SaveReport>) {
+    let mut run = Run {
+        behaviours: Vec::new(),
+        ledgers: Vec::new(),
+        bounds: Vec::new(),
+    };
+    let mut saves = Vec::new();
+    for k in 1..=frames {
+        let (step, saved) = session
+            .advance()
+            .await
+            .unwrap_or_else(|e| panic!("frame {k}: {e}"));
+        saves.extend(saved);
+        let details = step.details.expect("details are recorded");
+        let [record] = step.records.as_slice() else {
+            panic!("frame {k}: {} task records", step.records.len());
+        };
+        run.behaviours.push(
+            trace::line(&details, record).unwrap_or_else(|e| panic!("frame {k}: {e}"))["behaviour"]
+                .clone(),
+        );
+        run.ledgers.push(record.ledgers.clone());
+        run.bounds.push(record.bound.clone());
+    }
+    (run, saves)
+}
+
+/// The SHADOW-01 entry gate: the session runtime boots from a live FLYSIM01 store, runs, saves,
+/// restarts and restores from its own save, and every segment matches the legacy loop's trace.
+///
+/// The store holds one durable generation, a stream checkpoint (the FND-01 review's `rollback`
+/// file when `FLY_ENV01_TRACE_DIR` is set: a ratchet rollback on the first boundary, so the
+/// after-rollback durable save is exercised; else `FLY_DOOR_CHECKPOINT`). Process one boots from
+/// it (the legacy candidate order and gate, `boot`), writes its startup durable save, runs
+/// `FLY_TASK01_BOOT_FRAMES` transitions with the legacy boundary saves, and shuts down with a
+/// durable save. Process two boots from the same store and so restores process one's shutdown
+/// save -- a file the session runtime wrote -- and runs on. The legacy loop runs the first
+/// segment from the original file and the second from process one's save, which is also the
+/// proof that the legacy loop reads what the session runtime writes. In-process then process.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fafb_boot_run_save_restore() {
+    let Some(rom_path) = rom_path() else { return };
+    let Some(dataset) = fafb() else { return };
+    let source = std::env::var_os("FLY_ENV01_TRACE_DIR")
+        .map(|dir| PathBuf::from(dir).join("rollback.checkpoint"))
+        .filter(|p| p.is_file())
+        .or_else(|| std::env::var_os("FLY_DOOR_CHECKPOINT").map(PathBuf::from));
+    let Some(source) = source else {
+        eprintln!("skipping: no source checkpoint");
+        return;
+    };
+    let rom = std::fs::read(&rom_path).expect("the cartridge");
+    let data = Arc::new(load_brain_dataset_from_dir(&dataset).expect("the dataset"));
+    let frames = env_usize("FLY_TASK01_BOOT_FRAMES", 900);
+    let original = std::fs::read(&source).expect("the checkpoint");
+    let generation = flysim::store::decode(&original)
+        .expect("FLYSIM01")
+        .runtime
+        .generation;
+    for mode in modes() {
+        let root = tempfile::tempdir().expect("tmp");
+        let store = fly_legacy_session::composition::StoreConfig {
+            hot_dir: root.path().join("hot"),
+            durable_dir: root.path().join("durable"),
+            keep_generations: 4,
+            // The intervals are wall clock; a parity run takes its saves at the boundaries the
+            // legacy loop names (startup, a climb, a rollback, shutdown) and not on a timer.
+            hot_seconds: 1e9,
+            checkpoint_seconds: 1e9,
+            speed: 1.0,
+        };
+        flysim::store::Store::new(&store.durable_dir, store.keep_generations)
+            .commit(generation, &original, None)
+            .expect("the seeded store");
+        let config = |mode| LegacyConfig {
+            mode,
+            rom_path: rom_path.clone(),
+            dataset_dir: dataset.clone(),
+            profile: LegacyProfileKind::Production,
+            macro_mode: MacroMode::Macros,
+            agent_id: id("fly"),
+            agent_threads: 1,
+            record: true,
+        };
+
+        // Process one.
+        let started = std::time::Instant::now();
+        let (mut one, boot) =
+            fly_legacy_session::composition::boot(&root.path().join("p1"), config(mode), &store)
+                .await
+                .unwrap_or_else(|e| panic!("{}: boot one: {e}", mode.label()));
+        match &boot {
+            fly_legacy_session::composition::Boot::Restored { candidate, .. } => {
+                assert_eq!(
+                    candidate.generation,
+                    Some(generation),
+                    "the seeded generation"
+                );
+            }
+            other => panic!("boot one: {other:?}"),
+        }
+        let startup = one.checkpointer().expect("attached").next_generation() - 1;
+        assert!(
+            startup > generation,
+            "the startup save takes a generation above the store's"
+        );
+        let (run_one, saves_one) = run_booted(&mut one, frames).await;
+        let shutdown = one
+            .shutdown_save()
+            .await
+            .expect("the shutdown save")
+            .expect("a store");
+        one.stop().await;
+        assert!(shutdown.durable);
+        let legacy_one = run_legacy(
+            &rom,
+            &data,
+            &Start::Checkpoint(original.clone()),
+            MacroMode::Macros,
+            frames,
+            &Inputs::default(),
+            &root.path().join("legacy-one.jsonl"),
+        );
+        let agreement =
+            trace::compare(&legacy_one.behaviours, &run_one.behaviours, &run_one.bounds)
+                .unwrap_or_else(|e| panic!("{} segment one: {e}", mode.label()));
+        compare_ledgers(&legacy_one.ledgers, &run_one.ledgers);
+        report(
+            &format!("boot segment one, {}", mode.label()),
+            &agreement,
+            started.elapsed(),
+        );
+        eprintln!(
+            "  saves: startup g{startup}, during the run {:?}, shutdown g{}",
+            saves_one
+                .iter()
+                .map(|s| (s.generation, s.durable, s.archive_rank))
+                .collect::<Vec<_>>(),
+            shutdown.generation
+        );
+        if agreement.rollbacks > 0 {
+            assert!(
+                saves_one.iter().any(|s| s.durable),
+                "a rollback is followed by a durable save"
+            );
+        }
+
+        // Process two: restores process one's shutdown save.
+        let started = std::time::Instant::now();
+        let (mut two, boot) =
+            fly_legacy_session::composition::boot(&root.path().join("p2"), config(mode), &store)
+                .await
+                .unwrap_or_else(|e| panic!("{}: boot two: {e}", mode.label()));
+        let restored_path = match &boot {
+            fly_legacy_session::composition::Boot::Restored { candidate, .. } => {
+                assert_eq!(
+                    candidate.generation,
+                    Some(shutdown.generation),
+                    "the latest save"
+                );
+                candidate.path.clone()
+            }
+            other => panic!("boot two: {other:?}"),
+        };
+        let written = std::fs::read(&restored_path).expect("the session's own save");
+        let (run_two, _) = run_booted(&mut two, frames).await;
+        two.stop().await;
+        let legacy_two = run_legacy(
+            &rom,
+            &data,
+            &Start::Checkpoint(written),
+            MacroMode::Macros,
+            frames,
+            &Inputs::default(),
+            &root.path().join("legacy-two.jsonl"),
+        );
+        let agreement =
+            trace::compare(&legacy_two.behaviours, &run_two.behaviours, &run_two.bounds)
+                .unwrap_or_else(|e| panic!("{} segment two: {e}", mode.label()));
+        compare_ledgers(&legacy_two.ledgers, &run_two.ledgers);
+        report(
+            &format!("boot segment two, {}", mode.label()),
+            &agreement,
+            started.elapsed(),
+        );
     }
 }
 

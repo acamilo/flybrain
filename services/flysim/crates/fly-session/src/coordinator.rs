@@ -376,6 +376,9 @@ pub struct Coordinator {
     rollbacks: u64,
     /// The world's state format, when it is not the synthetic arena's.
     state_format_id: Option<Id>,
+    /// Leave a requested rollback for the host to apply (`apply_pending_rollback`).
+    defer_rollbacks: bool,
+    pending_rollback: Option<(u64, EpisodeRequest)>,
     lifecycle_acks: Vec<(WorkerRef, DomainRequestId)>,
     stats: Stats,
     /// The ordered actions this session took, for the ordering assertions.
@@ -493,6 +496,8 @@ impl Coordinator {
             in_flight_admissions: Vec::new(),
             rollbacks: 0,
             state_format_id: None,
+            defer_rollbacks: false,
+            pending_rollback: None,
             lifecycle_acks: Vec::new(),
             stats: Stats::default(),
             audit: Vec::new(),
@@ -623,6 +628,90 @@ impl Coordinator {
     /// synthetic arena's by default, `fly-gb-env-v1` for the legacy Game Boy world (ENV-01).
     pub fn set_state_format(&mut self, state_format_id: &str) {
         self.state_format_id = Some(id(state_format_id));
+    }
+
+    /// Leave a rollback the task asks for pending at its boundary, for the host to apply with
+    /// [`Coordinator::apply_pending_rollback`] after its own captures there. No transition starts
+    /// while one is pending.
+    pub fn defer_rollbacks(&mut self, on: bool) {
+        self.defer_rollbacks = on;
+    }
+
+    /// The boundary a deferred rollback waits at, if one does.
+    pub fn pending_rollback(&self) -> Option<u64> {
+        self.pending_rollback.as_ref().map(|(k, _)| *k)
+    }
+
+    /// Applies a deferred rollback (the declared policy, `apply_rollback`), and adds it to the
+    /// last transition's trace and step details, where an immediate rollback would have been.
+    /// Returns whether one was pending.
+    pub async fn apply_pending_rollback(&mut self) -> Outcome<bool> {
+        let Some((boundary, request)) = self.pending_rollback.take() else {
+            return Ok(false);
+        };
+        let (action, details) = self.apply_rollback(boundary, &request).await?;
+        if let Some(trace) = self.trace.transitions.last_mut()
+            && trace.behaviour.acknowledged_boundary == boundary
+        {
+            trace.behaviour.boundary_actions.push(action.clone());
+        }
+        if let Some(step) = self.last_details.as_mut()
+            && step.step + 1 == boundary
+        {
+            step.boundary_actions.push(action);
+            step.rollback = Some(details);
+        }
+        Ok(true)
+    }
+
+    /// One participant-coherent capture of the committed boundary for the legacy store
+    /// (STATE-02's `LegacyCheckpointer`): every participant's `State.Capture` payload under
+    /// `Capturing(k)`, released once read. The task's half is the host's to take from the task.
+    /// Taken after the boundary's slot save and before a pending rollback, as
+    /// `legacy-gameboy-v1` section 16 orders a milestone capture.
+    pub async fn capture_payloads(
+        &mut self,
+        checkpoint_id: &Id,
+    ) -> Outcome<(u64, Vec<u8>, Vec<(Id, Vec<u8>)>)> {
+        let origin = self.phases.phase();
+        let Some(boundary) = origin.committed_boundary().filter(|_| origin.is_committed_boundary())
+        else {
+            return Err(SessionFailure {
+                error: DomainError::before(
+                    ErrorCode::InvalidPhase,
+                    "a coherent capture is taken at a committed boundary only",
+                ),
+                phase: origin.label(),
+                detail: "capture".to_owned(),
+                participant: None,
+            });
+        };
+        self.transition(Phase::Capturing(boundary))?;
+        let mut participants = vec![self.environment.clone()];
+        participants.extend(self.agents.iter().map(|slot| slot.worker.clone()));
+        let params = object(CaptureParams { checkpoint_id: checkpoint_id.clone() }.to_json());
+        let want = vec![crate::state::PAYLOAD_ATTACHMENT.to_owned()];
+        let mut payloads = Vec::new();
+        for worker in participants {
+            let reply = self
+                .call(&worker, "State.Capture", Some(self.scope(boundary)), params.clone(), &[], &want)
+                .await?;
+            let Some(artifact) = reply.artifacts.get(crate::state::PAYLOAD_ATTACHMENT).cloned() else {
+                return Err(self.fail_now(
+                    DomainError::before(ErrorCode::BufferInvalid, "State.Capture carried no payload"),
+                    "capture",
+                ));
+            };
+            let bytes = artifact.read_all().await.map_err(|e| {
+                self.fail_now(DomainError::before(ErrorCode::BufferInvalid, e.message.clone()), "capture")
+            })?;
+            self.acknowledge_replies(&worker, std::slice::from_ref(&reply.request_id)).await?;
+            payloads.push((worker.worker_id.clone(), bytes));
+        }
+        self.transition(origin)?;
+        let world = payloads.remove(0).1;
+        self.audit.push(format!("captured-payloads:{checkpoint_id}@{boundary}"));
+        Ok((boundary, world, payloads))
     }
 
     /// The world's compatibility as this composition declares it.
@@ -1477,6 +1566,9 @@ pub struct RollbackDetails {
 #[derive(Clone, Debug)]
 pub struct ImportSpec {
     pub checkpoint_id: Id,
+    /// The scope the payloads record as their source (for a FLYSIM01 file,
+    /// `legacy_checkpoint::legacy_source_scope`: the session, epoch `legacy`, the boundary).
+    pub source_scope: Scope,
     /// The boundary the checkpoint is at.
     pub boundary: u64,
     /// The environment's `State.Capture` payload.
@@ -2043,6 +2135,16 @@ impl Coordinator {
                 "step",
             ));
         };
+        if let Some((boundary, _)) = &self.pending_rollback {
+            let boundary = *boundary;
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::InvalidPhase,
+                    format!("the rollback asked for at boundary {boundary} has not been applied"),
+                ),
+                "step",
+            ));
+        }
         if self.episode.is_some() {
             return Err(self.fail_now(
                 DomainError::before(
@@ -2221,9 +2323,16 @@ impl Coordinator {
             && request.kind == EpisodeRequestKind::Rollback
         {
             let request = request.clone();
-            let (action, details) = self.apply_rollback(k + 1, &request).await?;
-            boundary_actions.push(action);
-            rollback_details = Some(details);
+            if self.defer_rollbacks {
+                // The host takes its captures at this boundary first (a milestone archive is
+                // captured after the slot save and before the rollback, legacy-gameboy-v1
+                // section 16), then applies it: `apply_pending_rollback`.
+                self.pending_rollback = Some((k + 1, request));
+            } else {
+                let (action, details) = self.apply_rollback(k + 1, &request).await?;
+                boundary_actions.push(action);
+                rollback_details = Some(details);
+            }
         }
 
         let event_ids: Vec<Id> = evaluation.events.iter().map(|e| e.id.clone()).collect();
@@ -4676,59 +4785,8 @@ impl Coordinator {
         }
     }
 
-    /// The scope an imported checkpoint's payloads record as their source: this session, its
-    /// current epoch, the boundary the checkpoint is at.
-    pub fn import_scope(&self, boundary: u64) -> Scope {
-        self.scope(boundary)
-    }
-
-    /// One participant's `State.Capture` payload at the committed boundary, outside any group
-    /// capture: the template an importer rewrites a foreign agent state into.
-    pub async fn capture_participant(&mut self, worker_id: &Id) -> Outcome<Vec<u8>> {
-        let Some(boundary) = self.phases.phase().committed_boundary() else {
-            return Err(self.fail_now(
-                DomainError::before(ErrorCode::InvalidPhase, "a capture needs a committed boundary"),
-                "capture",
-            ));
-        };
-        let worker = if self.environment.worker_id == *worker_id {
-            self.environment.clone()
-        } else {
-            match self.agents.iter().find(|slot| slot.agent_id == *worker_id) {
-                Some(slot) => slot.worker.clone(),
-                None => {
-                    return Err(self.fail_now(
-                        DomainError::before(
-                            ErrorCode::IdentityMismatch,
-                            format!("{worker_id} is not a participant"),
-                        ),
-                        "capture",
-                    ));
-                }
-            }
-        };
-        let params = object(
-            CaptureParams { checkpoint_id: id(&format!("template-{worker_id}")) }.to_json(),
-        );
-        let want = vec![crate::state::PAYLOAD_ATTACHMENT.to_owned()];
-        let reply = self
-            .call(&worker, "State.Capture", Some(self.scope(boundary)), params, &[], &want)
-            .await?;
-        let artifact = reply.artifacts.get(crate::state::PAYLOAD_ATTACHMENT).cloned();
-        let Some(artifact) = artifact else {
-            return Err(self.fail_now(
-                DomainError::before(ErrorCode::BufferInvalid, "State.Capture carried no payload"),
-                "capture",
-            ));
-        };
-        let bytes = artifact.read_all().await.map_err(|e| {
-            self.fail_now(
-                DomainError::before(ErrorCode::BufferInvalid, e.message.clone()),
-                "capture",
-            )
-        })?;
-        self.acknowledge_replies(&worker, std::slice::from_ref(&reply.request_id)).await?;
-        Ok(bytes)
+    pub fn session_id(&self) -> &Id {
+        &self.session_id
     }
 
     /// Installs a checkpoint of another format as this session's start (TASK-01: the legacy
@@ -4759,6 +4817,15 @@ impl Coordinator {
         }
         let descriptor = self.descriptor.clone().expect("bootstrapped");
         let boundary = spec.boundary;
+        if spec.source_scope.step != boundary || spec.source_scope.session_id != self.session_id {
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::IdentityMismatch,
+                    "an import's source scope is this session at the imported boundary",
+                ),
+                "import",
+            ));
+        }
         let world_time = RationalNs::reduced(
             u128::from(descriptor.step_duration.numerator) * u128::from(boundary),
             u128::from(descriptor.step_duration.denominator),
@@ -4881,7 +4948,7 @@ impl Coordinator {
         }
         let manifest = crate::state::CheckpointManifest {
             checkpoint_id: spec.checkpoint_id.clone(),
-            source_scope: self.scope(boundary),
+            source_scope: spec.source_scope.clone(),
             episode_id: self.episode_id.clone(),
             world_time,
             scheduler_id: "lockstep-v1".to_owned(),
