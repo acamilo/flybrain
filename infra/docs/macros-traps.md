@@ -3052,6 +3052,101 @@ On `main` `510727c` (v0.6.1, row 59 merged):
 - `flysim --print-compatibility`, raw and macros: 648 bytes, sha256 `8ce67b97...a8f68`, the same
   as `main`. Decoder, reward catalog, adapter version and roles untouched.
 
+## 2026-09-24, row 62: the shop, the balls and the nurse, withheld
+
+### What was live
+
+v0.6.2, the fresh run since the operator's reset to milestone 1, about eleven and a half hours:
+rung 12 (MT. MOON) with the Boulder Badge, 16 trainer wins, 86 wild wins. In the whole event log
+(70,357 macro events) `GO SHOP` twice (the parcel errand), then no `BUY`, no `THROW BALL`, no
+`GO HEAL`, `HEAL` or nurse's YES, 72 `TALK`. Rung 12 took 3.5 hours: the fly whited out in Mt.
+Moon again and again and walked back from the south. The live checkpoint reads one Pokémon at
+54/80, 508 money (every whiteout halves it), no ball, the Viridian and Pewter marts and the Mt.
+Moon centre in the lifetime map ledger, the Pewter centre not, and **`wLastBlackoutMap` (`$d719`)
+= `$00`, Pallet Town**: only the nurse's YES writes it (`SetLastBlackoutMap`), and the fly had never
+said it.
+
+### The survey: what the pad dealt
+
+`FLY_PROBE_CATCH=offers` in `examples/scene_probe.rs` (new): 71,673 frames of the service's frame
+behind a uniform stub, per decidable frame (a playable scene, a pad, no macro running) which
+watched buttons are dealt, and the cartridge beside it. From the live checkpoint on `main`, twenty
+brain minutes in Mt. Moon: `HEAL`, `GO HEAL`, `GO SHOP`, `BUY BALL`, `BUY POTION` and `THROW BALL`
+on **0** of 32,178 decidable frames. From row 59's checkpoint inside the Mt. Moon centre at 10/70:
+`HEAL` on 31 frames of 28,069, never in that centre. With the chain's buttons preferred (a
+survey's driver), from the rung-11 Pewter checkpoint: `GO SHOP` never dealt on `main`; on the
+branch before the purchase fix, `BUY BALL` 55 starts, 55 `done`, the wallet at 1,606 throughout.
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 62 | section 13's errand is paid on entering, also by a visit on which the counter could do nothing (Oak's parcel at the Viridian mart, a centre entered with a full party), and with the lifetime map ledger since row 54 `GO SHOP` / `GO HEAL` never came back for the run | every town after its first visit; live, the whole run after the parcel | `go_heal_comes_back_for_a_hurt_party_after_the_errand_is_paid`, `go_shop_comes_back_while_the_bag_has_no_ball_and_the_money_covers_one`, `row62_go_shop_comes_back_with_no_ball_and_buy_ball_rings_up_a_ball` (ROM) | **fixed**: `palette::service_needed` (a centre while the party needs rest; a mart while the bag has no ball, the wallet covers one and no Oak's parcel is carried); `GO SHOP` / `GO HEAL` aim at the area's building while the errand or the need holds. Self-satisfying. `docs/design/macros.md` 12.26 |
+| 62b | a counter person this session had talked to or reached is retired from `TALK` and the counter walk for the session | a second visit to a counter in one session | `a_counter_the_fly_has_a_use_for_opens_again_after_this_session_has_talked_to_it`, `a_declined_heal_writes_the_nurse_into_the_talked_ledger` | **fixed**: with the need, the walk and `TALK` (`facing_service`) ignore talked and reached; blocked kept; a rested party still has no `TALK` at the nurse (12.12) |
+| 62c | `HEAL`'s goals were `counter_aims`, which drops the tile already facing the nurse and a nurse `GO HEAL` has reached (ten minutes) | at the counter, and after every `GO HEAL` | `heal_is_dealt_facing_the_nurse_and_after_go_heal_has_reached_her` | **fixed**: `HEAL`'s aims keep the facing tile and read neither ledger |
+| 62d | from a centre's door (3, 7) the nurse at (3, 1) is off the screen, so the drawn sprites hold nobody behind the counter: `HEAL`, `GO HEAL` and the counter suppression off on arrival, the way out on the pad | every centre entry | `the_nurse_is_found_from_the_door_when_the_screen_does_not_draw_her` | **fixed**: the counter person is read from the drawn and the off-screen sprites (row 58's `offscreen_npcs`) |
+| 62e | Route 4's centre (`$44`) was on no table: no `HEAL` in it, no errand to it | the last centre before Mt. Moon | `the_mt_moon_pokecenter_is_a_centre_and_route_4s`, `row62_heal_is_dealt_in_the_mt_moon_center_and_moves_the_whiteout_map` (ROM) | **fixed**: `MT_MOON_POKECENTER` in LINKS, Route 4's west piece and AMENITIES; Mt. Moon 1F's area is Route 4 |
+| 62f | `BUY …` pressed its last A while the price line was still up: after the quantity the mart prints "That will be" and waits for a press (a `cont`), then draws the YES/NO box; the macro reported `done` with nothing bought and the box left to the next hold | every purchase | `a_purchase_answers_the_price_box_once_the_cartridge_has_drawn_it`, the three purchase tests, `row62_go_shop_…` (ROM) | **fixed**: `Step::Prompt` pulses A until the box is drawn, YES, `Step::Paid` waits for the wallet to drop; running out is `blocked` |
+| 62g | `THROW BALL` | -- | -- | **not a trap**: off with no ball, dealt on 385 of 1,070 wild-battle frames with one (both arms), catches when pressed. The live run had no ball because 62/62f left no way to buy one |
+| 62h | the nurse's YES is dealt only for a hurt party, so a full party passing a centre never moves `wLastBlackoutMap` | a centre visited healthy | -- | **left, operator's**: the prompt's other effect is the whiteout map, which no macro reads; 12.12 keeps the full-party ring closed. With 62/62c/62d a hurt fly heals and moves it (9 of 10 branch surveys) |
+
+### Before and after
+
+Ten uniform-stub surveys per arm, 71,673 frames each (twenty brain minutes), `main` `862e343` vs
+branch, seeds 20260924 and 7. Checkpoints: `live` the row-62 live one (Mt. Moon 1F); `mtmoonpc`
+row 59's, inside the Mt. Moon centre at 10/70; `viridian` the milestone-5 one carried to rung 8
+(Viridian centre, 3,175, before the parcel); `pewter` row 59's rung-11 survey checkpoint (Pewter
+gym, 1,606, no ball, errands paid); `route2ball` the 2026-09-22 rung-9 one (Route 2, one Poké Ball).
+Cells are "frames dealt / starts".
+
+| run (checkpoint-arm-seed) | decidable | HEAL dealt/started | GO HEAL dealt/started | GO SHOP dealt/started | BUY BALL dealt/started | BUY POTION dealt/started | THROW BALL dealt/started | heals | balls bought | thrown | catches | whiteouts | blackout map |
+| live-base-s20260924 | 32178 | 0/0 | 0/0 | 0/0 | 0/0 | 0/0 | 0/0 | 0 | 0 | 0 | 0 | 0 | 0x00 |
+| live-base-s7 | 23494 | 0/0 | 48/3 | 1/1 | 0/0 | 0/0 | 0/0 | 0 | 0 | 0 | 0 | 1 | 0x00 |
+| live-branch-s20260924 | 31387 | 2/0 | 541/16 | 0/0 | 0/0 | 0/0 | 0/0 | 1 | 0 | 0 | 0 | 0 | 0x0f |
+| live-branch-s7 | 28546 | 7/0 | 405/8 | 178/6 | 0/0 | 0/0 | 0/0 | 2 | 0 | 0 | 0 | 1 | 0x02 |
+| mtmoonpc-base-s20260924 | 28069 | 31/0 | 75/3 | 0/0 | 0/0 | 0/0 | 0/0 | 0 | 0 | 0 | 0 | 1 | 0x00 |
+| mtmoonpc-base-s7 | 27696 | 9/0 | 11/1 | 0/0 | 0/0 | 0/0 | 0/0 | 0 | 0 | 0 | 0 | 1 | 0x00 |
+| mtmoonpc-branch-s20260924 | 35812 | 4/0 | 356/9 | 0/0 | 0/0 | 0/0 | 0/0 | 2 | 0 | 0 | 0 | 1 | 0x0f |
+| mtmoonpc-branch-s7 | 35128 | 25/2 | 634/7 | 0/0 | 0/0 | 0/0 | 0/0 | 2 | 0 | 0 | 0 | 0 | 0x0f |
+| pewter-base-s20260924 | 35351 | 0/0 | 0/0 | 0/0 | 0/0 | 0/0 | 0/0 | 0 | 0 | 0 | 0 | 1 | 0x00 |
+| pewter-base-s7 | 33628 | 0/0 | 1/1 | 0/0 | 0/0 | 0/0 | 0/0 | 0 | 0 | 0 | 0 | 1 | 0x00 |
+| pewter-branch-s20260924 | 33541 | 1/1 | 42/3 | 72/5 | 0/0 | 0/0 | 0/0 | 1 | 0 | 0 | 0 | 1 | 0x02 |
+| pewter-branch-s7 | 35554 | 0/0 | 30/1 | 29/2 | 0/0 | 0/0 | 0/0 | 0 | 0 | 0 | 0 | 1 | 0x00 |
+| route2ball-base-s20260924 | 32315 | 0/0 | 2/0 | 1/1 | 0/0 | 0/0 | 385/6 | 0 | 0 | 1 | 0 | 1 | 0x00 |
+| route2ball-base-s7 | 39135 | 0/0 | 0/0 | 0/0 | 0/0 | 0/0 | 385/6 | 0 | 0 | 1 | 0 | 1 | 0x00 |
+| route2ball-branch-s20260924 | 30993 | 41/0 | 209/6 | 38/2 | 9/0 | 9/1 | 385/6 | 1 | 0 | 1 | 0 | 1 | 0x02 |
+| route2ball-branch-s7 | 32296 | 1/1 | 57/2 | 0/0 | 0/0 | 0/0 | 385/6 | 1 | 0 | 1 | 0 | 1 | 0x01 |
+| viridian-base-s20260924 | 24307 | 2/1 | 2/0 | 34/2 | 0/0 | 0/0 | 0/0 | 1 | 0 | 0 | 0 | 3 | 0x01 |
+| viridian-base-s7 | 29710 | 1/1 | 1/0 | 65/2 | 0/0 | 0/0 | 0/0 | 1 | 0 | 0 | 0 | 4 | 0x01 |
+| viridian-branch-s20260924 | 34564 | 3/0 | 25/1 | 158/3 | 0/0 | 0/0 | 0/0 | 1 | 0 | 0 | 0 | 1 | 0x01 |
+| viridian-branch-s7 | 30238 | 1/1 | 1/0 | 94/2 | 0/0 | 0/0 | 0/0 | 1 | 0 | 0 | 0 | 2 | 0x01 |
+
+Totals, base -> branch: decidable frames 305,883 -> 328,059; `HEAL` dealt 43 -> 85; `GO HEAL`
+dealt 140 -> 2,300 (starts 8 -> 53); `GO SHOP` dealt 101 -> 569 (starts 6 -> 20); heals 2 -> 12;
+whiteout map off Pallet Town in 2 -> 9 runs; whiteouts 14 -> 9; `THROW BALL` identical (770 / 12,
+two thrown). No ball bought under the uniform stub on either arm: the counter opens only on
+`TALK`, then `CONFIRM`, then `BUY BALL`, and the stub rarely picks the three in a row. That is
+the fly's choice; with the chain preferred, the branch buys (Pewter: 1,606 -> 1,406, one ball) and
+`main` cannot (no `GO SHOP`, and a `BUY BALL` that ends before its box). The ROM tests fail on
+`main` (`HEAL` never dealt in 3,000 frames in the Mt. Moon centre; `GO SHOP` not on Pewter's pad)
+and pass on the branch (healed in 587 frames, `wLastBlackoutMap` `$0f`; one ball, 200 paid).
+
+The live event log's choices against the pad the survey measured from the live checkpoint on
+`main`: `HEAL`, `GO HEAL`, `GO SHOP`, `BUY BALL`, `BUY POTION`, `THROW BALL` dealt on 0 frames and
+chosen 0 times, except `GO SHOP` (2 starts in eleven hours, both the parcel errand, dealt only
+before it was paid). None of it was the fly's choice.
+
+**Review round 2** (two blocking findings, fixed in the macros; `docs/design/macros.md` 12.26).
+(1) Route 4's centre was dealt as `GO HEAL` (and as the errand under `GO OBJECTIVE`) from Route 4's
+east side and B1F's exit chamber, both in Route 4's area, and the road to it runs through B2F, in
+no area: the button dropped one hop in, opposite the road to Cerulean. A building is now the area's
+only where the route to it stays in the area (`geography::route_within`). ROM, from the live
+B2F checkpoint stepped up the ladder: the first round deals `GO HEAL` on 642 of 2,492 hurt frames
+east of the mountain and walks back down into B2F; the fix deals it on none (`main` none, no row).
+(2) Row 58's gym test failed on the first round (6 arrivals, 4 straight back out, by `GO HEAL` and
+`GO SHOP`): a service is not wanted while the rung's own target stands in the room (row 29's rule),
+and it passes (2 arrivals, 0 out, the badge won). The live Mt. Moon B2F trap at the ladder (row 64)
+is not this mechanism: from its checkpoint all three arms stay on B2F for twenty brain minutes,
+identically, and on `main` there is no Route 4 centre to route to.
+
 ## 2026-09-24, row 63: Mt. Moon B2F, ITEM, BACK, BACK
 
 ### What was live

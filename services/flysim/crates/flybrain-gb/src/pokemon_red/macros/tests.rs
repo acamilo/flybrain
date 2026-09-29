@@ -19,16 +19,16 @@ use crate::emulator::buttons;
 
 use super::cartridge::{
     BLOCKED_MINUTES_DEFAULT, CHEAPEST_PURCHASE, Edge, ExitId, FACINGS, LAST_MAP, MacroState, Objective,
-    TalkTarget, TargetKey, TargetLedger, Targets, Tile, battle_entry, button, item, price,
+    PURCHASES, TalkTarget, TargetKey, TargetLedger, Targets, Tile, battle_entry, button, item, price,
 };
-use super::geography::Amenity;
+use super::geography::{self, Amenity};
 use super::executor::{
     FRAME_CAP, FRAMES_PER_PLANNED_TILE, MacroAbort, MacroMachine, MacroRefused, Refusal,
     WALK_FRAME_CEILING, walk_budget,
 };
 use super::palette::{
-    MacroId, MacroKind, Palette, SLOTS, amenity_goals, answer_key, errand, facing_nurse,
-    healthiest_other, heal_goals, nurse_prompt, rested_nurse,
+    MacroId, MacroKind, Palette, SLOTS, amenity_goals, amenity_wanted, answer_key, errand, facing_nurse,
+    healthiest_other, heal_goals, inside_center, nurse_prompt, rested_nurse, service_needed,
     listing, losing, move_slot_bound, objective_goals, party_needs_rest, party_rested,
     poke_sprite, precondition, throw_slot, untalked_objects, untalked_people, ways,
 };
@@ -194,6 +194,14 @@ struct World {
     /// beside a cursor the game never clears, and what the palette asks is only "is a choice
     /// open" (section 12.12).
     prompt: bool,
+    /// A mart's price confirmation (row 62): after this many more A presses in the shop the price
+    /// line starts printing, and the YES/NO box is drawn this many frames later. `None`: the fake
+    /// draws no price box at all, which is what it did before row 62.
+    price_after: Option<(u8, u32)>,
+    /// The frame the price box is drawn on, once the presses above have been made.
+    price_at: Option<u32>,
+    /// Purchases the fake mart has rung up: an A on its drawn price box.
+    bought: u32,
     /// Whether the cartridge is driving the player right now ([`MacroState::scripted`]).
     scripted: bool,
     /// A frame at which the cartridge takes the joypad, which is what the Viridian gate does.
@@ -275,6 +283,9 @@ impl World {
             heal_at: None,
             box_open: false,
             prompt: false,
+            price_after: None,
+            price_at: None,
+            bought: 0,
             scripted: false,
             scripted_at: None,
             pulses: Vec::new(),
@@ -433,6 +444,12 @@ impl World {
             }
             self.heal_at = None;
         }
+        if let Some(at) = self.price_at
+            && self.frames >= at
+        {
+            self.prompt = true;
+            self.price_at = None;
+        }
         if mask == buttons::NONE && self.previous != buttons::NONE {
             self.pulses.push(self.previous);
             self.on_pulse(self.previous);
@@ -482,6 +499,24 @@ impl World {
         if mask == buttons::A && self.frames < self.latched_until {
             // The cartridge has not asked since the A that opened this list: this A is no edge.
             return;
+        }
+        if mask == buttons::A && self.scene == Scene::Shop {
+            if self.prompt {
+                // YES on the drawn price box: the one press that rings a purchase up, and the
+                // wallet pays for the item the list's cursor is on.
+                self.prompt = false;
+                self.bought += 1;
+                let item = self.stock.get(usize::from(self.cursor)).copied();
+                let price = PURCHASES.iter().find(|(id, _)| Some(*id) == item).map_or(0, |(_, p)| *p);
+                self.money = self.money.saturating_sub(price);
+            } else if let Some((left, print)) = self.price_after {
+                if left <= 1 {
+                    self.price_after = None;
+                    self.price_at = Some(self.frames + print);
+                } else {
+                    self.price_after = Some((left - 1, print));
+                }
+            }
         }
         if mask == buttons::A
             && let Some(next) = self.opens.pop_front()
@@ -712,7 +747,7 @@ impl MacroState for World {
     /// A drawn box is what the reading rests on, so a prompt cannot be open with no box open:
     /// `pokemon_red::state::yes_no_prompt` gates on `wFontLoaded` before it looks at the tiles.
     fn yes_no_prompt(&mut self) -> bool {
-        self.prompt && self.scene == Scene::Dialog
+        self.prompt && matches!(self.scene, Scene::Dialog | Scene::Shop)
     }
 
     fn move_without_effect(&mut self, id: u8) -> bool {
@@ -2430,6 +2465,8 @@ fn buy_potion_takes_buy_then_the_item_then_confirms_twice() {
     world.list = List::Shop(ShopScreen::BuySellQuit);
     world.cursor_max = 2;
     world.stock = vec![item::POKE_BALL, item::POTION];
+    // BUY, the item, the quantity, then the press the price line's `cont` waits for (row 62).
+    world.price_after = Some((4, 40));
     world.money = 1000;
     world.b_to_close = u8::MAX;
     // A on BUY opens the priced stock list.
@@ -2443,10 +2480,11 @@ fn buy_potion_takes_buy_then_the_item_then_confirms_twice() {
     assert_eq!(world.cursor, 1, "the potion is the second thing the mart stocks");
     assert_eq!(
         world.pulses.iter().filter(|mask| **mask == buttons::A).count(),
-        4,
-        "BUY, the item, the quantity and the price: {:?}",
+        5,
+        "BUY, the item, the quantity, the price line and the YES: {:?}",
         world.pulses
     );
+    assert_eq!(world.bought, 1, "and the price box was answered once it was drawn");
 }
 
 #[test]
@@ -2458,12 +2496,14 @@ fn buy_ball_skips_the_counter_menu_when_the_buy_list_is_already_up() {
     world.stock = vec![item::POKE_BALL, item::POTION];
     world.money = 1000;
     world.b_to_close = u8::MAX;
+    world.price_after = Some((3, 40));
     assert_eq!(run(&mut world, MacroKind::BuyBall).unwrap(), MacroAbort::Done);
+    assert_eq!(world.bought, 1);
     assert_eq!(world.cursor, 0);
     assert_eq!(
         world.pulses.iter().filter(|mask| **mask == buttons::A).count(),
-        3,
-        "the item, the quantity and the price: {:?}",
+        4,
+        "the item, the quantity, the price line and the YES: {:?}",
         world.pulses
     );
 }
@@ -4259,9 +4299,11 @@ fn go_shop_and_go_heal_are_on_the_pad_while_their_errand_stands() {
     assert!(on_the_pad(&mut world, MacroKind::GoHeal));
 
     // Paid, and the button leaves the pad -- which is section 12's "a precondition failure means
-    // the button is not on the pad", and what makes the errand impossible to loop on.
+    // the button is not on the pad", and what makes the errand impossible to loop on. Since row
+    // 62 that holds while neither building has a job to do: a ball in the bag and a full party.
     world.areas.insert((Amenity::Mart, maps::VIRIDIAN_CITY));
     world.areas.insert((Amenity::Center, maps::VIRIDIAN_CITY));
+    world.bag = vec![(item::POKE_BALL, 3)];
     assert!(!on_the_pad(&mut world, MacroKind::GoShop));
     assert!(!on_the_pad(&mut world, MacroKind::GoHeal));
 
@@ -4527,6 +4569,7 @@ fn a_purchase_navigates_by_the_items_place_in_the_stock_list() {
     world.cursor_max = 3;
     world.stock = vec![item::POKE_BALL, item::ANTIDOTE, 15, 12];
     world.money = 3_000;
+    world.price_after = Some((3, 40));
     assert_eq!(run(&mut world, MacroKind::BuyAntidote).unwrap(), MacroAbort::Done);
     assert_eq!(world.cursor, 1, "the Antidote's own index");
     assert_eq!(world.pulses.last(), Some(&buttons::A), "the price confirmation");
@@ -5421,11 +5464,15 @@ fn a_declined_heal_writes_the_nurse_into_the_talked_ledger() {
     assert_eq!(run(&mut center, MacroKind::No).unwrap(), MacroAbort::Done);
     assert!(center.talked.contains(&TalkTarget::Sprite(1)), "the nurse: {:?}", center.talked);
 
-    // So `TALK` is off the pad there even if the party is hurt later: the ledger is the record
-    // that this run has had her conversation.
+    // So `TALK` is off the pad there while the party stays full: the ledger is the record that
+    // this run has had her conversation, and a full party has nothing to ask her for.
     center.scene = Scene::Overworld;
-    center.mons[0].hp = 4;
     assert!(!precondition(MacroKind::Talk, &mut center));
+
+    // Row 62: hurt again later, and she is a service with a job to do. The talked ledger said
+    // "never again" for the session, which was the whole Mt. Moon run's one nurse.
+    center.mons[0].hp = 4;
+    assert!(precondition(MacroKind::Talk, &mut center), "a hurt party has a use for her");
 }
 
 #[test]
@@ -5599,4 +5646,278 @@ fn a_trainer_walking_up_teaches_the_ledgers_nothing() {
     hand_back(&mut machine, &mut world);
     assert!(!world.targets.blocked(world.map, north), "a challenge is not the road refusing");
     assert!(world.pushes.is_empty(), "and the ground is as walkable as it was");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Row 62: a service the fly has a use for is not withheld by the ledger that paid its errand
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn go_heal_comes_back_for_a_hurt_party_after_the_errand_is_paid() {
+    // The live run of 2026-09-24: the fly entered the Viridian centre once with a full party,
+    // which paid the errand for the run, and was never offered `GO HEAL` in Viridian again --
+    // eleven hours, no heal anywhere, and every whiteout sent it back to Pallet Town.
+    let mut world = viridian();
+    world.areas.insert((Amenity::Center, maps::VIRIDIAN_CITY));
+    world.seen_maps.insert(maps::VIRIDIAN_POKECENTER);
+    assert_eq!(errand(&mut world, Amenity::Center), None, "the errand is paid");
+    assert!(!on_the_pad(&mut world, MacroKind::GoHeal), "full party: nothing to go for");
+
+    world.mons[0].hp = 7;
+    assert!(on_the_pad(&mut world, MacroKind::GoHeal), "hurt: the centre has a job to do");
+    assert_eq!(
+        amenity_goals(&mut world, Amenity::Center).iter().map(|aim| aim.tile).collect::<Vec<_>>(),
+        vec![Tile::new(6, 1)],
+        "the centre's door"
+    );
+
+    // A status counts as the nurse's job too, and a route with no centre has none to go to.
+    world.mons[0].hp = 20;
+    world.mons[0].status = Status::Poison;
+    assert!(on_the_pad(&mut world, MacroKind::GoHeal));
+    world.map = maps::ROUTE_1;
+    assert!(!on_the_pad(&mut world, MacroKind::GoHeal), "no centre in this area");
+}
+
+#[test]
+fn go_shop_comes_back_while_the_bag_has_no_ball_and_the_money_covers_one() {
+    // The Viridian mart is entered first for Oak's parcel, when its clerk sells nothing, and that
+    // visit paid the errand for the run: `GO SHOP` was never dealt in Viridian again, `BUY BALL`
+    // never, `THROW BALL` never (live: GO SHOP 2 starts in eleven hours, both on the parcel).
+    let mut world = viridian();
+    world.areas.insert((Amenity::Mart, maps::VIRIDIAN_CITY));
+    world.seen_maps.insert(maps::VIRIDIAN_MART);
+    assert_eq!(errand(&mut world, Amenity::Mart), None, "the errand is paid");
+    assert!(on_the_pad(&mut world, MacroKind::GoShop), "no ball and 3000 to buy one with");
+
+    // A ball in the bag: nothing to go for.
+    world.bag = vec![(item::POTION, 1), (item::POKE_BALL, 1)];
+    assert!(!on_the_pad(&mut world, MacroKind::GoShop));
+    // Thrown, and it is back.
+    world.bag = vec![(item::POTION, 1)];
+    assert!(on_the_pad(&mut world, MacroKind::GoShop));
+    // Under a ball's price: nothing it could buy the ball with.
+    world.money = price::POKE_BALL - 1;
+    assert!(!on_the_pad(&mut world, MacroKind::GoShop));
+    world.money = price::POKE_BALL;
+    assert!(on_the_pad(&mut world, MacroKind::GoShop));
+    // Carrying Oak's parcel the Viridian counter sells nothing (`scripts/ViridianMart.asm`).
+    world.bag = vec![(item::OAKS_PARCEL, 1)];
+    assert!(!on_the_pad(&mut world, MacroKind::GoShop), "the parcel's text table, no counter");
+}
+
+#[test]
+fn heal_is_dealt_facing_the_nurse_and_after_go_heal_has_reached_her() {
+    // Row 62. `HEAL`'s goals were `counter_aims`, which drops the tile the fly already faces her
+    // from and retires a nurse `GO HEAL` has reached for ten brain minutes: so `HEAL` was off the
+    // pad on the one tile it is for, and for ten minutes after the walk that put the fly there.
+    let mut center = World::center();
+    center.player = Tile::new(3, 3);
+    center.facing = Facing::Up;
+    center.mons[0].hp = 5;
+    assert!(facing_nurse(&mut center));
+    assert!(on_the_pad(&mut center, MacroKind::Heal), "facing her with a hurt party");
+
+    let nurse = TargetKey::Thing(TalkTarget::Sprite(1));
+    center.targets.record_reached(center.map, nurse);
+    center.talked.insert(TalkTarget::Sprite(1));
+    assert!(on_the_pad(&mut center, MacroKind::Heal), "reached and talked: still her job");
+    assert!(on_the_pad(&mut center, MacroKind::Talk), "and the press that opens her box");
+
+    // It runs from where it stands: no walk, the talk, the YES, and a party that reads full.
+    center.switch = Some((40, Scene::Dialog));
+    center.heal_at = Some(80);
+    assert_eq!(run(&mut center, MacroKind::Heal).unwrap(), MacroAbort::Done);
+    assert_eq!(center.player, Tile::new(3, 3));
+    assert!(party_rested(&mut center));
+    center.scene = Scene::Overworld;
+    assert!(!on_the_pad(&mut center, MacroKind::Heal), "full: the button leaves the pad");
+    assert!(!on_the_pad(&mut center, MacroKind::Talk), "and so does the nurse's conversation");
+
+    // The blocked window is kept: a counter no walk reaches is still that.
+    center.mons[0].hp = 5;
+    center.targets.record_blocked(center.map, nurse);
+    assert!(!on_the_pad(&mut center, MacroKind::Heal));
+}
+
+#[test]
+fn a_counter_the_fly_has_a_use_for_opens_again_after_this_session_has_talked_to_it() {
+    // The clerk talked once this session (the parcel, or a visit that bought nothing) was out of
+    // `TALK`'s reach for the rest of it, and `GO SHOP` inside had nobody to walk to: the counter
+    // could not be opened again, so `BUY BALL` could not be dealt again.
+    let mut mart = World::mart();
+    mart.talked.insert(TalkTarget::Sprite(1));
+    mart.targets.record_reached(mart.map, TargetKey::Thing(TalkTarget::Sprite(1)));
+    assert!(service_needed(&mut mart, Amenity::Mart));
+    assert!(on_the_pad(&mut mart, MacroKind::GoShop), "walk to the clerk: {:?}", pad_of(&mut mart));
+
+    // At the counter, facing him: the walk is done and the press that opens it is dealt.
+    mart.player = Tile::new(2, 5);
+    mart.facing = Facing::Left;
+    assert!(!on_the_pad(&mut mart, MacroKind::GoShop), "already there");
+    assert!(on_the_pad(&mut mart, MacroKind::Talk), "open the counter again");
+
+    // With a ball in the bag the ledgers answer as they always did.
+    mart.bag = vec![(item::POKE_BALL, 2)];
+    assert!(!on_the_pad(&mut mart, MacroKind::Talk));
+    mart.player = Tile::new(3, 6);
+    assert!(!on_the_pad(&mut mart, MacroKind::GoShop));
+}
+
+#[test]
+fn the_mt_moon_pokecenter_is_a_centre_and_route_4s() {
+    // Route 4's centre, the last before Mt. Moon, was on no table: `HEAL` was never dealt in it and
+    // the nurse's prompt was nobody's. Live: the fly stood in it at 10/70 (the row 59 checkpoint)
+    // and walked back out.
+    assert_eq!(geography::amenity_at(maps::MT_MOON_POKECENTER), Some(Amenity::Center));
+    assert_eq!(geography::area_of(maps::MT_MOON_POKECENTER), Some(maps::ROUTE_4));
+    assert_eq!(geography::amenity_of(maps::ROUTE_4, Amenity::Center), Some(maps::MT_MOON_POKECENTER));
+    assert_eq!(geography::amenity_of(maps::ROUTE_4, Amenity::Mart), None, "Route 4 has no mart");
+    // The cave's first floor opens onto Route 4, so a hurt fly inside it has a centre to go to.
+    assert_eq!(geography::area_of(maps::MT_MOON_1F), Some(maps::ROUTE_4));
+
+    let mut center = World::center();
+    center.map = maps::MT_MOON_POKECENTER;
+    center.player = Tile::new(3, 3);
+    center.facing = Facing::Up;
+    center.mons[0].hp = 10;
+    assert!(inside_center(&mut center));
+    assert!(on_the_pad(&mut center, MacroKind::Heal));
+}
+
+#[test]
+fn the_nurse_is_found_from_the_door_when_the_screen_does_not_draw_her() {
+    // Row 62, measured in the Pewter centre: the fly arrives at (3, 7) and the nurse at (3, 1) is
+    // six rows up, off the top of the screen, so the drawn sprites hold nobody behind the
+    // counter. The pad on arrival was the way out: no `HEAL`, no `GO HEAL`, and the counter's
+    // suppression released.
+    let mut center = World::center();
+    center.player = Tile::new(3, 7);
+    center.mons[0].hp = 6;
+    center.offscreen = std::mem::take(&mut center.npcs);
+    assert!(
+        heal_goals(&mut center).iter().any(|aim| aim.tile == Tile::new(3, 3)),
+        "over the counter: {:?}",
+        heal_goals(&mut center)
+    );
+    assert!(on_the_pad(&mut center, MacroKind::Heal));
+    assert!(!on_the_pad(&mut center, MacroKind::GoOut), "the counter is still unfaced");
+}
+
+#[test]
+fn a_purchase_answers_the_price_box_once_the_cartridge_has_drawn_it() {
+    // Row 62, from the rung-11 checkpoint in the Pewter mart: the price line "POKe BALL? That will
+    // be 200. OK?" prints at text speed after the quantity is chosen, and only then is the YES/NO
+    // box drawn. The script's last A came one settle after the quantity's and landed on the text
+    // while it was still printing, so `BUY BALL` reported `done` with nothing bought -- 55 starts,
+    // 55 `done`, the wallet at 1,606 throughout -- and the box it had not answered was left to
+    // whatever the pad dealt next.
+    let mut world = World::room();
+    world.scene = Scene::Shop;
+    world.list = List::Shop(ShopScreen::Buying);
+    world.cursor_max = 3;
+    world.stock = vec![item::POKE_BALL, item::POTION, 29, item::ANTIDOTE];
+    world.money = 1_606;
+    world.b_to_close = u8::MAX;
+    // Measured: the line waits for a press after "That will be", and the box is drawn after
+    // the rest of it prints. The fake draws it three presses after the item's: the item, the
+    // quantity, and the press that the `cont` waits for.
+    world.price_after = Some((3, 30));
+    assert_eq!(run(&mut world, MacroKind::BuyBall).unwrap(), MacroAbort::Done);
+    assert_eq!(world.bought, 1, "YES on the drawn box: {:?}", world.pulses);
+    assert!(!world.prompt, "and the box is answered, not left up");
+
+    // A box that never comes is not a purchase: `blocked`, and nothing answered.
+    let mut world = World::room();
+    world.scene = Scene::Shop;
+    world.list = List::Shop(ShopScreen::Buying);
+    world.cursor_max = 3;
+    world.stock = vec![item::POKE_BALL];
+    world.money = 1_606;
+    world.b_to_close = u8::MAX;
+    assert_eq!(run(&mut world, MacroKind::BuyBall).unwrap(), MacroAbort::Blocked);
+    assert_eq!(world.bought, 0);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Row 62, review round 2: a service is not dealt off the area's ground, nor out of the rung's room
+// ---------------------------------------------------------------------------------------------
+
+/// A hurt fly with no ball and money for one, on `map` at `(x, y)`, the rung in Cerulean.
+fn hurt_on(map: u8, x: u8, y: u8) -> World {
+    let mut world = World::room().at(x, y);
+    world.map = map;
+    world.size = MapSize { width: 40, height: 36 };
+    world.warps = Vec::new();
+    world.mons[0].hp = 7;
+    world.money = 1_000;
+    world.objective = Some(Objective {
+        map: maps::CERULEAN_CITY,
+        tile: None,
+        warp: None,
+        edge: None,
+        target: None,
+    });
+    world
+}
+
+#[test]
+fn east_of_mt_moon_route_4s_centre_is_not_the_areas_errand_or_service() {
+    // B1: Route 4's east side (where the fly comes out of the mountain, hurt) and B1F's exit
+    // chamber are "in Route 4", and the centre is on the west side through B2F, which is in no
+    // area. The pad dealt `GO HEAL` there, its walk took it into B2F, and it left the pad one hop
+    // in, opposite `GO OBJECTIVE`'s road back up: a two-map ring by construction.
+    for (map, x, y, place) in [
+        (maps::ROUTE_4, 30, 10, "Route 4 east"),
+        (maps::MT_MOON_B1F, 26, 4, "B1F exit chamber"),
+    ] {
+        let mut world = hurt_on(map, x, y);
+        assert!(party_needs_rest(&mut world));
+        assert_eq!(errand(&mut world, Amenity::Center), None, "{place}: not the area's errand from here");
+        assert_eq!(amenity_wanted(&mut world, Amenity::Center), None, "{place}: nor its service");
+        assert!(amenity_goals(&mut world, Amenity::Center).is_empty(), "{place}");
+        assert!(!on_the_pad(&mut world, MacroKind::GoHeal), "{place}: GO HEAL is off the pad");
+        assert_eq!(
+            super::palette::objective_place(&mut world).map(|place| place.map),
+            Some(maps::CERULEAN_CITY),
+            "{place}: GO OBJECTIVE is the rung, not the centre behind the mountain"
+        );
+    }
+
+    // West of the mountain, and on the first floor, it is the area's centre as it was.
+    let mut world = hurt_on(maps::ROUTE_4, 12, 8);
+    world.warps = vec![Warp { x: 11, y: 5, destination_warp: 0, destination_map: maps::MT_MOON_POKECENTER }];
+    assert_eq!(amenity_wanted(&mut world, Amenity::Center), Some(maps::MT_MOON_POKECENTER));
+    assert!(on_the_pad(&mut world, MacroKind::GoHeal), "the door is a few tiles away");
+    let mut world = hurt_on(maps::MT_MOON_1F, 14, 20);
+    assert_eq!(amenity_wanted(&mut world, Amenity::Center), Some(maps::MT_MOON_POKECENTER));
+}
+
+#[test]
+fn a_service_does_not_walk_the_fly_out_of_the_rungs_room() {
+    // B2, row 58's ROM test on the branch: in the Pewter Gym with BROCK up the room, a hurt party
+    // and an empty bag put `GO HEAL` and `GO SHOP` on the pad, and both walked out of the door the
+    // fly had just come in by -- four of six arrivals bounced. Row 29's rule is the ways out's and
+    // is now the services' too.
+    let mut world = pewter_gym_doormat();
+    world.mons[0].hp = 7;
+    world.money = 1_000;
+    world.bag = Vec::new();
+    assert!(service_needed(&mut world, Amenity::Center));
+    assert!(service_needed(&mut world, Amenity::Mart));
+    assert!(!super::palette::objective_targets(&mut world).is_empty(), "BROCK is in the room");
+    assert_eq!(amenity_wanted(&mut world, Amenity::Center), None);
+    assert_eq!(amenity_wanted(&mut world, Amenity::Mart), None);
+    assert!(!on_the_pad(&mut world, MacroKind::GoHeal));
+    assert!(!on_the_pad(&mut world, MacroKind::GoShop));
+    assert!(on_the_pad(&mut world, MacroKind::GoObjective), "the walk to him is still there");
+
+    // The rule's own escape hatch: with the room's people talked to (or excluded), the services
+    // are wanted again and the centre is Pewter's.
+    for slot in [1, 2] {
+        world.talked.insert(TalkTarget::Sprite(slot));
+    }
+    assert!(super::palette::objective_targets(&mut world).is_empty());
+    assert_eq!(amenity_wanted(&mut world, Amenity::Center), Some(maps::PEWTER_POKECENTER));
+    assert_eq!(amenity_wanted(&mut world, Amenity::Mart), Some(maps::PEWTER_MART));
 }

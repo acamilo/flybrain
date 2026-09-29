@@ -56,6 +56,10 @@ pub mod item {
     pub const POTION: u8 = 20;
     /// `$1e`.
     pub const REPEL: u8 = 30;
+    /// `$46`. The Viridian clerk's parcel for Oak: while the bag holds it, that counter has
+    /// nothing to sell (`scripts/ViridianMart.asm` keeps the parcel's text table until
+    /// `EVENT_OAK_GOT_PARCEL`).
+    pub const OAKS_PARCEL: u8 = 0x46;
 }
 
 /// Mart prices at the pinned pokered commit, for section 3's "if money allows".

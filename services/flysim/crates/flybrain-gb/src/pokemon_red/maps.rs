@@ -86,5 +86,9 @@ pub const MT_MOON_B2F: u8 = 0x3d;
 pub const CERULEAN_POKECENTER: u8 = 0x40;
 pub const CERULEAN_GYM: u8 = 0x41;
 pub const CERULEAN_MART: u8 = 0x43;
+/// Route 4's Pokémon Center, the one beside Mt. Moon's mouth: the id straight after
+/// `CERULEAN_MART` `$43`, and confirmed by the cartridge rather than by counting -- Route 4's warp
+/// table names `$44` at (11, 5) (`tests/rom_macros_mode.rs`, row 59's door survey).
+pub const MT_MOON_POKECENTER: u8 = 0x44;
 pub const ROCK_TUNNEL_1F: u8 = 0x52;
 pub const INDIGO_PLATEAU_LOBBY: u8 = 0xae;
