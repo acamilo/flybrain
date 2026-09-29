@@ -24,6 +24,8 @@ both_transports!(
     bootstrap_cannot_advance_the_world_or_produce_a_reward,
     the_committed_snapshot_names_the_boundary_that_just_ended,
     a_terminal_episode_pauses_at_its_own_boundary,
+    a_rollback_request_without_a_declared_policy_fails_the_epoch,
+    a_declared_rollback_policy_holds_the_session_at_its_boundary,
     status_answers_with_the_committed_boundary,
     a_worker_refuses_a_second_initialize,
     a_single_agent_composition_runs_the_same_transaction,
@@ -305,6 +307,48 @@ async fn a_terminal_episode_pauses_at_its_own_boundary(via: Via) {
     // No worker resets itself, and no further gameplay transition is allowed.
     let err = f.harness.coordinator.step().await.expect_err("no transition after terminal");
     assert_eq!(err.error.code, ErrorCode::InvalidPhase);
+    f.shutdown().await;
+}
+
+/// `workers-v1` section 4 (2026-09-23): a composition that declares no rollback policy treats a
+/// rollback request as a task failure. The transition does not commit and the epoch is fenced.
+async fn a_rollback_request_without_a_declared_policy_fails_the_epoch(via: Via) {
+    let config = HarnessConfig {
+        terminal: fly_session::task::Terminal::RollbackAfterTransitions(2),
+        ..HarnessConfig::default()
+    };
+    let mut f = fixture(via, config).await;
+    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
+    assert!(f.harness.coordinator.rollback_policy().is_none());
+    within("step 1", f.harness.coordinator.step()).await.unwrap();
+    let err = within("step 2", f.harness.coordinator.step()).await.expect_err("refused");
+    assert_eq!(err.error.code, ErrorCode::Unsupported);
+    assert!(err.error.message.contains("no rollback policy"), "{}", err.error.message);
+    assert!(f.harness.coordinator.is_fenced());
+    assert_eq!(f.harness.coordinator.stats().commits, 2, "two agents committed transition 1; transition 2 committed nothing");
+    f.shutdown().await;
+}
+
+/// With `legacy-ratchet-rollback-v1` declared the request is accepted: the transition commits and
+/// the session holds at its boundary with the request recorded, for the policy to run.
+async fn a_declared_rollback_policy_holds_the_session_at_its_boundary(via: Via) {
+    let config = HarnessConfig {
+        terminal: fly_session::task::Terminal::RollbackAfterTransitions(2),
+        ..HarnessConfig::default()
+    };
+    let mut f = fixture(via, config).await;
+    f.harness
+        .coordinator
+        .declare_rollback_policy("legacy-ratchet-rollback-v1")
+        .unwrap();
+    assert!(f.harness.coordinator.declare_rollback_policy("reset-everything").is_err());
+    within("bootstrap", f.harness.coordinator.bootstrap()).await.unwrap();
+    let reports = within("run", f.harness.coordinator.run(4)).await.unwrap();
+    assert_eq!(reports.len(), 2);
+    assert!(!f.harness.coordinator.is_fenced());
+    assert_eq!(f.harness.coordinator.phase(), Phase::Paused(2));
+    let request = f.harness.coordinator.episode_request().unwrap();
+    assert_eq!(request.kind, EpisodeRequestKind::Rollback);
     f.shutdown().await;
 }
 
