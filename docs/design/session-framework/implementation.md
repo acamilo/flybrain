@@ -249,6 +249,43 @@ adapter. Keep `legacy-gameboy-v1` separately routed with exact old ordering/hash
 its own identity and public adapter selection. No console-specific state enters generic
 session types. ROM-backed checks are optional explicit jobs, not required downloads.
 
+### MEM-01 — The boundary memory image (port slice)
+
+**2026-09-29: built** on `port/mem-01` off v0.6.5 and awaiting review. It changes no live
+behaviour: nothing in `flysim` calls the new read, and the compatibility string is unchanged. It
+delivers the piece of ENV-01 above that reads "add the one read-only bulk memory read to the shim
+and prove it mutates nothing", together with the executor-side reader that TASK-01 and the
+CUT-01 shadow need.
+
+- **Shim.** `fly_gb_read_memory_image(gb, out, 65536)` fills the buffer in address order.
+  `Emulator::read_memory_image{,_into}` wraps it. There is no new write path.
+  [legacy-gameboy-v1](legacy-gameboy-v1.md) section 8 carries a dated amendment (2026-09-29):
+  VRAM, OAM and I/O are not captured and read `$FF`. binjgb's read of those windows runs a
+  catch-up that moves the exported state. Every memory byte is captured exactly.
+- **Executor reader.** `flybrain_gb::{MemoryImage, Cartridge, ImageReader}`. `ImageReader`
+  implements `MemoryReader`. The palette, `MacroLayer`, `PokeState` and `PokemonRedReward` run
+  over it unchanged; this is the same code, not a port. The emulator's own bank reads now go
+  through the same `Cartridge::read_bank`.
+- **Proof.** flybrain-gb `tests/rom_memory_image.rs` (ROM) checks three things. The exported
+  state is byte-identical before and after each bulk read over 4,200 boot frames. The image
+  equals the single and cached reads. Reading every frame leaves framebuffers, audio and state
+  frame-for-frame equal to a run that is never read. flysim `tests/rom_memory_image.rs` runs a
+  live arm and an image-only shadow arm (task and executor) from nine rom-env checkpoints for
+  3,000 frames each: 27,000 frames with about 5.5 M `MacroState` answers, deals, pads,
+  decisions, rewards, ledgers and rollbacks. It finds 0 mismatches and 0 reads outside the
+  captured ranges.
+- **Cost.** A bulk read has a median of 0.31 ms per boundary, 1.9 % of a 16.74 ms frame or
+  about 209 MB/s of reading. This is the same cost as the 57,120 single reads it replaces. The
+  image is 3.91 MB/s at 59.7275 fps. A 64 KiB copy has a median of 5 µs, and the optional
+  SHA-256 digest a median of 0.36 ms. Means and p99 values are dominated by preemption: the
+  measurement ran on the shared 4-core build box at load 16.
+
+**For ENV-01:** after `run_frame` and after a slot import, publish
+`read_memory_image` as the `gameboy-memory-inspection-v1` artifact (`MEMORY_IMAGE_CONTENT_TYPE`,
+65,536 bytes, digest optional, `romDigest` = `Cartridge::sha256_hex`). **For TASK-01:** build
+the executor over `ImageReader::new(&O[k], &cartridge)` in Phase B and over O[k+1] in Phase C,
+retaining O[k] until then. The `Cartridge` comes from `Cartridge::verified(rom, contentDigest)`.
+
 ### STATE-01 — Coherent all-participant checkpoint/recovery
 
 **Depends on:** SESSION-02, MEDIA-01; validate with fake agents first, then AGENT-01/ENV-01.

@@ -169,7 +169,8 @@ interface GameboyMemoryInspection {
 }
 ```
 
-- **The image.** Byte *i* is what `fly_gb_read_mem(i)` returns at this boundary, which is
+- **The image.** (Amended 2026-09-29, below: the register windows are not captured.) Byte *i*
+  is what `fly_gb_read_mem(i)` returns at this boundary, which is
   what every task and executor read in the legacy loop sees through the per-frame read cache.
   It is a listed bus attachment, content type `application/octet-stream`. Its digest is optional,
   because it is a transient live artifact ([state-media-v1](state-media-v1.md) section 1). At
@@ -186,6 +187,38 @@ interface GameboyMemoryInspection {
   image never carries ROM banks beyond the ones the CPU has mapped.
 - **Retention.** The coordinator keeps O[k]'s image until transition k→k+1 has been evaluated.
   The executor reads it in Phase B, and the task reads old and new images in Phase C.
+
+**Amendment, 2026-09-29 (MEM-01).** The image captures the address space's *memory*, not its
+*registers*. The two proofs this section demands contradicted each other for three windows: a
+read of VRAM (`$8000-$9FFF`), OAM (`$FE00-$FE9F`) or I/O with the APU and wave RAM
+(`$FF00-$FF7F`) goes through binjgb's lazy catch-up (`ppu_synchronize`, `timer_synchronize`,
+`serial_synchronize`, `intr_synchronize`, `apu_synchronize`) before it answers. The catch-up
+rewrites the subsystem's sync bookkeeping, so the exported state changes. On a boot run it
+changed on 104 to 105 of 105 sampled boundaries for each window. A full 65,536-byte read
+through `emulator_read_mem` is therefore not read-only by the state-comparison test. The amended
+rule:
+
+- **Captured**: `$0000-$7FFF` (ROM as mapped), `$A000-$FDFF` (cartridge RAM, work RAM and its
+  echo), `$FEA0-$FEFF` (the unused block) and `$FF80-$FFFF` (high RAM and `IE`). Byte *i* is
+  exactly what `fly_gb_read_mem(i)` returns at this boundary. binjgb reads each of these
+  straight out of an array, with no catch-up.
+- **Not captured**: the three register windows above. They read `$FF` (binjgb's
+  `INVALID_READ_BYTE`), and the shim does not call `emulator_read_mem` for them.
+- **Unchanged**: the artifact is still 65,536 bytes in address order,
+  `application/octet-stream`, with an optional digest. `gameboy-memory-inspection-v1` is
+  therefore unchanged, and so are its schema digest and the contract digest.
+- **Why no task or executor loses anything**: none of them reads a register window. The Pokémon
+  adapter, scene detector and macro engine read WRAM, HRAM and ROM only. MEM-01's equivalence
+  harness (flysim `tests/rom_memory_image.rs`) counts every address the image-backed arm reads
+  over 27,000 frames from nine checkpoints and finds no read outside the captured ranges. A future
+  task that needs a register must amend this section first. A register cannot be captured
+  read-only through this shim.
+
+The shim function is `fly_gb_read_memory_image(gb, out, 65536)`, and in Rust it is
+`Emulator::read_memory_image{,_into}`. The executor's reader is `flybrain_gb::ImageReader`,
+which pairs a `MemoryImage` with a `Cartridge`. `Cartridge::verified` refuses a ROM whose SHA-256
+is not the environment's `contentDigest`. The emulator answers its own bank reads through the same
+`Cartridge::read_bank`.
 
 ## 9. Environment
 
