@@ -502,6 +502,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "fly-session",
  "fly-session-types",
  "flybrain-core",
  "flybrain-gb",

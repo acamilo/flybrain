@@ -14,9 +14,14 @@
 //! (`agent_to_chunks`). A state digest is exact equality of every membrane, trace, gain, rate,
 //! RNG and decoder field.
 //!
-//! [`ReferenceSource`] is the seam for FND-01: a reader of `LegacyFrame`'s `FLY_TRACE` is a
-//! second reference beside [`DirectReference`], producing the same records from the running
-//! loop instead of from a transcription of it. Nothing here depends on it.
+//! FND-01's `FLY_TRACE` (`flysim::trace`, `flysim-legacy-frame-trace-v1`) is the running loop's
+//! own record. It carries digests and behaviour fields rather than full telemetry, and neither the
+//! frames nor the `{boot, bound, location}` context, so it cannot drive a worker by itself: it
+//! checks one. [`read_frame_trace`] reads it and [`check_against_trace`] holds a run's records to
+//! it. `flysim/tests/agent_trace_parity.rs` is the host that runs `LegacyFrame` with the trace on,
+//! records the missing inputs as a [`LegacyScript`], and checks both the worker and
+//! [`DirectReference`] against the trace -- so the transcription is itself checked against the
+//! service. [`ReferenceSource`] stays the seam for sources of full records.
 //!
 //! [`toy`] is the committed toy connectome the goldens run on; the real dataset is optional.
 
@@ -546,9 +551,8 @@ pub fn compare(left: &[ParityRecord], right: &[ParityRecord]) -> Result<(), Stri
 
 /// A source of reference records for a script.
 ///
-/// [`DirectReference`] is one. FND-01's `LegacyFrame` trace (`FLY_TRACE`) is meant to be the
-/// other: it would produce the same records from the running legacy loop, and at that point the
-/// transcription in [`DirectReference`] is itself checked against the service.
+/// [`DirectSource`] and [`RestoredSource`] are the two. FND-01's `FLY_TRACE` records digests
+/// rather than full records, so it is a check ([`check_against_trace`]) rather than a source.
 pub trait ReferenceSource {
     fn records(&mut self, script: &LegacyScript) -> Result<Vec<ParityRecord>, String>;
 }
@@ -557,8 +561,10 @@ pub trait ReferenceSource {
 // The direct reference: NeuralAgent in `Sim::step_frame` order
 
 /// `NeuralAgent` driven the way `flysim::simloop::Sim` drives it, transcribed line by line from
-/// `fresh_start`, `step_frame`, `recover` and `try_restore`, with the emulator, adapter and
-/// macro layer replaced by the script's recorded outputs.
+/// `fresh_start`, `step_frame`, `recover` and `try_restore` (since FND-01, one type:
+/// `flysim::frame::LegacyFrame`'s `initialize`, `transition`, `rollback` and `restore`, whose two
+/// reorderings touch disjoint state), with the emulator, adapter and macro layer replaced by the
+/// script's recorded outputs.
 pub struct DirectReference {
     dataset: Arc<BrainDataset>,
     agent: NeuralAgent,
@@ -757,7 +763,52 @@ pub struct DirectSource {
 
 impl ReferenceSource for DirectSource {
     fn records(&mut self, script: &LegacyScript) -> Result<Vec<ParityRecord>, String> {
-        let (mut reference, first) = DirectReference::fresh(self.dataset.clone(), script)?;
+        let (reference, first) = DirectReference::fresh(self.dataset.clone(), script)?;
+        reference.run(first, script)
+    }
+}
+
+/// [`ReferenceSource`] from a legacy agent state (a `FLYSIM01` checkpoint's), the way the
+/// stream restores after a restart: `LegacyFrame::restore` into a fresh process's transient.
+pub struct RestoredSource {
+    pub dataset: Arc<BrainDataset>,
+    pub state: flybrain_core::agent::AgentState,
+}
+
+impl ReferenceSource for RestoredSource {
+    fn records(&mut self, script: &LegacyScript) -> Result<Vec<ParityRecord>, String> {
+        let mut agent = DirectReference::build(self.dataset.clone(), &script.macro_channels)?;
+        agent.import_state(&self.state).map_err(|e| e.to_string())?;
+        let frame = script.frames[script.initial_frame].clone();
+        let (width, height) = (agent.frame.width, agent.frame.height);
+        agent.network.set_visual_frame(&frame, width, height);
+        let reference = DirectReference {
+            dataset: self.dataset.clone(),
+            agent,
+            macro_channels: script.macro_channels.clone(),
+            remainder: self.state.remainder,
+            location: None,
+            held_channel: None,
+            blocked_since_ms: 0.0,
+            frame_buffer: frame,
+            boot: script.initial_context.boot,
+            bound: script.initial_context.bound.clone(),
+            reinforcements: legacy_reinforcements(&self.state),
+        };
+        let mut first = reference.record(0, "restore", 0, 0, None, None);
+        first.telemetry = None;
+        first.state = Some(reference.state_digest());
+        reference.run(first, script)
+    }
+}
+
+impl DirectReference {
+    fn run(
+        mut self,
+        first: ParityRecord,
+        script: &LegacyScript,
+    ) -> Result<Vec<ParityRecord>, String> {
+        let reference = &mut self;
         let mut records = vec![first];
         let mut boundary = 0u64;
         for (index, step) in script.steps.iter().enumerate() {
@@ -1394,6 +1445,95 @@ impl AgentDriver {
         }
         self.acknowledge(reply.request_id).await
     }
+
+    /// Starts the agent from a legacy agent state -- a `FLYSIM01` checkpoint's `agent`, with
+    /// the loop's frame remainder in it -- instead of from a warm-up, the way the stream restores
+    /// after a restart (`legacy-transient-reset`).
+    ///
+    /// This is the test side of an import nothing ships yet: the worker is initialized, its own
+    /// capture is taken as the template for the session member, the agent chunks and the clock
+    /// are replaced with `state`'s, and the result is restored into a replacement worker through
+    /// the ordinary `State.StageRestore` / `ActivateRestore`, which validates it like any other
+    /// payload. `learning.updates` starts at [`legacy_reinforcements`], because `FLYSIM01` does
+    /// not record every reinforcement call.
+    pub async fn seed_from_legacy_state(
+        &mut self,
+        rig: &mut LegacyRig,
+        agent_id: &Id,
+        initial_frame: usize,
+        state: &flybrain_core::agent::AgentState,
+    ) -> Result<ParityRecord, String> {
+        self.initialize(initial_frame).await?;
+        let template = self.capture().await?;
+        let bytes = legacy_state_payload(&template.bytes, state, &self.context)?;
+        let digest = digest_of_bytes(&bytes);
+        let artifact = crate::state::seal_payload(&self.client, &bytes, &digest)
+            .await
+            .map_err(domain)?;
+        let seeded = Captured {
+            result: CaptureResult {
+                payload: artifact.reference().clone(),
+                ..template.result
+            },
+            artifact,
+            bytes,
+            scope: template.scope,
+        };
+        let target = rig.replace(agent_id).await?;
+        self.restore_into(target, &seeded).await?;
+        let after = self.capture().await?;
+        let restored = payload_state_digest(&after.bytes)?;
+        if restored != state_digest(state) {
+            return Err("the seeded worker's state is not the legacy state".to_owned());
+        }
+        self.remainder = legacy_remainder_to_rational(state.remainder)?;
+        Ok(ParityRecord {
+            index: 0,
+            kind: "restore",
+            boundary: self.boundary,
+            ticks: 0,
+            brain_ticks: state.network.ms as u64,
+            remainder: self.remainder,
+            decision: None,
+            telemetry: None,
+            spikes: None,
+            state: Some(restored),
+        })
+    }
+}
+
+/// The reinforcement calls to start a legacy agent state's `learning.updates` at.
+///
+/// `FLYSIM01` records `plasticity.updates`, the reinforcements that moved a gain, but not every
+/// call, and the contract requires `learning.changed <= learning.updates`. An import that starts
+/// the call count at zero makes the first telemetry unreadable (found on the row-58 stream
+/// checkpoint: `changed` is in the thousands), so it starts at the recorded count, a lower bound
+/// on the calls actually made.
+pub fn legacy_reinforcements(state: &flybrain_core::agent::AgentState) -> u64 {
+    state.network.plasticity.updates as u64
+}
+
+/// A worker capture with its agent chunks and clock replaced by a legacy agent state, and its
+/// context by `context`: see [`AgentDriver::seed_from_legacy_state`].
+pub fn legacy_state_payload(
+    template: &[u8],
+    state: &flybrain_core::agent::AgentState,
+    context: &TypedValue,
+) -> Result<Vec<u8>, String> {
+    let mut session = captured_session(template)?;
+    let remainder = legacy_remainder_to_rational(state.remainder)?;
+    session["accumulator"]["remainder"] = remainder.to_json();
+    session["accumulator"]["executedTicks"] = json!((state.network.ms as u64).to_string());
+    session["reinforcements"] = json!(legacy_reinforcements(state).to_string());
+    session["context"] = context.to_json();
+    let chunks = agent_to_chunks(state);
+    let mut manifest = chunks.manifest;
+    manifest.set(
+        "session",
+        flybrain_core::json::JsonValue::parse(&session.to_string()).map_err(|e| e.to_string())?,
+    );
+    flybrain_core::envelope::encode_envelope(PAYLOAD_MAGIC, &manifest, &chunks.chunks)
+        .map_err(|e| e.to_string())
 }
 
 /// Runs a script against the rig's agent, recording what the coordinator observes.
@@ -1402,8 +1542,27 @@ pub async fn run_on_worker(
     agent_id: &Id,
     script: &LegacyScript,
 ) -> Result<Vec<ParityRecord>, String> {
+    run_on_worker_from(rig, agent_id, script, None).await
+}
+
+/// [`run_on_worker`], from a warm-up or, with `start`, from a legacy agent state
+/// ([`AgentDriver::seed_from_legacy_state`]).
+pub async fn run_on_worker_from(
+    rig: &mut LegacyRig,
+    agent_id: &Id,
+    script: &LegacyScript,
+    start: Option<&flybrain_core::agent::AgentState>,
+) -> Result<Vec<ParityRecord>, String> {
     let mut driver = rig.driver(agent_id, script);
-    let mut records = vec![driver.initialize(script.initial_frame).await?];
+    let first = match start {
+        None => driver.initialize(script.initial_frame).await?,
+        Some(state) => {
+            driver
+                .seed_from_legacy_state(rig, agent_id, script.initial_frame, state)
+                .await?
+        }
+    };
+    let mut records = vec![first];
     for (index, step) in script.steps.iter().enumerate() {
         let mut record = match step {
             ScriptStep::Frame {
@@ -1475,6 +1634,324 @@ pub fn golden_json(script: &LegacyScript, records: &[ParityRecord]) -> Value {
         "digest": digest_of(&Value::Array(all)).expect("records canonicalize"),
         "rows": records.iter().map(ParityRecord::row).collect::<Vec<_>>(),
     })
+}
+
+// -------------------------------------------------------------------------------------------
+// FND-01's FLY_TRACE: the running legacy loop as a reference
+
+/// The format name on the first line of a `FLY_TRACE` file (`flysim::trace::FORMAT`).
+pub const FRAME_TRACE_FORMAT: &str = "flysim-legacy-frame-trace-v1";
+
+/// One sugar or operator pulse admitted at the top of a legacy frame, before its ticks.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TraceAdmission {
+    Sugar {
+        duration_ms: f64,
+    },
+    /// `POST /reward`: `plasticity.reinforce(value)` at admission. It has no session-framework
+    /// counterpart, so a script cannot carry it and [`check_against_trace`] refuses a trace
+    /// that has one.
+    RewardPulse {
+        value: f64,
+    },
+}
+
+/// The agent-observable half of one `FLY_TRACE` transition line, `behaviour` only.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TraceTransition {
+    pub step: u64,
+    pub admissions: Vec<TraceAdmission>,
+    pub ticks: u64,
+    pub brain_ticks: u64,
+    pub remainder: RationalNs,
+    pub rates_digest: String,
+    pub spikes_digest: String,
+    pub spike_count: u64,
+    /// The decode's active set, as the executor was given it.
+    pub decision: Vec<String>,
+    /// The mask the emulator was given: the executor's, not the decision's.
+    pub mask: u32,
+    pub framebuffer_digest: String,
+    /// `(value, stimulationMs)` in adapter order.
+    pub rewards: Vec<RewardEvent>,
+    /// The boundary actions, `save-slot` and `rollback`, in order.
+    pub boundary_actions: Vec<String>,
+}
+
+/// Reads a `FLY_TRACE` file: the header, an optional start-boundary line, then one line per
+/// transition.
+pub fn read_frame_trace(text: &str) -> Result<Vec<TraceTransition>, String> {
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+    let header: Value = serde_json::from_str(lines.next().ok_or("an empty trace")?)
+        .map_err(|e| format!("the trace header: {e}"))?;
+    if header["format"] != FRAME_TRACE_FORMAT {
+        return Err(format!(
+            "the trace is {}, not {FRAME_TRACE_FORMAT}",
+            header["format"]
+        ));
+    }
+    let text_u64 = |v: &Value, key: &str| -> Result<u64, String> {
+        v[key]
+            .as_str()
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| format!("{key} is not a U64 string"))
+    };
+    let string = |v: &Value, key: &str| -> Result<String, String> {
+        v[key]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| format!("{key} is not a string"))
+    };
+    let mut out = Vec::new();
+    for (n, line) in lines.enumerate() {
+        let value: Value =
+            serde_json::from_str(line).map_err(|e| format!("trace line {}: {e}", n + 2))?;
+        let Some(b) = value.get("behaviour") else {
+            // The start boundary's captures: operational only.
+            continue;
+        };
+        let admissions = b["admissions"]
+            .as_array()
+            .ok_or("admissions is not a list")?
+            .iter()
+            .map(|a| match a["kind"].as_str() {
+                Some("sugar") => a["durationMs"]
+                    .as_f64()
+                    .map(|duration_ms| TraceAdmission::Sugar { duration_ms })
+                    .ok_or_else(|| "a sugar admission without durationMs".to_owned()),
+                Some("reward") => a["value"]
+                    .as_f64()
+                    .map(|value| TraceAdmission::RewardPulse { value })
+                    .ok_or_else(|| "a reward admission without value".to_owned()),
+                other => Err(format!("an admission of kind {other:?}")),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let rewards = b["rewards"]
+            .as_array()
+            .ok_or("rewards is not a list")?
+            .iter()
+            .map(|r| {
+                Ok(RewardEvent {
+                    value: r["value"].as_f64().ok_or("a reward without value")?,
+                    stimulation_ms: r["stimulationMs"]
+                        .as_f64()
+                        .ok_or("a reward without stimulationMs")?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let decision = b["decision"]
+            .as_array()
+            .ok_or("decision is not a list")?
+            .iter()
+            .map(|c| c.as_str().map(str::to_owned).ok_or("a decision channel"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let boundary_actions = b["boundaryActions"]
+            .as_array()
+            .ok_or("boundaryActions is not a list")?
+            .iter()
+            .map(|a| {
+                a["kind"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or("an action kind")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        out.push(TraceTransition {
+            step: text_u64(b, "step")?,
+            admissions,
+            ticks: text_u64(b, "ticksAdvanced")?,
+            brain_ticks: text_u64(b, "brainTicks")?,
+            remainder: RationalNs::from_json(&b["remainder"])
+                .map_err(|e| format!("remainder: {}", e.0))?,
+            rates_digest: string(b, "ratesDigest")?,
+            spikes_digest: string(b, "spikesDigest")?,
+            spike_count: b["spikeCount"].as_u64().ok_or("spikeCount")?,
+            decision,
+            mask: b["mask"]
+                .as_u64()
+                .and_then(|m| u32::try_from(m).ok())
+                .ok_or("mask")?,
+            framebuffer_digest: string(b, "framebufferDigest")?,
+            rewards,
+            boundary_actions,
+        });
+    }
+    Ok(out)
+}
+
+/// `FLY_TRACE`'s `ratesDigest` of a telemetry's rates: per tracked role in the network's
+/// order, the name's length (u32 LE), the name, and the rate's f64 bits (LE). The role id is
+/// the role name (`legacy-rate-role-id-v1`).
+pub fn trace_rates_digest(telemetry: &AgentTelemetry) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    for sample in &telemetry.rates {
+        let name = gameboy::rate_role_name(&sample.role_id).map_err(|e| e.0)?;
+        bytes.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(name.as_bytes());
+        bytes.extend_from_slice(&sample.hz.to_bits().to_le_bytes());
+    }
+    Ok(digest_of_bytes(&bytes))
+}
+
+/// What a trace check covered.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TraceCheck {
+    pub transitions: usize,
+    pub sugar: usize,
+    pub rewards: usize,
+    pub rollbacks: usize,
+    pub macro_decisions: usize,
+    pub pressed: usize,
+    pub spikes: u64,
+}
+
+/// Checks the records of a run of `script` -- the worker's, or [`DirectReference`]'s --
+/// against the `FLY_TRACE` of the legacy loop that produced the script.
+///
+/// The trace carries digests and the behaviour fields, not the full telemetry, so this is a
+/// check rather than a [`ReferenceSource`]. It holds the script to the trace first (the same
+/// sugar, frames and reward events, a rollback exactly where the loop rolled back), then each
+/// frame record to its transition: ticks, brain clock, exact remainder, the rates digest, the
+/// spike-set digest, and the decision as `gameboy-channels-v1` of the decode's active set under
+/// the context the step was decided in.
+pub fn check_against_trace(
+    script: &LegacyScript,
+    records: &[ParityRecord],
+    trace: &[TraceTransition],
+) -> Result<TraceCheck, String> {
+    if records.len() != script.steps.len() + 1 {
+        return Err(format!(
+            "{} records for {} steps",
+            records.len(),
+            script.steps.len()
+        ));
+    }
+    let mut check = TraceCheck::default();
+    let mut transitions = trace.iter();
+    let mut last: Option<&TraceTransition> = None;
+    let mut bound = script.initial_context.bound.clone();
+    let mut previous_ticks = records[0].brain_ticks;
+    for (index, step) in script.steps.iter().enumerate() {
+        let record = &records[index + 1];
+        let at = |what: String| format!("step {index} (record {}): {what}", index + 1);
+        match step {
+            ScriptStep::Frame {
+                sugar,
+                frame,
+                rewards,
+                next_context,
+            } => {
+                let t = transitions
+                    .next()
+                    .ok_or_else(|| at("the trace ended".to_owned()))?;
+                let admitted: Vec<TraceAdmission> = sugar
+                    .iter()
+                    .map(|d| TraceAdmission::Sugar { duration_ms: *d })
+                    .collect();
+                if t.admissions != admitted {
+                    return Err(at(format!(
+                        "the trace admitted {:?}, the script {admitted:?}",
+                        t.admissions
+                    )));
+                }
+                if digest_of_bytes(&script.frames[*frame]) != t.framebuffer_digest {
+                    return Err(at("the script's frame is not the loop's".to_owned()));
+                }
+                if &t.rewards != rewards {
+                    return Err(at(format!(
+                        "the trace rewarded {:?}, the script {rewards:?}",
+                        t.rewards
+                    )));
+                }
+                if t.boundary_actions.iter().any(|a| a == "rollback")
+                    != matches!(
+                        script.steps.get(index + 1),
+                        Some(ScriptStep::Rollback { .. })
+                    )
+                {
+                    return Err(at("the script's rollback is not where the loop's is".into()));
+                }
+                if record.kind != "frame" {
+                    return Err(at(format!("a {} record for a frame", record.kind)));
+                }
+                let mut differ = Vec::new();
+                if record.ticks != t.ticks {
+                    differ.push(format!("ticks {} != {}", record.ticks, t.ticks));
+                }
+                if record.brain_ticks != t.brain_ticks {
+                    differ.push(format!(
+                        "brainTicks {} != {}",
+                        record.brain_ticks, t.brain_ticks
+                    ));
+                }
+                if record.remainder != t.remainder {
+                    differ.push(format!(
+                        "remainder {:?} != {:?}",
+                        record.remainder, t.remainder
+                    ));
+                }
+                let telemetry = record
+                    .telemetry
+                    .as_ref()
+                    .ok_or_else(|| at("a frame record without telemetry".to_owned()))?;
+                if trace_rates_digest(telemetry)? != t.rates_digest {
+                    differ.push("ratesDigest".to_owned());
+                }
+                if record.spikes.as_deref() != Some(t.spikes_digest.as_str()) {
+                    differ.push("spikesDigest".to_owned());
+                }
+                let want = channels_decision(&t.decision, &bound);
+                if record.decision.as_ref() != Some(&want) {
+                    differ.push(format!(
+                        "decision {:?} != {:?} (active {:?})",
+                        record.decision, want, t.decision
+                    ));
+                }
+                if !differ.is_empty() {
+                    return Err(at(format!(
+                        "differs from trace step {}: {}",
+                        t.step,
+                        differ.join("; ")
+                    )));
+                }
+                check.transitions += 1;
+                check.sugar += sugar.len();
+                check.rewards += rewards.len();
+                check.spikes += t.spike_count;
+                check.macro_decisions += usize::from(want.macro_channel.is_some());
+                check.pressed += usize::from(want.mask() != 0);
+                bound = next_context.bound.clone();
+                previous_ticks = record.brain_ticks;
+                last = Some(t);
+            }
+            ScriptStep::Rollback { frame, context } => {
+                let t = last.ok_or_else(|| at("a rollback before any frame".to_owned()))?;
+                if !t.boundary_actions.iter().any(|a| a == "rollback") {
+                    return Err(at("the loop did not roll back here".to_owned()));
+                }
+                if record.kind != "rollback" || record.ticks != 0 {
+                    return Err(at(format!("a {} record with ticks", record.kind)));
+                }
+                if record.brain_ticks != previous_ticks {
+                    return Err(at("a rollback moved the brain clock".to_owned()));
+                }
+                // The slot's frame is the rolled-back world's, which the trace does not digest;
+                // the next transition's ticks and spikes are what it drives.
+                let _ = frame;
+                check.rollbacks += 1;
+                bound = context.bound.clone();
+            }
+            ScriptStep::Restore => {
+                return Err(at(
+                    "a restore splits a trace in two; check each process's trace".to_owned(),
+                ));
+            }
+        }
+    }
+    if let Some(t) = transitions.next() {
+        return Err(format!("the trace goes on at step {}", t.step));
+    }
+    Ok(check)
 }
 
 #[cfg(test)]

@@ -606,7 +606,8 @@ mod fafb {
     }
 
     fn pokered_channels() -> Vec<String> {
-        let file = fly_session_types::fixtures::load("gameboy-decoder-config.json").expect("vectors");
+        let file =
+            fly_session_types::fixtures::load("gameboy-decoder-config.json").expect("vectors");
         file["cases"][1]["macroChannels"]
             .as_array()
             .expect("the Pokemon Red macro group")
@@ -632,20 +633,31 @@ mod fafb {
                 sugar: if k == 12 { vec![400.0] } else { vec![] },
                 frame: k % 6,
                 rewards: if k % 11 == 0 {
-                    vec![RewardEvent { value: 0.5, stimulation_ms: 120.0 }]
+                    vec![RewardEvent {
+                        value: 0.5,
+                        stimulation_ms: 120.0,
+                    }]
                 } else {
                     vec![]
                 },
                 next_context: ReadoutContext {
                     boot: k < 10,
                     bound: bound(k),
-                    location: (k > 5).then_some(Location { area: 12, x: 3 + (k / 40) as u32, y: 7 }),
+                    location: (k > 5).then_some(Location {
+                        area: 12,
+                        x: 3 + (k / 40) as u32,
+                        y: 7,
+                    }),
                 },
             });
             if k == 60 {
                 steps.push(ScriptStep::Rollback {
                     frame: 2,
-                    context: ReadoutContext { boot: false, bound: bound(k), location: None },
+                    context: ReadoutContext {
+                        boot: false,
+                        bound: bound(k),
+                        location: None,
+                    },
                 });
             }
             if k == 75 {
@@ -658,7 +670,11 @@ mod fafb {
             macro_channels: channels,
             frames: Arc::new(frame_pool(6, 783)),
             initial_frame: 0,
-            initial_context: ReadoutContext { boot: true, bound: vec![], location: None },
+            initial_context: ReadoutContext {
+                boot: true,
+                bound: vec![],
+                location: None,
+            },
             steps,
             checkpoints: [30, last].into_iter().collect(),
         }
@@ -693,8 +709,14 @@ mod fafb {
         let script = script(90);
         let started = std::time::Instant::now();
         let dataset = Arc::new(load_brain_dataset_from_dir(&dir).expect("the dataset loads"));
-        let want = DirectSource { dataset }.records(&script).expect("the reference runs");
-        eprintln!("reference: {} records in {:?}", want.len(), started.elapsed());
+        let want = DirectSource { dataset }
+            .records(&script)
+            .expect("the reference runs");
+        eprintln!(
+            "reference: {} records in {:?}",
+            want.len(),
+            started.elapsed()
+        );
         let summary = legacy_parity::golden_json(&script, &want);
         eprintln!("reference digest {}", summary["digest"]);
         for mode in [ExecutionMode::InProcess, ExecutionMode::Process] {
@@ -708,16 +730,156 @@ mod fafb {
                 macro_channels: script.macro_channels.clone(),
                 worker_threads: 1,
             };
-            let mut rig = LegacyRig::start(root.path(), mode, &[agent]).await.expect("the rig");
+            let mut rig = LegacyRig::start(root.path(), mode, &[agent])
+                .await
+                .expect("the rig");
             let got = legacy_parity::run_on_worker(&mut rig, &id("fly-a"), &script)
                 .await
                 .unwrap_or_else(|e| panic!("{}: {e}", mode.label()));
             rig.stop().await;
             legacy_parity::compare(&want, &got).unwrap_or_else(|e| panic!("{}: {e}", mode.label()));
-            eprintln!("{}: {} records identical in {:?}", mode.label(), got.len(), started.elapsed());
+            eprintln!(
+                "{}: {} records identical in {:?}",
+                mode.label(),
+                got.len(),
+                started.elapsed()
+            );
         }
         for row in summary["rows"].as_array().expect("rows").iter().step_by(10) {
             eprintln!("  {}", row.as_str().expect("a row"));
         }
+    }
+}
+
+/// FND-01's `FLY_TRACE` reader and check, without a ROM: a trace written in flysim's line shape
+/// from the reference's own records is accepted, and each kind of disagreement is refused. The
+/// real traces are `flysim/tests/agent_trace_parity.rs`.
+mod frame_trace {
+    use super::*;
+    use fly_session::legacy_parity::{
+        ScriptStep, check_against_trace, read_frame_trace, toy_raw_script, trace_rates_digest,
+    };
+    use fly_session::types::{DomainType, digest_of_bytes};
+    use flybrain_core::decoder::gameboy::GAMEBOY_BUTTONS;
+    use serde_json::json;
+
+    /// `flysim::trace` lines for a script and its records.
+    fn trace_of(script: &LegacyScript, records: &[ParityRecord]) -> Vec<Value> {
+        let mut lines: Vec<Value> = Vec::new();
+        for (index, step) in script.steps.iter().enumerate() {
+            let record = &records[index + 1];
+            match step {
+                ScriptStep::Frame {
+                    sugar,
+                    frame,
+                    rewards,
+                    ..
+                } => {
+                    let decision = record.decision.as_ref().expect("a decision");
+                    let mut active: Vec<&str> = GAMEBOY_BUTTONS
+                        .iter()
+                        .enumerate()
+                        .filter(|(bit, _)| decision.buttons[*bit])
+                        .map(|(_, name)| *name)
+                        .collect();
+                    if let Some(channel) = &decision.macro_channel {
+                        active.push(channel);
+                    }
+                    lines.push(json!({
+                        "behaviour": {
+                            "step": (lines.len() as u64).to_string(),
+                            "admissions": sugar.iter().map(|d| json!({"kind": "sugar", "durationMs": d})).collect::<Vec<_>>(),
+                            "ticksAdvanced": record.ticks.to_string(),
+                            "brainTicks": record.brain_ticks.to_string(),
+                            "remainder": record.remainder.to_json(),
+                            "ratesDigest": trace_rates_digest(record.telemetry.as_ref().expect("telemetry")).expect("rates"),
+                            "spikesDigest": record.spikes.clone().expect("spikes"),
+                            "spikeCount": 0,
+                            "decision": active,
+                            "mask": decision.mask(),
+                            "macroEvents": [],
+                            "framebufferDigest": digest_of_bytes(&script.frames[*frame]),
+                            "wramDigest": "",
+                            "rewards": rewards.iter().map(|r| json!({"kind": "toy", "value": r.value, "stimulationMs": r.stimulation_ms})).collect::<Vec<_>>(),
+                            "rank": 0,
+                            "acknowledgedBoundary": (lines.len() as u64 + 1).to_string(),
+                            "boundaryActions": [],
+                        },
+                        "operational": {"captures": []},
+                    }));
+                }
+                ScriptStep::Rollback { .. } => {
+                    let last = lines.last_mut().expect("a frame before the rollback");
+                    last["behaviour"]["boundaryActions"]
+                        .as_array_mut()
+                        .expect("a list")
+                        .push(json!({"kind": "rollback", "slotId": "best", "stateDigest": null}));
+                }
+                ScriptStep::Restore => unreachable!("the raw script has no restore"),
+            }
+        }
+        lines
+    }
+
+    fn text(lines: &[Value]) -> String {
+        let mut out = json!({"format": "flysim-legacy-frame-trace-v1"}).to_string();
+        out.push('\n');
+        out.push_str(&json!({"boundary": "0", "operational": {"captures": [{"checkpointId": "g1", "afterActions": 0}]}}).to_string());
+        for line in lines {
+            out.push('\n');
+            out.push_str(&line.to_string());
+        }
+        out
+    }
+
+    #[test]
+    fn a_trace_of_the_reference_checks_and_every_disagreement_is_refused() {
+        let script = toy_raw_script(80);
+        let records = reference(&script);
+        let lines = trace_of(&script, &records);
+        let trace = read_frame_trace(&text(&lines)).expect("the trace reads");
+        assert_eq!(trace.len(), 80);
+        let check = check_against_trace(&script, &records, &trace).expect("the reference checks");
+        assert_eq!(
+            (check.transitions, check.sugar, check.rollbacks),
+            (80, 1, 1)
+        );
+
+        let refused = |edit: &dyn Fn(&mut Vec<Value>)| {
+            let mut lines = lines.clone();
+            edit(&mut lines);
+            let trace = read_frame_trace(&text(&lines)).expect("the trace reads");
+            check_against_trace(&script, &records, &trace).expect_err("a disagreement")
+        };
+        let e = refused(&|l| l[30]["behaviour"]["spikesDigest"] = json!("00"));
+        assert!(e.contains("spikesDigest"), "{e}");
+        let e = refused(&|l| l[30]["behaviour"]["brainTicks"] = json!("1"));
+        assert!(e.contains("brainTicks"), "{e}");
+        let e = refused(&|l| {
+            l[30]["behaviour"]["remainder"] = json!({"numerator": "0", "denominator": "1"})
+        });
+        assert!(e.contains("remainder"), "{e}");
+        let e = refused(&|l| l[30]["behaviour"]["ratesDigest"] = json!("00"));
+        assert!(e.contains("ratesDigest"), "{e}");
+        let e = refused(&|l| l[30]["behaviour"]["decision"] = json!(["select"]));
+        assert!(e.contains("decision"), "{e}");
+        let e = refused(&|l| l[9]["behaviour"]["admissions"] = json!([]));
+        assert!(e.contains("admitted"), "{e}");
+        let e = refused(&|l| {
+            l[9]["behaviour"]["admissions"] = json!([{"kind": "reward", "value": 1.0}])
+        });
+        assert!(e.contains("RewardPulse"), "{e}");
+        let e = refused(&|l| l[5]["behaviour"]["framebufferDigest"] = json!("00"));
+        assert!(e.contains("frame"), "{e}");
+        let e = refused(&|l| {
+            for line in l.iter_mut() {
+                line["behaviour"]["boundaryActions"] = json!([]);
+            }
+        });
+        assert!(e.contains("rollback"), "{e}");
+        let e = refused(&|l| {
+            l.pop();
+        });
+        assert!(e.contains("ended"), "{e}");
     }
 }
