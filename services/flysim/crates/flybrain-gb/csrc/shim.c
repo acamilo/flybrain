@@ -127,6 +127,51 @@ u8 fly_gb_read_mem(FlyGb* gb, u16 address) {
   return emulator_read_mem(gb->e, address);
 }
 
+/*
+ * The boundary memory image (MEM-01, legacy-gameboy-v1 section 8 as amended
+ * 2026-09-29): the CPU address space $0000..=$FFFF in address order.
+ *
+ * Every *memory* byte is exactly what fly_gb_read_mem returns for it: ROM as
+ * mapped ($0000-$7FFF), cartridge RAM ($A000-$BFFF), work RAM and its echo
+ * ($C000-$FDFF), the unused block ($FEA0-$FEFF), high RAM ($FF80-$FFFE) and
+ * IE ($FFFF). binjgb reads all of these straight out of its arrays.
+ *
+ * The *register* windows are not captured and read as FLY_GB_NOT_CAPTURED:
+ * VRAM ($8000-$9FFF), OAM ($FE00-$FE9F) and I/O, APU and wave RAM
+ * ($FF00-$FF7F). binjgb's read of those first runs a lazy catch-up
+ * (ppu_synchronize, timer_/serial_/intr_synchronize, apu_synchronize) that
+ * rewrites the subsystem's sync bookkeeping, so reading them would change the
+ * exported state and could not be called read-only. Nothing a task or an
+ * executor reads lives there (flysim tests/rom_memory_image.rs records every
+ * address they read).
+ *
+ * Read-only: the captured bytes are the same emulator_read_mem the single read
+ * makes, and nothing but `out` is written. fly_gb_set_buttons stays the only
+ * write into a running game; there is no memory-write path.
+ */
+#define FLY_GB_MEMORY_IMAGE_SIZE 0x10000u
+#define FLY_GB_NOT_CAPTURED 0xffu
+
+size_t fly_gb_memory_image_size(void) { return FLY_GB_MEMORY_IMAGE_SIZE; }
+
+static int fly_gb_captured(u32 address) {
+  if (address >= 0x8000u && address <= 0x9fffu) return 0; /* VRAM */
+  if (address >= 0xfe00u && address <= 0xfe9fu) return 0; /* OAM */
+  if (address >= 0xff00u && address <= 0xff7fu) return 0; /* I/O, APU, wave */
+  return 1;
+}
+
+int fly_gb_read_memory_image(FlyGb* gb, u8* out, size_t size) {
+  u32 address;
+  if (out == NULL || size != FLY_GB_MEMORY_IMAGE_SIZE) return -1;
+  for (address = 0; address < FLY_GB_MEMORY_IMAGE_SIZE; ++address) {
+    out[address] = fly_gb_captured(address)
+                       ? emulator_read_mem(gb->e, (u16)address)
+                       : (u8)FLY_GB_NOT_CAPTURED;
+  }
+  return 0;
+}
+
 u32 fly_gb_audio_frequency(FlyGb* gb) {
   return emulator_get_audio_buffer(gb->e)->frequency;
 }

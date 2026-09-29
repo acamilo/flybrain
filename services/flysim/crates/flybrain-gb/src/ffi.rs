@@ -38,6 +38,8 @@ unsafe extern "C" {
 
     pub fn fly_gb_set_buttons(gb: *mut FlyGb, mask: u32);
     pub fn fly_gb_read_mem(gb: *mut FlyGb, address: u16) -> u8;
+    pub fn fly_gb_memory_image_size() -> usize;
+    pub fn fly_gb_read_memory_image(gb: *mut FlyGb, out: *mut u8, size: usize) -> c_int;
 
     pub fn fly_gb_audio_frequency(gb: *mut FlyGb) -> u32;
     pub fn fly_gb_audio_size(gb: *mut FlyGb) -> usize;
