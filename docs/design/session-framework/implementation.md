@@ -555,6 +555,46 @@ had three failures, each accounted for:
 typecheck is clean, and `infra/tests/lint.sh` passed every check. The compatibility string is
 648 B `8ce67b97...` in raw and macros mode, unchanged.
 
+**Review fix round, 2026-09-29** (APPROVE-WITH-NOTES). The branch was rebased onto port/task-01's
+fix round, `2fc9fd7`: an artifact-backed task ledger, the palette seed, queued saves and bounded
+history. The shadow now bounds its coordinator's history per segment. The fixes:
+
+- *R1.* The verdict hashes `flysim-session`, SERVE-01's service, with the other release binaries.
+  `check` defaults to `--binary flysim-session --current /opt/fly/current`. It requires the
+  verdict's release to be the directory the link resolves to, with every shadowed binary
+  unchanged there.
+- *R2.* Every session-side failure is a divergence:
+  - a session that does not start;
+  - a restore-gate refusal (`tests/shadow.rs` now plants one);
+  - a capture with no agent;
+  - an unrecorded transition;
+  - an unbuildable trace line.
+
+  Skips carry a kind, and only the live side's own kinds allow a cutover.
+- *N1.* The live trace needs the shadow's heartbeat to start and to keep going, and flysim keeps
+  the trace directory under 8 GiB. The runbook's claim is corrected.
+- *N2.* `fly-shadow-run` records a baseline and runs `flyshadow-guard.timer`. The guard stops
+  everything and restarts flysim without the trace on 1 s of lag growth, or when the realtime
+  factor drops below min(0.97, baseline - 0.03). `lint.sh` drives the rule on six cases.
+- *N3.* Both `pass` and the cutover require one live save compared per 600 brain seconds, with at
+  most 10 % unavailable. The cutover also requires a shadow at most 3,600 transitions behind.
+
+**Cost re-measured on the rebased tip.** This was a 12-brain-minute rehearsal on the same box,
+at real time, with a restart and the guard on. It had 43,104 transitions, 197 saves byte-identical
+and zero divergence. The box was contended by other runs again; the guard paused the shadow for
+911 s and it still passed. Unthrottled replays of its trace, all identical, gave these mean
+milliseconds per frame:
+
+| Mode | ms per frame (mean) |
+| --- | --- |
+| in-process, 2 threads | 15.1 |
+| in-process, 3 threads | 13.3 |
+| thread mode, 3 threads | 14.9 |
+| process mode, 2 threads | 15.4 |
+
+Earlier the same 2-thread and 3-thread in-process arms took 19.7 and 17.0 ms. With 3 threads the
+shadow keeps real time with about 20 % to spare.
+
 ### STATE-01 — Coherent all-participant checkpoint/recovery
 
 **Depends on:** SESSION-02, MEDIA-01; validate with fake agents first, then AGENT-01/ENV-01.

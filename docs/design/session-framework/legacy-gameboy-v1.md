@@ -761,25 +761,54 @@ live process's own trace *is* the legacy behaviour.
 | --- | --- |
 | `archive-order` | A legacy milestone archive taken before that boundary's slot save (`afterActions` 0 ahead of a `save-slot`, sections 4 and 16) holds the pre-capture ratchet and slot. The live file's `ratchet`, `ratchetGame` and `ratchetFrame` stand in for the shadow's in that capture only. The operator accepted this on 2026-09-23 ("Archive order") |
 | `decision-list-order` | The decision is compared as `gameboy-channels-v1` sees it (section 6, `trace::channels`) |
-| `host-fields` | `generation`, `wallMs` and `lastEventId` are the live file's. The session runtime has no feed event log before EDGE-01, and as a shadow it allocates no generations |
+| `host-fields` | `generation`, `wallMs` and `lastEventId` are the live file's. They are host bookkeeping: the shadow keeps no feed event log (SERVE-01's service host keeps its own) and allocates no generations, because it writes no store |
 | `admission-replay` | Sugar is replayed, not re-decided (above) |
 | `operator-reward-pulse` | A segment with one is reported uncompared from that transition on |
 
 **The window.** The verdict is `pass` once the compared transitions add up to **10,800 s of
-live brain time** (the sum of `ticksAdvanced`, 3 h at real time) with zero divergence. That time
-may span several processes. A process whose startup save is already gone when the shadow reaches
-it (the shadow started late, or the spool bound evicted it) is listed under `skipped` and adds
-nothing. A process killed hard loses its unflushed tail, and those transitions are not compared.
+live brain time** (the sum of `ticksAdvanced`, 3 h at real time) with zero divergence, and at least
+one live save per 600 of those brain seconds has been compared byte for byte. That time may span
+several processes.
+
+*Skips* are only the live side's own events (`SKIP_KINDS`):
+
+- `startup-save-gone`: a process whose startup save was already gone when the shadow reached it,
+  because the shadow started late or its spool evicted the file;
+- `operator-reward-pulse`;
+- `trace-cap`: the live trace stopped at its byte cap, or with no consumer;
+- `no-transition`: a process that ran none.
+
+A skip adds nothing to the window. A trace the shadow cannot read is `trace-malformed`, which
+refuses the cutover. A process killed hard loses its unflushed tail, and those transitions are
+not compared.
+
 The first difference of any kind stops the shadow with `diverged` (exit status 3) and writes
-`divergence.json` with the 30 transition pairs before it:
+`divergence.json` with the 30 transition pairs before it. The same applies to every session-side
+failure, which is **never** a skip:
 
 - a trace field;
 - the ledgers;
 - the checkpoint bytes;
-- a session error;
-- a startup save the session runtime cannot restore.
+- a session that does not start;
+- a startup save the candidate's restore gate refuses or the session runtime cannot restore;
+- a step, capture or rollback error;
+- a transition the session did not record.
 
 A shadow that keeps running after `pass` turns the verdict to `diverged` on a later difference.
+
+**The live fly never pays for the shadow (amended by the SHADOW-01 review).** Three mechanisms
+make sure of it:
+
+- *The trace is on only while a shadow consumes it.* The shadow writes a heartbeat
+  (`<trace dir>/consumer`) every 30 s and removes it when it stops. flysim starts no trace without
+  a fresh heartbeat, stops a running one within a minute of frames once the heartbeat is more than
+  10 minutes old, and keeps the directory under 8 GiB.
+- *The guard* (`fly-shadow-run guard`, every 60 s, root) compares the live fly with the baseline
+  recorded before the shadow started. It stops everything and restarts flysim without the trace
+  when either of these happens while the fly runs:
+  - `fly_lag_seconds` grew by a second in the same process;
+  - the 10-s mean `fly_realtime_factor` fell below min(0.97, baseline - 0.03).
+- *The shadow* runs at `SCHED_IDLE` off flysim's CPUs, and pauses while the live lag grows.
 
 **The verdict contract (for CUT-01).** The shadow writes `verdict.json` in the format
 `fly-shadow-verdict-v1` (`shadow::verdict`, whose module notes list the fields). CUT-01 cuts over
@@ -787,12 +816,16 @@ automatically only if all of the following hold when it reads the file, at the m
 over:
 
 - `status` is `pass` and `firstDivergence` is `null`;
-- `compared.brainSeconds` ≥ `required.brainSeconds`;
-- the session-runtime binary being switched to is one of `candidate.binaries`, by file name and
-  SHA-256. These are the release binaries beside the shadow: the shadow proves the release it
-  shipped in, and SERVE-01's service is built from the same tree;
+- `compared.brainSeconds` ≥ `required.brainSeconds`.
+- *Saves were compared.* At least one per 600 brain seconds was compared byte for byte, and at
+  most 10 % of those the trace named were unavailable.
+- *The release.* `candidate.release` is the directory `/opt/fly/current` resolves to now. Every
+  binary in `candidate.binaries` still has its recorded SHA-256 there. The binary switched to,
+  `flysim-session` (SERVE-01's service), is one of them.
 - `candidate.compatibility` is the live `--print-compatibility`;
-- `updatedAt` is recent: the shadow is still following.
+- every `skipped` entry is one of the live side's own kinds;
+- *the shadow is alive and caught up*: `updatedAt` is at most 5 minutes old and
+  `lagTransitions` is at most 3,600.
 
 `fly-shadow check` (and `fly-shadow-run check`) implements exactly this rule and exits 0 only when
 it holds. Anything else keeps the legacy fly. The one-command rollback `fly-runtime legacy` is
