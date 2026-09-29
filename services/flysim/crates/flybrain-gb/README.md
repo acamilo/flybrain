@@ -17,7 +17,7 @@ ROM bytes -> Emulator::run_frame -> RGBA frame + PCM + WRAM
 | `emulator` | Safe wrapper over binjgb: frames, framebuffer, buttons, WRAM, audio, save states, ROM hash |
 | `image` | The boundary memory image (`read_memory_image`), the `Cartridge` and `ImageReader`, which runs the macros and adapters over an image instead of a live emulator (MEM-01) |
 | `adapter` | `GameAdapter`, `RewardEvent`, `ProgressSnapshot`, `MemoryReader`, `adapter_for` |
-| `pokemon_red` | The `pokered-unique8-v7` reward adapter, its catalog and its generated symbol table |
+| `pokemon_red` | The `pokered-unique8-v8` reward adapter, its catalog and its generated symbol table |
 | `platformer` | The `sml-progress-v1` Super Mario Land adapter, its catalog and its RAM map |
 | `ratchet` | The progress ratchet, generic over the adapter's rank and its `RecoveryPolicy` |
 | `recovery` | Rolling the game back to the ratchet's best safe snapshot |

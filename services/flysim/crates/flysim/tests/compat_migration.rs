@@ -1,17 +1,19 @@
-//! A `v6` checkpoint restored under `v7`: accepted with the opt-in, refused without it.
+//! A `v7` (and a `v6`) checkpoint restored under `v8`: accepted with the opt-in, refused without
+//! it.
 //!
 //! The unit tests in `flybrain-gb` cover the decision function and the adapter's own state
 //! migration separately. This is the two of them against one artefact: a real `FLYSIM01`
-//! envelope carrying a `pokered-unique8-v6` compatibility string and a `v6` reward ledger —
-//! written, encoded, decoded, and then put through exactly what `Sim::try_restore` puts a
-//! candidate through, and then one sample of a game in which items were already taken.
+//! envelope carrying a `pokered-unique8-v7` (or `-v6`) compatibility string and that version's
+//! reward ledger — written, encoded, decoded, and then put through exactly what
+//! `Sim::try_restore` puts a candidate through, and then samples of a game: one in which items
+//! were already taken (`v6`), one in the middle of the row 67 battle (`v7`).
 //!
 //! No ROM and no dataset, deliberately. Building a `Sim` would need both, and neither is part of
 //! the question: what decides a restore is the compatibility string and `import_state`, and what
 //! decides the seed is the first sample's read of the cartridge's own item bits.
 //!
-//! (`v5` -> `v6`, the catch rule's migration, was this same file; `v6` no longer migrates from
-//! anything, so that pair is refused now like any other.)
+//! (`v5` -> `v6`, the catch rule's migration, was this same file, and `v6` -> `v7` the engagement
+//! rules'. `v8` reads both `v7` and `v6`: the chain composes, and `v5` stays refused.)
 
 use flybrain_gb::GameAdapter;
 use flybrain_gb::MemoryReader;
@@ -67,7 +69,34 @@ fn v6_reward() -> serde_json::Value {
     })
 }
 
+/// A `v7` reward ledger: the `v6` one after the engagement rules' first sample (the item seed and
+/// a conversation), with a battle in flight -- the row 67 Jr. Trainer's Diglett at 19 of 31 --
+/// and **no** `damageCounts`, `counts.damage` or `battle.damage`.
+fn v7_reward() -> serde_json::Value {
+    let mut reward = v6_reward();
+    let seen = reward["seen"].as_array_mut().unwrap();
+    for key in ["items:seeded", "item:42", "talk:54:sprite:1"] {
+        seen.push(serde_json::json!(key));
+    }
+    reward["counts"]["talk"] = serde_json::json!(1);
+    reward["counts"]["item"] = serde_json::json!(0);
+    reward["mode"] = serde_json::json!("BATTLE");
+    reward["battle"] = serde_json::json!({
+        "key": "54:59:11", "wild": false, "sawLiving": true, "ko": false,
+        "speciesAtStart": 1, "captured": null, "capturedNew": false
+    });
+    reward
+}
+
 fn v6_checkpoint() -> Vec<u8> {
+    checkpoint_of("pokered-unique8-v6", v6_reward())
+}
+
+fn v7_checkpoint() -> Vec<u8> {
+    checkpoint_of("pokered-unique8-v7", v7_reward())
+}
+
+fn checkpoint_of(adapter: &str, reward: serde_json::Value) -> Vec<u8> {
     use flybrain_core::decoder::DecoderState;
     use flybrain_core::lif::LifState;
     use flybrain_core::ordered::NumberMap;
@@ -118,12 +147,12 @@ fn v6_checkpoint() -> Vec<u8> {
         wall_ms: 1_790_000_000_000,
         rom_sha256: flybrain_gb::pokemon_red::SUPPORTED_ROM.to_string(),
         emulator_frame: 1_000_000,
-        compatibility: compatibility("pokered-unique8-v6"),
+        compatibility: compatibility(adapter),
         speed: 1.0,
         buttons: 0,
         rank_since_ms: 1_000.0,
         last_event_id: 4_242,
-        reward: v6_reward(),
+        reward,
         ratchet: flybrain_gb::RatchetState { best: 3, attempts: 1, recoveries: 4, ..Default::default() },
         emulator: vec![3; 64],
         framebuffer: vec![0; 32],
@@ -134,25 +163,31 @@ fn v6_checkpoint() -> Vec<u8> {
 }
 
 #[test]
-fn a_v6_checkpoint_is_refused_under_v7_without_the_opt_in() {
-    let checkpoint = store::decode(&v6_checkpoint()).expect("the fixture decodes");
+fn a_v7_or_v6_checkpoint_is_refused_under_v8_without_its_own_opt_in() {
     let adapter = PokemonRedReward::new();
     let current = compatibility(adapter.id());
-    assert_ne!(checkpoint.runtime.compatibility, current, "v7 is not v6");
-
-    for opt_in in [None, Some(""), Some("pokered-unique8-v5"), Some("some-other-adapter")] {
-        assert!(
-            matches!(
-                decide(
-                    &checkpoint.runtime.compatibility,
-                    &current,
-                    adapter.migrates_from(),
-                    &accepted_adapters(opt_in),
+    for (bytes, own) in
+        [(v7_checkpoint(), "pokered-unique8-v7"), (v6_checkpoint(), "pokered-unique8-v6")]
+    {
+        let checkpoint = store::decode(&bytes).expect("the fixture decodes");
+        assert_ne!(checkpoint.runtime.compatibility, current, "v8 is not {own}");
+        let other = if own.ends_with("v7") { "pokered-unique8-v6" } else { "pokered-unique8-v7" };
+        for opt_in in
+            [None, Some(""), Some("pokered-unique8-v5"), Some("some-other-adapter"), Some(other)]
+        {
+            assert!(
+                matches!(
+                    decide(
+                        &checkpoint.runtime.compatibility,
+                        &current,
+                        adapter.migrates_from(),
+                        &accepted_adapters(opt_in),
+                    ),
+                    RestoreDecision::Refuse(_)
                 ),
-                RestoreDecision::Refuse(_)
-            ),
-            "FLY_ACCEPT_ADAPTERS={opt_in:?} must not migrate anything"
-        );
+                "{own} with FLY_ACCEPT_ADAPTERS={opt_in:?} must not migrate"
+            );
+        }
     }
 }
 
@@ -166,7 +201,7 @@ impl MemoryReader for Wram {
 }
 
 #[test]
-fn a_v6_checkpoint_restores_under_v7_with_the_new_ledgers_empty_and_the_items_seeded() {
+fn a_v6_checkpoint_restores_under_v8_with_the_new_ledgers_empty_and_the_items_seeded() {
     let checkpoint = store::decode(&v6_checkpoint()).expect("the fixture decodes");
     let mut adapter = PokemonRedReward::new();
     let current = compatibility(adapter.id());
@@ -182,18 +217,20 @@ fn a_v6_checkpoint_restores_under_v7_with_the_new_ledgers_empty_and_the_items_se
     );
 
     // The migration itself: `import_state`, exactly as `Sim::try_restore` calls it.
-    adapter.import_state(&checkpoint.runtime.reward).expect("a v6 ledger is a valid v7 ledger");
+    adapter.import_state(&checkpoint.runtime.reward).expect("a v6 ledger is a valid v8 ledger");
 
     let after = adapter.export_state();
     assert_eq!(after["counts"]["talk"], serde_json::json!(0), "no conversation was ever paid");
     assert_eq!(after["counts"]["item"], serde_json::json!(0), "nor any item");
+    assert_eq!(after["counts"]["damage"], serde_json::json!(0), "nor any damage");
+    assert_eq!(after["damageCounts"], serde_json::json!({}));
 
-    // And nothing else moved: every field the v6 state carried round-trips to the same value,
-    // and v7 adds no field at all -- its ledgers are keys in `seen`.
+    // And nothing else moved: every field the v6 state carried round-trips to the same value;
+    // v7 added no field (its ledgers are keys in `seen`) and v8 adds one, `damageCounts`.
     //
     // `counts` is the one field that is not byte-identical, and it is not a change of meaning:
-    // it serializes every kind in the catalog, so a v7 state lists `talk` and `item` where a v6
-    // state had nothing to list. Every kind the v6 state did carry keeps its number.
+    // it serializes every kind in the catalog, so a v8 state lists `talk`, `item` and `damage`
+    // where a v6 state had nothing to list. Every kind the v6 state did carry keeps its number.
     let before = v6_reward();
     for (key, value) in before.as_object().unwrap() {
         if key == "counts" {
@@ -206,7 +243,7 @@ fn a_v6_checkpoint_restores_under_v7_with_the_new_ledgers_empty_and_the_items_se
                 .keys()
                 .filter(|kind| !value.as_object().unwrap().contains_key(*kind))
                 .collect();
-            assert_eq!(added, vec!["talk", "item"], "v7 counts two more kinds and no others");
+            assert_eq!(added, vec!["talk", "item", "damage"], "three more kinds and no others");
             continue;
         }
         assert_eq!(&after[key], value, "{key} must survive the migration byte for byte");
@@ -217,7 +254,7 @@ fn a_v6_checkpoint_restores_under_v7_with_the_new_ledgers_empty_and_the_items_se
         .keys()
         .filter(|key| !before.as_object().unwrap().contains_key(*key))
         .collect();
-    assert!(added.is_empty(), "v7 adds no field: {added:?}");
+    assert_eq!(added, vec!["damageCounts"], "v8 adds one field");
 
     // The first sample of the restored game. Under v6 the fly took an item ball (global
     // toggleable index 0x2a) and a hidden item (index 9); v6 paid for neither. The sample seeds
@@ -250,11 +287,11 @@ fn a_v6_checkpoint_restores_under_v7_with_the_new_ledgers_empty_and_the_items_se
 #[test]
 fn nothing_but_the_adapter_segment_may_differ_for_the_migration_to_apply() {
     let adapter = PokemonRedReward::new();
-    let accepted = accepted_adapters(Some("pokered-unique8-v6"));
+    let accepted = accepted_adapters(Some("pokered-unique8-v7"));
     let current = compatibility(adapter.id());
 
-    // A v6 string whose state format also moved: a different build, not a rule change.
-    let other_abi = compatibility("pokered-unique8-v6").replace("199616", "199617");
+    // A v7 string whose state format also moved: a different build, not a rule change.
+    let other_abi = compatibility("pokered-unique8-v7").replace("199616", "199617");
     assert!(matches!(
         decide(&other_abi, &current, adapter.migrates_from(), &accepted),
         RestoreDecision::Refuse(_)
@@ -266,14 +303,85 @@ fn nothing_but_the_adapter_segment_may_differ_for_the_migration_to_apply() {
         RestoreDecision::Exact
     );
 
-    // And v5 -> v7 is not a migration this adapter wrote, whatever the operator names.
+    // And v5 -> v8 is not a migration this adapter wrote, whatever the operator names.
     assert!(matches!(
         decide(
             &compatibility("pokered-unique8-v5"),
             &current,
             adapter.migrates_from(),
-            &accepted_adapters(Some("pokered-unique8-v5,pokered-unique8-v6")),
+            &accepted_adapters(Some("pokered-unique8-v5,pokered-unique8-v6,pokered-unique8-v7")),
         ),
         RestoreDecision::Refuse(_)
     ));
+}
+
+/// The enemy battle struct and the turn, as `LoadEnemyMonData` and `ExecutePlayerMove` leave them.
+fn battle_wram(hp: u8, fly_turn: bool) -> Wram {
+    let mut wram = Wram(vec![0; 0x10000]);
+    wram.0[ram::wStatusFlags6 as usize] = 1;
+    wram.0[ram::wPartyCount as usize] = 1;
+    wram.0[ram::wCurMap as usize] = 54;
+    wram.0[ram::wCurMapWidth as usize] = 5;
+    wram.0[ram::wCurMapHeight as usize] = 7;
+    wram.0[ram::wXCoord as usize] = 4;
+    wram.0[ram::wYCoord as usize] = 10;
+    wram.0[ram::wIsInBattle as usize] = 2;
+    wram.0[ram::wEnemyMonPartyPos as usize] = 0;
+    wram.0[ram::wEnemyMonSpecies as usize] = 59;
+    wram.0[ram::wEnemyMonLevel as usize] = 11;
+    wram.0[(ram::wEnemyMonHP + 1) as usize] = hp;
+    wram.0[(ram::wEnemyMonMaxHP + 1) as usize] = 31;
+    wram.0[flybrain_gb::pokemon_red::state::poke::H_WHOSE_TURN as usize] = u8::from(!fly_turn);
+    wram.0[ram::wPlayerMoveNum as usize] = 0x91;
+    wram
+}
+
+#[test]
+fn a_v7_checkpoint_taken_mid_battle_restores_under_v8_and_pays_only_what_follows() {
+    let checkpoint = store::decode(&v7_checkpoint()).expect("the fixture decodes");
+    let mut adapter = PokemonRedReward::new();
+    let current = compatibility(adapter.id());
+    assert_eq!(
+        decide(
+            &checkpoint.runtime.compatibility,
+            &current,
+            adapter.migrates_from(),
+            &accepted_adapters(Some("pokered-unique8-v7")),
+        ),
+        RestoreDecision::MigrateAdapter { from: "pokered-unique8-v7".to_string() }
+    );
+    adapter.import_state(&checkpoint.runtime.reward).expect("a v7 ledger is a valid v8 ledger");
+
+    // Every field v7 carried survives, and v8 adds `damageCounts` and the battle's `damage`.
+    let before = v7_reward();
+    let after = adapter.export_state();
+    for (key, value) in before.as_object().unwrap() {
+        match key.as_str() {
+            "counts" => {
+                for (kind, count) in value.as_object().unwrap() {
+                    assert_eq!(&after["counts"][kind], count, "counts.{kind}");
+                }
+                assert_eq!(after["counts"]["damage"], serde_json::json!(0));
+            }
+            "battle" => {
+                for (field, v) in value.as_object().unwrap() {
+                    assert_eq!(&after["battle"][field], v, "battle.{field}");
+                }
+                assert_eq!(after["battle"]["damage"]["restored"], serde_json::json!(true));
+            }
+            _ => assert_eq!(&after[key], value, "{key} must survive the migration byte for byte"),
+        }
+    }
+    assert_eq!(after["damageCounts"], serde_json::json!({}));
+
+    // The restored battle: Diglett stands at 19 of 31. The 12 HP it lost under v7 are not paid;
+    // its own turn's poison tick is not paid; BUBBLE's next hit is.
+    assert!(adapter.sample(&mut battle_wram(19, true), 2_000.0).is_empty(), "no back pay");
+    assert!(adapter.sample(&mut battle_wram(17, false), 2_017.0).is_empty(), "not its turn");
+    let hit = adapter.sample(&mut battle_wram(8, true), 2_034.0);
+    assert_eq!(hit.len(), 1);
+    assert_eq!(hit[0].kind, "damage");
+    assert_eq!(hit[0].label, "HIT #59 FOR 9 HP");
+    assert!((hit[0].value - 0.20 * 9.0 / 31.0).abs() < 1e-12);
+    assert_eq!(adapter.progress().rank, 3, "the rank is untouched");
 }

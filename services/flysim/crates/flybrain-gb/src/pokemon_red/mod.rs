@@ -1,4 +1,4 @@
-//! The Pokémon Red reward adapter, `pokered-unique8-v7`.
+//! The Pokémon Red reward adapter, `pokered-unique8-v8`.
 //!
 //! A port of the prototype's `src/reward/pokemon-red.ts`. The gates and budgets
 //! are unchanged; `docs/rewards-learning.md` holds the live rule table and the
@@ -8,9 +8,11 @@
 //! next to and the first step onto each of a map's exits; v6 adds `catch`, the
 //! operator's decision of 2026-09-22, which pays for keeping a wild Pokémon; v7 adds
 //! `talk` and `item` and stops `boundary` paying indoors, the operator's decision of
-//! 2026-09-23 to pay for engaging with a building rather than for leaving it.
+//! 2026-09-23 to pay for engaging with a building rather than for leaving it; v8 adds `damage`,
+//! the operator's decision of 2026-09-29 to pay for the HP the fly's own attack removes.
 
 pub mod catalog;
+pub mod damage;
 pub mod engage;
 #[cfg(test)]
 pub(crate) mod fake_wram;
@@ -36,7 +38,15 @@ use symbols::ram;
 
 /// Adapter version, pinned into the checkpoint compatibility string.
 ///
-/// `v7` is the engagement rules: `talk` and `item` pay, and `boundary` stops paying on an
+/// `v8` is the damage rule (the operator, 2026-09-29): HP the fly's own attack removes from the
+/// Pokémon it is fighting pays, in proportion, within a per-battle cap ([`damage`]). A `v7`
+/// checkpoint is refused by default and resumed only when the operator names it in
+/// `FLY_ACCEPT_ADAPTERS`, like every migration before it. `v7`'s state is a `v8` state with no
+/// `damageCounts` (no wild key has paid damage) and, for a battle in flight, no per-battle damage
+/// state: that battle marks each enemy Pokémon at the HP it has when first read, so nothing lost
+/// before the restore is paid ([`damage::BattleDamage::restored`]).
+///
+/// `v7` was the engagement rules: `talk` and `item` pay, and `boundary` stops paying on an
 /// indoor map (the operator, 2026-09-23). Bumping it is what makes a `v6` checkpoint a
 /// decision rather than an accident: the compatibility string is compared whole before a
 /// restore is attempted, so a `v6` run is refused by default and resumed only when the
@@ -53,11 +63,17 @@ use symbols::ram;
 /// that meant "4 badges" on the old ladder is not a rung on the new one. Neither of
 /// those is a migration; the last two are, because nothing an older ledger holds means
 /// something different under the newer rules.)
-pub const REWARD_ADAPTER: &str = "pokered-unique8-v7";
+pub const REWARD_ADAPTER: &str = "pokered-unique8-v8";
 
-/// Adapter ids whose checkpoints `v7` can read.
+/// Adapter ids whose checkpoints `v8` can read.
 ///
-/// Exactly one, and it is one because the engagement rules add ledger keys and change nothing
+/// `v7`, the live run's, by the migration [`REWARD_ADAPTER`] describes. And still `v6`: the
+/// chain composes, because nothing in `v8` reads a key `v7` wrote that a `v6` state lacks other
+/// than the ones `v7`'s own migration already handles in this build -- the item seed runs on the
+/// first sample that finds `items:seeded` absent, and the damage state starts empty either way.
+/// `compat_migration.rs` restores a `v6` envelope and a `v7` envelope under this build.
+///
+/// (For `v7` the list was `v6` alone, and the reason it was one:) the engagement rules add ledger keys and change nothing
 /// else a `v6` state holds: every field keeps its name, shape and meaning, the `talk:` keys start
 /// empty (no conversation was ever paid), and the `item:`/`hidden:` keys are seeded from the
 /// game's own flags on the first sample, so no pickup made under `v6` pays when a rollback
@@ -68,7 +84,7 @@ pub const REWARD_ADAPTER: &str = "pokered-unique8-v7";
 ///
 /// Listing an id here is necessary but not sufficient: `FLY_ACCEPT_ADAPTERS` must name it too
 /// (`crate::compatibility::decide`, `docs/design/flysim.md`).
-pub const MIGRATES_FROM: &[&str] = &["pokered-unique8-v6"];
+pub const MIGRATES_FROM: &[&str] = &["pokered-unique8-v7", "pokered-unique8-v6"];
 
 /// The only cartridge semantic rewards are enabled for. Even the canonical
 /// pret build stays disabled until reviewed; see `docs/rewards-learning.md`.
@@ -102,6 +118,11 @@ pub const SUPPORTED_ROM: &str =
 /// *Not* bumped for the engagement rules either. `talk` and `item` key their payouts into the
 /// existing `seen` array, the way `boundary` did, and the item seed is marked there too
 /// ([`ITEMS_SEEDED`]); a `v6` state is structurally a `v7` state with none of those keys.
+///
+/// *Not* bumped for the damage rule. It adds one optional counter, `damageCounts`, and one
+/// optional object inside a battle in flight, `battle.damage`; a `v7` state without them restores
+/// with the counter empty and the battle marked where it stands, which is the truth about a run
+/// that was never paid for damage.
 pub const STATE_VERSION: u64 = 4;
 
 /// The `seen` key that says the item keys have been seeded from the cartridge's flags.
@@ -374,7 +395,7 @@ fn rung_place(seen: &OrderedSet, rung: usize) -> Option<MapPlace> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Battle {
     key: String,
     wild: bool,
@@ -400,6 +421,8 @@ struct Battle {
     /// Whether that catch was a species this run had never owned, decided on the frame
     /// the capture was observed.
     captured_new: bool,
+    /// The damage rule's marks and what this battle has paid ([`damage::BattleDamage`]).
+    damage: damage::BattleDamage,
 }
 
 /// Immutable per-sample byte cache. Each address requested during one sample
@@ -449,6 +472,9 @@ pub struct PokemonRedReward {
     /// string. The one field `v6` adds to the checkpoint; absent in a `v5` state, which
     /// reads as every species at zero.
     catch_counts: BTreeMap<String, u64>,
+    /// Wild battles that paid damage, per wild key (`map:species:level`, the wild-KO rule's). The
+    /// one field `v8` adds to the checkpoint; absent in a `v7` state, which reads as none.
+    damage_counts: BTreeMap<String, u64>,
     replay_blocked: OrderedSet,
     counts: Counts,
     total: f64,
@@ -507,6 +533,7 @@ impl PokemonRedReward {
             tile_counts: BTreeMap::new(),
             wild_wins: BTreeMap::new(),
             catch_counts: BTreeMap::new(),
+            damage_counts: BTreeMap::new(),
             replay_blocked: OrderedSet::new(),
             counts: Counts::default(),
             total: 0.0,
@@ -676,6 +703,10 @@ impl PokemonRedReward {
         for species in caught {
             self.replay_blocked.insert(&format!("catch:{species}"));
         }
+        let damaged: Vec<String> = self.damage_counts.keys().cloned().collect();
+        for key in damaged {
+            self.replay_blocked.insert(&format!("damage:{key}"));
+        }
     }
 
     /// Sample WRAM after one completed frame and return this frame's payouts.
@@ -800,6 +831,7 @@ impl PokemonRedReward {
                     species_at_start: Some(species_paid),
                     captured: None,
                     captured_new: false,
+                    damage: damage::BattleDamage::default(),
                 });
             }
             // The cartridge's own answer to "was one caught": `ram/wram.asm`'s comment on
@@ -830,6 +862,9 @@ impl PokemonRedReward {
                     battle.captured_new =
                         battle.species_at_start.is_some_and(|before| species_paid > before);
                 }
+            }
+            if in_battle != 255 {
+                self.damage(&mut emitted, memory, in_battle == 2, brain_ms);
             }
         } else if in_battle == 0 {
             self.mode = "OVERWORLD".to_string();
@@ -983,6 +1018,39 @@ impl PokemonRedReward {
         recent.truncate(8);
         self.recent = recent;
         emitted
+    }
+
+    /// The damage rule (`docs/rewards-learning.md`, the operator 2026-09-29): pay for the HP the
+    /// fly's own attack removed from the enemy on this sample. [`damage`] says what counts.
+    fn damage(
+        &mut self,
+        emitted: &mut Vec<RewardEvent>,
+        memory: &mut impl MemoryReader,
+        trainer: bool,
+        brain_ms: f64,
+    ) {
+        let Some(reading) = damage::Reading::read(memory) else { return };
+        let Some(battle) = self.battle.as_mut() else { return };
+        let Some(hit) = battle.damage.observe(reading) else { return };
+        let key = battle.key.clone();
+        let count = self.damage_counts.get(&key).copied().unwrap_or(0);
+        let blocked = self.replay_blocked.contains(&format!("damage:{key}"));
+        let (_, counted) = battle.damage.decide_scale(trainer, (count, blocked));
+        let value = catalog::rule(kind::DAMAGE).expect("the damage rule is in the catalog").value;
+        let amount = battle.damage.pay(hit, value, trainer);
+        if counted {
+            self.damage_counts.insert(key, (count + 1).min(damage::MAX_WILD_BATTLES));
+        }
+        if amount > 0.0 {
+            let knocked_out = if hit.knocked_out { " KO" } else { "" };
+            self.emit_amount(
+                emitted,
+                kind::DAMAGE,
+                format!("HIT #{} FOR {} HP{knocked_out}", hit.target.species, hit.removed),
+                amount,
+                brain_ms,
+            );
+        }
     }
 
     fn emit(
@@ -1220,6 +1288,8 @@ impl PokemonRedReward {
             // empty, which is the documented v5 -> v6 migration and the truth about a run
             // that was never paid for a catch.
             "catchCounts": self.catch_counts,
+            // The one field v8 adds, absent in a v7 state for the same reason.
+            "damageCounts": self.damage_counts,
             "replayBlocked": self.replay_blocked.as_slice(),
             "counts": self.counts,
             "total": self.total,
@@ -1243,6 +1313,7 @@ impl PokemonRedReward {
                 "speciesAtStart": battle.species_at_start,
                 "captured": battle.captured,
                 "capturedNew": battle.captured_new,
+                "damage": battle.damage.to_json(),
             })),
             "mode": self.mode,
         })
@@ -1295,6 +1366,11 @@ impl PokemonRedReward {
             None | Some(Value::Null) => BTreeMap::new(),
             Some(value) => counted_record(Some(value)).ok_or(BAD_CHECKPOINT)?,
         };
+        // Absent in every v7 state: no wild key has paid damage, because the rule did not exist.
+        let damage_counts = match input.get("damageCounts") {
+            None | Some(Value::Null) => BTreeMap::new(),
+            Some(value) => counted_record(Some(value)).ok_or(BAD_CHECKPOINT)?,
+        };
 
         let recent = recent_raw
             .iter()
@@ -1330,6 +1406,12 @@ impl PokemonRedReward {
                     .get("capturedNew")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                // v8's. A v7 battle has none, and marks each enemy Pokémon at the HP it reads
+                // next rather than paying for HP lost before the restore.
+                damage: match value.get("damage") {
+                    None | Some(Value::Null) => damage::BattleDamage::restored(),
+                    Some(state) => damage::BattleDamage::from_json(state).ok_or(BAD_HISTORY)?,
+                },
             }),
         };
         let replay_blocked = match input.get("replayBlocked") {
@@ -1356,6 +1438,7 @@ impl PokemonRedReward {
         self.tile_counts = tile_counts;
         self.wild_wins = wild_wins_raw;
         self.catch_counts = catch_counts;
+        self.damage_counts = damage_counts;
         self.replay_blocked = replay_blocked.iter().map(String::as_str).collect();
         self.counts = Counts::default();
         for (key, count) in &counts_raw {
