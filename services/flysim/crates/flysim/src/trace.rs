@@ -29,6 +29,21 @@
 //! Wall time is never written, so a run with the periodic checkpoint intervals pushed out of the
 //! way produces the same file twice. Off by default; when off, nothing here is constructed and the
 //! loop pays one `Option` test per hook.
+//!
+//! **The shadow run's input (SHADOW-01).** The trace is also what the shadow run
+//! (`fly-legacy-session::shadow`) follows beside the live service, so three switches serve it.
+//! None changes a line's behaviour fields or anything the fly does:
+//!
+//! - `FLY_TRACE_DIR=<dir>` writes one file per process, `trace-<wall ms, 13 digits>-<pid>.jsonl`,
+//!   instead of the one `FLY_TRACE` path a restart would truncate. File names sort in start order;
+//!   a process's file ends where the next one begins.
+//! - `FLY_TRACE_MAX_BYTES` caps one file (default 4 GiB in directory mode, none otherwise). At the
+//!   cap the recorder writes `{"truncated":true}` and stops, so a shadow that is not consuming the
+//!   files cannot fill the disk; the loop runs on untouched.
+//! - `FLY_TRACE_LEDGERS=<n>` adds `ledgersDigest` to every transition whose `step` is a multiple
+//!   of `n`: the SHA-256 of [`crate::frame::ledgers_string`] after the boundary (adapter export,
+//!   ratchet, slot, executor scene/bound/running/counts/nearer). `1` is every transition. The
+//!   header then carries `ledgersEvery`.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -47,6 +62,24 @@ pub const FORMAT: &str = "flysim-legacy-frame-trace-v1";
 
 /// The environment variable that turns the trace on.
 pub const ENV: &str = "FLY_TRACE";
+
+/// One file per process in this directory (SHADOW-01).
+pub const DIR_ENV: &str = "FLY_TRACE_DIR";
+
+/// The per-file byte cap.
+pub const MAX_BYTES_ENV: &str = "FLY_TRACE_MAX_BYTES";
+
+/// The ledger digest's period in transitions.
+pub const LEDGERS_ENV: &str = "FLY_TRACE_LEDGERS";
+
+/// The default per-file cap in directory mode: about 23 hours of stream.
+pub const DEFAULT_DIR_MAX_BYTES: u64 = 4 << 30;
+
+/// The per-process file name in [`DIR_ENV`] mode: start wall time (13 digits, so names sort in
+/// start order) and pid.
+pub fn dir_file_name(wall_ms: u64, pid: u32) -> String {
+    format!("trace-{wall_ms:013}-{pid}.jsonl")
+}
 
 /// The ratchet's one slot, as the legacy composition declares it (legacy-gameboy-v1 section 9).
 pub const SLOT: &str = "best";
@@ -122,6 +155,7 @@ struct Record {
     rank: u32,
     boundary_actions: Vec<Value>,
     captures: Vec<Value>,
+    ledgers: Option<String>,
 }
 
 /// The recorder. The loop calls it at fixed points of the frame order; it holds the transition
@@ -137,21 +171,78 @@ pub struct FrameTrace {
     admissions: Vec<Value>,
     /// Brain clock before this transition's ticks, the lower edge of its spike window.
     ms_before: f64,
+    /// Bytes written so far, and the cap (`FLY_TRACE_MAX_BYTES`).
+    written: u64,
+    max_bytes: Option<u64>,
+    /// Set once the cap was reached: nothing more is written.
+    stopped: bool,
+    /// `FLY_TRACE_LEDGERS`: a ledger digest every this many transitions.
+    ledgers_every: Option<u64>,
 }
 
 impl FrameTrace {
     /// `FLY_TRACE`, if it is set and non-empty. A path that cannot be created is an error rather
     /// than a silent run without the trace that was asked for.
+    ///
+    /// `FLY_TRACE_DIR` (one file per process) wins over `FLY_TRACE`; `FLY_TRACE_MAX_BYTES` and
+    /// `FLY_TRACE_LEDGERS` apply to either.
     pub fn from_env() -> std::io::Result<Option<Self>> {
-        match std::env::var_os(ENV) {
-            Some(path) if !path.is_empty() => Self::create(Path::new(&path)).map(Some),
-            _ => Ok(None),
+        let var = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+        let number = |name: &str| -> std::io::Result<Option<u64>> {
+            match var(name) {
+                None => Ok(None),
+                Some(value) => value
+                    .to_str()
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+                    .filter(|v| *v > 0)
+                    .map(Some)
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            format!("{name} must be a positive integer"),
+                        )
+                    }),
+            }
+        };
+        let ledgers_every = number(LEDGERS_ENV)?;
+        let max_bytes = number(MAX_BYTES_ENV)?;
+        if let Some(dir) = var(DIR_ENV) {
+            let dir = Path::new(&dir);
+            std::fs::create_dir_all(dir)?;
+            let wall_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as u64);
+            let path = dir.join(dir_file_name(wall_ms, std::process::id()));
+            return Self::create_with(
+                &path,
+                max_bytes.or(Some(DEFAULT_DIR_MAX_BYTES)),
+                ledgers_every,
+            )
+            .map(Some);
+        }
+        match var(ENV) {
+            Some(path) => Self::create_with(Path::new(&path), max_bytes, ledgers_every).map(Some),
+            None => Ok(None),
         }
     }
 
     pub fn create(path: &Path) -> std::io::Result<Self> {
+        Self::create_with(path, None, None)
+    }
+
+    /// A trace with a byte cap and a ledger digest period (see the module notes).
+    pub fn create_with(
+        path: &Path,
+        max_bytes: Option<u64>,
+        ledgers_every: Option<u64>,
+    ) -> std::io::Result<Self> {
         let mut out = BufWriter::with_capacity(1 << 20, File::create(path)?);
-        writeln!(out, "{}", json!({ "format": FORMAT }))?;
+        let header = match ledgers_every {
+            Some(every) => json!({ "format": FORMAT, "ledgersEvery": every }),
+            None => json!({ "format": FORMAT }),
+        };
+        let header = header.to_string();
+        writeln!(out, "{header}")?;
         Ok(Self {
             out,
             initial: Vec::new(),
@@ -159,12 +250,49 @@ impl FrameTrace {
             open: None,
             admissions: Vec::new(),
             ms_before: 0.0,
+            written: header.len() as u64 + 1,
+            max_bytes,
+            stopped: false,
+            ledgers_every,
         })
     }
 
     fn write(&mut self, value: &Value) {
-        if let Err(error) = writeln!(self.out, "{value}") {
+        if self.stopped {
+            return;
+        }
+        let line = value.to_string();
+        let len = line.len() as u64 + 1;
+        if let Some(cap) = self.max_bytes
+            && self.written + len > cap
+        {
+            // The cap: one marker, then silence. The loop is unaffected.
+            self.stopped = true;
+            if let Err(error) = writeln!(self.out, "{}", json!({ "truncated": true })) {
+                tracing::warn!(%error, "could not write the frame trace");
+            }
+            let _ = self.out.flush();
+            tracing::warn!(cap, "the frame trace reached its byte cap and stopped");
+            return;
+        }
+        self.written += len;
+        if let Err(error) = writeln!(self.out, "{line}") {
             tracing::warn!(%error, "could not write the frame trace");
+        }
+    }
+
+    /// Whether the open transition takes a ledger digest (`FLY_TRACE_LEDGERS`).
+    pub fn wants_ledgers(&self) -> bool {
+        match (self.ledgers_every, self.open.as_ref()) {
+            (Some(every), Some(record)) => !self.stopped && record.step % every == 0,
+            _ => false,
+        }
+    }
+
+    /// The ledgers after the boundary, as [`crate::frame::ledgers_string`] writes them.
+    pub fn ledgers(&mut self, ledgers: &str) {
+        if let Some(record) = self.open.as_mut() {
+            record.ledgers = Some(sha256_hex(ledgers.as_bytes()));
         }
     }
 
@@ -309,7 +437,7 @@ impl FrameTrace {
         let Some(record) = self.open.take() else {
             return;
         };
-        let line = json!({
+        let mut line = json!({
             "behaviour": {
                 "step": record.step.to_string(),
                 "admissions": record.admissions,
@@ -331,6 +459,9 @@ impl FrameTrace {
             },
             "operational": { "captures": record.captures },
         });
+        if let Some(digest) = record.ledgers {
+            line["behaviour"]["ledgersDigest"] = Value::String(digest);
+        }
         self.write(&line);
     }
 
@@ -352,6 +483,68 @@ impl Drop for FrameTrace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lines(path: &Path) -> Vec<Value> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn directory_files_sort_in_start_order() {
+        assert!(dir_file_name(999, 70_000) < dir_file_name(1000, 5));
+        assert_eq!(dir_file_name(1, 2), "trace-0000000000001-2.jsonl");
+    }
+
+    #[test]
+    fn the_byte_cap_ends_the_file_with_a_marker_and_nothing_after() {
+        let dir = std::env::temp_dir().join(format!("fly-trace-cap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let mut trace = FrameTrace::create_with(&path, Some(1500), None).unwrap();
+        for step in 0..40 {
+            trace.begin(step, 0.0);
+        }
+        trace.finish();
+        drop(trace);
+        let all = lines(&path);
+        assert_eq!(all.first().unwrap()["format"], FORMAT);
+        assert_eq!(all.last().unwrap(), &json!({ "truncated": true }));
+        assert!(all.len() > 2 && all.len() < 40);
+        let size = std::fs::metadata(&path).unwrap().len();
+        assert!(size <= 1500 + 20, "{size}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn ledger_digests_every_nth_step() {
+        let dir = std::env::temp_dir().join(format!("fly-trace-ledgers-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let mut trace = FrameTrace::create_with(&path, None, Some(2)).unwrap();
+        for step in 10..14 {
+            trace.begin(step, 0.0);
+            if trace.wants_ledgers() {
+                trace.ledgers("the ledgers");
+            }
+        }
+        trace.finish();
+        drop(trace);
+        let all = lines(&path);
+        assert_eq!(all[0]["ledgersEvery"], 2);
+        let digests: Vec<bool> = all[1..]
+            .iter()
+            .map(|l| l["behaviour"].get("ledgersDigest").is_some())
+            .collect();
+        assert_eq!(digests, vec![true, false, true, false]);
+        assert_eq!(
+            all[1]["behaviour"]["ledgersDigest"],
+            sha256_hex(b"the ledgers").as_str()
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn every_legacy_remainder_is_exact_nanoseconds() {
