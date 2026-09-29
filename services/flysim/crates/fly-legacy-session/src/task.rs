@@ -51,9 +51,13 @@ pub const MEMORY_ATTACHMENT: &str = fly_session::legacy_env::MEMORY_ATTACHMENT;
 pub const SLOT: &str = fly_session::legacy_env::DEFAULT_SLOT;
 /// The game id the adapter and the palette are chosen by.
 pub const GAME: &str = "pokemon-red";
-/// The palette seed. `flybrain_gb::palette_for` carries it for a macro with a random component
-/// and no macro has one (`MacroMachine`'s generator is never read; `macros/tests.rs` proves two
-/// seeds press the same buttons), so the legacy loop's `rng_state()` seed is not needed here.
+/// The palette seed of a fresh start. The legacy loop seeds the palette from the brain's RNG
+/// state after the warm-up (`Sim::boot`: `rng_state() as u32`), which the task cannot read: the
+/// agent does not publish it. It is also never read: `MacroMachine`'s generator is written and
+/// never consulted (no macro has a random step), which `tests/palette_seed.rs` holds on the
+/// cartridge, so a fresh start's constant presses exactly what the legacy seed presses. A
+/// restore uses the legacy seed itself, the imported agent state's RNG
+/// ([`PokeredTask::set_palette_seed`]).
 pub const PALETTE_SEED: u32 = 0;
 
 fn schema(name: &str) -> SchemaRef {
@@ -68,6 +72,9 @@ fn schema(name: &str) -> SchemaRef {
 pub fn ledger_schema() -> SchemaRef {
     schema("pokered-task-ledger-v1")
 }
+/// The attachment the task ledger's adapter state travels as (its JSON).
+pub const REWARD_ATTACHMENT: &str = "reward";
+
 /// The executor's capture: a marker only, because its state is transient (section 10, "Capture").
 pub fn executor_schema() -> SchemaRef {
     schema("pokered.executor.v1")
@@ -190,6 +197,9 @@ struct Inner {
     driver: Option<Box<dyn crate::driver::DecisionDriver>>,
     /// Addresses the engine read that the image does not capture ([`Watched`]).
     uncaptured: std::collections::BTreeSet<u16>,
+    /// The seed the next fresh macro layer is built with ([`PALETTE_SEED`], or a restored
+    /// agent's RNG state as the legacy loop seeds it).
+    palette_seed: u32,
 }
 
 /// The one object. [`PokeredTask::task`] and [`PokeredTask::executor`] are its two faces; the
@@ -211,7 +221,7 @@ impl PokeredTask {
         let cartridge = Cartridge::verified(rom, rom_digest).map_err(|e| e.to_string())?;
         let adapter = PokemonRedReward::new();
         let ratchet = Ratchet::with_policy(adapter.recovery_policy());
-        let macros = fresh_layer(&config);
+        let macros = fresh_layer(&config, PALETTE_SEED);
         Ok(Self {
             inner: Arc::new(Mutex::new(Inner {
                 config,
@@ -229,6 +239,7 @@ impl PokeredTask {
                 records: Vec::new(),
                 driver: None,
                 uncaptured: std::collections::BTreeSet::new(),
+                palette_seed: PALETTE_SEED,
             })),
         })
     }
@@ -261,6 +272,12 @@ impl PokeredTask {
         self.lock().uncaptured.iter().copied().collect()
     }
 
+    /// Seeds the next restore's fresh macro layer as the legacy loop does after a restore: with
+    /// the restored brain's RNG state (`rng_state() as u32`).
+    pub fn set_palette_seed(&self, seed: u32) {
+        self.lock().palette_seed = seed;
+    }
+
     /// The records since the last call.
     pub fn take_records(&self) -> Vec<TaskRecord> {
         std::mem::take(&mut self.lock().records)
@@ -274,9 +291,29 @@ impl PokeredTask {
 
     /// The ledger of a task half (STATE-02's `TaskHalf`, FLYSIM01's `reward` and `ratchet`), with
     /// whether the ratchet holds a snapshot (which the environment's slot `best` now holds).
-    pub fn ledger_of(half: &TaskHalf, slot_filled: bool) -> TypedValue {
-        TypedValue::new(ledger_schema(), half.to_ledger(slot_filled))
-            .expect("a ledger fits the contract")
+    ///
+    /// The adapter's lifetime ledger grows with play and is past the 32 KiB `TypedValue` bound on
+    /// the live fly (42-46 KB at rank 12-15), so it is artifact-backed (`workers-v1` section 1):
+    /// the typed value is `{reward: {digest, byteLength}, ratchet, slotFilled}` and the reward's
+    /// JSON travels as the attachment [`REWARD_ATTACHMENT`].
+    pub fn ledger_of(
+        half: &TaskHalf,
+        slot_filled: bool,
+    ) -> DomainResult<(TypedValue, BTreeMap<String, Vec<u8>>)> {
+        // The adapter's own JSON, exactly as FLYSIM01's `reward` member holds it.
+        let reward = serde_json::to_vec(&half.reward)
+            .map_err(|e| state_error(format!("the adapter ledger: {e}")))?;
+        let value = json!({
+            "reward": {"digest": digest_of_bytes(&reward), "byteLength": reward.len().to_string()},
+            "ratchet": serde_json::to_value(half.ratchet)
+                .map_err(|e| state_error(format!("the ratchet: {e}")))?,
+            "slotFilled": slot_filled,
+        });
+        let typed = TypedValue::new(ledger_schema(), value).map_err(|e| state_error(e.0))?;
+        Ok((
+            typed,
+            BTreeMap::from([(REWARD_ATTACHMENT.to_owned(), reward)]),
+        ))
     }
 
     /// The task's half of a FLYSIM01 export at the committed boundary, and whether the slot is
@@ -308,12 +345,14 @@ impl PokeredTask {
     pub fn preview_context(
         &self,
         ledger: &TypedValue,
+        attachments: &BTreeMap<String, Vec<u8>>,
         image: &MemoryImage,
         ms: f64,
     ) -> Result<TypedValue, String> {
         let inner = self.lock();
-        let (adapter, _ratchet) = parse_ledger(&inner, ledger).map_err(|e| e.message)?;
-        let mut layer = fresh_layer(&inner.config);
+        let (adapter, _ratchet) =
+            parse_ledger(&inner, ledger, attachments).map_err(|e| e.message)?;
+        let mut layer = fresh_layer(&inner.config, inner.palette_seed);
         if let Some(layer) = layer.as_mut() {
             let mut reader = ImageReader::new(image, &inner.cartridge);
             let _ = layer.observe(&mut reader, &AdapterLedger(&adapter), ms);
@@ -338,11 +377,11 @@ impl PokeredTask {
 }
 
 /// `Sim::boot`'s layer: the configuration's palette at the macro group's hold.
-fn fresh_layer(config: &PokeredConfig) -> Option<MacroLayer> {
+fn fresh_layer(config: &PokeredConfig, seed: u32) -> Option<MacroLayer> {
     let mut service = Config::default();
     service.loop_.game = GAME.to_owned();
     service.macros.mode = config.mode;
-    macro_layer(&service, config.hold_ms, PALETTE_SEED)
+    macro_layer(&service, config.hold_ms, seed)
 }
 
 /// The image reader the engine is handed: `ImageReader`, plus a record of any address it was asked
@@ -731,23 +770,43 @@ impl Task for TaskFace {
 
     fn capture(&self) -> DomainResult<TypedValue> {
         let (half, slot_filled) = self.0.task_half();
-        Ok(PokeredTask::ledger_of(&half, slot_filled))
+        PokeredTask::ledger_of(&half, slot_filled).map(|(typed, _)| typed)
+    }
+
+    fn capture_attachments(&self) -> DomainResult<BTreeMap<String, Vec<u8>>> {
+        let (half, slot_filled) = self.0.task_half();
+        PokeredTask::ledger_of(&half, slot_filled).map(|(_, attachments)| attachments)
     }
 
     fn validate_restore(&self, state: &TypedValue) -> DomainResult<()> {
+        self.validate_restore_with(state, &BTreeMap::new())
+    }
+
+    fn validate_restore_with(
+        &self,
+        state: &TypedValue,
+        attachments: &BTreeMap<String, Vec<u8>>,
+    ) -> DomainResult<()> {
         let inner = self.0.lock();
-        let (adapter, ratchet) = parse_ledger(&inner, state)?;
-        drop((adapter, ratchet));
-        Ok(())
+        parse_ledger(&inner, state, attachments).map(|_| ())
     }
 
     fn install_restore(&mut self, epoch: &Id, state: &TypedValue) -> DomainResult<()> {
+        self.install_restore_with(epoch, state, &BTreeMap::new())
+    }
+
+    fn install_restore_with(
+        &mut self,
+        epoch: &Id,
+        state: &TypedValue,
+        attachments: &BTreeMap<String, Vec<u8>>,
+    ) -> DomainResult<()> {
         let mut inner = self.0.lock();
-        let (adapter, ratchet) = parse_ledger(&inner, state)?;
+        let (adapter, ratchet) = parse_ledger(&inner, state, attachments)?;
         inner.adapter = adapter;
         inner.ratchet = ratchet;
         // `legacy-transient-reset`: a fresh executor, nothing running, empty ledgers.
-        inner.macros = fresh_layer(&inner.config);
+        inner.macros = fresh_layer(&inner.config, inner.palette_seed);
         inner.current = None;
         inner.open = None;
         inner.epoch = epoch.clone();
@@ -770,13 +829,32 @@ impl Task for TaskFace {
     }
 }
 
-fn parse_ledger(inner: &Inner, state: &TypedValue) -> DomainResult<(PokemonRedReward, Ratchet)> {
+fn parse_ledger(
+    inner: &Inner,
+    state: &TypedValue,
+    attachments: &BTreeMap<String, Vec<u8>>,
+) -> DomainResult<(PokemonRedReward, Ratchet)> {
     if state.schema != ledger_schema() {
         return Err(state_error(
             "the captured ledger is not a pokered-macros-v1 ledger",
         ));
     }
-    let half = TaskHalf::from_ledger(&state.value).map_err(state_error)?;
+    let bytes = attachments
+        .get(REWARD_ATTACHMENT)
+        .ok_or_else(|| state_error("the ledger's reward attachment is missing"))?;
+    let declared = &state.value["reward"];
+    if declared["digest"].as_str() != Some(digest_of_bytes(bytes).as_str())
+        || declared["byteLength"].as_str() != Some(bytes.len().to_string().as_str())
+    {
+        return Err(state_error(
+            "the reward attachment is not the one the ledger names",
+        ));
+    }
+    let reward: Value = serde_json::from_slice(bytes)
+        .map_err(|e| state_error(format!("the reward attachment is not JSON: {e}")))?;
+    let mut value = state.value.clone();
+    value["reward"] = reward;
+    let half = TaskHalf::from_ledger(&value).map_err(state_error)?;
     let slot_filled = state
         .value
         .get("slotFilled")

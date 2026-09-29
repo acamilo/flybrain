@@ -1464,6 +1464,8 @@ pub enum AdmissionEnd {
 #[derive(Debug, Default)]
 struct AdmissionState {
     queued: Vec<Admission>,
+    /// Cut into a Prepare whose transition has not committed yet.
+    in_flight: Vec<Admission>,
     remaining: BTreeMap<Id, f64>,
     ended: Vec<(Admission, AdmissionEnd)>,
 }
@@ -1495,18 +1497,41 @@ impl AdmissionQueue {
         self.lock().queued.len()
     }
 
+    /// The longest stimulus admitted for the agent that no commit has reported on yet: queued
+    /// for the next cut, or cut into a Prepare still in flight. The legacy loop applies a sugar
+    /// the moment it admits it, so its pulse is active for the next request at once; here it
+    /// is active from admission too, which is what this reads. `None` when there is none.
+    pub fn pending_stimulus_ms(&self, agent_id: &Id) -> Option<f64> {
+        let state = self.lock();
+        state
+            .queued
+            .iter()
+            .chain(state.in_flight.iter())
+            .filter(|a| a.agent_id() == agent_id)
+            .map(|a| match a {
+                Admission::Stimulus { duration_ms, .. } => *duration_ms,
+            })
+            .reduce(f64::max)
+    }
+
     /// Every admission that has ended since the last call, in the order they ended.
     pub fn take_ended(&self) -> Vec<(Admission, AdmissionEnd)> {
         std::mem::take(&mut self.lock().ended)
     }
 
     fn cut(&self) -> Vec<Admission> {
-        std::mem::take(&mut self.lock().queued)
+        let mut state = self.lock();
+        let cut = std::mem::take(&mut state.queued);
+        state.in_flight.extend(cut.iter().cloned());
+        cut
     }
 
     fn end(&self, admissions: Vec<Admission>, end: AdmissionEnd) {
         let mut state = self.lock();
         for admission in admissions {
+            state
+                .in_flight
+                .retain(|a| a.interaction_id() != admission.interaction_id());
             state.ended.push((admission, end.clone()));
         }
     }
@@ -1576,6 +1601,8 @@ pub struct ImportSpec {
     /// Every agent, in sorted agent-id order.
     pub agents: Vec<ImportedAgent>,
     pub task_ledger: TypedValue,
+    /// The ledger's attachments (`Task::capture_attachments`), by name.
+    pub task_attachments: BTreeMap<String, Vec<u8>>,
     /// Each declared audio stream's next sample.
     pub audio_positions: BTreeMap<String, u64>,
 }
@@ -4369,6 +4396,22 @@ impl Coordinator {
             self.seal_own(crate::state::TASK_LEDGER_PAYLOAD, &ledger.to_json())
                 .await?,
         );
+        let attachments =
+            self.task.capture_attachments().map_err(|e| self.fail_now(e, "capture"))?;
+        for (name, bytes) in attachments {
+            let name = crate::state::task_attachment_payload(&name);
+            let digest = digest_of_bytes(&bytes);
+            let artifact = match crate::state::seal_payload(&self.bus, &bytes, &digest).await {
+                Ok(artifact) => artifact,
+                Err(e) => return Err(self.fail_now(e, "capture")),
+            };
+            payloads.push(crate::state::CapturedPayload {
+                name,
+                byte_length: bytes.len() as u64,
+                digest,
+                artifact,
+            });
+        }
         let inspection = self
             .observation
             .as_ref()
@@ -4943,6 +4986,9 @@ impl Coordinator {
         if let Err(e) = own(crate::state::ADMISSION_PAYLOAD, &record) {
             failure = failure.or(Some(e));
         }
+        for (name, bytes) in &spec.task_attachments {
+            payloads.push((crate::state::task_attachment_payload(name), bytes.clone()));
+        }
         if let Some(e) = failure {
             return Err(self.fail_now(e, "import"));
         }
@@ -5459,7 +5505,7 @@ impl Coordinator {
             &manifest.coordinator.task_ledger,
         )?)
         .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;
-        task.validate_restore(&ledger)?;
+        task.validate_restore_with(&ledger, &crate::state::task_attachments(payloads))?;
         for (agent_id, name) in &manifest.coordinator.executor_state {
             let state = TypedValue::from_json(&Coordinator::read_payload(payloads, name)?)
                 .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;
@@ -5560,7 +5606,8 @@ impl Coordinator {
 
         let ledger = TypedValue::from_json(&read(&manifest.coordinator.task_ledger)?)
             .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;
-        self.task.validate_restore(&ledger)?;
+        let task_attachments = crate::state::task_attachments(payloads);
+        self.task.validate_restore_with(&ledger, &task_attachments)?;
         for (agent_id, name) in &manifest.coordinator.executor_state {
             let state = TypedValue::from_json(&read(name)?)
                 .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;
@@ -5626,7 +5673,7 @@ impl Coordinator {
             audio_positions.insert(stream.clone(), sample);
         }
         // Everything above validated. From here the coordinator installs, in one pass.
-        self.task.install_restore(new_epoch, &ledger)?;
+        self.task.install_restore_with(new_epoch, &ledger, &task_attachments)?;
         for (agent_id, name) in &manifest.coordinator.executor_state {
             let state = TypedValue::from_json(&read(name)?)
                 .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;

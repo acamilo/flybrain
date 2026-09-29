@@ -18,7 +18,7 @@ use serde_json::json;
 
 use flybus::{Grants, Pattern, Policy, RouterConfig};
 
-use fly_session::coordinator::{Admission, AdmissionEnd, AgentSlot, Coordinator};
+use fly_session::coordinator::{AdmissionEnd, AgentSlot, Coordinator};
 use fly_session::fly_session_types::extensions::ROLLBACK_POLICY;
 use fly_session::fly_session_types::gameboy::{
     self, ChannelsDecision, ReadoutContext, RollbackRequest,
@@ -377,12 +377,34 @@ async fn run(mode: ExecutionMode) {
     let mut actions = Vec::new();
     for k in 0..9u64 {
         if k == 2 {
-            admissions.admit(Admission::Stimulus {
-                agent_id: id("fly"),
-                interaction_id: id("sugar-1"),
-                kind_id: id(gameboy::STIMULUS_REWARD_PULSE),
-                duration_ms: 300.0,
-            });
+            // Two sugars before the next commit: the legacy drain admits the first and refuses
+            // the second (its pulse is already active), and so does the session's admission.
+            let mut legacy = flysim::ratelimit::RateLimiter::new(6);
+            let mut remaining = admissions
+                .stimulus_remaining_ms(&id("fly"))
+                .expect("committed");
+            let legacy_answers: Vec<_> = [300.0, 250.0]
+                .iter()
+                .map(|duration: &f64| {
+                    let answer = legacy.admit(1_000, remaining);
+                    if answer.is_ok() {
+                        remaining = remaining.max(*duration);
+                    }
+                    answer
+                })
+                .collect();
+            let mut sugar =
+                fly_legacy_session::admission::LegacyAdmission::new(admissions.clone(), id("fly"));
+            let first = sugar.sugar(1_000, Some(300.0)).map(|(_, d)| d);
+            let second = sugar.sugar(1_000, Some(250.0)).map(|(_, d)| d);
+            assert_eq!(first, Ok(300.0));
+            assert_eq!(legacy_answers[0], Ok(()));
+            assert_eq!(
+                second.err(),
+                legacy_answers[1].err(),
+                "the second is refused as legacy refuses it"
+            );
+            assert_eq!(admissions.queued(), 1);
         }
         let report = coordinator.step().await.unwrap_or_else(|e| {
             panic!(
@@ -482,6 +504,11 @@ async fn run(mode: ExecutionMode) {
     let ended = admissions.take_ended();
     assert_eq!(ended.len(), 1);
     assert_eq!(ended[0].1, AdmissionEnd::Applied { boundary: 3 });
+    assert_eq!(
+        admissions.pending_stimulus_ms(&id("fly")),
+        None,
+        "nothing pending once committed"
+    );
     assert!(admissions.stimulus_remaining_ms(&id("fly")).is_some());
     let audit = coordinator.audit.join(" ");
     for needle in [

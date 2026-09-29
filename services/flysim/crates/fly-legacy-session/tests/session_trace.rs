@@ -482,7 +482,7 @@ async fn fafb_service_trace_checkpoints() {
 async fn run_booted(
     session: &mut LegacySession,
     frames: usize,
-) -> (Run, Vec<fly_session::legacy_checkpoint::SaveReport>) {
+) -> (Run, Vec<fly_legacy_session::composition::SaveQueued>) {
     let mut run = Run {
         behaviours: Vec::new(),
         ledgers: Vec::new(),
@@ -525,148 +525,186 @@ async fn run_booted(
 async fn fafb_boot_run_save_restore() {
     let Some(rom_path) = rom_path() else { return };
     let Some(dataset) = fafb() else { return };
-    let source = std::env::var_os("FLY_ENV01_TRACE_DIR")
-        .map(|dir| PathBuf::from(dir).join("rollback.checkpoint"))
-        .filter(|p| p.is_file())
-        .or_else(|| std::env::var_os("FLY_DOOR_CHECKPOINT").map(PathBuf::from));
-    let Some(source) = source else {
+    // The rollback file (a ratchet rollback on the first boundary), and the live fly's largest
+    // task ledgers: row 64 (42 KB) and the row 65 yard (46 KB), past the 32 KiB TypedValue bound
+    // (TASK-01 review B1). `FLY_TASK01_BOOT_SOURCES` picks others (`name=path,...`).
+    let sources: Vec<(String, PathBuf)> = match std::env::var("FLY_TASK01_BOOT_SOURCES") {
+        Ok(list) => list
+            .split(',')
+            .filter_map(|item| {
+                item.split_once('=')
+                    .map(|(n, p)| (n.to_owned(), PathBuf::from(p)))
+            })
+            .collect(),
+        Err(_) => [
+            (
+                "rollback",
+                std::env::var_os("FLY_ENV01_TRACE_DIR")
+                    .map(|dir| PathBuf::from(dir).join("rollback.checkpoint")),
+            ),
+            (
+                "row64",
+                std::env::var_os("FLY_ROW64_CHECKPOINT").map(PathBuf::from),
+            ),
+            (
+                "row65-yard",
+                std::env::var_os("FLY_ROW65_YARD_CHECKPOINT").map(PathBuf::from),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(name, path)| path.filter(|p| p.is_file()).map(|p| (name.to_owned(), p)))
+        .collect(),
+    };
+    if sources.is_empty() {
         eprintln!("skipping: no source checkpoint");
         return;
-    };
+    }
     let rom = std::fs::read(&rom_path).expect("the cartridge");
     let data = Arc::new(load_brain_dataset_from_dir(&dataset).expect("the dataset"));
     let frames = env_usize("FLY_TASK01_BOOT_FRAMES", 900);
-    let original = std::fs::read(&source).expect("the checkpoint");
-    let generation = flysim::store::decode(&original)
-        .expect("FLYSIM01")
-        .runtime
-        .generation;
-    for mode in modes() {
-        let root = tempfile::tempdir().expect("tmp");
-        let store = fly_legacy_session::composition::StoreConfig {
-            hot_dir: root.path().join("hot"),
-            durable_dir: root.path().join("durable"),
-            keep_generations: 4,
-            // The intervals are wall clock; a parity run takes its saves at the boundaries the
-            // legacy loop names (startup, a climb, a rollback, shutdown) and not on a timer.
-            hot_seconds: 1e9,
-            checkpoint_seconds: 1e9,
-            speed: 1.0,
-        };
-        flysim::store::Store::new(&store.durable_dir, store.keep_generations)
-            .commit(generation, &original, None)
-            .expect("the seeded store");
-        let config = |mode| LegacyConfig {
-            mode,
-            rom_path: rom_path.clone(),
-            dataset_dir: dataset.clone(),
-            profile: LegacyProfileKind::Production,
-            macro_mode: MacroMode::Macros,
-            agent_id: id("fly"),
-            agent_threads: 1,
-            record: true,
-        };
+    for (name, source) in sources {
+        let original = std::fs::read(&source).expect("the checkpoint");
+        let decoded = flysim::store::decode(&original).expect("FLYSIM01");
+        let generation = decoded.runtime.generation;
+        eprintln!(
+            "boot source {name}: generation {generation}, task ledger {} bytes of adapter JSON",
+            serde_json::to_vec(&decoded.runtime.reward)
+                .map(|v| v.len())
+                .unwrap_or(0)
+        );
+        for mode in modes() {
+            let root = tempfile::tempdir().expect("tmp");
+            let store = fly_legacy_session::composition::StoreConfig {
+                hot_dir: root.path().join("hot"),
+                durable_dir: root.path().join("durable"),
+                keep_generations: 4,
+                // The intervals are wall clock; a parity run takes its saves at the boundaries the
+                // legacy loop names (startup, a climb, a rollback, shutdown) and not on a timer.
+                hot_seconds: 1e9,
+                checkpoint_seconds: 1e9,
+                speed: 1.0,
+            };
+            flysim::store::Store::new(&store.durable_dir, store.keep_generations)
+                .commit(generation, &original, None)
+                .expect("the seeded store");
+            let config = |mode| LegacyConfig {
+                mode,
+                rom_path: rom_path.clone(),
+                dataset_dir: dataset.clone(),
+                profile: LegacyProfileKind::Production,
+                macro_mode: MacroMode::Macros,
+                agent_id: id("fly"),
+                agent_threads: 1,
+                record: true,
+            };
 
-        // Process one.
-        let started = std::time::Instant::now();
-        let (mut one, boot) =
-            fly_legacy_session::composition::boot(&root.path().join("p1"), config(mode), &store)
+            // Process one.
+            let started = std::time::Instant::now();
+            let (mut one, boot) = fly_legacy_session::composition::boot(
+                &root.path().join("p1"),
+                config(mode),
+                &store,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{}: boot one: {e}", mode.label()));
+            match &boot {
+                fly_legacy_session::composition::Boot::Restored { candidate, .. } => {
+                    assert_eq!(
+                        candidate.generation,
+                        Some(generation),
+                        "the seeded generation"
+                    );
+                }
+                other => panic!("boot one: {other:?}"),
+            }
+            let startup = one.checkpointer().expect("attached").next_generation() - 1;
+            assert!(
+                startup > generation,
+                "the startup save takes a generation above the store's"
+            );
+            let (run_one, saves_one) = run_booted(&mut one, frames).await;
+            let shutdown = one
+                .shutdown_save()
                 .await
-                .unwrap_or_else(|e| panic!("{}: boot one: {e}", mode.label()));
-        match &boot {
-            fly_legacy_session::composition::Boot::Restored { candidate, .. } => {
-                assert_eq!(
-                    candidate.generation,
-                    Some(generation),
-                    "the seeded generation"
+                .expect("the shutdown save")
+                .expect("a store");
+            one.stop().await;
+            assert!(shutdown.durable);
+            let legacy_one = run_legacy(
+                &rom,
+                &data,
+                &Start::Checkpoint(original.clone()),
+                MacroMode::Macros,
+                frames,
+                &Inputs::default(),
+                &root.path().join("legacy-one.jsonl"),
+            );
+            let agreement =
+                trace::compare(&legacy_one.behaviours, &run_one.behaviours, &run_one.bounds)
+                    .unwrap_or_else(|e| panic!("{} segment one: {e}", mode.label()));
+            compare_ledgers(&legacy_one.ledgers, &run_one.ledgers);
+            report(
+                &format!("boot {name} segment one, {}", mode.label()),
+                &agreement,
+                started.elapsed(),
+            );
+            eprintln!(
+                "  saves: startup g{startup}, during the run {:?}, shutdown g{}",
+                saves_one
+                    .iter()
+                    .map(|s| (s.generation, s.durable, s.archive_rank))
+                    .collect::<Vec<_>>(),
+                shutdown.generation
+            );
+            if agreement.rollbacks > 0 {
+                assert!(
+                    saves_one.iter().any(|s| s.durable),
+                    "a rollback is followed by a durable save"
                 );
             }
-            other => panic!("boot one: {other:?}"),
-        }
-        let startup = one.checkpointer().expect("attached").next_generation() - 1;
-        assert!(
-            startup > generation,
-            "the startup save takes a generation above the store's"
-        );
-        let (run_one, saves_one) = run_booted(&mut one, frames).await;
-        let shutdown = one
-            .shutdown_save()
+
+            // Process two: restores process one's shutdown save.
+            let started = std::time::Instant::now();
+            let (mut two, boot) = fly_legacy_session::composition::boot(
+                &root.path().join("p2"),
+                config(mode),
+                &store,
+            )
             .await
-            .expect("the shutdown save")
-            .expect("a store");
-        one.stop().await;
-        assert!(shutdown.durable);
-        let legacy_one = run_legacy(
-            &rom,
-            &data,
-            &Start::Checkpoint(original.clone()),
-            MacroMode::Macros,
-            frames,
-            &Inputs::default(),
-            &root.path().join("legacy-one.jsonl"),
-        );
-        let agreement =
-            trace::compare(&legacy_one.behaviours, &run_one.behaviours, &run_one.bounds)
-                .unwrap_or_else(|e| panic!("{} segment one: {e}", mode.label()));
-        compare_ledgers(&legacy_one.ledgers, &run_one.ledgers);
-        report(
-            &format!("boot segment one, {}", mode.label()),
-            &agreement,
-            started.elapsed(),
-        );
-        eprintln!(
-            "  saves: startup g{startup}, during the run {:?}, shutdown g{}",
-            saves_one
-                .iter()
-                .map(|s| (s.generation, s.durable, s.archive_rank))
-                .collect::<Vec<_>>(),
-            shutdown.generation
-        );
-        if agreement.rollbacks > 0 {
-            assert!(
-                saves_one.iter().any(|s| s.durable),
-                "a rollback is followed by a durable save"
+            .unwrap_or_else(|e| panic!("{}: boot two: {e}", mode.label()));
+            let restored_path = match &boot {
+                fly_legacy_session::composition::Boot::Restored { candidate, .. } => {
+                    assert_eq!(
+                        candidate.generation,
+                        Some(shutdown.generation),
+                        "the latest save"
+                    );
+                    candidate.path.clone()
+                }
+                other => panic!("boot two: {other:?}"),
+            };
+            let written = std::fs::read(&restored_path).expect("the session's own save");
+            let (run_two, _) = run_booted(&mut two, frames).await;
+            two.stop().await;
+            let legacy_two = run_legacy(
+                &rom,
+                &data,
+                &Start::Checkpoint(written),
+                MacroMode::Macros,
+                frames,
+                &Inputs::default(),
+                &root.path().join("legacy-two.jsonl"),
+            );
+            let agreement =
+                trace::compare(&legacy_two.behaviours, &run_two.behaviours, &run_two.bounds)
+                    .unwrap_or_else(|e| panic!("{} segment two: {e}", mode.label()));
+            compare_ledgers(&legacy_two.ledgers, &run_two.ledgers);
+            report(
+                &format!("boot {name} segment two, {}", mode.label()),
+                &agreement,
+                started.elapsed(),
             );
         }
-
-        // Process two: restores process one's shutdown save.
-        let started = std::time::Instant::now();
-        let (mut two, boot) =
-            fly_legacy_session::composition::boot(&root.path().join("p2"), config(mode), &store)
-                .await
-                .unwrap_or_else(|e| panic!("{}: boot two: {e}", mode.label()));
-        let restored_path = match &boot {
-            fly_legacy_session::composition::Boot::Restored { candidate, .. } => {
-                assert_eq!(
-                    candidate.generation,
-                    Some(shutdown.generation),
-                    "the latest save"
-                );
-                candidate.path.clone()
-            }
-            other => panic!("boot two: {other:?}"),
-        };
-        let written = std::fs::read(&restored_path).expect("the session's own save");
-        let (run_two, _) = run_booted(&mut two, frames).await;
-        two.stop().await;
-        let legacy_two = run_legacy(
-            &rom,
-            &data,
-            &Start::Checkpoint(written),
-            MacroMode::Macros,
-            frames,
-            &Inputs::default(),
-            &root.path().join("legacy-two.jsonl"),
-        );
-        let agreement =
-            trace::compare(&legacy_two.behaviours, &run_two.behaviours, &run_two.bounds)
-                .unwrap_or_else(|e| panic!("{} segment two: {e}", mode.label()));
-        compare_ledgers(&legacy_two.ledgers, &run_two.ledgers);
-        report(
-            &format!("boot segment two, {}", mode.label()),
-            &agreement,
-            started.elapsed(),
-        );
     }
 }
 
