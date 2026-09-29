@@ -1913,6 +1913,64 @@ a door is taken the way the cartridge takes it, and the map graph says what the 
 decoder, the reward catalog, the adapter version, the roles and the compatibility string are
 untouched.
 
+### 12.30 A counter walked away from is not walked back to, a ball is bought with one button, and a closed bag is not the pad (2026-09-29, row 66)
+
+The operator restarted the live run from the rung-8 archive (VIRIDIAN CITY) to watch the fly shop,
+buy Poké Balls and catch. On v0.6.5, 35 minutes in: `GO SHOP` done 33 times, `TALK` 5, `BUY BALL`
+never dealt, `THROW BALL` 0, no catch. Three findings, two of them the pad.
+
+**`GO SHOP` and the way out were a ring.** Row 62 (12.26) deals a service walk whenever the
+cartridge says the service is needed, whatever the ledgers say. When the fly stands at the counter
+and does not use it, that is a ring by construction: `GO SHOP` from the street to the Viridian
+clerk, `GO OUT` or `GO OBJECTIVE` back out of the door, and `GO SHOP` on the street's pad again,
+because the bag still holds no ball. Reproduced with the connectome from a post-parcel checkpoint
+of the Viridian mart (`survey-rank8-row66-viridian-mart`, saved by the offers survey): three laps in
+eighteen brain seconds. A `GO SHOP` or `GO HEAL` that finishes facing the counter person now
+records the building's counter (`TargetKey::Counter`, keyed by the building's map, because the
+question is asked from the street, where none of the building's sprite slots means anything). For
+the reached window the service walk toward that building is not dealt, from the street or inside.
+That is 12.1's ledger doing for the service walk what it does for every other walk: a target
+arrived at and faced is not walked to again at once. `TALK` at the counter, `HEAL` in a centre and
+`BUY BALL` in a mart are unchanged by it. When the window closes the counter is a service again.
+
+**A ball is one button (the operator's decision).** Even without the ring the fly did not buy.
+A purchase took four choices in a row at the counter: `TALK`, a press at the greeting, `CONFIRM`
+on BUY, and `BUY BALL` on the list. With the connectome the fly walked to the clerk every time and
+never once chose `TALK` there. So `BUY BALL` is now also the mart's `HEAL`. On the overworld pad
+inside a mart, one press walks to the clerk, talks, advances the greeting until BUY / SELL / QUIT
+is drawn, buys the first row, answers the price box as 12.26's purchase does, and is `done` when
+the wallet drops. It is offered only while it can work:
+
+- in a mart whose first stock row is a Poké Ball (`geography::BALL_FIRST_MARTS`: Viridian, Pewter,
+  Cerulean, `data/items/marts.asm`). The script reads the stock once the counter is open and
+  refuses if the first row is anything else;
+- while `service_needed` holds for the mart: no ball in the bag, 200 in the wallet, no Oak's parcel
+  (while it is carried the Viridian clerk's text table is the parcel's and he sells nothing). In
+  Viridian it is also not offered before Oak has the parcel (`EVENT_OAK_GOT_PARCEL`);
+- with the clerk not in the blocked window. The talked and reached ledgers do not retire him, as
+  for the nurse.
+
+The fly still chooses it, as it chooses `HEAL`. The open-counter `BUY BALL` is unchanged.
+
+**After a catch the pad read the bag.** `wListMenuID` is written when a list opens and never
+cleared. After a ball was thrown, every frame to the end of the battle read as an open battle bag:
+"All right! WEEDLE was caught!", the Pokédex page, the nickname offer and the naming screen. The pad
+was `BACK` and `THROW BALL`, a `THROW BALL` that threw nothing. Its A presses said YES to the
+nickname and typed it, 6,900 frames from the catch to the battle's end on a stub survey. The bag
+is now the bag only while its box, a `TextBoxBorder` at (4, 2)-(19, 12), is on screen: row 50's rule
+for the move list. After the catch the pad is `NEXT`. `NEXT` answers the nickname offer with YES
+and names the Pokémon with A's. Offering the offer's two answers inside a battle is a pad change
+not made here.
+
+ROM tests: `row66_a_counter_walked_away_from_is_not_walked_back_to_by_go_shop` and
+`row66_buy_ball_from_the_marts_floor_rings_up_a_ball` (`FLY_ROW66_MART_CHECKPOINT`),
+`row66_after_a_catch_the_pad_is_not_the_bag_and_the_battle_ends` (`FLY_CATCH_CHECKPOINT`). Survey
+numbers are in `infra/docs/macros-traps.md` row 66.
+
+Nothing ranks a button or presses for the fly. The walk back is withheld for a window, a purchase
+is one offer, and the bag is read off the screen. The decoder, the reward catalog, the adapter
+version, the roles and the compatibility string are untouched.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")

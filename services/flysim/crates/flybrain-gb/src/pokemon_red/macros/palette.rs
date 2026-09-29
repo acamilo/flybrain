@@ -529,6 +529,11 @@ pub fn scene_set(scene: Scene, state: &mut dyn MacroState) -> Vec<MacroKind> {
             if inside_center(state) {
                 set.push(Heal);
             }
+            // Row 66: the mart's `HEAL`. One button from the floor that walks to the clerk,
+            // opens the counter and buys one ball ([`floor_ball_goals`]).
+            if inside_mart(state) {
+                set.push(BuyBall);
+            }
             set.extend([GoShop, GoHeal, GoItem, GoNpc, GoFrontier, Talk]);
             set
         }
@@ -692,7 +697,12 @@ pub fn precondition(kind: MacroKind, state: &mut dyn MacroState) -> bool {
         | MacroKind::BuyBall
         | MacroKind::BuyAntidote
         | MacroKind::BuyRepel => match kind.purchase() {
-            Some((id, cost)) => affordable(state, id, cost),
+            Some((id, cost)) => {
+                affordable(state, id, cost)
+                    || (kind == MacroKind::BuyBall
+                        && state.scene() == Scene::Overworld
+                        && !floor_ball_goals(state).is_empty())
+            }
             // Unreachable while [`MacroKind::purchase`] covers the four arms above, and a `false`
             // rather than a panic if it ever stops: an unpriced purchase is a button off the pad.
             None => false,
@@ -999,7 +1009,9 @@ pub fn amenity_goals(state: &mut dyn MacroState, kind: Amenity) -> Vec<Aim> {
         // reached and talked ledgers answer "is this job done", and for a service the answer is
         // the party or the bag, not the ledger: a nurse reached an hour ago with a party that has
         // since been beaten is a job to do again.
-        if service_needed(state, kind) {
+        // ...unless this counter is the one the fly has just walked to and walked away from
+        // ([`counter_walked_away`], row 66): then the ledgers answer, as they do for any person.
+        if service_needed(state, kind) && !state.counter_walked_to(here) {
             return service_aims(state, kind);
         }
         return counter_aims(state, counter_sprite(kind));
@@ -1039,6 +1051,36 @@ pub fn heal_goals(state: &mut dyn MacroState) -> Vec<Aim> {
     // which is where `GO HEAL` leaves the fly, and for ten brain minutes after `GO HEAL` had
     // reached her. Only the blocked window is kept: a counter no walk can reach is still that.
     person_aims(state, poke_sprite::NURSE, Ledgers::BlockedOnly, true)
+}
+
+/// `BUY BALL`'s walk from the floor of a mart: the tiles the clerk can be talked to from (row 66).
+///
+/// The operator's decision on row 66: buying a ball is one macro, modelled on `HEAL` -- walk to
+/// the clerk, talk, open BUY, take the first row, answer the price box, done when the wallet says
+/// it is paid. Measured with the connectome before it: `GO SHOP` walked the fly to the Viridian
+/// clerk again and again and the fly never once chose `TALK` there, so the four choices in a row
+/// that a purchase took (`TALK`, the greeting, `CONFIRM`, `BUY BALL`) never happened. The fly
+/// still has to choose this button; it is only on the pad while it can work:
+///
+/// - in a mart whose first stock row is a Poké Ball ([`geography::BALL_FIRST_MARTS`]);
+/// - while [`service_needed`] holds for the mart: no ball in the bag, the money for one, and no
+///   Oak's parcel (the Viridian clerk's text table while it is carried sells nothing) -- and in
+///   Viridian not before Oak has the parcel at all ([`MacroState::parcel_delivered`]);
+/// - with the clerk reachable: the blocked window is kept, the talked and reached ledgers are not
+///   (a counter is a service), and the tile already facing him is a goal (no walk at all).
+///
+/// Empty anywhere else, which is the other half of the precondition.
+pub fn floor_ball_goals(state: &mut dyn MacroState) -> Vec<Aim> {
+    let Some(here) = state.player().map(|player| player.map) else { return Vec::new() };
+    if !geography::BALL_FIRST_MARTS.contains(&here) || !service_needed(state, Amenity::Mart) {
+        return Vec::new();
+    }
+    // Before the parcel is even in the bag the Viridian counter is the parcel's too: the clerk's
+    // script hands it over on the fly's first visit, and sells nothing until Oak has it.
+    if here == super::super::maps::VIRIDIAN_MART && !state.parcel_delivered() {
+        return Vec::new();
+    }
+    person_aims(state, poke_sprite::CLERK, Ledgers::BlockedOnly, true)
 }
 
 /// Whether the building of `kind` has something to do for the fly right now: the party needs the
@@ -1095,7 +1137,32 @@ pub fn amenity_wanted(state: &mut dyn MacroState, kind: Amenity) -> Option<u8> {
         return None;
     }
     let area = area_here(state)?;
-    amenity_in_reach(state, area, kind)
+    let map = amenity_in_reach(state, area, kind)?;
+    if counter_walked_away(state, map) {
+        return None;
+    }
+    Some(map)
+}
+
+/// Whether the fly has just stood at the counter of the building on `map`, facing it, and is now
+/// outside that building: what takes the service walk toward it off the pad for the reached window
+/// (row 66).
+///
+/// **A counter the fly walked away from is not walked back to at once.** Row 62 made a service
+/// dealt again whenever the cartridge says it is needed, whatever the ledgers say, and that is a
+/// ring by construction when the fly does not use the counter: live on v0.6.5 from the rung-8
+/// archive, `GO SHOP` 33 times in 35 minutes, each one a walk in from the street and up to the
+/// Viridian clerk, then `GO OUT` or `GO OBJECTIVE` back out of the door without a `TALK`, and
+/// outside `GO SHOP` on the pad again because the bag still had no ball. Reproduced from a
+/// post-parcel checkpoint of the Viridian mart with the connectome: three laps in eighteen brain
+/// seconds. It is section 12.1's ledger doing what it does for every other walk -- a target
+/// arrived at and faced is not re-walked for the window -- applied to the one walk row 62 took it
+/// away from. The fly standing at the counter still has `TALK` (its precondition reads the
+/// service, not this), the nurse's `HEAL` still walks from anywhere in the centre, and when the
+/// window closes the counter is a service again.
+fn counter_walked_away(state: &mut dyn MacroState, map: u8) -> bool {
+    let here = state.player().map(|player| player.map);
+    here != Some(map) && state.counter_walked_to(map)
 }
 
 /// `area`'s building of `kind`, when the route to it from the piece of ground the fly stands on

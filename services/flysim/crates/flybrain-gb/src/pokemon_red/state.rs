@@ -119,6 +119,10 @@ pub mod poke {
     /// four tall, then writes a horizontal run over its top-left corner and a `┘` over (10, 12).
     /// Values rather than symbols, like `YES_NO_BOX`: this is a figure on screen, not a byte.
     pub const MOVE_LIST_BOX: (u16, u16, u16, u16) = (4, 12, 19, 17);
+    /// The bag's own box in a battle (row 66): `DisplayListMenuID` draws a `TextBoxBorder` at
+    /// (4, 2), nine rows by fourteen, so its corners are (4, 2) and (19, 12). Surveyed on the
+    /// cartridge: whole on every frame the list is up, gone on the frame it closes.
+    pub const ITEM_LIST_BOX: (u16, u16, u16, u16) = (4, 2, 19, 12);
     pub const MOVE_LIST_JOIN: u16 = 10;
     /// Where `MoveSelectionMenu` parks the shared cursor: row 12, column 5.
     pub const MOVE_LIST_CURSOR_Y: u8 = 12;
@@ -631,12 +635,19 @@ pub fn battle(memory: &mut dyn MemoryReader) -> Option<Battle> {
         BattleMenu::Moves { cursor: slot, count }
     } else if party_list(memory) {
         BattleMenu::Party { cursor: cursor.current }
-    } else if read(memory, ram::wListMenuID) == poke::ITEM_LIST_MENU {
+    } else if read(memory, ram::wListMenuID) == poke::ITEM_LIST_MENU && item_list_drawn(memory) {
         // The bag, opened from the battle menu's ITEM entry. `DisplayListMenuID` keeps its
         // position in the same shared cursor every other menu uses, and the entry count is the
         // bag's own, so the scripts that reach into it (`ITEM`, `THROW BALL`) navigate by reading
         // rather than by counting presses -- which is what section 4 requires of them and what
         // they could not do while this read as no list at all.
+        //
+        // **And only while its box is on screen** (row 66), row 50's rule for the move list:
+        // `wListMenuID` is written when the list opens and never cleared, so after a ball was
+        // thrown every frame to the end of the battle -- "All right! WEEDLE was caught!", the
+        // Pokédex page, the nickname offer and the naming screen -- read as an open bag, the pad
+        // was `BACK` and `THROW BALL`, and the ball's A presses typed the nickname: 6,900 frames
+        // from the catch to the end of the battle, under a `THROW BALL` that threw nothing.
         let count = bag(memory).len().min(usize::from(poke::BAG_CAPACITY));
         BattleMenu::Bag { cursor: cursor.current, count: u8::try_from(count).unwrap_or(0) }
     } else {
@@ -1083,6 +1094,12 @@ fn two_option_box_drawn(memory: &mut dyn MemoryReader, cursor_x: u8, cursor_y: u
 /// becomes a horizontal run and (10, 12) becomes the `┘` junction with the PP box above. The
 /// mimic and relearn menus draw at row 7 and never reach a battle's own turn. Read whole, like
 /// every other box in this module, because a single tile id is an ordinary character.
+/// Whether the battle bag's list box is whole on screen ([`poke::ITEM_LIST_BOX`], row 66).
+fn item_list_drawn(memory: &mut dyn MemoryReader) -> bool {
+    let (left, top, right, bottom) = poke::ITEM_LIST_BOX;
+    border_drawn(memory, left, top, right, bottom)
+}
+
 fn move_list_drawn(memory: &mut dyn MemoryReader) -> bool {
     let (left, top, right, bottom) = poke::MOVE_LIST_BOX;
     if screen_tile(memory, left, top) != poke::frame::HORIZONTAL
@@ -2315,6 +2332,17 @@ impl MacroState for PokeState<'_> {
     fn reached(&mut self, target: TargetKey) -> bool {
         let Some(map) = player(self.memory).map(|player| player.map) else { return false };
         self.targets.reached(map, target)
+    }
+
+    /// Whether the counter of the building on `map` was walked to inside the window (row 66).
+    fn counter_walked_to(&mut self, map: u8) -> bool {
+        self.targets.reached(map, TargetKey::Counter)
+    }
+
+    /// `EVENT_OAK_GOT_PARCEL`, bit 56 of `wEventFlags`.
+    fn parcel_delivered(&mut self) -> bool {
+        let bit = super::symbols::events::EVENT_OAK_GOT_PARCEL;
+        read(self.memory, ram::wEventFlags + (bit >> 3)) & (1 << (bit & 7)) != 0
     }
 
     /// Where the ladder's next unreached rung is (`GO OBJECTIVE`).

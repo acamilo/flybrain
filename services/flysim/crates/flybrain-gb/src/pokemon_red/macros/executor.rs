@@ -30,7 +30,8 @@ use super::cartridge::{
 };
 use super::geography::Amenity;
 use super::palette::{
-    MacroId, MacroKind, Palette, amenity_goals, frontier_aims, heal_goals, healthiest_other,
+    MacroId, MacroKind, Palette, amenity_goals, floor_ball_goals, frontier_aims, heal_goals,
+    healthiest_other,
     facing_target, listing, move_index, move_list, nurse_prompt, objective_goals, party_rested,
     potion_slot,
     precondition,
@@ -370,6 +371,12 @@ enum Step {
     /// `Blocked` if it never does. The cartridge adds the item and takes the money a few frames
     /// after the YES, so a purchase is `done` when the wallet says so and not when the press is.
     Paid { waited: u32, before: u32 },
+    /// Advance the clerk's greeting until the counter's BUY / SELL / QUIT menu is drawn, then
+    /// move on; `Blocked` if it never comes, or if the counter's first stock row is not a Poké
+    /// Ball once its list can be read (row 66, `BUY BALL` from the floor). Pulses A the way
+    /// [`Step::Prompt`] does and reads the screen every frame, so the menu is caught before the
+    /// next pulse could choose BUY on it.
+    Counter { waited: u32 },
 }
 
 /// Progress through one A* walk.
@@ -648,6 +655,9 @@ pub struct MacroMachine {
     /// that finds no route to *any* of its goals has failed at all of them, and each is a key.
     blocked: Vec<(u8, TargetKey)>,
     reached: Option<(u8, TargetKey)>,
+    /// The building whose counter a completed `GO SHOP` or `GO HEAL` has just faced, for the
+    /// reached ledger under [`TargetKey::Counter`] (row 66).
+    counter: Option<u8>,
     /// A map whose frontier a `GO FRONTIER` has just proved unreachable, waiting to be taken
     /// into the session's ledger ([`super::cartridge::Frontiers`], section 12.14).
     ///
@@ -754,6 +764,7 @@ impl MacroMachine {
             outcome: None,
             blocked: Vec::new(),
             reached: None,
+            counter: None,
             exhausted: None,
             pushed_tile: Vec::new(),
             refused_at: None,
@@ -842,6 +853,9 @@ impl MacroMachine {
         }
         // A walk's cap is its own; every other script keeps section 4's flat ten seconds.
         let cap = match plan.front() {
+            // `BUY BALL` from the floor is a walk and then a whole purchase (row 66): the walk's
+            // budget, and a script's ten seconds for the counter after it.
+            Some(Step::Walk(walk)) if spec.kind == MacroKind::BuyBall => walk.budget + FRAME_CAP,
             Some(Step::Walk(walk)) => walk.budget,
             _ => FRAME_CAP,
         };
@@ -1000,6 +1014,11 @@ impl MacroMachine {
         self.reached.take()
     }
 
+    /// The building whose counter a completed `GO SHOP` or `GO HEAL` faced, taken (row 66).
+    pub fn take_counter(&mut self) -> Option<u8> {
+        self.counter.take()
+    }
+
     /// The map a `no route` from `GO FRONTIER` earned, taken rather than read (section 12.14).
     pub fn take_exhausted(&mut self) -> Option<u8> {
         self.exhausted.take()
@@ -1040,6 +1059,7 @@ impl MacroMachine {
         // that so a cancelled queue cannot leak into the next macro's finish.
         self.blocked.clear();
         self.reached = None;
+        self.counter = None;
         // A rollback is not the map pushing the fly anywhere, and it is not the frontier being
         // out of reach either: the fly is about to be somewhere else entirely.
         self.pushed_tile.clear();
@@ -1411,6 +1431,16 @@ impl MacroMachine {
                         && let Some(entry) = active.target
                     {
                         self.reached = Some(entry);
+                        // **The counter itself, by the building's map** (row 66): a service walk
+                        // that ended facing the clerk or the nurse. From the street the question
+                        // is "has the fly just stood at this counter", and outside the building
+                        // no sprite slot of it can be named.
+                        if matches!(active.kind, MacroKind::GoShop | MacroKind::GoHeal)
+                            && let (map, TargetKey::Thing(_)) = entry
+                            && super::geography::amenity_at(map).is_some()
+                        {
+                            self.counter = Some(map);
+                        }
                         // And a completed `HEAL` has *had* the conversation: the box was opened,
                         // answered and closed by this macro's own presses, so the nurse is talked
                         // to and `TALK` has nothing left to open (section 12.12). Without it the
@@ -1575,6 +1605,24 @@ fn advance(step: &mut Step, state: &mut dyn MacroState) -> Progress {
             } else {
                 *waited += 1;
                 Progress::Hold(buttons::NONE)
+            }
+        }
+        Step::Counter { waited } => {
+            if shop_screen(state) == Some(ShopScreen::BuySellQuit) {
+                if stock_index(state, item::POKE_BALL) == Some(0) {
+                    Progress::Next
+                } else {
+                    Progress::Blocked
+                }
+            } else if *waited >= PROMPT_WAIT {
+                Progress::Blocked
+            } else {
+                *waited += 1;
+                if *waited % PROMPT_PULSE < PRESS_HOLD {
+                    Progress::Hold(buttons::A)
+                } else {
+                    Progress::Hold(buttons::NONE)
+                }
             }
         }
         Step::Prompt { waited, before } => {
@@ -1808,6 +1856,8 @@ fn beside(state: &mut dyn MacroState, here: Tile) -> Vec<Tile> {
 const fn spanned(kind: MacroKind) -> &'static [Class] {
     match kind {
         MacroKind::Heal => &[Class::Overworld, Class::Talking],
+        // Row 66: from the floor, `BUY BALL` walks, opens the counter (text) and buys (the shop).
+        MacroKind::BuyBall => &[Class::Overworld, Class::Talking, Class::Shop],
         _ => &[],
     }
 }
@@ -2167,7 +2217,33 @@ fn script(
             vec![cursor_on(battle_entry::RUN, true, Some(ListKind::BattleMain))]
         }
         MacroKind::BuyPotion => shop_plan(state, item::POTION)?,
-        MacroKind::BuyBall => shop_plan(state, item::POKE_BALL)?,
+        // At the open counter, the purchase; from the mart's floor (row 66), `HEAL`'s shape for a
+        // mart: walk to the clerk, the A that talks to him, the greeting advanced until BUY / SELL
+        // / QUIT is drawn, and the same purchase from there -- BUY, the first row (a Poké Ball in
+        // every mart this is offered in, checked once the list is readable), quantity one, the
+        // price box's YES, done when the wallet drops.
+        MacroKind::BuyBall if state.shop().is_some() => shop_plan(state, item::POKE_BALL)?,
+        MacroKind::BuyBall => {
+            let goals = aim_goals(floor_ball_goals(state));
+            unreachable.extend(goal_keys(&goals));
+            let (walk, target) = walk_then(state, goals, true)?;
+            aimed = target;
+            let before = state.money();
+            vec![
+                Step::Walk(walk),
+                press(buttons::A),
+                settle(),
+                Step::Counter { waited: 0 },
+                cursor(0, true),
+                settle(),
+                cursor(0, true),
+                settle(),
+                press(buttons::A),
+                Step::Prompt { waited: 0, before },
+                press(buttons::A),
+                Step::Paid { waited: 0, before },
+            ]
+        }
         MacroKind::BuyAntidote => shop_plan(state, item::ANTIDOTE)?,
         MacroKind::BuyRepel => shop_plan(state, item::REPEL)?,
         // Section 13's two errands: the same walk `GO OBJECTIVE` makes, aimed at the area's mart

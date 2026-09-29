@@ -382,6 +382,13 @@ fn a_battle_frame_with_a_cursor_accepting_input_is_the_flys_turn() {
     let mut wram = Wram::overworld();
     battler(&mut wram);
     wram.bag(&[(crate::pokemon_red::macros::cartridge::item::POTION, 2)]).set(ram::wListMenuID, poke::ITEM_LIST_MENU);
+    // Row 66: the list byte alone is not the bag. It is never cleared, so it outlives the list
+    // into the rest of the battle -- after a ball, the catch, the Pokédex page, the nickname.
+    let fight = battle(&mut wram).unwrap();
+    assert_eq!(fight.menu, BattleMenu::None, "the list byte without the list's box on screen");
+    assert!(!fight.own_turn, "text after the bag closed is nobody's turn");
+    let (left, top, right, bottom) = poke::ITEM_LIST_BOX;
+    wram.draw_box(left, top, right, bottom);
     let fight = battle(&mut wram).unwrap();
     assert_eq!(fight.menu, BattleMenu::Bag { cursor: 0, count: 1 });
     assert!(fight.own_turn, "the battle bag is a cursor accepting input");
