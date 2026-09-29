@@ -995,3 +995,32 @@ power, from `engine/battle/effects.asm` and `MoveHitTest`:
 Confuse Ray and Supersonic on a confused target, Leech Seed on a seeded or Grass target, Focus
 Energy, Mist, Reflect and Light Screen already up, Disable on a disabled target, and a damaging
 move the type chart makes "doesn't affect" (the chart is another ROM table).
+
+## 14. What an item will do, and the joypad the cartridge last read (2026-09-24, `docs/design/macros.md` 12.27)
+
+Row 63. Two addresses, both pinned and read back from the code that uses them by
+`row63_the_joypad_latch_and_the_item_table_are_where_the_cartridge_says` (FLY_ROM).
+
+| name | where | what reads it |
+| --- | --- | --- |
+| `ItemUsePtrTable` | `$03:$55E1` | one little-endian routine pointer per item id, `MASTER_BALL` (1) to `MAX_ELIXER` (`$53`); the operand of `UseItem_`'s `ld hl` |
+| `hJoyLast` | `$FFB1` (HRAM) | the buttons `_Joypad` saw down last time the game asked; the operand of `_Joypad`'s `ldh a, [hJoyLast]` at `$03:$4000` |
+
+**`state::item_routine`** reads an item's pointer and refuses a table where the five balls or the
+potions and status heals do not share one routine. **`state::battle_item_use`** classes an item by
+its routine, never by its id: the routine of `POKE_BALL`, `POTION`, `POKE_DOLL`, `ETHER`, or one of
+`X_ACCURACY`, `GUARD_SPEC`, `DIRE_HIT`, `X_ATTACK`, `POKE_FLUTE`, and answers each one's check before
+it acts (`engine/items/item_effects.asm`): a ball in a wild battle (a full party is `None`, the box
+count unread; a trainer is `false`); medicine with somebody it would change, `ItemUseMedicine`'s
+own id order (Revive: fainted; Full Heal and the status heals: that status; Full Restore: hurt or
+statused; the HP items: neither fainted nor full), the Pokémon that is out read from the battle's
+copy; a Poké Doll in a wild battle; the X items and the flute in any battle; a PP restore with a
+move below its PP (PP Ups counted). Every other routine refuses in a battle. A TM or an HM goes to
+`ItemUseTMHM` before the table and is `None`.
+
+**`state::a_latched`** is `hJoyLast` bit 0 (`PAD_A`). `hJoyPressed` is `hJoyInput & ~hJoyLast`,
+and the game only calls `_Joypad` while something reads input, so after the A that confirms a list
+the latch keeps that A until the next list first asks. Measured on the Potion's party list: the
+list reads open on the frame after the pulse, an A in the next 22 frames is lost, and across 120
+rollback delays `hJoyLast`, `hJoyPressed`, `hJoyHeld` and `hJoy5` are the only bytes of WRAM and
+HRAM whose values never overlap between lost and answered frames.

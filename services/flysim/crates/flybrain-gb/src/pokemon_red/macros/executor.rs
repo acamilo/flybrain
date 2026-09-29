@@ -1725,6 +1725,22 @@ fn cursor_frame(cursor: &mut Cursor, state: &mut dyn MacroState) -> Progress {
         if !cursor.confirm {
             return Progress::Next;
         }
+        // **The confirming A waits for the cartridge to have seen A let go** (row 63). A list
+        // opened by an A reads open from its cursor bytes before the game has asked the joypad
+        // again, and until it asks, the A that opened it is still down in `hJoyLast`: an A
+        // pressed into that window is no edge and the cartridge never sees it. The Potion's party
+        // list is the case that found it -- one Pokémon, so the cursor is on its target on the
+        // first frame and the confirm went straight into the window, `ITEM` reported done over a
+        // list that was still waiting, and the fly backed out of it and the bag with two `BACK`s.
+        // A wait presses nothing, and it is the same budget as a list that is not up at all.
+        if state.a_latched() {
+            cursor.waited += 1;
+            return if cursor.waited > CURSOR_WAIT {
+                Progress::Blocked
+            } else {
+                Progress::Hold(buttons::NONE)
+            };
+        }
         cursor.confirmed = true;
         cursor.phase = 0;
         return pulse(buttons::A, &mut cursor.phase, PRESS_HOLD, PRESS_GAP);

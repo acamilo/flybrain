@@ -168,6 +168,14 @@ struct World {
     opens_draw_in: u32,
     /// The list an A press opened and the frame it starts accepting input on.
     pending: Option<(u32, Opens)>,
+    /// Frames the cartridge keeps the A that opened a list as its last joypad reading before it
+    /// asks again (row 63): an A pressed inside them is no edge and changes nothing, while the
+    /// list already reads open. Zero everywhere but the tests this is for.
+    a_latch: u32,
+    /// The frame the cartridge next asks the joypad, while an A is latched.
+    latched_until: u32,
+    /// Item ids the cartridge would refuse from the battle bag on this frame (row 63).
+    refused_items: BTreeSet<u8>,
     /// A scene the world switches to at this frame, for the abort rule.
     switch: Option<(u32, Scene)>,
     /// A frame at which the cartridge heals the party, which is what a Pokémon Center does while
@@ -260,6 +268,9 @@ impl World {
             opens: VecDeque::new(),
             opens_draw_in: 0,
             pending: None,
+            a_latch: 0,
+            latched_until: 0,
+            refused_items: BTreeSet::new(),
             switch: None,
             heal_at: None,
             box_open: false,
@@ -468,9 +479,14 @@ impl World {
                 self.list = List::None;
             }
         }
+        if mask == buttons::A && self.frames < self.latched_until {
+            // The cartridge has not asked since the A that opened this list: this A is no edge.
+            return;
+        }
         if mask == buttons::A
             && let Some(next) = self.opens.pop_front()
         {
+            self.latched_until = self.frames + self.a_latch;
             if self.opens_draw_in > 0 {
                 self.pending = Some((self.frames + self.opens_draw_in, next));
             } else {
@@ -701,6 +717,14 @@ impl MacroState for World {
 
     fn move_without_effect(&mut self, id: u8) -> bool {
         self.no_effect.contains(&id)
+    }
+
+    fn item_refused(&mut self, id: u8) -> bool {
+        self.refused_items.contains(&id)
+    }
+
+    fn a_latched(&mut self) -> bool {
+        self.frames < self.latched_until
     }
 
     fn shop_stock(&mut self) -> Vec<u8> {
@@ -2308,6 +2332,95 @@ fn item_reaches_the_potion_by_reading_the_bags_cursor() {
         "the bag was opened and the potion confirmed: {:?}",
         world.pulses
     );
+}
+
+#[test]
+fn items_last_press_waits_for_the_cartridge_to_let_go_of_the_potions_a() {
+    // Row 63, Mt. Moon B2F: Wartortle out at 8 of 86, one Pokémon, a Potion in the bag. The A
+    // that chose the Potion opened the party list, whose cursor bytes read open at once and whose
+    // one entry is already under the cursor -- so `ITEM` confirmed on the first frame, while the
+    // cartridge still held that A as its last reading. No edge, no press: `ITEM` reported done over
+    // a list still waiting for its answer, and the fly left it and the bag with `BACK`, `BACK`.
+    let mut world = World::battle();
+    world.mons = vec![mon(0, 8, 86, &[(44, 0), (55, 25)])];
+    world.bag = vec![(item::ANTIDOTE, 1), (item::POTION, 1), (0xea, 1)];
+    world.list = List::BattleBag;
+    world.grid = false;
+    world.cursor = 0;
+    world.cursor_max = 2;
+    // Measured: the list reads open at once, and an A is lost until about 30 frames after the
+    // Potion's A was let go. This fake takes a press on its release, eight frames after the edge
+    // the cartridge would see, so its window is those 30 and the 8 and a little: 40.
+    world.a_latch = 40;
+    world.opens.push_back(Opens { list: List::BattleParty, cursor: 0, max: 0, grid: false });
+    // What the honoured A does: the Potion is used, and the screen is battle text.
+    world.opens.push_back(Opens { list: List::None, cursor: 0, max: 0, grid: false });
+    assert_eq!(run(&mut world, MacroKind::Item).unwrap(), MacroAbort::Done);
+    assert_eq!(world.list, List::None, "the party list was answered, not left waiting");
+    assert!(world.opens.is_empty(), "both A presses were taken: {:?}", world.pulses);
+}
+
+#[test]
+fn a_confirm_is_not_held_back_when_nothing_is_latched() {
+    // The wait costs nothing where there is nothing to wait for: a list that reads open with the
+    // cartridge's last reading clear is confirmed on the frame it is reached, as before.
+    let mut world = World::battle();
+    world.mons = vec![mon(0, 8, 86, &[(44, 0), (55, 25)])];
+    world.bag = vec![(item::POTION, 1)];
+    world.list = List::BattleBag;
+    world.grid = false;
+    world.cursor_max = 0;
+    world.opens.push_back(Opens { list: List::BattleParty, cursor: 0, max: 0, grid: false });
+    world.opens.push_back(Opens { list: List::None, cursor: 0, max: 0, grid: false });
+    assert_eq!(run(&mut world, MacroKind::Item).unwrap(), MacroAbort::Done);
+    assert_eq!(world.list, List::None);
+    assert!(world.frames < 120, "no wait: {} frames", world.frames);
+}
+
+#[test]
+fn item_is_off_the_pad_while_the_cartridge_would_refuse_the_potion() {
+    let mut world = World::battle();
+    world.bag = vec![(item::POTION, 1)];
+    assert!(precondition(MacroKind::Item, &mut world));
+    world.refused_items.insert(item::POTION);
+    assert!(!precondition(MacroKind::Item, &mut world), "\"It won't have any effect.\"");
+}
+
+#[test]
+fn move_one_is_not_fights_backstop_beside_a_usable_move() {
+    // Row 63's second pair, the same ten minutes: slot one spent, slot four with 25 PP. `MOVE 1`
+    // over the menu confirmed FIGHT and stopped, which opens the list and chooses nothing, and the
+    // list's `BACK` closed it again -- `MOVE 1`, `BACK`, ten times. `MOVE 4` is on this menu too,
+    // and it is the button that ends the turn.
+    let mut world = World::battle();
+    world.mons = vec![mon(0, 8, 86, &[(44, 0), (39, 0), (145, 0), (55, 25)])];
+    let moves: Vec<&str> =
+        pad_of(&mut world).into_iter().filter(|name| name.starts_with("MOVE")).collect();
+    assert_eq!(moves, ["MOVE 4"]);
+    // With nothing usable it is the backstop again: Struggle is behind FIGHT (row 34).
+    world.mons = vec![mon(0, 8, 86, &[(44, 0), (39, 0), (145, 0), (55, 0)])];
+    let moves: Vec<&str> =
+        pad_of(&mut world).into_iter().filter(|name| name.starts_with("MOVE")).collect();
+    assert_eq!(moves, ["MOVE 1"]);
+    // And with slot one usable it is slot one's own button.
+    world.mons = vec![mon(0, 8, 86, &[(44, 3), (55, 25)])];
+    let moves: Vec<&str> =
+        pad_of(&mut world).into_iter().filter(|name| name.starts_with("MOVE")).collect();
+    assert_eq!(moves, ["MOVE 1", "MOVE 2"]);
+}
+
+#[test]
+fn a_battle_menu_the_cartridge_still_holds_an_a_on_deals_no_pad() {
+    // Row 63: RUN's A is taken, and the menu's box stays up while the game stops asking the
+    // joypad. The frame after `RUN` finished dealt `MOVE 4` over that box, which pressed at "Got
+    // away safely!" and held the pad through its whole cursor wait. Until the cartridge asks
+    // again the menu is not the fly's to answer.
+    let mut world = World::battle();
+    assert!(!pad_of(&mut world).is_empty());
+    world.latched_until = world.frames + 10;
+    assert_eq!(pad_of(&mut world), Vec::<&str>::new(), "the cartridge is acting on its last A");
+    world.frames += 10;
+    assert!(pad_of(&mut world).contains(&"MOVE 1"), "and the pad is back when it asks again");
 }
 
 #[test]

@@ -43,6 +43,13 @@ use super::symbols::ram;
 /// `const`s that no symbol table carries, so each one names its file.
 pub mod poke {
     /// `constants/hardware.inc`.
+    /// `ram/hram.asm`: `hJoyLast`, the buttons `_Joypad` saw down the last time the game asked
+    /// (`engine/joypad.asm`). The first of the seven joypad bytes (`hJoyLast`, `hJoyReleased`,
+    /// `hJoyPressed`, `hJoyHeld`, `hJoy5`..`hJoy7`) at `$FFB1`: read from the operand of
+    /// `_Joypad`'s `ldh a, [hJoyLast]` on the cartridge, and pinned by the ROM-gated test that
+    /// reads it back from there (row 63, `docs/design/macros.md` 12.27).
+    pub const H_JOY_LAST: u16 = 0xffb1;
+
     pub mod pad {
         pub const A: u8 = 1 << 0;
         pub const B: u8 = 1 << 1;
@@ -284,6 +291,47 @@ pub mod poke {
         pub const TYPE_POISON: u8 = 0x03;
         pub const TYPE_GROUND: u8 = 0x04;
         pub const TYPE_ELECTRIC: u8 = 0x17;
+    }
+
+    /// The cartridge's item-use dispatch and the ids that name its routines (row 63,
+    /// `docs/design/macros.md` 12.27).
+    pub mod items {
+        /// `engine/items/item_effects.asm`: `UseItem_` jumps through `ItemUsePtrTable`, one
+        /// little-endian pointer per item id from `MASTER_BALL` (1) to `MAX_ELIXER` (`$53`), in
+        /// `SECTION "bank3"`. At the pinned commit the table is at `$03:$55E1`: read from the
+        /// operand of `UseItem_`'s `ld hl, ItemUsePtrTable` and checked by
+        /// [`super::super::item_routine`] against the table's own shape on every read.
+        pub const TABLE_BANK: u8 = 0x03;
+        pub const TABLE_ADDRESS: u16 = 0x55e1;
+        pub const LAST_ITEM: u8 = 0x53;
+
+        /// `constants/item_constants.asm`. Each id below stands for the routine the table gives
+        /// it, and every other item is classed by the routine the table gives *it*: an item whose
+        /// pointer is `POTION`'s is medicine, whatever its id.
+        pub const MASTER_BALL: u8 = 0x01;
+        pub const POKE_BALL: u8 = 0x04;
+        pub const SAFARI_BALL: u8 = 0x08;
+        pub const ANTIDOTE: u8 = 0x0b;
+        pub const BURN_HEAL: u8 = 0x0c;
+        pub const ICE_HEAL: u8 = 0x0d;
+        pub const AWAKENING: u8 = 0x0e;
+        pub const PARLYZ_HEAL: u8 = 0x0f;
+        pub const FULL_RESTORE: u8 = 0x10;
+        pub const POTION: u8 = 0x14;
+        pub const HP_UP: u8 = 0x23;
+        pub const X_ACCURACY: u8 = 0x2e;
+        pub const POKE_DOLL: u8 = 0x33;
+        pub const FULL_HEAL: u8 = 0x34;
+        pub const REVIVE: u8 = 0x35;
+        pub const MAX_REVIVE: u8 = 0x36;
+        pub const GUARD_SPEC: u8 = 0x37;
+        pub const DIRE_HIT: u8 = 0x3a;
+        pub const X_ATTACK: u8 = 0x41;
+        pub const POKE_FLUTE: u8 = 0x49;
+        pub const ETHER: u8 = 0x50;
+
+        /// `constants/pokemon_data_constants.asm`: `PARTY_LENGTH`.
+        pub const PARTY_LENGTH: u8 = 6;
     }
 }
 
@@ -784,6 +832,147 @@ pub fn move_without_effect(memory: &mut dyn MemoryReader, id: u8) -> Option<bool
         }
         _ => false,
     })
+}
+
+/// The routine the cartridge's `ItemUsePtrTable` runs for item `id`, as its bank-3 address.
+///
+/// `None` when the seam has no cartridge behind it, when `id` is not an item the table covers
+/// (a TM or an HM goes to `ItemUseTMHM` before the table is asked, and is never usable in a
+/// battle), or when the table is not the one the disassembly describes: the five balls share one
+/// routine and the potions and status heals share another, so a table where `POKE_BALL` and
+/// `SAFARI_BALL` or `POTION` and `ANTIDOTE` part company is somebody else's bytes and answers
+/// nothing.
+pub fn item_routine(memory: &mut dyn MemoryReader, id: u8) -> Option<u16> {
+    use poke::items::*;
+    let entry = |memory: &mut dyn MemoryReader, id: u8| -> Option<u16> {
+        let at = TABLE_ADDRESS + 2 * u16::from(id - 1);
+        let low = memory.read_rom(TABLE_BANK, at)?;
+        let high = memory.read_rom(TABLE_BANK, at + 1)?;
+        Some(u16::from_le_bytes([low, high])).filter(|address| (0x4000..0x8000).contains(address))
+    };
+    if id == 0 || id > LAST_ITEM {
+        return None;
+    }
+    let ball = entry(memory, POKE_BALL)?;
+    let medicine = entry(memory, POTION)?;
+    if [MASTER_BALL, SAFARI_BALL].into_iter().any(|other| entry(memory, other) != Some(ball))
+        || entry(memory, ANTIDOTE) != Some(medicine)
+        || ball == medicine
+    {
+        return None;
+    }
+    entry(memory, id)
+}
+
+/// Whether the cartridge would **take** bag item `id` if the fly chose it from the battle bag on
+/// this frame: the item is used and the turn goes on, rather than "This isn't the time to use
+/// that!", "It won't have any effect." or a ball thrown at a trainer's Pokémon, after which the
+/// fly is back in the bag with nothing changed.
+///
+/// Row 63 (`docs/design/macros.md` 12.27). Which routine an item runs is the cartridge's own
+/// `ItemUsePtrTable` ([`item_routine`]), and each routine's answer is the check it makes before
+/// it does anything, on bytes already in WRAM (`engine/items/item_effects.asm`):
+///
+/// - a **ball** (`ItemUseBall`): a wild battle; against a trainer it is "The trainer blocked the
+///   BALL!", the ball spent for nothing. With a full party the box decides, and the box count is
+///   not read here, so that answer is `None`;
+/// - **medicine** (`ItemUseMedicine`): somebody in the party it would change -- for an HP item a
+///   Pokémon neither fainted nor full (a Full Restore also cures a status at full HP), for a
+///   Revive a fainted one, for a status heal a Pokémon with that status (a Full Heal any). The
+///   Pokémon that is out is read from the battle's own copy, which is the one the engine damages;
+/// - `X_ACCURACY`, `GUARD_SPEC`, `DIRE_HIT`, the four X stat items and the `POKE_FLUTE`: any
+///   battle;
+/// - `POKE_DOLL`: a wild battle;
+/// - `ETHER` and its three siblings: a party move below its PP (PP Ups are counted);
+/// - every other routine -- a vitamin, a stone, a repel, an Escape Rope, a key item, a badge
+///   pseudo-item -- refuses inside a battle.
+///
+/// `None` outside a battle this module understands, or when the table cannot be read: a refusal
+/// this module cannot read is not one it reports.
+pub fn battle_item_use(memory: &mut dyn MemoryReader, id: u8) -> Option<bool> {
+    use poke::items::*;
+    let kind = in_battle(memory)?;
+    let routine = item_routine(memory, id)?;
+    let of = |memory: &mut dyn MemoryReader, anchor: u8| item_routine(memory, anchor);
+    if Some(routine) == of(memory, POKE_BALL) {
+        if kind != BattleKind::Wild {
+            return Some(false);
+        }
+        return (read(memory, ram::wPartyCount) < PARTY_LENGTH).then_some(true);
+    }
+    if Some(routine) == of(memory, POKE_DOLL) {
+        return Some(kind == BattleKind::Wild);
+    }
+    if [X_ACCURACY, GUARD_SPEC, DIRE_HIT, X_ATTACK, POKE_FLUTE]
+        .into_iter()
+        .any(|anchor| of(memory, anchor) == Some(routine))
+    {
+        return Some(true);
+    }
+    // The party as the item routines see it, with the Pokémon that is out read from the battle's
+    // copy: `ReadPlayerMonCurHPAndStatus` writes it back to the party struct at the top of every
+    // turn, and the battle copy is the one the damage went to.
+    let mut mons = party(memory).mons;
+    if let Some(out) = own_mon(memory)
+        && let Some(mon) = mons.iter_mut().find(|mon| mon.slot == out.slot)
+    {
+        mon.hp = out.hp;
+        mon.status = out.status;
+    }
+    if Some(routine) == of(memory, POTION) {
+        let cures = |status: Status| -> bool {
+            match id {
+                ANTIDOTE => status == Status::Poison,
+                BURN_HEAL => status == Status::Burn,
+                ICE_HEAL => status == Status::Freeze,
+                AWAKENING => matches!(status, Status::Sleep(_)),
+                PARLYZ_HEAL => status == Status::Paralysis,
+                _ => status != Status::Healthy,
+            }
+        };
+        // `ItemUseMedicine`'s own order: Revive and Max Revive, then Full Heal, then the HP items
+        // (Full Restore to Potion, and the three drinks past Revive), then the status heals.
+        let takes = |mon: &Mon| -> bool {
+            let fainted = mon.hp == 0;
+            match id {
+                REVIVE | MAX_REVIVE => fainted,
+                FULL_HEAL => !fainted && cures(mon.status),
+                FULL_RESTORE => !fainted && (mon.hp < mon.max_hp || cures(mon.status)),
+                _ if id > MAX_REVIVE || (FULL_RESTORE..=POTION).contains(&id) => {
+                    !fainted && mon.hp < mon.max_hp
+                }
+                _ if id < FULL_RESTORE => !fainted && cures(mon.status),
+                _ => false,
+            }
+        };
+        return Some(mons.iter().any(takes));
+    }
+    if Some(routine) == of(memory, ETHER) {
+        let spent = |memory: &mut dyn MemoryReader, entry: &Move| -> bool {
+            let ups = entry.pp_up;
+            match move_data(memory, entry.id) {
+                Some(data) => entry.pp < data.pp + (data.pp / 5) * ups,
+                None => true,
+            }
+        };
+        let moves: Vec<Move> = mons.iter().flat_map(|mon| mon.moves.iter().flatten().copied()).collect();
+        return Some(moves.iter().any(|entry| spent(memory, entry)));
+    }
+    Some(false)
+}
+
+/// Whether the cartridge still has `A` down from the last time it read the joypad.
+///
+/// Row 63 (`docs/design/macros.md` 12.27). `_Joypad` makes a press out of an *edge* --
+/// `hJoyPressed` is what is down now and was not down in `hJoyLast` -- and the game only asks
+/// while something is reading input. So after the A that confirms a list, the game stops asking
+/// while it draws the next one, `hJoyLast` keeps that A, and an A issued before the new list's
+/// first read is down on both sides of the comparison: no edge, no press. Measured on the
+/// Potion's party list from the row-63 checkpoint: the list's cursor bytes read open at once, an
+/// A in the first 22 frames is swallowed every time, and `hJoyLast` separates the refused frames
+/// from the answered ones exactly (`infra/docs/macros-traps.md` row 63).
+pub fn a_latched(memory: &mut dyn MemoryReader) -> bool {
+    read(memory, poke::H_JOY_LAST) & poke::pad::A != 0
 }
 
 /// Whether a text box is open, and whether the bottom-of-screen dialogue box is the one drawn.
@@ -1972,6 +2161,14 @@ impl MacroState for PokeState<'_> {
 
     fn move_without_effect(&mut self, id: u8) -> bool {
         move_without_effect(self.memory, id).unwrap_or(false)
+    }
+
+    fn item_refused(&mut self, id: u8) -> bool {
+        battle_item_use(self.memory, id) == Some(false)
+    }
+
+    fn a_latched(&mut self) -> bool {
+        a_latched(self.memory)
     }
 
     /// The whole loaded map's walkability, from the cache when it is for this map

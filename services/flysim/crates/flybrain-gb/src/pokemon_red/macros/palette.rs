@@ -547,6 +547,16 @@ pub fn scene_set(scene: Scene, state: &mut dyn MacroState) -> Vec<MacroKind> {
         // list* closed it again; neither spent a turn, and the two of them were half the pad
         // between them. Two buttons that undo each other with nothing else changing are section
         // 12.2's trap spread over two sub-states of one turn.
+        // **A battle menu the cartridge is still holding an A on is not the fly's to answer**
+        // (row 63). The A that chose RUN, FIGHT or the Potion is taken, and the game stops asking
+        // the joypad while it acts on it -- so `hJoyLast` keeps that A, and the menu's box and
+        // cursor bytes stay on screen for as many as sixteen frames after its answer. A macro dealt
+        // there presses at a menu that is already gone: measured from the row-63 checkpoint, every
+        // `RUN` from FIGHT's column was followed by a `MOVE 4` dealt on the frame after, which
+        // pressed UP at "Got away safely!" and held the pad for its whole cursor wait. The pad is
+        // empty for those frames, which is 12.13's reading: the cartridge is driving, and it gives
+        // the buttons back on the first frame it asks again.
+        Scene::Battle { own_turn: true, .. } if state.a_latched() => Vec::new(),
         Scene::Battle { own_turn: true, .. } => match battle_menu(state) {
             // The move list. `BACK` is a button here because there is a list to leave (12.9) --
             // but only while the moves can be *read*: a battler the seam cannot place leaves all
@@ -658,7 +668,13 @@ pub fn precondition(kind: MacroKind, state: &mut dyn MacroState) -> bool {
         // the fly's.
         MacroKind::ThrowBall => throw_slot(state).is_some(),
         MacroKind::Switch => healthiest_other(state).is_some(),
-        MacroKind::Item => hurt(state) && potion_slot(state).is_some(),
+        // ...and a Potion the cartridge would take (row 63): `ItemUseMedicine` answers "It won't
+        // have any effect." to a Pokémon that is fainted or full, and the fly is back in the bag
+        // with nothing changed. `hurt` already says the one that is out is neither, so this is
+        // the cartridge agreeing rather than a second opinion.
+        MacroKind::Item => {
+            hurt(state) && potion_slot(state).is_some() && !state.item_refused(item::POTION)
+        }
         // A wild battle the fly is *losing* (`docs/design/macros.md` section 13.1, the operator: "we run
         // away a lot"). Knowledge inside the macro, as a precondition: nothing ranks `RUN` below
         // `ATTACK` -- the button simply is not there while the fight is still worth having.
@@ -1985,8 +2001,14 @@ pub fn move_slot_bound(state: &mut dyn MacroState, kind: MacroKind) -> bool {
     }
     let any_useful = useful.iter().any(|flag| *flag);
     let entry = holds(usize::from(index)).copied();
+    // `MOVE 1` over the menu is FIGHT's backstop **only while nothing else is a move**: Struggle,
+    // or nothing that would do anything (row 34, row 60). Beside a usable move a spent slot one is
+    // what it is over the list -- not a move -- and its script, "confirm FIGHT and stop", only
+    // opens the list whose `BACK` closes it again: row 63 measured `MOVE 1`, `BACK` ten times in
+    // ten minutes on Mt. Moon B2F with `MOVE 4` usable, 12.11's pair once more. The usable move is
+    // on this pad itself, and it is the button that ends the turn.
     if index == 0 && main {
-        return !any_useful || useful[0] || entry.is_none_or(|entry| entry.pp == 0);
+        return !any_useful || useful[0];
     }
     let Some(entry) = entry else { return false };
     if entry.pp > 0 {

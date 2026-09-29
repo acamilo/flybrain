@@ -1787,6 +1787,14 @@ fn main() {
     dump(&mut gb, "At the checkpoint");
     pad(&mut gb, &adapter, "The pad at the checkpoint");
 
+    if std::env::var("FLY_PROBE_CATCH").is_ok_and(|value| value == "bag") {
+        bag_survey(&mut gb, &mut adapter, &mut ms, &mut layer, &mut decoder, hold_ms);
+        return;
+    }
+    if std::env::var("FLY_PROBE_CATCH").is_ok_and(|value| value == "potion") {
+        potion_survey(&mut gb, &mut adapter, &mut ms);
+        return;
+    }
     let catch_nurse = std::env::var("FLY_PROBE_CATCH").is_ok_and(|value| value == "nurse");
     if catch_nurse {
         nurse_survey(&mut gb, &mut adapter, &mut ms);
@@ -2147,4 +2155,349 @@ fn battle_line(gb: &mut Emulator) -> Option<String> {
         battle.enemy.map(|enemy| (enemy.species, enemy.level, enemy.hp, enemy.max_hp)),
         gb.read8(ram::wEnemyMonStatus),
     ))
+}
+
+/// Row 63: `FLY_PROBE_CATCH=bag`. The live loop was a wild battle on Mt. Moon B2F with the pad
+/// dealing `ITEM` and the bag's `BACK` in turn -- ITEM, BACK, BACK, ITEM, BACK -- until `RUN`.
+///
+/// Drives the layer with a uniform pick among the buttons dealt on each hold (seeded by
+/// `FLY_PROBE_RNG`), so what is counted is the pad and not a readout's favourite. Prints the bag
+/// and the party first, and then per battle its length in frames, its end, and the `ITEM` and
+/// `BACK` starts inside it; `FLY_PROBE_TRACE=1` adds every macro event with the battle menu it
+/// left and the screen on the frames the bag is open.
+fn bag_survey(
+    gb: &mut Emulator,
+    adapter: &mut PokemonRedReward,
+    ms: &mut f64,
+    layer: &mut flysim::macros::MacroLayer,
+    decoder: &mut PopulationDecoder,
+    hold_ms: f64,
+) {
+    use flybrain_gb::pokemon_red::macros::cartridge::MacroState;
+    use flybrain_gb::pokemon_red::macros::state::BattleMenu;
+
+    let menu_of = |gb: &mut Emulator, adapter: &PokemonRedReward| {
+        let ledger = AdapterLedger(adapter);
+        let mut poke = flybrain_gb::pokemon_red::state::PokeState::with_ledger(gb, &ledger);
+        let state: &mut dyn MacroState = &mut poke;
+        state.battle().map(|battle| battle.menu)
+    };
+    battle_dump(gb, adapter, &layer.bound_channels(), "Before the drive");
+    let items: Vec<String> = state::bag(gb)
+        .iter()
+        .map(|stack| {
+            format!(
+                "{:#04x} x{} usable here: {:?}",
+                stack.id,
+                stack.count,
+                state::battle_item_use(gb, stack.id)
+            )
+        })
+        .collect();
+    println!("- the bag, as the cartridge would answer each item in this battle: {items:#?}");
+
+    let budget = env_usize("FLY_PROBE_FRAMES", 71_673);
+    let trace = std::env::var("FLY_PROBE_TRACE").is_ok_and(|value| value == "1");
+    let trace_macro = std::env::var("FLY_PROBE_TRACE_MACRO").ok();
+    let prefer: Vec<String> = std::env::var("FLY_PROBE_PREFER")
+        .map(|value| value.split(',').map(|name| name.trim().to_string()).collect())
+        .unwrap_or_default();
+    let mut rng = env_usize("FLY_PROBE_RNG", 20_260_924) as u32 | 1;
+    let mut legacy = flysim::frame::LegacyFrame::new();
+    let mut hot: Option<String> = None;
+    let mut hot_until = 0.0f64;
+    let mut next_pick = *ms;
+    let mut starts: BTreeMap<String, u64> = BTreeMap::new();
+    let mut outcomes: BTreeMap<String, u64> = BTreeMap::new();
+    // Frames the fly could decide on in a battle, and on how many of them each button was dealt.
+    let mut decidable = 0u64;
+    let mut dealt: BTreeMap<String, u64> = BTreeMap::new();
+    let mut dealt_item_main_unusable = 0u64;
+    let mut bag_frames = 0u64;
+    let mut rewards: BTreeMap<String, u64> = BTreeMap::new();
+    // (frames, item starts, back starts, how it ended)
+    let mut battles: Vec<(u64, u64, u64, String)> = Vec::new();
+    let mut current: Option<(u64, u64, u64)> = None;
+    // Whether the Pokémon on the other side has been seen at 0 HP in the battle that is running:
+    // the win, read from the battle and not from the reward, which pays a key three times at most.
+    // Seen living first, as the adapter's own wild-KO rule does: the enemy's struct reads 0 HP on
+    // the battle's opening frames, before it is loaded.
+    let mut enemy_fainted = false;
+    let mut enemy_living = false;
+    let mut alternation = 0u32;
+    let mut longest_alternation = 0u32;
+    let mut last_start: Option<&'static str> = None;
+    let mut last_reward = String::new();
+    for frame in 0..budget {
+        let bound = layer.bound_channels();
+        if *ms >= next_pick && !bound.is_empty() && layer.running().is_none() {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            // `FLY_PROBE_PREFER=ITEM` presses that button whenever it is dealt: to see what it
+            // does once pressed, not how often the fly would press it.
+            let preferred = prefer
+                .iter()
+                .map(|name| format!("macro_{}", name.to_lowercase().replace(' ', "_")))
+                .find(|channel| bound.contains(channel));
+            hot = Some(preferred.unwrap_or_else(|| bound[rng as usize % bound.len()].clone()));
+            hot_until = *ms + BURST_MS;
+            next_pick = *ms + hold_ms;
+        }
+        if *ms >= hot_until {
+            hot = None;
+        }
+        let in_battle = gb.read8(ram::wIsInBattle) != 0 && gb.read8(ram::wIsInBattle) != 0xff;
+        let names: Vec<String> = layer.feed_palette().into_iter().map(|slot| slot.name).collect();
+        if in_battle && layer.running().is_none() && !names.is_empty() {
+            decidable += 1;
+            for name in &names {
+                *dealt.entry(name.clone()).or_default() += 1;
+            }
+            let menu = menu_of(gb, adapter);
+            if matches!(menu, Some(BattleMenu::Bag { .. })) {
+                bag_frames += 1;
+            }
+            if matches!(menu, Some(BattleMenu::Main { .. }))
+                && names.iter().any(|name| name == "ITEM")
+                && !state::bag(gb).iter().any(|stack| state::battle_item_use(gb, stack.id).is_some())
+            {
+                dealt_item_main_unusable += 1;
+            }
+        }
+        let active = decoder.decode_bound(&rates(hot.as_deref()), *ms, false, None, Some(&bound));
+        let before = if trace { menu_of(gb, adapter) } else { None };
+        let executed = legacy.execute(Some(layer), &active, 0, *ms, gb, adapter);
+        // `FLY_PROBE_TRACE_MACRO=ITEM` prints every frame that macro runs: the mask it pressed,
+        // the menu the seam reads, and the cursor bytes under it.
+        if let Some(want) = trace_macro.as_deref()
+            && (layer.running() == Some(want) || executed.events.iter().any(|event| event.name == want))
+        {
+            let cursor = state::cursor(gb);
+            println!(
+                "    {want} f{frame} mask {:#04x} menu {:?} cursor {}/{} top ({},{}) keys {:#04x} list {:#04x} party-type {:#04x} hJoyLast {:#04x}",
+                executed.mask,
+                menu_of(gb, adapter),
+                cursor.current,
+                cursor.max,
+                cursor.top_x,
+                cursor.top_y,
+                cursor.watched_keys,
+                gb.read8(ram::wListMenuID),
+                gb.read8(ram::wPartyMenuTypeOrMessageID),
+                gb.read8(flybrain_gb::pokemon_red::state::poke::H_JOY_LAST),
+            );
+        }
+        for event in &executed.events {
+            match event.outcome {
+                None => {
+                    *starts.entry(event.name.to_string()).or_default() += 1;
+                    if let Some(battle) = current.as_mut() {
+                        if event.name == "ITEM" {
+                            battle.1 += 1;
+                        }
+                        if event.name == "BACK" {
+                            battle.2 += 1;
+                        }
+                    }
+                    let pair = matches!(
+                        (last_start, event.name),
+                        (Some("ITEM"), "BACK") | (Some("BACK"), "ITEM") | (Some("BACK"), "BACK")
+                    );
+                    alternation = if pair { alternation + 1 } else { 0 };
+                    longest_alternation = longest_alternation.max(alternation);
+                    last_start = Some(event.name);
+                }
+                Some(outcome) => {
+                    *outcomes.entry(format!("{} {}", event.name, outcome.as_str())).or_default() += 1;
+                }
+            }
+            if trace {
+                println!(
+                    "  f{frame:<6} {:<16} menu {before:?} -> {:?}",
+                    event.label(),
+                    menu_of(gb, adapter)
+                );
+            }
+        }
+        if trace && matches!(menu_of(gb, adapter), Some(BattleMenu::Bag { .. })) && frame % 30 == 0 {
+            for line in screen_text(gb).iter().take(12) {
+                println!("      | {line}");
+            }
+        }
+        *ms += MS_PER_FRAME;
+        let evaluated =
+            legacy.stub_advance(Some(layer), gb, adapter, *ms).expect("a frame should complete");
+        for reward in &evaluated.rewards {
+            *rewards.entry(reward.kind.to_string()).or_default() += 1;
+            last_reward = format!("{} {}", reward.kind, reward.label);
+        }
+        let in_battle_now = gb.read8(ram::wIsInBattle) != 0 && gb.read8(ram::wIsInBattle) != 0xff;
+        if in_battle_now && let Some(enemy) = state::battle(gb).and_then(|battle| battle.enemy) {
+            enemy_living |= enemy.hp > 0;
+            enemy_fainted |= enemy_living && enemy.hp == 0;
+        }
+        match (current.as_mut(), in_battle_now) {
+            (Some(battle), true) => battle.0 += 1,
+            (Some(_), false) => {
+                let (frames, item, back) = current.take().expect("a battle is running");
+                let party_hp: u32 =
+                    state::party(gb).mons.iter().map(|mon| u32::from(mon.hp)).sum();
+                let end = if party_hp == 0 {
+                    "lost".to_string()
+                } else if enemy_fainted {
+                    "won".to_string()
+                } else {
+                    "fled or caught".to_string()
+                };
+                if trace {
+                    println!("  f{frame:<6} battle over: {frames} frames, {end}");
+                }
+                battles.push((frames, item, back, end));
+                last_reward.clear();
+                enemy_fainted = false;
+                enemy_living = false;
+            }
+            (None, true) => current = Some((1, 0, 0)),
+            (None, false) => {}
+        }
+    }
+    if let Some((frames, item, back)) = current {
+        battles.push((frames, item, back, "still running".to_string()));
+    }
+
+    println!("\n## Row 63 survey: {budget} frames, seed {}\n", env_usize("FLY_PROBE_RNG", 20_260_924));
+    println!("- macro starts: {starts:?}");
+    println!("- macro outcomes: {outcomes:?}");
+    println!("- decidable battle frames {decidable}; frames with the bag open {bag_frames}");
+    println!("- dealt on those frames: {dealt:?}");
+    println!(
+        "- `ITEM` dealt on the battle menu with nothing in the bag the cartridge would use: {dealt_item_main_unusable}"
+    );
+    println!("- longest ITEM/BACK run of starts: {longest_alternation}");
+    println!("- rewards: {rewards:?}");
+    let won = battles.iter().filter(|battle| battle.3 == "won").count();
+    let frames: u64 = battles.iter().map(|battle| battle.0).sum();
+    let longest = battles.iter().map(|battle| battle.0).max().unwrap_or(0);
+    println!(
+        "- battles {}: won {won}, frames {frames} (mean {}, longest {longest}), ITEM starts inside {}, BACK starts inside {}",
+        battles.len(),
+        if battles.is_empty() { 0 } else { frames / battles.len() as u64 },
+        battles.iter().map(|battle| battle.1).sum::<u64>(),
+        battles.iter().map(|battle| battle.2).sum::<u64>(),
+    );
+    for (index, battle) in battles.iter().enumerate() {
+        println!("  - battle {index}: {} frames, ITEM {}, BACK {}, {}", battle.0, battle.1, battle.2, battle.3);
+    }
+    battle_dump(gb, adapter, &layer.bound_channels(), "After the drive");
+}
+
+/// Row 63: `FLY_PROBE_CATCH=potion`, from a checkpoint with the battle bag open and a Potion in
+/// it. Raw presses put the bag's cursor on the Potion and confirm it; once the party list reads
+/// open, every delay from 0 to `FLY_PROBE_STUCK` frames is tried in a rollback -- wait that
+/// long, pulse A, watch 180 frames -- and the ones after which the Pokémon's HP went up are
+/// printed. That is the window in which `ITEM`'s last press is answered.
+fn potion_survey(gb: &mut Emulator, adapter: &mut PokemonRedReward, ms: &mut f64) {
+    use flybrain_gb::buttons;
+    use flybrain_gb::pokemon_red::macros::cartridge::MacroState;
+    use flybrain_gb::pokemon_red::macros::state::BattleMenu;
+
+    let menu = |gb: &mut Emulator, adapter: &PokemonRedReward| {
+        let ledger = AdapterLedger(adapter);
+        let mut poke = flybrain_gb::pokemon_red::state::PokeState::with_ledger(gb, &ledger);
+        let state: &mut dyn MacroState = &mut poke;
+        state.battle().map(|battle| battle.menu)
+    };
+    let hp = |gb: &mut Emulator| {
+        u16::from(gb.read8(ram::wBattleMonHP)) * 256 + u16::from(gb.read8(ram::wBattleMonHP + 1))
+    };
+    let mut pulse = |gb: &mut Emulator, adapter: &mut PokemonRedReward, mask: u8| {
+        for phase in 0..16 {
+            gb.set_buttons(if phase < 8 { mask } else { 0 });
+            gb.run_frame().expect("a frame should complete");
+            *ms += MS_PER_FRAME;
+            adapter.sample(gb, *ms);
+        }
+    };
+    let potion = state::bag(gb).iter().position(|stack| stack.id == 0x14);
+    println!("\n## Row 63: the Potion, pressed by hand\n\n- bag {:?}, potion at {potion:?}, menu {:?}, hp {}", state::bag(gb), menu(gb, adapter), hp(gb));
+    let Some(potion) = potion else { return };
+    for _ in 0..8 {
+        match menu(gb, adapter) {
+            Some(BattleMenu::Bag { cursor, .. }) if usize::from(cursor) == potion => break,
+            Some(BattleMenu::Bag { cursor, .. }) if usize::from(cursor) < potion => {
+                pulse(gb, adapter, buttons::DOWN)
+            }
+            _ => pulse(gb, adapter, buttons::UP),
+        }
+    }
+    println!("- on the Potion: {:?}", menu(gb, adapter));
+    pulse(gb, adapter, buttons::A);
+    let mut opened = None;
+    for frame in 0..240 {
+        if matches!(menu(gb, adapter), Some(BattleMenu::Party { .. })) {
+            opened = Some(frame);
+            break;
+        }
+        gb.set_buttons(0);
+        gb.run_frame().expect("a frame should complete");
+    }
+    println!("- the party list reads open {opened:?} frames after the confirming pulse");
+    for line in screen_text(gb) {
+        println!("      | {line}");
+    }
+    let before = hp(gb);
+    let mut answered = Vec::new();
+    let mut texts = Vec::new();
+    let mut separator = Separator::new();
+    let span = env_usize("FLY_PROBE_STUCK", 120);
+    for delay in 0..span {
+        let save = gb.export_state().expect("export");
+        for _ in 0..delay {
+            gb.set_buttons(0);
+            gb.run_frame().expect("a frame should complete");
+        }
+        let text = state::text_box(gb);
+        let reading = format!(
+            "box {} seam {:?}",
+            box_rows(gb),
+            menu(gb, adapter)
+        );
+        let probe = gb.export_state().expect("export");
+        let screen = if [0usize, 10, 20, 21, 22, 23, 30].contains(&delay) { screen_text(gb) } else { Vec::new() };
+        gb.import_state(&probe).expect("import");
+        for phase in 0..16 {
+            gb.set_buttons(if phase < 8 { buttons::A } else { 0 });
+            gb.run_frame().expect("a frame should complete");
+        }
+        for _ in 0..180 {
+            gb.set_buttons(0);
+            gb.run_frame().expect("a frame should complete");
+        }
+        let healed = hp(gb) > before;
+        if healed {
+            answered.push(delay);
+        }
+        if delay % 10 == 0 || (18..26).contains(&delay) {
+            texts.push(format!("d{delay} text {text:?} {reading} healed {healed}"));
+        }
+        for line in screen {
+            texts.push(format!("    d{delay} | {line}"));
+        }
+        gb.import_state(&save).expect("import");
+        for _ in 0..delay {
+            gb.set_buttons(0);
+            gb.run_frame().expect("a frame should complete");
+        }
+        separator.observe(gb, healed);
+        gb.import_state(&save).expect("import");
+    }
+    println!("- WRAM/HRAM addresses whose values never overlap between refused and answered frames (refused, answered):");
+    for (address, refused, honoured) in separator.disjoint().into_iter().take(25) {
+        println!("  - {address:#06x}: {refused:?} / {honoured:?}");
+    }
+    println!("- A after these delays healed ({} of {span}): {answered:?}", answered.len());
+    for line in texts {
+        println!("  - {line}");
+    }
 }

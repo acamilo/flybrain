@@ -778,8 +778,10 @@ impl Run {
         // picks among exactly those (`docs/design/macros.md` section 12).
         let bound = self.layer.bound_channels();
         // Only the fly's *own* turn. Battle text between turns is a pad of one `NEXT` by design
-        // (the v0.2.4 deadlock fix), so counting it would measure the wrong thing.
-        if self.own_turn() {
+        // (the v0.2.4 deadlock fix), so counting it would measure the wrong thing. Nor a menu the
+        // cartridge still holds an A on, whose pad is empty on purpose (12.27): the answer is
+        // taken or the list is not yet asking, and it is back on the game's next joypad read.
+        if self.own_turn() && !flybrain_gb::pokemon_red::state::a_latched(&mut self.gb) {
             self.move_button_on_battle_pad |=
                 bound.iter().any(|channel| channel.starts_with("macro_move_"));
             let dealt = bound.len();
@@ -3805,4 +3807,186 @@ fn a_trainers_challenge_does_not_wall_the_road_to_the_forests_north_gate() {
     assert!(north_gate.is_some(), "the fly never reached the forest's north gate: {arrivals:?}");
     assert!(route_2_north.is_some(), "nor Route 2 through it: {arrivals:?}");
     assert!(pewter.is_some(), "nor Pewter City: {arrivals:?}");
+}
+
+/// The row-63 checkpoint (Mt. Moon B2F, a wild battle with the bag open), or `None` to skip.
+fn row63_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_ROW63_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// Mt. Moon B2F, from the checkpoint taken mid-trap: Wartortle out at 8 of 86 against a wild
+/// Geodude, the bag open on an Antidote, a Potion and TM34.
+///
+/// **What was live** (2026-09-24, v0.6.2, rank 12): per ten minutes `BACK` 62, `ITEM` 28, `RUN`
+/// 21, `MOVE 1` 10, no game event -- ITEM, BACK, BACK, ITEM, BACK ... then RUN. The bag is not
+/// the problem: the Potion is one the cartridge would take. `ITEM`'s last press, the A on the
+/// party list, went in while the cartridge still held the A that chose the Potion, so it was no
+/// press; `ITEM` reported done over the waiting list and the fly left it and the bag with two
+/// `BACK`s. Beside it `MOVE 1` was dealt over the menu with slot one spent and slot four usable,
+/// and only opened the list its `BACK` closed (`infra/docs/macros-traps.md` row 63).
+///
+/// The driver is the real palette, pressing `ITEM` whenever the pad deals it and otherwise a
+/// uniform choice per hold -- a harness choice, not the fly's. The claims:
+///
+/// - **the Potion is used**: Wartortle's HP goes up and the Potion leaves the bag;
+/// - **no `ITEM` ends with its party list still up**, so no `BACK` is needed to leave it;
+/// - **`MOVE 1` is not dealt over the menu while slot one is spent beside a usable move**;
+/// - **the battle ends**.
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_ROW63_CHECKPOINT=.local/checkpoints/release-rank12-row63.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture row63
+/// ```
+#[test]
+fn row63_item_uses_the_potion_and_the_battle_menu_deals_no_list_it_only_opens() {
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = row63_checkpoint() else {
+        eprintln!("skipped: no FLY_ROW63_CHECKPOINT");
+        return;
+    };
+    // The Potion, pressed whenever it is dealt.
+    let item = row63_drive(&rom, &checkpoint, &["ITEM"]);
+    assert!(item.starts.get("ITEM").copied().unwrap_or(0) > 0, "ITEM was never pressed");
+    assert_eq!(item.item_left_a_list, 0, "an ITEM ended with its party list still waiting");
+    assert!(item.hp_rose, "the Potion never reached Wartortle");
+    assert_eq!(item.potions_left, 0, "the Potion is still in the bag");
+    assert!(item.ended_at.is_some(), "the battle did not end: {item:?}");
+    // Out of the bag, then `MOVE 1` whenever it is dealt: over the menu it may only be the
+    // backstop, and the menu with slot one spent beside slot four is reached.
+    let move_one = row63_drive(&rom, &checkpoint, &["BACK", "MOVE 1"]);
+    assert!(move_one.spent_menu_frames > 0, "the menu with slot one spent was never up");
+    assert_eq!(move_one.spent_move_one_dealt, 0, "MOVE 1 opened a list beside a usable move");
+    assert!(move_one.ended_at.is_some(), "the battle did not end: {move_one:?}");
+}
+
+/// What one drive from the row-63 checkpoint measured.
+#[derive(Debug)]
+struct Row63 {
+    starts: std::collections::BTreeMap<&'static str, u32>,
+    item_left_a_list: u32,
+    spent_move_one_dealt: u32,
+    /// Free frames on the menu with slot one spent and another move usable.
+    spent_menu_frames: u32,
+    hp_rose: bool,
+    potions_left: u32,
+    battle_frames: u32,
+    ended_at: Option<u32>,
+}
+
+/// The real palette from the row-63 checkpoint, pressing the first of `prefer` the pad deals and
+/// otherwise a uniform choice per hold, until the battle ends or 12,000 frames pass.
+fn row63_drive(rom: &[u8], checkpoint: &flysim::store::Checkpoint, prefer: &[&str]) -> Row63 {
+    use flybrain_gb::pokemon_red::macros::PokemonPalette;
+    use flybrain_gb::pokemon_red::macros::state::BattleMenu;
+    use flybrain_gb::pokemon_red::state;
+    use flybrain_gb::pokemon_red::symbols::ram;
+    use flybrain_gb::{MacroPalette, MemoryReader, Started};
+    const POTION: u8 = 0x14;
+    let mut run = Run::resume(rom, MacroMode::Macros, checkpoint);
+    assert_eq!(run.gb.read8(ram::wIsInBattle), 1, "the checkpoint is inside the wild battle");
+    let potions = |gb: &mut Emulator| -> u32 {
+        state::bag(gb).iter().filter(|stack| stack.id == POTION).map(|stack| u32::from(stack.count)).sum()
+    };
+    assert_eq!(potions(&mut run.gb), 1);
+    assert_eq!(state::battle_item_use(&mut run.gb, POTION), Some(true), "the cartridge takes it");
+    let hp_before = state::battle(&mut run.gb).and_then(|battle| battle.own).map(|own| own.hp);
+
+    let budget = 12_000u32;
+    let hold_frames = 48u32;
+    let mut palette = PokemonPalette::new(SEED);
+    let mut rng = 20_260_924u32;
+    let mut running: Option<&'static str> = None;
+    let mut since_decision = hold_frames;
+    let mut ms = run.ms;
+    let mut out = Row63 {
+        starts: std::collections::BTreeMap::new(),
+        item_left_a_list: 0,
+        spent_move_one_dealt: 0,
+        spent_menu_frames: 0,
+        hp_rose: false,
+        potions_left: 0,
+        battle_frames: 0,
+        ended_at: None,
+    };
+    for frame in 0..budget {
+        palette.clock(ms);
+        let observed = {
+            let ledger = AdapterLedger(&run.adapter);
+            palette.observe(&mut run.gb, &ledger)
+        };
+        let names: Vec<&str> = observed.bindings.iter().map(|binding| binding.name).collect();
+        if running.is_none()
+            && let Some(battle) = state::battle(&mut run.gb)
+            && matches!(battle.menu, BattleMenu::Main { .. })
+            && let Some(own) = battle.own
+        {
+            let spent = own.moves[0].is_some_and(|entry| entry.pp == 0);
+            let usable = own.moves.iter().flatten().any(|entry| entry.id != 0 && entry.pp > 0);
+            if spent && usable {
+                out.spent_menu_frames += 1;
+                if names.contains(&"MOVE 1") {
+                    out.spent_move_one_dealt += 1;
+                }
+            }
+        }
+        let mut mask = 0u8;
+        {
+            let ledger = AdapterLedger(&run.adapter);
+            if let Some(name) = running {
+                match palette.step(&mut run.gb, &ledger) {
+                    Some(held) => mask = held,
+                    None => {
+                        running = None;
+                        if name == "ITEM"
+                            && state::battle(&mut run.gb)
+                                .is_some_and(|battle| matches!(battle.menu, BattleMenu::Party { .. }))
+                        {
+                            out.item_left_a_list += 1;
+                        }
+                    }
+                }
+            } else if since_decision >= hold_frames && !observed.bindings.is_empty() {
+                since_decision = 0;
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                let binding = prefer
+                    .iter()
+                    .find_map(|want| observed.bindings.iter().find(|binding| binding.name == *want))
+                    .unwrap_or(&observed.bindings[rng as usize % observed.bindings.len()]);
+                if let Started::Running(_) = palette.start(binding.slot, &mut run.gb, &ledger) {
+                    *out.starts.entry(binding.name).or_default() += 1;
+                    running = Some(binding.name);
+                    match palette.step(&mut run.gb, &ledger) {
+                        Some(held) => mask = held,
+                        None => running = None,
+                    }
+                }
+            }
+        }
+        since_decision += 1;
+        run.gb.set_buttons(mask);
+        run.gb.run_frame().expect("a frame should complete");
+        ms += MS_PER_FRAME;
+        run.adapter.sample(&mut run.gb, ms);
+        if let (Some(before), Some(now)) = (
+            hp_before,
+            state::battle(&mut run.gb).and_then(|battle| battle.own).map(|own| own.hp),
+        ) && now > before
+        {
+            out.hp_rose = true;
+        }
+        if run.gb.read8(ram::wIsInBattle) == 0 {
+            out.ended_at = Some(frame);
+            break;
+        }
+        out.battle_frames += 1;
+    }
+    out.potions_left = potions(&mut run.gb);
+    eprintln!("row 63, pressing {prefer:?} whenever dealt: {out:?}");
+    out
 }

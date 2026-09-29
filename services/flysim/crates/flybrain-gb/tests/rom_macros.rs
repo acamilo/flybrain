@@ -1276,3 +1276,36 @@ fn after_the_starter_the_way_out_of_pallet_town_is_north() {
     eprintln!("GO OBJECTIVE walked from {:?} to {:?} in {macros} macros", (start_x, start_y), (x, y));
     assert!(y < start_y, "the fly went north, toward Route 1 and the parcel beyond it");
 }
+
+/// Row 63's two pinned addresses, read back from the code that uses them.
+///
+/// `_Joypad` (`engine/joypad.asm`, the first thing in `SECTION "bank3"`) opens `ldh a,
+/// [hJoyInput]`, `cp PAD_BUTTONS`, `jp z, TrySoftReset`, `ld b, a`, `ldh a, [hJoyLast]`: the
+/// operand of that second `ldh` is the latch `state::a_latched` reads. `UseItem_` loads
+/// `ItemUsePtrTable` with `ld hl, nn` fourteen bytes in, and that is the table
+/// `state::item_routine` reads.
+#[test]
+fn row63_the_joypad_latch_and_the_item_table_are_where_the_cartridge_says() {
+    use flybrain_gb::pokemon_red::state::poke;
+    let rom = skip_without_rom!();
+    let gb = emulator(&rom);
+    let bank3 = |address: u16| gb.read_rom_bank(0x03, address).expect("bank 3");
+    let joypad: Vec<u8> = (0x4000..0x400b).map(bank3).collect();
+    assert_eq!(&joypad[0..1], &[0xf0], "ldh a, [hJoyInput]");
+    assert_eq!(&joypad[2..4], &[0xfe, 0x0f], "cp PAD_BUTTONS");
+    assert_eq!(joypad[4], 0xca, "jp z, TrySoftReset");
+    assert_eq!(&joypad[7..9], &[0x47, 0xf0], "ld b, a; ldh a, [hJoyLast]");
+    assert_eq!(0xff00 | u16::from(joypad[9]), poke::H_JOY_LAST);
+
+    // `UseItem_`: ld a, 1 / ld [wActionResultOrTookBattleTurn], a / ld a, [wCurItem] /
+    // cp HM01 / jp nc, ItemUseTMHM / ld hl, ItemUsePtrTable.
+    let start = (0x4000u16..0x7ff0)
+        .find(|address| {
+            let at = |offset: u16| bank3(address + offset);
+            at(0) == 0x3e && at(1) == 0x01 && at(2) == 0xea && at(5) == 0xfa && at(8) == 0xfe
+                && at(9) == 0xc4 && at(10) == 0xd2 && at(13) == 0x21
+        })
+        .expect("UseItem_ in bank 3");
+    let table = u16::from_le_bytes([bank3(start + 14), bank3(start + 15)]);
+    assert_eq!(table, poke::items::TABLE_ADDRESS);
+}

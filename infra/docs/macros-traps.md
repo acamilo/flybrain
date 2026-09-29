@@ -3051,3 +3051,64 @@ On `main` `510727c` (v0.6.1, row 59 merged):
 - `npm test` 663 passed; `npm run typecheck` clean; `infra/tests/lint.sh` ALL CHECKS PASSED.
 - `flysim --print-compatibility`, raw and macros: 648 bytes, sha256 `8ce67b97...a8f68`, the same
   as `main`. Decoder, reward catalog, adapter version and roles untouched.
+
+## 2026-09-24, row 63: Mt. Moon B2F, ITEM, BACK, BACK
+
+### What was live
+
+Map 61 (Mt. Moon B2F), rung 12, v0.6.2, wild battles, about 03:05 to 03:15 UTC: per ten minutes
+`BACK` 62, `ITEM` 28, `RUN` 21, `MOVE 1` 10, no game event. The log: ITEM, BACK, BACK, ITEM, BACK
+... RUN, and MOVE 1, BACK, RUN. The checkpoint is a wild Geodude L9 with the battle bag open:
+Wartortle L28 at 8/86, BITE, TAIL WHIP and BUBBLE at 0 PP and WATER GUN at 25; the bag an
+Antidote, a Potion, TM34.
+
+### The survey
+
+`scene_probe` `FLY_PROBE_CATCH=bag` (uniform pick among dealt buttons, trace per macro) and
+`=potion` (the Potion pressed by hand, then A tried after every delay 0..120 in a rollback).
+
+- The cartridge's `ItemUsePtrTable` says the Potion would be taken, the Antidote not (nobody
+  poisoned), TM34 never in a battle. `ITEM` is dealt correctly (hurt, a Potion).
+- `ITEM` presses ITEM, the Potion, and the party list opens on the frame after the pulse with
+  the one Pokémon under the cursor; the script's confirm goes in at once and the list stays up.
+  `ITEM done`; `BACK` closes the list (`UseItem` fails, back to the bag); `BACK` closes the bag.
+- By rollback: A lost for 22 frames after the pulse, answered from then on; `hJoyLast` (and the
+  three joypad bytes after it) the only bytes that separate the two.
+- `MOVE 1` is dealt over the menu with slot one spent beside slot four; it opens the list, whose
+  `BACK` closes it.
+- With the confirm fixed: RUN's A is taken, the menu's box stays for up to sixteen frames with
+  `hJoyLast` = A, and a macro dealt there (the survey: `MOVE 4` after every `RUN` from FIGHT's
+  column, 324 of 324) presses at a menu that is gone and blocks for 180 frames.
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 63 | a cursor step's confirming A goes into a list that reads open before the cartridge has let go of the A that opened it; the press is no edge, the macro reports done over a waiting list, and `BACK` twice undoes it | any list opened by an A whose target is under the cursor at once; the Potion's party list with one Pokémon | `items_last_press_waits_for_the_cartridge_to_let_go_of_the_potions_a`, `row63_item_uses_the_potion_and_the_battle_menu_deals_no_list_it_only_opens` (ROM) | **fixed**: `state::a_latched` (`hJoyLast`, `$FFB1`); the confirm waits while it holds. `docs/design/macros.md` 12.27 |
+| 63b | `MOVE 1` over the battle menu with slot one spent beside a usable move only opens the list its `BACK` closes | a spent first move | `move_one_is_not_fights_backstop_beside_a_usable_move`, the ROM test's second drive | **fixed**: the backstop only while no move is usable |
+| 63c | a battle menu the cartridge has taken an A on stays on screen; a macro dealt on it presses at a menu already gone | RUN, and any answer whose box lingers | `a_battle_menu_the_cartridge_still_holds_an_a_on_deals_no_pad` | **fixed**: no own-turn pad while `hJoyLast` holds A |
+| 63d | `ITEM` is dealt while the cartridge would refuse the Potion | none reached: `hurt` implies it is taken | `item_is_off_the_pad_while_the_cartridge_would_refuse_the_potion`, `the_row_63_bag_holds_one_item_the_cartridge_would_take` | **guarded**: `state::battle_item_use` from `ItemUsePtrTable` (`$03:$55E1`) |
+| 63e | a party list opened by an item reads as the battle's party list: its pad is `SWITCH`, `BACK`, and `SWITCH` there would use the item on the healthiest other Pokémon | only if `ITEM` stops before its last press; not reached with 63 fixed | -- | **left**: `ITEM` now finishes; naming the item's list is a seam change for when it is reached |
+
+### Before and after
+
+Ten seeds per arm, 71,673 frames each (20 brain minutes), uniform pick among the dealt buttons,
+from the row-63 checkpoint. Base: `main` plus the seam reader and the probe; branch: the fix.
+`build/loop-row63/survey-summary.md` has the per-seed table.
+
+| | base | branch |
+| --- | ---: | ---: |
+| `ITEM` starts | 244 | 10 (each one used the Potion) |
+| `BACK` starts | 559 | 0 |
+| `MOVE 1` starts | 173 | 0 |
+| longest ITEM/BACK run | 6 | 0 |
+| battle macros blocked | 0 | 0 |
+| battles | 392 | 343 |
+| battle frames | 448,282 | 366,049 |
+| mean / longest battle | 1,144 / 2,006 | 1,067 / 1,651 |
+| wins (enemy seen at 0 HP) | 185 | 166 |
+| rewards: battle / exploration / boundary+item | 67 / 3 / 0 | 73 / 19 / 24 |
+
+ROM-gated, `row63_item_uses_the_potion_and_the_battle_menu_deals_no_list_it_only_opens`: base,
+pressing `ITEM` whenever dealt, 12,000 frames in the one battle, `ITEM` 119 and `BACK` 119, the
+party list left waiting 119 times, the Potion never used, and pressing `BACK` then `MOVE 1`
+whenever dealt, `MOVE 1` 125 and `BACK` 125, the battle never ends: **fails**. Branch: the Potion
+used (8 to 28 HP) and the battle over in 555 frames; `MOVE 4` and the battle over in 773: passes.
