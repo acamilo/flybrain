@@ -389,6 +389,12 @@ agent-adapter choices that the sections above leave open. `LegacyAgentWorker`
   `signal` is `plasticity.signal`. The legacy per-synapse count (`LearningStats.changed`, the
   gains away from 1.0) is not carried. It can still be read from a captured state.
   `stimulusRemainingMs` is the network's `reward_remaining` after the operation.
+  *Amended 2026-09-29 (AGENT-01 rebase):* `FLYSIM01` records `plasticity.updates` but not the
+  reinforcement calls. An agent imported from a `FLYSIM01` agent state therefore starts
+  `updates` at that state's `plasticity.updates`, which is a lower bound on the calls made. Starting
+  it at zero makes the first telemetry violate `changed <= updates`: on the live fly `changed` is
+  in the thousands. `legacy_parity::legacy_reinforcements` is the rule. The import that ENV-01
+  or STATE-01 ships must apply it.
 - *Spikes.* Each `Agent.Commit` reply carries the attachment `telemetry.spikes`, with content type
   `application/x-fly-spike-bitset`. It uses the legacy feed's layout: bit *i* is neuron *i*,
   `ceil(neurons/8)` bytes. It covers the transition's ticks: a neuron is set when its last spike
