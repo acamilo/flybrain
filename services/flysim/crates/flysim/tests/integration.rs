@@ -264,7 +264,18 @@ async fn the_service_streams_takes_sugar_checkpoints_and_resumes_after_being_kil
     let boot = boot_started.elapsed();
     eprintln!("[timing] boot to first healthy /healthz: {:.1} s", boot.as_secs_f64());
 
-    let (status, versions) = service.get("/status");
+    // `/healthz` goes green before the first snapshot is published, and until then `/status`
+    // carries the placeholder header (rank BOOT, a one-rung ladder). On a loaded box that
+    // window is long enough to be read, so wait (bounded) for the first real snapshot; every
+    // assertion below is unchanged.
+    let first_snapshot_by = Instant::now() + Duration::from_secs(30);
+    let (status, versions) = loop {
+        let (status, versions) = service.get("/status");
+        if versions["milestone"]["total"] != json!(1) || Instant::now() >= first_snapshot_by {
+            break (status, versions);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
     assert_eq!(status, 200);
     assert_eq!(versions["version"]["kernel"], json!("lif-1ms-f64-v2"));
     assert_eq!(versions["version"]["adapter"], json!("pokered-unique8-v7"));
