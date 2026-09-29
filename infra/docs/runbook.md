@@ -193,6 +193,8 @@ ssh the host pct exec <release-ctid> -- curl -s 127.0.0.1:7410/metrics | grep fl
 | Repeating `FATAL:` + `transport_limit` for more than ~10 min | Something else is holding this account's websocket transports (a second bridge, a dev box, a stale `tools/mock-twitch.sh`) | Find and stop the other client. `GET https://api.twitch.tv/helix/eventsub/subscriptions` with the broadcaster token lists them; delete the strays. |
 | Repeating `FATAL:` + `create failure ... missing scope` | The token lost a scope (re-authorized with the wrong `--role`, or Twitch revoked it) | Re-run `tools/authorize.mts` — see "Rotate the bot token" below. The bridge will NOT recover from this on its own; restarting cannot add a scope. |
 | Repeating `FATAL:` + `revoked (authorization_revoked)` | The channel or the user revoked the app | Re-authorize. Same as above. |
+| Repeating `FATAL: Twitch refused to refresh the <role> token ... (HTTP 400 "Invalid refresh token")` at startup | That role's refresh token is revoked or invalid (password change, app disconnected, re-authorized elsewhere) | Re-authorize that `--role` — "Rotate the bot token" below. Restarting cannot help; systemd keeps retrying every 15 s with one refresh request per role until the file is fixed. |
+| `the stored <role> access token has expired; refreshing it` or `rejected the stored <role> access token (401); refreshing it once`, then a normal start | The bridge was down longer than an access token lives (~4 h), or Twitch invalidated it early | Nothing: it refreshed and persisted the new token itself. |
 | One `FATAL:` then a quiet, `chatSubscriptionHealthy: true` bridge | It healed. | Nothing. Note it in the status log if it was during a stream. |
 | `active (running)`, `chatSubscriptionHealthy: false`, and NO `FATAL:` line after more than 2 min | The watchdog itself is not running — an old bundle | Check `/opt/fly/current/bridge/index.js` is from a release that has it, then `systemctl restart flybridge`. |
 
@@ -203,13 +205,30 @@ unit, so chat can never take the fly down.
 
 ## Rotate the bot token (flybridge)
 
-Not yet applicable until flybridge exists and is wired up (P3, `docs/design/infra.md`
-section 7). Once it is: re-run `tools/authorize.mts` (`docs/design/stage-bridge.md`
-section B1) on the operator box to get a fresh refresh token, which
-`RefreshingAuthProvider`'s `onRefresh` persists to `/var/lib/fly/bridge/tokens.json`
-automatically from then on — a one-time manual step, not a recurring one. The
-`twitch-app` credential (client id/secret) only needs rotating if the app itself is
-compromised; follow the same `06-secrets.sh` pattern as the stream key.
+Access tokens live about 4 h; refresh tokens until revoked. The bridge refreshes on its own:
+at runtime through `RefreshingAuthProvider`, and ON LOAD (`prepareStartupTokens` in
+`services/bridge/src/auth.ts`) — a stored access token that has expired, or that Twitch's
+validate endpoint rejects with 401, is refreshed with its refresh token before the bridge gives
+up, for both roles, and each refreshed token is written back to `/var/lib/flybridge/tokens.json`
+under its own role (tmp file + rename, mode 0600), also when the bot and the broadcaster are one
+account. So an outage longer than an access token's life no longer needs a hand refresh
+(2026-09-28: it used to crash-loop on 401 at `validate`).
+
+Re-authorizing is needed only when the journal says
+`flybridge: FATAL: Twitch refused to refresh the <role> token for user <id> (HTTP 400 "Invalid refresh token")`,
+or a scope is missing (the table in "Chat dead" above). Then, on the operator box:
+
+1. `npx tsx tools/authorize.mts --role <role> --tokens-file <local copy of tokens.json>`
+   (`services/bridge`, `docs/design/stage-bridge.md` section B1). It rewrites only that role's
+   entry and keeps the other.
+2. Push the file to the release container as `/var/lib/flybridge/tokens.json`, owned by the
+   service user, mode 0600 (it is a secret; never in a release artifact or in git).
+3. `systemctl restart flybridge` and read the journal for the startup notice line.
+
+Never paste a token or the client secret into a log, a ticket or chat: the bridge itself prints
+neither (Twitch errors are logged by status and message only, URLs redacted). The `twitch-app`
+credential (client id/secret) only needs rotating if the app itself is compromised; follow the
+same `06-secrets.sh` pattern as the stream key.
 
 ## Restore a checkpoint locally
 

@@ -5,7 +5,7 @@
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { ApiClient } from '@twurple/api';
-import { assertStartupScopes, buildAuthProvider, loadTokensFile } from './auth';
+import { assertStartupScopes, buildAuthProvider, loadTokensFile, StartupTokenError } from './auth';
 import { createSend, TwurpleChatSender } from './chat';
 import { loadConfig } from './config';
 import { startEventSub } from './eventsub';
@@ -23,6 +23,7 @@ import {
   RedemptionManager,
   TwurpleRedemptionApi,
 } from './redemptions';
+import { safeErrorText } from './redact';
 import { HttpSimClient } from './sim';
 
 const EXPLAINER_TICK_MS = 60_000;
@@ -31,7 +32,11 @@ const SUGAR_REWARD_TITLE = 'Sugar';
 async function main(): Promise<void> {
   const config = loadConfig();
   const tokens = await loadTokensFile(config.tokensFile);
-  await assertStartupScopes(config, tokens);
+  const auth = buildAuthProvider(config, tokens);
+  // Refreshes an expired or 401-rejected stored token (either role) BEFORE giving up, persists
+  // it, then asserts scopes. Validating first crash-looped the bridge after any outage longer
+  // than an access token's ~4 h life (src/auth.ts, `prepareStartupTokens`).
+  await assertStartupScopes(config, auth);
 
   const {
     botAuthProvider,
@@ -40,7 +45,7 @@ async function main(): Promise<void> {
     broadcasterUserId,
     sameAccount,
     sharedEventSubAuthProvider,
-  } = buildAuthProvider(config, tokens);
+  } = auth;
   // One client per identity. See `buildAuthProvider` in src/auth.ts: a single provider holding both
   // tokens loses one of them whenever the two roles are the same Twitch account.
   const botApiClient = new ApiClient({ authProvider: botAuthProvider });
@@ -250,7 +255,10 @@ const isMainModule = (() => {
 
 if (isMainModule) {
   main().catch((error: unknown) => {
-    console.error(error);
+    // A StartupTokenError's message is the whole, secret-free line (and names the runbook step).
+    // Anything else may be a twurple HttpStatusCodeError, whose message carries the request URL —
+    // for the refresh grant that is the client secret and refresh token — so it is redacted.
+    console.error(error instanceof StartupTokenError ? error.message : safeErrorText(error));
     process.exit(1);
   });
 }

@@ -2,14 +2,18 @@
  * Loads `tokens.json` (written by `tools/authorize.mts`) and builds the `RefreshingAuthProvider`
  * with both identities registered (`docs/design/stage-bridge.md` B1): the bot account (chat) and
  * the broadcaster account (redemptions, predictions, follows). Persists refreshed tokens back to
- * the same file, atomically, 0600.
+ * the same file, atomically, 0600 — for BOTH roles, including when they are one account.
+ *
+ * On load, a stored access token that has expired, or that Twitch's validate endpoint rejects with
+ * 401, is refreshed with its refresh token before anything gives up (`prepareStartupTokens`). Only
+ * a refresh that Twitch itself refuses is fatal, with one line pointing at the runbook.
  */
 import { readFile } from 'node:fs/promises';
-import type { AccessTokenMaybeWithUserId, AccessTokenWithUserId, AuthProvider } from '@twurple/auth';
-import { RefreshingAuthProvider } from '@twurple/auth';
-import { getTokenInfo } from '@twurple/auth';
+import type { AccessToken, AccessTokenMaybeWithUserId, AccessTokenWithUserId, AuthProvider } from '@twurple/auth';
+import { accessTokenIsExpired, getTokenInfo, InvalidTokenError, RefreshingAuthProvider } from '@twurple/auth';
 import { atomicWriteJson } from './atomic-file';
 import type { BridgeConfig } from './config';
+import { safeErrorMessage } from './redact';
 import { assertRequiredScopes, type GrantedScopes } from './scopes';
 
 /** One stored OAuth token, shaped like `@twurple/auth`'s `AccessToken` plus the user id. */
@@ -26,6 +30,9 @@ export interface TokensFile {
   bot: StoredToken;
   broadcaster: StoredToken;
 }
+
+export type TokenRole = keyof TokensFile;
+const ROLES: readonly TokenRole[] = ['bot', 'broadcaster'];
 
 export async function loadTokensFile(path: string): Promise<TokensFile> {
   let raw: string;
@@ -48,6 +55,8 @@ export interface AuthSetup {
   botAuthProvider: RefreshingAuthProvider;
   /** Carries the broadcaster token only: follows, raids, Channel Points. */
   broadcasterAuthProvider: RefreshingAuthProvider;
+  /** Where every refresh, by either role, is persisted; `flush()` waits for the writes. */
+  tokenStore: TokenStore;
   botUserId: string;
   broadcasterUserId: string;
   /** True when one Twitch account holds both roles — see the comment on `buildAuthProvider`. */
@@ -73,7 +82,7 @@ export interface AuthSetup {
  * second call silently REPLACED the first. The surviving token was the broadcaster's, which holds
  * `channel:bot`/`moderator:read:followers`/`channel:*:redemptions` and none of
  * `user:read:chat`/`user:write:chat`/`user:bot`. The startup scope assertion still passed, because
- * `assertStartupScopes` calls `getTokenInfo` on each stored token separately and never asks the
+ * the startup scope assertion called `getTokenInfo` on each stored token separately and never asked the
  * provider what it would actually hand out; the failure landed later, on the first chat send and
  * on the `channel.chat.message` subscription, as a missing-scope error.
  *
@@ -83,23 +92,29 @@ export interface AuthSetup {
  * is authorized by the token of the user it names.
  */
 export function buildAuthProvider(config: Pick<BridgeConfig, 'twitchClientId' | 'twitchClientSecret' | 'tokensFile'>, tokens: TokensFile): AuthSetup {
-  const newProvider = (): RefreshingAuthProvider => {
+  const tokenStore = new TokenStore(config.tokensFile, tokens);
+
+  // The ROLE is fixed per provider, so a refresh is persisted under the role whose provider did
+  // it. This replaced guessing the role from the refreshed token's scope set, which is all a
+  // single shared callback could go on when both roles are one account.
+  const newProvider = (role: TokenRole): RefreshingAuthProvider => {
     const provider = new RefreshingAuthProvider({
       clientId: config.twitchClientId,
       clientSecret: config.twitchClientSecret,
     });
     provider.onRefresh((userId, newTokenData) => {
-      void persistRefreshedToken(config.tokensFile, tokens, userId, newTokenData).catch((cause: unknown) => {
-        console.error(`flybridge: failed to persist refreshed token for ${userId}: ${String(cause)}`);
-      });
+      tokenStore.update(role, userId, newTokenData);
+    });
+    provider.onRefreshFailure((userId, error) => {
+      console.error(runtimeRefreshFailureLine(role, userId, error));
     });
     return provider;
   };
 
-  const botAuthProvider = newProvider();
+  const botAuthProvider = newProvider('bot');
   botAuthProvider.addUser(tokens.bot.userId, toAccessToken(tokens.bot), ['chat']);
 
-  const broadcasterAuthProvider = newProvider();
+  const broadcasterAuthProvider = newProvider('broadcaster');
   broadcasterAuthProvider.addUser(tokens.broadcaster.userId, toAccessToken(tokens.broadcaster), ['broadcaster']);
 
   const sameAccount = tokens.bot.userId === tokens.broadcaster.userId;
@@ -107,6 +122,7 @@ export function buildAuthProvider(config: Pick<BridgeConfig, 'twitchClientId' | 
   return {
     botAuthProvider,
     broadcasterAuthProvider,
+    tokenStore,
     botUserId: tokens.bot.userId,
     broadcasterUserId: tokens.broadcaster.userId,
     sameAccount,
@@ -197,13 +213,7 @@ export function createRoleRoutingAuthProvider(options: RoleRoutingAuthProviderOp
   };
 }
 
-function toAccessToken(token: StoredToken): {
-  accessToken: string;
-  refreshToken: string | null;
-  scope: string[];
-  expiresIn: number | null;
-  obtainmentTimestamp: number;
-} {
+function toAccessToken(token: StoredToken): AccessToken {
   return {
     accessToken: token.accessToken,
     refreshToken: token.refreshToken,
@@ -214,59 +224,246 @@ function toAccessToken(token: StoredToken): {
 }
 
 /**
- * Persist a refreshed token back into `tokens.json`.
+ * The in-memory copy of `tokens.json` and its only writer at runtime.
  *
- * The role is identified by the token's SCOPE SET, not by its user id: when both roles are the
- * same account (the `<twitch-channel>` case) the id says nothing, and writing the refreshed
- * broadcaster token over the `bot` entry would destroy the chat scopes on disk — a corruption that
- * survives a restart, unlike the in-memory collision `buildAuthProvider` describes. Scopes are
- * preserved exactly across a refresh, so they are a reliable discriminator.
+ * Every refresh, by either role, lands here keyed by ROLE (never by user id — when both roles are
+ * one account the id says nothing, and writing the broadcaster token over the `bot` entry would
+ * destroy the chat scopes on disk). Writes are serialized, and each writes the WHOLE current
+ * state, so two refreshes that land together (both roles refreshed on load) cannot race each
+ * other's renames and leave one role's new token unpersisted — the v0.2.3 incident, where only the
+ * bot role's fresher token reached disk and the next start failed on the broadcaster's.
  */
-async function persistRefreshedToken(
-  tokensFilePath: string,
-  tokens: TokensFile,
-  userId: string,
-  newToken: { accessToken: string; refreshToken: string | null; scope: string[]; expiresIn: number | null; obtainmentTimestamp: number },
-): Promise<void> {
-  const key = roleForRefreshedToken(tokens, userId, newToken.scope);
-  if (!key) {
-    console.error(
-      `flybridge: refreshed token for ${userId} matches neither stored role by scope set; not persisting`,
-    );
-    return;
+export class TokenStore {
+  private chain: Promise<void> = Promise.resolve();
+  private lastError: unknown = null;
+
+  constructor(
+    private readonly path: string,
+    private readonly tokens: TokensFile,
+  ) {}
+
+  /** The current (possibly refreshed) token for a role. */
+  get(role: TokenRole): StoredToken {
+    return this.tokens[role];
   }
-  tokens[key] = { userId, ...newToken };
-  await atomicWriteJson(tokensFilePath, tokens);
+
+  update(role: TokenRole, userId: string, token: AccessToken): void {
+    this.tokens[role] = {
+      userId,
+      accessToken: token.accessToken,
+      refreshToken: token.refreshToken ?? this.tokens[role].refreshToken,
+      // twurple turns a refresh response without `scope` into []; never let that wipe the scopes
+      // the role routing and the startup assertion read from disk.
+      scope: token.scope.length > 0 ? token.scope : this.tokens[role].scope,
+      expiresIn: token.expiresIn,
+      obtainmentTimestamp: token.obtainmentTimestamp,
+    };
+    this.chain = this.chain.then(async () => {
+      try {
+        await atomicWriteJson(this.path, this.tokens);
+      } catch (cause) {
+        this.lastError = cause;
+        console.error(`flybridge: failed to persist the refreshed ${role} token to ${this.path}: ${safeErrorMessage(cause)}`);
+      }
+    });
+  }
+
+  /** Resolves once every queued write has finished; rejects if any of them failed. */
+  async flush(): Promise<void> {
+    await this.chain;
+    if (this.lastError !== null) {
+      const cause = this.lastError;
+      this.lastError = null;
+      throw new Error(`could not persist refreshed tokens to ${this.path}: ${safeErrorMessage(cause)}`);
+    }
+  }
 }
 
-function roleForRefreshedToken(
-  tokens: TokensFile,
-  userId: string,
-  scope: readonly string[],
-): keyof TokensFile | null {
-  const sameSet = (a: readonly string[], b: readonly string[]): boolean =>
-    a.length === b.length && [...a].sort().join(' ') === [...b].sort().join(' ');
-  if (sameSet(tokens.bot.scope, scope)) return 'bot';
-  if (sameSet(tokens.broadcaster.scope, scope)) return 'broadcaster';
-  // Different accounts: the id is unambiguous, so fall back to it.
-  if (tokens.bot.userId !== tokens.broadcaster.userId) {
-    return tokens.bot.userId === userId ? 'bot' : 'broadcaster';
+const REAUTHORIZE_HINT =
+  'Restarting will not fix this: re-authorize that role with tools/authorize.mts, see ' +
+  'infra/docs/runbook.md "Rotate the bot token".';
+
+/**
+ * `@twurple/api-call`'s `HttpStatusCodeError`, recognised by shape: that package is only a
+ * transitive dependency here, and the esbuild bundle would inline a second copy of it, against
+ * which `instanceof` never matches the one `@twurple/auth` (external) throws.
+ */
+interface TwitchHttpError extends Error {
+  statusCode: number;
+  body: string;
+}
+
+function isTwitchHttpError(error: unknown): error is TwitchHttpError {
+  return (
+    error instanceof Error &&
+    error.name === 'HttpStatusCodeError' &&
+    typeof (error as Partial<TwitchHttpError>).statusCode === 'number'
+  );
+}
+
+/** Status code and Twitch's own message, never the URL (which carries the secret and the token). */
+function describeTwitchError(error: unknown): string {
+  if (isTwitchHttpError(error)) {
+    let message = '';
+    try {
+      const body = JSON.parse(String(error.body)) as { message?: unknown };
+      if (typeof body.message === 'string') message = body.message;
+    } catch {
+      // not JSON: say nothing more than the status
+    }
+    return `HTTP ${String(error.statusCode)}${message ? ` "${message}"` : ''}`;
   }
-  return null;
+  return safeErrorMessage(error);
+}
+
+/** Twitch answered the refresh grant itself with a 4xx: the refresh token is dead. */
+function isRefreshRefusal(error: unknown): boolean {
+  return isTwitchHttpError(error) && error.statusCode >= 400 && error.statusCode < 500;
+}
+
+function refreshFailureLine(role: TokenRole, userId: string, error: unknown): string {
+  return (
+    `flybridge: FATAL: Twitch refused to refresh the ${role} token for user ${userId} ` +
+    `(${describeTwitchError(error)}): the refresh token is revoked or invalid. ${REAUTHORIZE_HINT}`
+  );
+}
+
+/** What `onRefreshFailure` logs, at startup (before the FATAL line) and at runtime alike. */
+function runtimeRefreshFailureLine(role: TokenRole, userId: string, error: unknown): string {
+  const base = `flybridge: refreshing the ${role} token for user ${userId} failed (${describeTwitchError(error)})`;
+  return isRefreshRefusal(error)
+    ? `${base}; Twitch calls as ${role} will fail until it is re-authorized (infra/docs/runbook.md "Rotate the bot token")`
+    : base;
 }
 
 /**
- * Startup scope assertion via `getTokenInfo` (`docs/design/stage-bridge.md` B1): refuses to
- * start with a named missing scope rather than failing at the first subscription.
+ * A stored token that could not be brought back to life on load. Its message is the whole log line
+ * and carries no token, secret or URL, so the entrypoint prints it as-is. `reauthorize` is true
+ * when Twitch refused the refresh (restarting cannot help); false for a transient failure (network,
+ * 5xx), which the next start retries.
+ */
+export class StartupTokenError extends Error {
+  constructor(
+    message: string,
+    readonly reauthorize: boolean,
+  ) {
+    super(message);
+    this.name = 'StartupTokenError';
+  }
+}
+
+export interface PrepareStartupTokensOptions {
+  /** Informational lines; defaults to `console.log`. */
+  log?: (line: string) => void;
+}
+
+/**
+ * Make both stored tokens usable before the bridge does anything else, and return the scopes
+ * Twitch reports for each (for `assertRequiredScopes`).
+ *
+ * Per role, at most ONE refresh request:
+ *  - expired on disk (obtainmentTimestamp + expiresIn, twurple's one-minute grace) → the role's
+ *    `RefreshingAuthProvider` refreshes it inside `getAccessTokenForUser`, before any validate;
+ *  - otherwise validate it; a 401 → `refreshAccessTokenForUser` once, then validate the new token.
+ * Every refresh goes through the role's provider, so `onRefresh` persists it under that role, and
+ * the writes are flushed before this returns. A refresh Twitch refuses (4xx: revoked or invalid
+ * refresh token) is fatal with a pointer to the runbook; twurple then also caches the failure, so
+ * nothing in this process asks again. Both roles are attempted before failing, so one start names
+ * every dead role.
+ *
+ * This replaces validating the stored access tokens first, which crash-looped the bridge on 401
+ * whenever it had been down longer than an access token lives (~4 h), even though both refresh
+ * tokens were still good (v0.2.3 and 2026-09-28).
+ */
+export async function prepareStartupTokens(
+  config: Pick<BridgeConfig, 'twitchClientId'>,
+  setup: Pick<AuthSetup, 'botAuthProvider' | 'broadcasterAuthProvider' | 'botUserId' | 'broadcasterUserId' | 'tokenStore'>,
+  options: PrepareStartupTokensOptions = {},
+): Promise<GrantedScopes> {
+  const log = options.log ?? ((line: string) => console.log(line));
+  const roles = {
+    bot: { provider: setup.botAuthProvider, userId: setup.botUserId },
+    broadcaster: { provider: setup.broadcasterAuthProvider, userId: setup.broadcasterUserId },
+  };
+
+  const granted: Partial<GrantedScopes> = {};
+  const failures: StartupTokenError[] = [];
+
+  for (const role of ROLES) {
+    const { provider, userId } = roles[role];
+    const fail = (error: unknown, what: string): StartupTokenError =>
+      isRefreshRefusal(error)
+        ? new StartupTokenError(refreshFailureLine(role, userId, error), true)
+        : new StartupTokenError(
+            `flybridge: FATAL: ${what} for the ${role} token (user ${userId}) failed: ${describeTwitchError(error)}`,
+            false,
+          );
+
+    try {
+      const expiredOnDisk = accessTokenIsExpired(setup.tokenStore.get(role));
+      if (expiredOnDisk) log(`flybridge: the stored ${role} access token has expired; refreshing it before validating`);
+      const stored = await provider.getAccessTokenForUser(userId).catch((error: unknown) => {
+        throw fail(error, 'refreshing the expired stored token');
+      });
+      if (stored === null) throw new StartupTokenError(`flybridge: FATAL: no ${role} token was registered`, false);
+      // Nothing was spent on validate yet: twurple refreshed an expired token before returning it.
+      let token: AccessToken = stored;
+
+      let info;
+      try {
+        info = await getTokenInfo(token.accessToken, config.twitchClientId);
+      } catch (error) {
+        if (!(error instanceof InvalidTokenError)) throw fail(error, 'validating');
+        if (expiredOnDisk) {
+          // It was refreshed a moment ago and Twitch still says 401: a second refresh would only
+          // repeat the first.
+          throw new StartupTokenError(
+            `flybridge: FATAL: the freshly refreshed ${role} token for user ${userId} was rejected (401). ${REAUTHORIZE_HINT}`,
+            true,
+          );
+        }
+        log(`flybridge: Twitch rejected the stored ${role} access token (401); refreshing it once`);
+        token = await provider.refreshAccessTokenForUser(userId).catch((refreshError: unknown) => {
+          throw fail(refreshError, 'refreshing the rejected token');
+        });
+        info = await getTokenInfo(token.accessToken, config.twitchClientId).catch((again: unknown) => {
+          throw again instanceof InvalidTokenError
+            ? new StartupTokenError(
+                `flybridge: FATAL: the freshly refreshed ${role} token for user ${userId} was also rejected (401). ${REAUTHORIZE_HINT}`,
+                true,
+              )
+            : fail(again, 'validating the refreshed token');
+        });
+      }
+      granted[role] = info.scopes;
+    } catch (error) {
+      if (error instanceof StartupTokenError) failures.push(error);
+      else throw error;
+    }
+  }
+
+  // Persist what did refresh even if the other role is dead: its new token is still good.
+  await setup.tokenStore.flush();
+
+  if (failures.length > 0) {
+    throw new StartupTokenError(
+      failures.map((f) => f.message).join('\n'),
+      failures.some((f) => f.reauthorize),
+    );
+  }
+  return granted as GrantedScopes;
+}
+
+/**
+ * Startup token check (`docs/design/stage-bridge.md` B1): refresh-before-give-up on both stored
+ * tokens (`prepareStartupTokens`), then refuse to start with a named missing scope rather than
+ * failing at the first subscription.
  */
 export async function assertStartupScopes(
   config: Pick<BridgeConfig, 'twitchClientId' | 'featureRedemptions' | 'featurePredictions'>,
-  tokens: TokensFile,
+  setup: Parameters<typeof prepareStartupTokens>[1],
+  options: PrepareStartupTokensOptions = {},
 ): Promise<void> {
-  const [botInfo, broadcasterInfo] = await Promise.all([
-    getTokenInfo(tokens.bot.accessToken, config.twitchClientId),
-    getTokenInfo(tokens.broadcaster.accessToken, config.twitchClientId),
-  ]);
-  const granted: GrantedScopes = { bot: botInfo.scopes, broadcaster: broadcasterInfo.scopes };
+  const granted = await prepareStartupTokens(config, setup, options);
   assertRequiredScopes(config, granted);
 }

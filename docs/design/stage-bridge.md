@@ -193,7 +193,7 @@ Two identities, both registered on the provider: the **bot account** (chat send)
 | `channel:manage:broadcast` | broadcaster | stream markers |
 | `channel:manage:predictions` | broadcaster | predictions (later, Affiliate-gated) |
 
-Startup asserts the actual granted scopes via `getTokenInfo` and refuses to start with a named missing scope rather than failing at the first subscription. `channel.raid` needs no scope but does need a user token and a `to_broadcaster_user_id` condition.
+Startup asserts the actual granted scopes via `getTokenInfo` and refuses to start with a named missing scope rather than failing at the first subscription. Before that assertion, each role's stored token is made usable (added 2026-09-28): an access token expired by `obtainmentTimestamp + expiresIn`, or one `validate` rejects with 401, is refreshed once through that role's `RefreshingAuthProvider`, and every refresh is persisted under the role whose provider made it (serialized atomic writes), so both roles survive a restart even when they are one account. Only a refresh Twitch refuses (4xx) is fatal, with one line naming the role and the runbook's re-authorize step; tokens, the client secret and request URLs never reach the log. `channel.raid` needs no scope but does need a user token and a `to_broadcaster_user_id` condition.
 
 ## B2. Day one (pre-channel-setup)
 
