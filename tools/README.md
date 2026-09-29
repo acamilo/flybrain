@@ -104,3 +104,17 @@ files, so `packages/brain/tests/dataset.test.ts` is the end-to-end check that th
 during extraction from the `fly-plays-pokemon` prototype. The circuit roles are now accumulated
 in the same pass over the sorted `root_id` list that builds `meta.json`, which is what made the
 two scripts agree on neuron indices in the first place.
+
+# Privacy guard
+
+`pii-scan.sh` refuses identifying strings and credentials in what this public repo publishes:
+the tree (`--tree [REV]`), the lines and messages of a commit range (`--range`), or everything a
+push would publish (`--push REMOTE`, the pre-push hook's mode). The generic shapes live in the
+script; the proper nouns are loaded from the operator's private pattern list
+(`$FLY_PII_PATTERNS`, default `~/.config/flybrain/pii-patterns.txt`), so the guard never spells
+out what it refuses. `infra/tests/lint.sh` runs it and treats a missing list as a note;
+`infra/build/tag-release.sh` and the pre-push hook fail closed without it.
+
+`install-hooks.sh` installs the pre-push hook for this clone and all its worktrees; it scans
+pushes to the `github` remote (and any github.com URL, or names in `$FLY_PII_PUBLIC_REMOTES`).
+Tests: `infra/tests/pii-scan-test.sh`.

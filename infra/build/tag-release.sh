@@ -38,6 +38,19 @@ branch="$(git rev-parse --abbrev-ref HEAD)"
 if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
     die "refusing to tag: ${TAG} already exists (git tag -l ${TAG})"
 fi
+
+# A tag is published with its whole history, so the privacy scan runs first and fails
+# closed: without the operator's private pattern list ($FLY_PII_PATTERNS) it cannot see
+# host names, people's names, the channel or pass entry names, and a tag is not cut blind.
+# It checks the tree being tagged and every line added since the previous tag.
+log "running tools/pii-scan.sh (private pattern list required)"
+"${REPO_DIR}/tools/pii-scan.sh" --require-private --tree HEAD \
+    || die "refusing to tag: tools/pii-scan.sh found identifying strings in the tree (or its private pattern list is missing) — see above"
+prev_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
+pii_range="HEAD"
+[ -z "$prev_tag" ] || pii_range="${prev_tag}..HEAD"
+"${REPO_DIR}/tools/pii-scan.sh" --require-private --range "$pii_range" \
+    || die "refusing to tag: tools/pii-scan.sh found identifying strings in commits since ${prev_tag:-the root} (a tag publishes them even if a later commit removed them) — see above"
 git fetch --tags >/dev/null 2>&1 \
     && log "fetched tags from the remote" \
     || log "WARNING: git fetch --tags failed (no remote configured, or offline) — checking only against local tag state"
