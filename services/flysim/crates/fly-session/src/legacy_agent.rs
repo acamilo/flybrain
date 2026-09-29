@@ -73,6 +73,10 @@ f767d48ff556fceae996e2ac73c0d0871df71101db0af414a0ffcd0bfb678489:\
 /// The magic of the agent's capture payload: a `flybrain-core` checkpoint envelope whose
 /// manifest and chunks are exactly `agent_to_chunks`, plus one `session` manifest member.
 pub const PAYLOAD_MAGIC: &str = "FLYAGT01";
+/// An optional payload chunk: the frame to install as the next input when the payload is
+/// staged. Only the `FLYSIM01` import writes it (STATE-02), because the legacy restore
+/// re-projects the saved framebuffer rather than trusting the saved visual drive.
+pub const INPUT_FRAME_CHUNK: &str = "inputFrame";
 /// The layout version of the `session` member.
 pub const PAYLOAD_VERSION: u64 = 1;
 /// The attachment a Commit reply carries the transition's spike bitset under.
@@ -241,6 +245,92 @@ pub fn rational_remainder_to_legacy(remainder: &RationalNs) -> Result<f64, Strin
         return Err("a remainder must stay below one model tick".to_owned());
     }
     Ok(k as f64 / 32_768.0)
+}
+
+// -------------------------------------------------------------------------------------------
+// The capture payload
+
+/// Everything in a `FLYAGT01` capture payload's `session` member except the accumulator and the
+/// context: whose state it is, where it was taken and under which identities.
+#[derive(Clone, Copy, Debug)]
+pub struct PayloadIdentity<'a> {
+    pub agent_id: &'a Id,
+    pub checkpoint_id: &'a Id,
+    pub source_scope: &'a Scope,
+    pub committed_step: u64,
+    pub profile: &'a AssetRef,
+    pub seed: i32,
+    /// Reinforcement calls applied since the fly's fresh start (`learning.updates`).
+    pub reinforcements: u64,
+    /// The composition's `executor.macroChannels`, in composition order; empty in raw mode.
+    pub macro_channels: &'a [String],
+}
+
+/// Encodes a `FLYAGT01` capture payload: `agent_to_chunks(state)` in `flybrain-core`'s envelope,
+/// plus the `session` manifest member `State.StageRestore` reads back. `state.remainder` must
+/// already be the accumulator's, as a capture sets it.
+///
+/// The worker's own `State.Capture` writes exactly this, and so does the `FLYSIM01` import
+/// (`crate::legacy_checkpoint`), which is why it is one function.
+pub fn encode_payload(
+    state: &AgentState,
+    identity: &PayloadIdentity<'_>,
+    accumulator: &TickAccumulator,
+    context: &TypedValue,
+    input_frame: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
+    let mut chunks = agent_to_chunks(state);
+    if let Some(frame) = input_frame {
+        chunks.chunks.push((INPUT_FRAME_CHUNK.to_owned(), frame.to_vec()));
+    }
+    let channels: Vec<&str> = identity.macro_channels.iter().map(String::as_str).collect();
+    let session = json!({
+        "payloadVersion": PAYLOAD_VERSION,
+        "kind": "legacy-agent",
+        "agentId": identity.agent_id,
+        "checkpointId": identity.checkpoint_id,
+        "sourceScope": identity.source_scope.to_json(),
+        "committedStep": identity.committed_step.to_string(),
+        "profile": identity.profile.to_json(),
+        "seed": identity.seed,
+        "reinforcements": identity.reinforcements.to_string(),
+        "kernelVersion": gameboy::KERNEL_VERSION,
+        "plasticityVersion": gameboy::PLASTICITY_VERSION,
+        "macroChannels": identity.macro_channels,
+        "decoderConfigDigest": decoder_config_digest(&gameboy_decoder_config_with_macros(&channels)),
+        "accumulator": {
+            "tickDuration": accumulator.tick_duration().to_json(),
+            "remainder": accumulator.remainder().to_json(),
+            "executedTicks": accumulator.executed_ticks().to_string(),
+            "warmupOffset": accumulator.warmup_offset().to_string(),
+        },
+        "context": context.to_json(),
+    });
+    let mut manifest = chunks.manifest;
+    let session = JsonValue::parse(&session.to_string()).map_err(|e| e.to_string())?;
+    manifest.set("session", session);
+    encode_envelope(PAYLOAD_MAGIC, &manifest, &chunks.chunks).map_err(|e| e.to_string())
+}
+
+/// The reinforcement calls a `FLYAGT01` capture payload records (`learning.updates`).
+pub fn decode_payload_reinforcements(bytes: &[u8]) -> Result<u64, String> {
+    let parts = decode_envelope(bytes, PAYLOAD_MAGIC)
+        .map_err(|e| format!("not a {PAYLOAD_MAGIC} envelope: {e}"))?;
+    let session = parts.manifest.get("session").ok_or("the agent payload has no session member")?;
+    let session: Value = serde_json::from_str(&session.stringify()).map_err(|e| e.to_string())?;
+    session
+        .get("reinforcements")
+        .and_then(Value::as_str)
+        .and_then(|text| text.parse().ok())
+        .ok_or_else(|| "the agent payload has no reinforcement count".to_owned())
+}
+
+/// The agent state a `FLYAGT01` capture payload carries, with the accumulator's remainder in it.
+/// The `session` member is not validated here; `State.StageRestore` does that.
+pub fn decode_payload_state(bytes: &[u8]) -> Result<AgentState, String> {
+    let parts = decode_envelope(bytes, PAYLOAD_MAGIC)
+        .map_err(|e| format!("not a {PAYLOAD_MAGIC} envelope: {e}"))?;
+    agent_from_chunks(&parts.manifest, &parts).map_err(|e| e.to_string())
 }
 
 // -------------------------------------------------------------------------------------------
@@ -1191,43 +1281,23 @@ impl LegacyAgentWorker {
         // The session owns the frame remainder, as the legacy loop does (`Sim::checkpoint`).
         state.remainder = rational_remainder_to_legacy(&accumulator.remainder())
             .map_err(|e| DomainError::new(ErrorCode::Internal, e, MutationCertainty::None))?;
-        let chunks = agent_to_chunks(&state);
-        let channels: Vec<&str> = self
-            .config
-            .macro_channels
-            .iter()
-            .map(String::as_str)
-            .collect();
-        let session = json!({
-            "payloadVersion": PAYLOAD_VERSION,
-            "kind": "legacy-agent",
-            "agentId": self.config.agent_id,
-            "checkpointId": checkpoint_id,
-            "sourceScope": scope.to_json(),
-            "committedStep": k.to_string(),
-            "profile": self.profile.asset.to_json(),
-            "seed": self.seed,
-            "reinforcements": self.reinforcements.to_string(),
-            "kernelVersion": gameboy::KERNEL_VERSION,
-            "plasticityVersion": gameboy::PLASTICITY_VERSION,
-            "macroChannels": self.config.macro_channels,
-            "decoderConfigDigest": decoder_config_digest(&gameboy_decoder_config_with_macros(&channels)),
-            "accumulator": {
-                "tickDuration": accumulator.tick_duration().to_json(),
-                "remainder": accumulator.remainder().to_json(),
-                "executedTicks": accumulator.executed_ticks().to_string(),
-                "warmupOffset": accumulator.warmup_offset().to_string(),
+        encode_payload(
+            &state,
+            &PayloadIdentity {
+                agent_id: &self.config.agent_id,
+                checkpoint_id,
+                source_scope: scope,
+                committed_step: k,
+                profile: &self.profile.asset,
+                seed: self.seed,
+                reinforcements: self.reinforcements,
+                macro_channels: &self.config.macro_channels,
             },
-            "context": context.typed.to_json(),
-        });
-        let mut manifest = chunks.manifest;
-        let session = JsonValue::parse(&session.to_string()).map_err(|e| {
-            DomainError::new(ErrorCode::Internal, e.to_string(), MutationCertainty::None)
-        })?;
-        manifest.set("session", session);
-        encode_envelope(PAYLOAD_MAGIC, &manifest, &chunks.chunks).map_err(|e| {
-            DomainError::new(ErrorCode::Internal, e.to_string(), MutationCertainty::None)
-        })
+            accumulator,
+            &context.typed,
+            None,
+        )
+        .map_err(|e| DomainError::new(ErrorCode::Internal, e, MutationCertainty::None))
     }
 
     async fn state_capture(&mut self, ctx: &HandlerCtx<'_>) -> DomainResult<HandlerReply> {
@@ -1479,20 +1549,8 @@ impl LegacyAgentWorker {
         if !state.warmed_up {
             return Err(incompatible("the staged agent state was never warmed up"));
         }
-        // A replacement fly: the dataset is loaded and checked here, not trusted.
-        let dataset = self.dataset()?;
-        let (mut agent, graph) = self.build_agent(dataset.clone(), seed)?;
-        let computed =
-            compatibility_digest(&self.config.agent_id, &self.profile.asset, &graph, seed);
-        if computed != params.compatibility_digest {
-            return Err(incompatible(format!(
-                "the staged state's compatibility {} is not the {computed} this worker is",
-                params.compatibility_digest
-            )));
-        }
-        agent
-            .import_state(&state)
-            .map_err(|e| incompatible(format!("the agent state does not import: {e}")))?;
+        // The conflicts first: a worker already holding a staged restore, or a token already
+        // activated, is refused before a replacement network is built for nothing.
         if let Some(staged) = &self.staged {
             return Err(DomainError::before(
                 ErrorCode::Conflict,
@@ -1513,6 +1571,30 @@ impl LegacyAgentWorker {
                 ErrorCode::Conflict,
                 "this exact restore was already activated on this worker",
             ));
+        }
+        // A replacement fly: the dataset is loaded and checked here, not trusted.
+        let dataset = self.dataset()?;
+        let (mut agent, graph) = self.build_agent(dataset.clone(), seed)?;
+        let computed =
+            compatibility_digest(&self.config.agent_id, &self.profile.asset, &graph, seed);
+        if computed != params.compatibility_digest {
+            return Err(incompatible(format!(
+                "the staged state's compatibility {} is not the {computed} this worker is",
+                params.compatibility_digest
+            )));
+        }
+        agent
+            .import_state(&state)
+            .map_err(|e| incompatible(format!("the agent state does not import: {e}")))?;
+        // A payload imported from `FLYSIM01` carries the frame on screen as its next input, and
+        // the restore installs it, as `LegacyFrame::restore` re-projects the saved framebuffer
+        // (`legacy_checkpoint::agent_payload`). A worker's own capture carries none.
+        if let Some(frame) = parts.chunk(INPUT_FRAME_CHUNK) {
+            let (width, height) = (agent.frame.width, agent.frame.height);
+            if frame.len() != width as usize * height as usize * 4 {
+                return Err(incompatible("the staged input frame is not the profile's view"));
+            }
+            agent.network.set_visual_frame(frame, width, height);
         }
         self.staged = Some(StagedAgent {
             token: token.clone(),

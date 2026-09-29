@@ -198,6 +198,11 @@ pub struct LegacyFrame {
     pub location: Option<(u32, u32, u32)>,
     pub held_channel: Option<String>,
     pub blocked_since_ms: f64,
+    /// Reinforcement calls since the fly's fresh start: one per commit while the rule is
+    /// enabled, zero sums included; checkpointed (`reinforcements`, STATE-02). It is the session
+    /// agent's `learning.updates`, counted the same way, so a checkpoint carries it across both
+    /// runtimes. Counting changes nothing the fly does.
+    pub reinforcements: u64,
     trace: Option<FrameTrace>,
 }
 
@@ -219,6 +224,7 @@ impl LegacyFrame {
             location: None,
             held_channel: None,
             blocked_since_ms: 0.0,
+            reinforcements: 0,
             trace: None,
         }
     }
@@ -248,6 +254,7 @@ impl LegacyFrame {
             .map_err(|error| anyhow!("running the first frame: {error}"))?;
         self.frame_buffer.copy_from_slice(emulator.framebuffer());
         self.frame_counter = 1;
+        self.reinforcements = 0;
         let audio = emulator.take_audio_u8();
         agent
             .warmup(Some(&self.frame_buffer))
@@ -305,6 +312,11 @@ impl LegacyFrame {
             .map_err(|error| anyhow!("{error}"))?;
 
         self.remainder = checkpoint.agent.remainder;
+        // A file from before the counter starts it at the recorded `plasticity.updates`, a lower
+        // bound (legacy-gameboy-v1 section 13 amendment of 2026-09-29).
+        self.reinforcements = runtime
+            .reinforcements
+            .unwrap_or(checkpoint.agent.network.plasticity.updates as u64);
         self.frame_counter = runtime.emulator_frame;
         self.buttons = runtime.buttons;
         self.frame_buffer.copy_from_slice(&runtime.framebuffer);
@@ -576,6 +588,7 @@ impl LegacyFrame {
         }
         if agent.network.plasticity.enabled {
             agent.network.plasticity.reinforce(total, ms);
+            self.reinforcements += 1;
         }
     }
 

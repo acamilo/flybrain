@@ -1450,10 +1450,10 @@ impl AgentDriver {
     /// the loop's frame remainder in it -- instead of from a warm-up, the way the stream restores
     /// after a restart (`legacy-transient-reset`).
     ///
-    /// This is the test side of an import nothing ships yet: the worker is initialized, its own
-    /// capture is taken as the template for the session member, the agent chunks and the clock
-    /// are replaced with `state`'s, and the result is restored into a replacement worker through
-    /// the ordinary `State.StageRestore` / `ActivateRestore`, which validates it like any other
+    /// The payload is the shipped `FLYSIM01` import's (`legacy_checkpoint::agent_payload`, STATE-02,
+    /// which replaced AGENT-01's prototype here): the worker is initialized, its capture names the
+    /// checkpoint and scope, and the import is restored into a replacement worker through the
+    /// ordinary `State.StageRestore` / `ActivateRestore`, which validates it like any other
     /// payload. `learning.updates` starts at [`legacy_reinforcements`], because `FLYSIM01` does
     /// not record every reinforcement call.
     pub async fn seed_from_legacy_state(
@@ -1463,9 +1463,42 @@ impl AgentDriver {
         initial_frame: usize,
         state: &flybrain_core::agent::AgentState,
     ) -> Result<ParityRecord, String> {
+        self.seed_with_reinforcements(rig, agent_id, initial_frame, state, legacy_reinforcements(state))
+            .await
+    }
+
+    /// [`AgentDriver::seed_from_legacy_state`] with the reinforcement count a `FLYSIM01` file
+    /// records (`legacy_checkpoint::Halves::reinforcements`).
+    pub async fn seed_with_reinforcements(
+        &mut self,
+        rig: &mut LegacyRig,
+        agent_id: &Id,
+        initial_frame: usize,
+        state: &flybrain_core::agent::AgentState,
+        reinforcements: u64,
+    ) -> Result<ParityRecord, String> {
         self.initialize(initial_frame).await?;
         let template = self.capture().await?;
-        let bytes = legacy_state_payload(&template.bytes, state, &self.context)?;
+        // The shipped import (STATE-02, `legacy_checkpoint::agent_payload`); the template capture
+        // only supplies the checkpoint, the scope and the composition's macro channels.
+        let macro_channels: Vec<String> =
+            serde_json::from_value(captured_session(&template.bytes)?["macroChannels"].clone())
+                .map_err(|e| format!("the template's macro channels: {e}"))?;
+        let import = crate::legacy_checkpoint::AgentImport {
+            agent_id: self.agent_id.clone(),
+            profile: self.profile.asset.clone(),
+            seed: LEGACY_SEED,
+            macro_channels,
+        };
+        let bytes = crate::legacy_checkpoint::agent_payload(
+            state,
+            reinforcements,
+            &self.frames[initial_frame],
+            &import,
+            &template.result.checkpoint_id,
+            &template.scope,
+            &self.context,
+        )?;
         let digest = digest_of_bytes(&bytes);
         let artifact = crate::state::seal_payload(&self.client, &bytes, &digest)
             .await
@@ -1483,7 +1516,11 @@ impl AgentDriver {
         self.restore_into(target, &seeded).await?;
         let after = self.capture().await?;
         let restored = payload_state_digest(&after.bytes)?;
-        if restored != state_digest(state) {
+        // Exact but for the visual drive, which the restore re-projects from the frame on screen
+        // as `LegacyFrame::restore` does (the direct reference does the same).
+        let mut expected = crate::legacy_checkpoint::agent_state(&after.bytes)?;
+        expected.network.visual_drive = state.network.visual_drive.clone();
+        if state_digest(&expected) != state_digest(state) {
             return Err("the seeded worker's state is not the legacy state".to_owned());
         }
         self.remainder = legacy_remainder_to_rational(state.remainder)?;
@@ -1502,39 +1539,8 @@ impl AgentDriver {
     }
 }
 
-/// The reinforcement calls to start a legacy agent state's `learning.updates` at.
-///
-/// `FLYSIM01` records `plasticity.updates`, the reinforcements that moved a gain, but not every
-/// call, and the contract requires `learning.changed <= learning.updates`. An import that starts
-/// the call count at zero makes the first telemetry unreadable (found on the row-58 stream
-/// checkpoint: `changed` is in the thousands), so it starts at the recorded count, a lower bound
-/// on the calls actually made.
-pub fn legacy_reinforcements(state: &flybrain_core::agent::AgentState) -> u64 {
-    state.network.plasticity.updates as u64
-}
-
-/// A worker capture with its agent chunks and clock replaced by a legacy agent state, and its
-/// context by `context`: see [`AgentDriver::seed_from_legacy_state`].
-pub fn legacy_state_payload(
-    template: &[u8],
-    state: &flybrain_core::agent::AgentState,
-    context: &TypedValue,
-) -> Result<Vec<u8>, String> {
-    let mut session = captured_session(template)?;
-    let remainder = legacy_remainder_to_rational(state.remainder)?;
-    session["accumulator"]["remainder"] = remainder.to_json();
-    session["accumulator"]["executedTicks"] = json!((state.network.ms as u64).to_string());
-    session["reinforcements"] = json!(legacy_reinforcements(state).to_string());
-    session["context"] = context.to_json();
-    let chunks = agent_to_chunks(state);
-    let mut manifest = chunks.manifest;
-    manifest.set(
-        "session",
-        flybrain_core::json::JsonValue::parse(&session.to_string()).map_err(|e| e.to_string())?,
-    );
-    flybrain_core::envelope::encode_envelope(PAYLOAD_MAGIC, &manifest, &chunks.chunks)
-        .map_err(|e| e.to_string())
-}
+/// The shipped import's rule (`crate::legacy_checkpoint`), re-exported for the harness.
+pub use crate::legacy_checkpoint::legacy_reinforcements;
 
 /// Runs a script against the rig's agent, recording what the coordinator observes.
 pub async fn run_on_worker(
@@ -1553,12 +1559,37 @@ pub async fn run_on_worker_from(
     script: &LegacyScript,
     start: Option<&flybrain_core::agent::AgentState>,
 ) -> Result<Vec<ParityRecord>, String> {
+    let start = start.map(|state| (state, legacy_reinforcements(state)));
+    run_script(rig, agent_id, script, start, false)
+        .await
+        .map(|(records, _)| records)
+}
+
+/// [`run_on_worker_from`], then one `State.Capture` at the boundary the script ends on: the
+/// records and the captured payload (STATE-02 writes a `FLYSIM01` export from it).
+pub async fn run_on_worker_from_then_capture(
+    rig: &mut LegacyRig,
+    agent_id: &Id,
+    script: &LegacyScript,
+    start: Option<(&flybrain_core::agent::AgentState, u64)>,
+) -> Result<(Vec<ParityRecord>, Vec<u8>), String> {
+    let (records, captured) = run_script(rig, agent_id, script, start, true).await?;
+    Ok((records, captured.expect("a capture was asked for")))
+}
+
+async fn run_script(
+    rig: &mut LegacyRig,
+    agent_id: &Id,
+    script: &LegacyScript,
+    start: Option<(&flybrain_core::agent::AgentState, u64)>,
+    capture_at_end: bool,
+) -> Result<(Vec<ParityRecord>, Option<Vec<u8>>), String> {
     let mut driver = rig.driver(agent_id, script);
     let first = match start {
         None => driver.initialize(script.initial_frame).await?,
-        Some(state) => {
+        Some((state, reinforcements)) => {
             driver
-                .seed_from_legacy_state(rig, agent_id, script.initial_frame, state)
+                .seed_with_reinforcements(rig, agent_id, script.initial_frame, state, reinforcements)
                 .await?
         }
     };
@@ -1604,7 +1635,12 @@ pub async fn run_on_worker_from(
         }
         records.push(record);
     }
-    Ok(records)
+    let captured = if capture_at_end {
+        Some(driver.capture().await?.bytes)
+    } else {
+        None
+    };
+    Ok((records, captured))
 }
 
 fn captured_session(payload: &[u8]) -> Result<Value, String> {
