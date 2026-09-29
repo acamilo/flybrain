@@ -6032,6 +6032,8 @@ fn a_ledge_the_walk_presses_into_is_hopped_and_is_not_a_push_back() {
     // scripted push-back, and a push-back walls the tile for the session.
     let mut world = World::room().at(3, 1);
     world.map = 0x0f;
+    // Route 4's centre (row 62) is seen, so its errand does not come ahead of the goal.
+    world.seen_maps.insert(maps::MT_MOON_POKECENTER);
     for x in 0..8 {
         world.walls.insert(Tile::new(x, 3));
         world.ledges.push((Tile::new(x, 2), Facing::Down));
@@ -6048,6 +6050,7 @@ fn a_ledge_the_walk_presses_into_is_hopped_and_is_not_a_push_back() {
     // From below, the ledge is a wall: nothing plans up it.
     let mut below = World::room().at(3, 6);
     below.map = 0x0f;
+    below.seen_maps.insert(maps::MT_MOON_POKECENTER);
     for x in 0..8 {
         below.walls.insert(Tile::new(x, 3));
         below.ledges.push((Tile::new(x, 2), Facing::Down));
