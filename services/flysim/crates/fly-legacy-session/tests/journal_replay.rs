@@ -177,7 +177,22 @@ fn a_killed_session_runs_journal_replays_onto_its_hot_checkpoint_in_the_legacy_l
         "the emulator state"
     );
     assert_eq!(frame.frame_buffer, target.runtime.framebuffer, "the frame on screen");
-    assert_eq!(adapter.export_state(), target.runtime.reward, "the adapter's ledger");
+    // Compared as numbers: the session's ledger crossed the task's canonical JSON, which writes
+    // an integral f64 as `7580031` where the legacy export writes `7580031.0`.
+    let ledger = numeric(&adapter.export_state());
+    let target_ledger = numeric(&target.runtime.reward);
+    if ledger != target_ledger {
+        for (key, value) in ledger.as_object().into_iter().flatten() {
+            if target_ledger.get(key) != Some(value) {
+                eprintln!(
+                    "ledger {key}:\n  replay {}\n  target {}",
+                    value,
+                    target_ledger.get(key).unwrap_or(&serde_json::Value::Null)
+                );
+            }
+        }
+        panic!("the adapter's ledger differs");
+    }
     assert_eq!(ratchet.state, target.runtime.ratchet, "the ratchet");
     eprintln!(
         "IDENTICAL: {} frames, {stamped} journaled sugar inputs, agent/emulator/frame/adapter/ratchet \
@@ -186,4 +201,17 @@ fn a_killed_session_runs_journal_replays_onto_its_hot_checkpoint_in_the_legacy_l
         target.runtime.generation,
         started.elapsed()
     );
+}
+
+/// Every number as an f64, so `1` and `1.0` compare equal and nothing else changes.
+fn numeric(value: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Number(n) => n.as_f64().map_or(Value::Number(n.clone()), Value::from),
+        Value::Array(items) => Value::Array(items.iter().map(numeric).collect()),
+        Value::Object(map) => {
+            Value::Object(map.iter().map(|(k, v)| (k.clone(), numeric(v))).collect())
+        }
+        other => other.clone(),
+    }
 }
