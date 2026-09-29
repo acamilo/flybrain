@@ -5986,6 +5986,7 @@ fn a_service_does_not_walk_the_fly_out_of_the_rungs_room() {
     assert!(super::palette::objective_targets(&mut world).is_empty());
     assert_eq!(amenity_wanted(&mut world, Amenity::Center), Some(maps::PEWTER_POKECENTER));
     assert_eq!(amenity_wanted(&mut world, Amenity::Mart), Some(maps::PEWTER_MART));
+}
 
 #[test]
 fn a_walk_that_starts_on_the_ladder_it_wants_steps_off_and_back_on_to_take_it() {
