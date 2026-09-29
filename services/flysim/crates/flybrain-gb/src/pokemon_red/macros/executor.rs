@@ -648,6 +648,9 @@ pub struct MacroMachine {
     /// that finds no route to *any* of its goals has failed at all of them, and each is a key.
     blocked: Vec<(u8, TargetKey)>,
     reached: Option<(u8, TargetKey)>,
+    /// The building whose counter a completed `GO SHOP` or `GO HEAL` has just faced, for the
+    /// reached ledger under [`TargetKey::Counter`] (row 66).
+    counter: Option<u8>,
     /// A map whose frontier a `GO FRONTIER` has just proved unreachable, waiting to be taken
     /// into the session's ledger ([`super::cartridge::Frontiers`], section 12.14).
     ///
@@ -754,6 +757,7 @@ impl MacroMachine {
             outcome: None,
             blocked: Vec::new(),
             reached: None,
+            counter: None,
             exhausted: None,
             pushed_tile: Vec::new(),
             refused_at: None,
@@ -1000,6 +1004,11 @@ impl MacroMachine {
         self.reached.take()
     }
 
+    /// The building whose counter a completed `GO SHOP` or `GO HEAL` faced, taken (row 66).
+    pub fn take_counter(&mut self) -> Option<u8> {
+        self.counter.take()
+    }
+
     /// The map a `no route` from `GO FRONTIER` earned, taken rather than read (section 12.14).
     pub fn take_exhausted(&mut self) -> Option<u8> {
         self.exhausted.take()
@@ -1040,6 +1049,7 @@ impl MacroMachine {
         // that so a cancelled queue cannot leak into the next macro's finish.
         self.blocked.clear();
         self.reached = None;
+        self.counter = None;
         // A rollback is not the map pushing the fly anywhere, and it is not the frontier being
         // out of reach either: the fly is about to be somewhere else entirely.
         self.pushed_tile.clear();
@@ -1411,6 +1421,16 @@ impl MacroMachine {
                         && let Some(entry) = active.target
                     {
                         self.reached = Some(entry);
+                        // **The counter itself, by the building's map** (row 66): a service walk
+                        // that ended facing the clerk or the nurse. From the street the question
+                        // is "has the fly just stood at this counter", and outside the building
+                        // no sprite slot of it can be named.
+                        if matches!(active.kind, MacroKind::GoShop | MacroKind::GoHeal)
+                            && let (map, TargetKey::Thing(_)) = entry
+                            && super::geography::amenity_at(map).is_some()
+                        {
+                            self.counter = Some(map);
+                        }
                         // And a completed `HEAL` has *had* the conversation: the box was opened,
                         // answered and closed by this macro's own presses, so the nurse is talked
                         // to and `TALK` has nothing left to open (section 12.12). Without it the

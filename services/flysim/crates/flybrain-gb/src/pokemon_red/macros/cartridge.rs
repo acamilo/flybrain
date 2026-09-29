@@ -312,6 +312,11 @@ pub enum TargetKey {
     /// the box belongs to is whatever the fly is standing in front of, and the box is the only
     /// thing on screen while it is open.
     Answer { at: Tile, yes: bool },
+    /// A mart's or a Pokémon Center's counter, walked to by `GO SHOP` or `GO HEAL` and faced
+    /// (row 66). Keyed by the building's map and nothing else, because the question it answers is
+    /// asked from *outside* the building, where no sprite slot of it means anything: has the fly
+    /// just stood at this counter and walked away from it ([`MacroState::counter_walked_to`]).
+    Counter,
 }
 
 /// Which list the shared cursor belongs to right now.
@@ -614,6 +619,13 @@ pub trait MacroState: GameState {
     ///
     /// No window on this one: a reached target is not a failure to retry, it is a job done.
     fn reached(&mut self, _target: TargetKey) -> bool {
+        false
+    }
+
+    /// Whether a `GO SHOP` or `GO HEAL` has walked the fly to the counter of the building on
+    /// `map` and faced it, inside the reached window (row 66). Asked of any map, not only the
+    /// loaded one: it is what the service walk from the street outside reads.
+    fn counter_walked_to(&mut self, _map: u8) -> bool {
         false
     }
 

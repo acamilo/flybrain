@@ -875,6 +875,10 @@ impl MacroState for World {
         self.targets.reached(self.map, target)
     }
 
+    fn counter_walked_to(&mut self, map: u8) -> bool {
+        self.targets.reached(map, TargetKey::Counter)
+    }
+
     fn refused_here(&mut self, slot: u8) -> bool {
         self.targets.refused(self.map, slot, self.player)
     }
@@ -5803,6 +5807,42 @@ fn go_shop_comes_back_while_the_bag_has_no_ball_and_the_money_covers_one() {
     // Carrying Oak's parcel the Viridian counter sells nothing (`scripts/ViridianMart.asm`).
     world.bag = vec![(item::OAKS_PARCEL, 1)];
     assert!(!on_the_pad(&mut world, MacroKind::GoShop), "the parcel's text table, no counter");
+}
+
+#[test]
+fn a_counter_the_fly_walked_away_from_is_not_walked_back_to_for_the_window() {
+    // Row 66. Live on v0.6.5 from the rung-8 archive: `GO SHOP` 33 times in 35 minutes, in from
+    // the street to the Viridian clerk and back out of the door without a `TALK`, and `GO SHOP` on
+    // the street's pad again because the bag still had no ball -- row 62's "dealt again while
+    // needed", with no window at all.
+    let mut world = viridian();
+    world.areas.insert((Amenity::Mart, maps::VIRIDIAN_CITY));
+    world.seen_maps.insert(maps::VIRIDIAN_MART);
+    assert!(on_the_pad(&mut world, MacroKind::GoShop), "no ball, and the money for one");
+
+    // A `GO SHOP` has just stood the fly at that counter; it walked back out.
+    world.targets.record_reached(maps::VIRIDIAN_MART, TargetKey::Counter);
+    assert!(!on_the_pad(&mut world, MacroKind::GoShop), "not straight back in: {:?}", pad_of(&mut world));
+    assert_eq!(amenity_wanted(&mut world, Amenity::Mart), None);
+
+    // The window closes and the counter is a service again.
+    world.targets.clock(BLOCKED_MINUTES_DEFAULT * 60_000.0 + 1.0);
+    assert!(on_the_pad(&mut world, MacroKind::GoShop), "after the window");
+
+    // Inside, inside the window: no walk back to the counter, and at the counter its press.
+    let mut mart = World::mart();
+    mart.targets.record_reached(mart.map, TargetKey::Counter);
+    mart.targets.record_reached(mart.map, TargetKey::Thing(TalkTarget::Sprite(1)));
+    assert!(service_needed(&mut mart, Amenity::Mart));
+    assert!(!on_the_pad(&mut mart, MacroKind::GoShop), "{:?}", pad_of(&mut mart));
+    mart.player = Tile::new(2, 5);
+    mart.facing = Facing::Left;
+    assert!(on_the_pad(&mut mart, MacroKind::Talk), "the counter still opens where the fly stands");
+
+    // Only the counter: another person reached in the building is not the counter.
+    let mut mart = World::mart();
+    mart.targets.record_reached(mart.map, TargetKey::Thing(TalkTarget::Sprite(1)));
+    assert!(on_the_pad(&mut mart, MacroKind::GoShop), "row 62's rule stands without a counter visit");
 }
 
 #[test]

@@ -999,7 +999,9 @@ pub fn amenity_goals(state: &mut dyn MacroState, kind: Amenity) -> Vec<Aim> {
         // reached and talked ledgers answer "is this job done", and for a service the answer is
         // the party or the bag, not the ledger: a nurse reached an hour ago with a party that has
         // since been beaten is a job to do again.
-        if service_needed(state, kind) {
+        // ...unless this counter is the one the fly has just walked to and walked away from
+        // ([`counter_walked_away`], row 66): then the ledgers answer, as they do for any person.
+        if service_needed(state, kind) && !state.counter_walked_to(here) {
             return service_aims(state, kind);
         }
         return counter_aims(state, counter_sprite(kind));
@@ -1095,7 +1097,32 @@ pub fn amenity_wanted(state: &mut dyn MacroState, kind: Amenity) -> Option<u8> {
         return None;
     }
     let area = area_here(state)?;
-    amenity_in_reach(state, area, kind)
+    let map = amenity_in_reach(state, area, kind)?;
+    if counter_walked_away(state, map) {
+        return None;
+    }
+    Some(map)
+}
+
+/// Whether the fly has just stood at the counter of the building on `map`, facing it, and is now
+/// outside that building: what takes the service walk toward it off the pad for the reached window
+/// (row 66).
+///
+/// **A counter the fly walked away from is not walked back to at once.** Row 62 made a service
+/// dealt again whenever the cartridge says it is needed, whatever the ledgers say, and that is a
+/// ring by construction when the fly does not use the counter: live on v0.6.5 from the rung-8
+/// archive, `GO SHOP` 33 times in 35 minutes, each one a walk in from the street and up to the
+/// Viridian clerk, then `GO OUT` or `GO OBJECTIVE` back out of the door without a `TALK`, and
+/// outside `GO SHOP` on the pad again because the bag still had no ball. Reproduced from a
+/// post-parcel checkpoint of the Viridian mart with the connectome: three laps in eighteen brain
+/// seconds. It is section 12.1's ledger doing what it does for every other walk -- a target
+/// arrived at and faced is not re-walked for the window -- applied to the one walk row 62 took it
+/// away from. The fly standing at the counter still has `TALK` (its precondition reads the
+/// service, not this), the nurse's `HEAL` still walks from anywhere in the centre, and when the
+/// window closes the counter is a service again.
+fn counter_walked_away(state: &mut dyn MacroState, map: u8) -> bool {
+    let here = state.player().map(|player| player.map);
+    here != Some(map) && state.counter_walked_to(map)
 }
 
 /// `area`'s building of `kind`, when the route to it from the piece of ground the fly stands on

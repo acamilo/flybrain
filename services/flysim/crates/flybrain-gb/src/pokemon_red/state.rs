@@ -2334,6 +2334,11 @@ impl MacroState for PokeState<'_> {
         self.targets.reached(map, target)
     }
 
+    /// Whether the counter of the building on `map` was walked to inside the window (row 66).
+    fn counter_walked_to(&mut self, map: u8) -> bool {
+        self.targets.reached(map, TargetKey::Counter)
+    }
+
     /// Where the ladder's next unreached rung is (`GO OBJECTIVE`).
     ///
     /// The adapter's [`crate::adapter::MapPlace`] in the executor's own types, which is the only

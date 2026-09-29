@@ -19,7 +19,8 @@ use crate::macros::{
 use super::super::mapgrid::MapGrids;
 use super::super::state::PokeState;
 use super::cartridge::{
-    Areas, Frontiers, LAST_MAP, MacroState, Pushed, Stood, Talked, Targets, Tile, outdoors,
+    Areas, Frontiers, LAST_MAP, MacroState, Pushed, Stood, Talked, TargetKey, Targets, Tile,
+    outdoors,
 };
 use super::geography;
 use super::executor::{MacroAbort, MacroMachine, Refusal};
@@ -270,6 +271,9 @@ impl PokemonPalette {
         }
         if let Some((map, target)) = self.machine.take_reached() {
             self.targets.record_reached(map, target);
+        }
+        if let Some(map) = self.machine.take_counter() {
+            self.targets.record_reached(map, TargetKey::Counter);
         }
         // A tile the cartridge drove the fly off: no window, because the map is like that until
         // the event that unlocks it, and nothing here knows which event that is (row 37).
