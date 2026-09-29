@@ -6,6 +6,9 @@
 //! changed is the pulse they read: the agent's `stimulusRemainingMs` from the **last completed
 //! commit** ([`AdmissionQueue::stimulus_remaining_ms`]), which the operator accepted as one commit
 //! stale. Until the first commit of an epoch it is unknown, and a request is refused with a retry.
+//! A sugar admitted and not yet reported on by a commit counts as active from its admission, as
+//! the legacy loop's `stimulate` makes it active at once, so two sugars between two commits are
+//! one admission and one `PulseActive` refusal, exactly as the legacy drain answers them.
 //!
 //! The operator's `POST /reward` pulse is refused. The legacy loop refuses it too unless an
 //! operator turns `control.allow_reward` on (it is off in every shipped configuration); the new
@@ -77,7 +80,15 @@ impl LegacyAdmission {
                 retry_after_ms: UNKNOWN_PULSE_RETRY_MS,
             });
         };
-        self.limiter.admit(now_ms, remaining)?;
+        // A sugar admitted and not yet reported on by a commit is an active pulse, as it is in
+        // the legacy loop the moment `stimulate` runs: a second request before the next commit
+        // is refused (`PulseActive`), not admitted into a pulse that would take the max and add
+        // nothing (TASK-01 review N1).
+        let pending = self
+            .queue
+            .pending_stimulus_ms(&self.agent_id)
+            .unwrap_or(0.0);
+        self.limiter.admit(now_ms, remaining.max(pending))?;
         let duration = duration_ms
             .unwrap_or(self.default_ms)
             .clamp(1.0, self.max_ms)

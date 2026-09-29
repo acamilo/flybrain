@@ -82,10 +82,14 @@ pub async fn import_flysim01(
     );
 
     // The task's ledger, and from it and the restored image the context the agent resumes with.
-    let ledger = PokeredTask::ledger_of(&halves.task, !checkpoint.runtime.ratchet_game.is_empty());
+    let (ledger, task_attachments) =
+        PokeredTask::ledger_of(&halves.task, !checkpoint.runtime.ratchet_game.is_empty())
+            .map_err(|e| format!("the task ledger: {}", e.message))?;
     let brain_ms = halves.agent.network.ms;
+    // `Sim::boot` seeds the palette from the restored brain's RNG state.
+    task.set_palette_seed(halves.agent.network.rng as u32);
     let image = image_of(rom, &halves.world.emulator)?;
-    let context = task.preview_context(&ledger, &image, brain_ms)?;
+    let context = task.preview_context(&ledger, &task_attachments, &image, brain_ms)?;
     let payload = agent_payload(
         &halves.agent,
         halves.reinforcements,
@@ -115,6 +119,7 @@ pub async fn import_flysim01(
             context,
         }],
         task_ledger: ledger,
+        task_attachments,
         audio_positions,
     };
     coordinator

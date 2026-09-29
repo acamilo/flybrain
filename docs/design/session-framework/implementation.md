@@ -575,7 +575,7 @@ until `fly-runtime session` is run on a container.
   startup durable save, then per frame the command drain, `Coordinator::step`, the task's macro
   and reward events, the rank and its milestone archive, the deferred ratchet rollback with its
   recovery event and durable save, the 30 Hz publish, the hot (5 s) and durable (300 s) wall-clock
-  saves, the event log fsync and flysim's `Pacer`. Saves are queued (`save_queued`) so the
+  saves, the event log fsync and flysim's `Pacer`. Saves are queued (`queue_save`, TASK-01) so the
   encoding and the fsyncs stay off the loop, as the legacy writer thread keeps them.
 - **Where each header field comes from.** The frame is the committed `lcd` view; the audio is
   each transition's `apu` chunk through the legacy DC blocker (`DcBlocker::process_f32_into`,

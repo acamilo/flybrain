@@ -183,6 +183,35 @@ pub trait Task: Send {
     /// The checkpointable ledger at a committed boundary (`workers-v1` section 4).
     fn capture(&self) -> DomainResult<TypedValue>;
 
+    /// Bytes the ledger carries beside its typed value, by name: for a ledger over the 32 KiB
+    /// `TypedValue` bound, the "explicit artifact-backed schema" of `workers-v1` section 1. A
+    /// checkpoint files each as its own payload (`state::task_attachment_payload`). None by
+    /// default.
+    fn capture_attachments(&self) -> DomainResult<BTreeMap<String, Vec<u8>>> {
+        Ok(BTreeMap::new())
+    }
+
+    /// [`Task::validate_restore`] with the ledger's attachments.
+    fn validate_restore_with(
+        &self,
+        state: &TypedValue,
+        attachments: &BTreeMap<String, Vec<u8>>,
+    ) -> DomainResult<()> {
+        let _ = attachments;
+        self.validate_restore(state)
+    }
+
+    /// [`Task::install_restore`] with the ledger's attachments.
+    fn install_restore_with(
+        &mut self,
+        epoch: &Id,
+        state: &TypedValue,
+        attachments: &BTreeMap<String, Vec<u8>>,
+    ) -> DomainResult<()> {
+        let _ = attachments;
+        self.install_restore(epoch, state)
+    }
+
     /// Validates a captured ledger without installing it, so a group install can fail before
     /// anything is changed.
     fn validate_restore(&self, state: &TypedValue) -> DomainResult<()>;

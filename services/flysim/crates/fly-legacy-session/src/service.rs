@@ -15,7 +15,7 @@
 //! | `drain_commands`: stimulate, reward, chat, checkpoint, pause, resume, shutdown | [`SessionHost::drain_commands`]; sugar by `RateLimiter` over the last commit's pulse, admitted at the next Prepare |
 //! | `step_frame`: the frame, macro/reward events, `track_rank` + milestone archive, ratchet rollback + recovery | [`SessionHost::step_frame`]: `Coordinator::step`, the task's [`crate::task::FeedRecord`], the checkpointer's rank, `apply_pending_rollback` |
 //! | `publish`: the header from the network, the adapter and the macro layer | [`SessionHost::publish`]: the agent's `Legacy.FeedStatus`, the task's parts, the committed view, the step's audio and spikes, through flysim's own `feed_*` builders |
-//! | `checkpoint_if_due` (hot 5 s, durable 300 s, wall clock), pause, forced, shutdown | the same, through [`crate::composition::LegacySession::save_queued`] and STATE-02's `LegacyCheckpointer` |
+//! | `checkpoint_if_due` (hot 5 s, durable 300 s, wall clock), pause, forced, shutdown | the same, through [`crate::composition::LegacySession::queue_save`] and STATE-02's `LegacyCheckpointer` |
 //! | the sugar journal (`crate::journal` of flysim) | the same journal, `runtime: fly-session` |
 //!
 //! Declared differences from the legacy service (SERVE-01, `implementation.md`):
@@ -1099,7 +1099,7 @@ impl SessionHost {
         self.session
             .set_last_event_id(self.log.next_id().saturating_sub(1));
         let wall_ms = now_wall_ms();
-        let ticket = match self.session.save_queued(kind).await {
+        let ticket = match self.session.queue_save(kind).await {
             Ok(ticket) => ticket,
             Err(error) => {
                 Metrics::incr(&self.shared.metrics.checkpoint_failures_total);
