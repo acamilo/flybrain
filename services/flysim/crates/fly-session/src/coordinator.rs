@@ -709,6 +709,19 @@ impl Coordinator {
         &mut self,
         checkpoint_id: &Id,
     ) -> Outcome<(u64, Vec<u8>, Vec<(Id, Vec<u8>)>)> {
+        let pending = self.begin_capture(checkpoint_id).await?;
+        self.finish_capture(pending).await
+    }
+
+    /// Sends every participant's `State.Capture` for the committed boundary and returns without
+    /// waiting for the replies: the capture off the loop (TASK-01 review N5).
+    ///
+    /// Each participant takes its state at the boundary when it handles the request, which it
+    /// does before any request sent after it (a worker takes its lock in arrival order), and a
+    /// participant that encodes off its lock (the legacy agent) answers the next Prepare while it
+    /// seals the payload. The session may step on; [`Coordinator::finish_capture`] collects the
+    /// payloads, in the order sent, whenever the host is ready for them.
+    pub async fn begin_capture(&mut self, checkpoint_id: &Id) -> Outcome<PendingCapture> {
         let origin = self.phases.phase();
         let Some(boundary) = origin.committed_boundary().filter(|_| origin.is_committed_boundary())
         else {
@@ -727,11 +740,53 @@ impl Coordinator {
         participants.extend(self.agents.iter().map(|slot| slot.worker.clone()));
         let params = object(CaptureParams { checkpoint_id: checkpoint_id.clone() }.to_json());
         let want = vec![crate::state::PAYLOAD_ATTACHMENT.to_owned()];
-        let mut payloads = Vec::new();
+        let scope = self.scope(boundary);
+        let mut calls = Vec::new();
         for worker in participants {
-            let reply = self
-                .call(&worker, "State.Capture", Some(self.scope(boundary)), params.clone(), &[], &want)
-                .await?;
+            let request_id = self.serials.next(&worker.service);
+            let sent = crate::rpc::send(
+                &self.bus,
+                &worker,
+                "State.Capture",
+                Some(scope.clone()),
+                params.clone(),
+                &[],
+                request_id,
+                &want,
+            )
+            .await;
+            match sent {
+                Ok(sent) => calls.push((worker, sent)),
+                Err(e) => {
+                    self.blame(Some(worker.worker_id.clone()));
+                    return Err(self.fail_now(e, "capture"));
+                }
+            }
+        }
+        self.transition(origin)?;
+        Ok(PendingCapture { checkpoint_id: checkpoint_id.clone(), boundary, scope, calls })
+    }
+
+    /// Collects a capture begun with [`Coordinator::begin_capture`]: the world's payload and
+    /// every agent's, read and released.
+    pub async fn finish_capture(
+        &mut self,
+        pending: PendingCapture,
+    ) -> Outcome<(u64, Vec<u8>, Vec<(Id, Vec<u8>)>)> {
+        let PendingCapture { checkpoint_id, boundary, scope, calls } = pending;
+        let mut payloads = Vec::new();
+        for (worker, sent) in calls {
+            let reply = match sent.finish().await {
+                Ok(reply) => reply,
+                Err(e) => {
+                    self.blame(Some(worker.worker_id.clone()));
+                    return Err(self.fail_now(e, "capture"));
+                }
+            };
+            self.check_reply(&worker, &reply, &Some(scope.clone()), "State.Capture")?;
+            if let Err(e) = reply.result() {
+                return Err(self.fail_now(e, "capture"));
+            }
             let Some(artifact) = reply.artifacts.get(crate::state::PAYLOAD_ATTACHMENT).cloned() else {
                 return Err(self.fail_now(
                     DomainError::before(ErrorCode::BufferInvalid, "State.Capture carried no payload"),
@@ -746,7 +801,6 @@ impl Coordinator {
             self.acknowledge_replies(&worker, std::slice::from_ref(&reply.request_id)).await?;
             payloads.push((worker.worker_id.clone(), bytes));
         }
-        self.transition(origin)?;
         let world = payloads.remove(0).1;
         self.audit.push(format!("captured-payloads:{checkpoint_id}@{boundary}"));
         Ok((boundary, world, payloads))
@@ -1622,6 +1676,21 @@ pub struct RollbackDetails {
     pub observation: WorldObservation,
     pub view_digests: Vec<(String, Digest)>,
     pub agents: Vec<(Id, fly_session_types::extensions::AgentRollbackResult)>,
+}
+
+/// A capture sent to every participant and not yet collected ([`Coordinator::begin_capture`]).
+pub struct PendingCapture {
+    checkpoint_id: Id,
+    boundary: u64,
+    scope: Scope,
+    calls: Vec<(WorkerRef, crate::rpc::SentCall)>,
+}
+
+impl PendingCapture {
+    /// The committed boundary the capture is of.
+    pub fn boundary(&self) -> u64 {
+        self.boundary
+    }
 }
 
 /// A checkpoint of another format, assembled by an importer in each participant's own capture
