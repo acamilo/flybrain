@@ -102,6 +102,9 @@ wall0=$(date +%s.%N)
     --mode "$mode" --threads "$threads" --max-live-lag-seconds "$guard" \
     --required-brain-seconds "$((brain_minutes * 60))" > "$out/shadow.log" 2>&1 &
 shadow_pid=$!
+# flysim starts no trace without the shadow's heartbeat.
+for _ in $(seq 1 120); do [ -f "$live/trace/consumer" ] && break; sleep 0.5; done
+[ -f "$live/trace/consumer" ] || die "fly-shadow wrote no heartbeat"
 start_live
 echo "shadow-rehearsal: $out (flysim $live_pid, fly-shadow $shadow_pid)"
 

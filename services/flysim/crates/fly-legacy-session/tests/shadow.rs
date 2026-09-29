@@ -243,8 +243,20 @@ fn diverges(
     spool: &Path,
     empty: &Path,
 ) -> shadow::verdict::Verdict {
+    diverges_with(rom, root, trace, spool, empty, |_| {})
+}
+
+fn diverges_with(
+    rom: &Path,
+    root: &Path,
+    trace: &Path,
+    spool: &Path,
+    empty: &Path,
+    edit: impl FnOnce(&mut ShadowConfig),
+) -> shadow::verdict::Verdict {
     let _ = std::fs::remove_dir_all(root.join("out"));
-    let config = config(rom, root, trace, (empty, empty), spool);
+    let mut config = config(rom, root, trace, (empty, empty), spool);
+    edit(&mut config);
     let stop = StopFlag::default();
     let handle = spawn_shadow(config, stop.clone());
     let deadline = Instant::now() + Duration::from_secs(600);
@@ -295,6 +307,13 @@ fn the_shadow_follows_the_real_service_and_catches_every_planted_difference() {
     let out = config.out_dir.clone();
     let stop = StopFlag::default();
     let handle = spawn_shadow(config, stop.clone());
+    // The live recorder starts no trace without the shadow's heartbeat.
+    let heartbeat = dirs.trace.join(flysim::trace::CONSUMER_FILE);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !heartbeat.is_file() {
+        assert!(Instant::now() < deadline, "the shadow wrote no heartbeat");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     // Process one: a fresh fly (the stores are empty), two sugars, 25 brain seconds.
     let live = start_live(&binary, &rom, &dirs, &root.join("flysim-1.log"));
@@ -455,4 +474,14 @@ fn the_shadow_follows_the_real_service_and_catches_every_planted_difference() {
     let d = got.divergence.expect("a divergence");
     assert_eq!((d.kind.as_str(), d.step), ("checkpoint", Some(at)));
     assert!(d.detail.contains("rankSinceMs"), "{}", d.detail);
+
+    // A session-side failure is a divergence, never a skip: a candidate whose restore gate
+    // refuses the live startup save (another dataset profile, so another compatibility string).
+    let got = diverges_with(&rom, &neg.join("gate"), &dirs.trace, &spool, &empty, |c| {
+        c.profile = LegacyProfileKind::Production;
+    });
+    let d = got.divergence.expect("a divergence");
+    assert_eq!(d.kind, "boot", "{}", d.detail);
+    assert!(d.detail.contains("restore gate"), "{}", d.detail);
+    assert!(got.skipped.is_empty());
 }

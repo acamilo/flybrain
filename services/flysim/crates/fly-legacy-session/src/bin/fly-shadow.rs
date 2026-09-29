@@ -30,11 +30,12 @@
 //!
 //! Exit status: 0 passed or stopped, 3 diverged, 2 the shadow's own error.
 //!
-//! `check --verdict FILE [--binary FILE] [--compatibility STRING] [--max-age-seconds N]`: the
-//! cutover rule of `fly_legacy_session::shadow::verdict`. `--binary` is the session-runtime binary
-//! CUT-01 switches to (default: `fly-session` beside this executable); it must be one of the
-//! shadowed release's binaries by name and SHA-256. `--compatibility` defaults to this build's
-//! legacy compatibility string.
+//! `check --verdict FILE [--current DIR] [--binary NAME] [--compatibility STRING]
+//! [--max-age-seconds N]`: the cutover rule of `fly_legacy_session::shadow::verdict`. `--current`
+//! is the release link CUT-01 switches into (default `/opt/fly/current`): the verdict must be for
+//! the directory it resolves to, with every shadowed binary unchanged there. `--binary` is the
+//! file name of the session-runtime binary CUT-01 switches to (default `flysim-session`,
+//! SERVE-01's service). `--compatibility` defaults to this build's legacy compatibility string.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -104,13 +105,19 @@ fn this_binary() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|e| die(format!("current_exe: {e}")))
 }
 
-/// SHA-256 of the release binaries beside this one, by name.
-fn release_binaries() -> std::collections::BTreeMap<String, String> {
-    let dir = this_binary()
-        .parent()
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    ["fly-shadow", "fly-session", "flysim", "fly-edge"]
+/// The release binaries a verdict vouches for: SERVE-01's service (`flysim-session`, what CUT-01
+/// switches to), its worker program, the shadow itself, the legacy service and the edge.
+const RELEASE_BINARIES: [&str; 5] = [
+    "flysim-session",
+    "fly-session",
+    "fly-shadow",
+    "flysim",
+    "fly-edge",
+];
+
+/// SHA-256 of the release binaries in `dir`, by name.
+fn binaries_in(dir: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+    RELEASE_BINARIES
         .iter()
         .filter_map(|name| {
             let path = dir.join(name);
@@ -118,6 +125,14 @@ fn release_binaries() -> std::collections::BTreeMap<String, String> {
                 .then(|| ((*name).to_owned(), file_sha256(&path)))
         })
         .collect()
+}
+
+/// The resolved directory of this binary: the release it runs from.
+fn this_release() -> PathBuf {
+    this_binary()
+        .parent()
+        .and_then(|d| d.canonicalize().ok())
+        .unwrap_or_default()
 }
 
 fn main() {
@@ -134,10 +149,15 @@ fn main() {
                 .value("--verdict")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| usage());
-            let binary = args.value("--binary").map_or_else(
-                || this_binary().with_file_name("fly-session"),
-                PathBuf::from,
-            );
+            // The release CUT-01 switches into (what `/opt/fly/current` resolves to now), and the
+            // binary in it that it switches to: SERVE-01's service.
+            let current = args
+                .value("--current")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("/opt/fly/current"));
+            let binary = args
+                .value("--binary")
+                .unwrap_or_else(|| "flysim-session".to_owned());
             let compatibility = args.value("--compatibility");
             let max_age: i64 = args.parsed("--max-age-seconds").unwrap_or(300);
             args.done();
@@ -150,12 +170,16 @@ fn main() {
             let value: serde_json::Value =
                 serde_json::from_str(&text).unwrap_or_else(|e| die(format!("verdict: {e}")));
             let now = verdict::parse_iso(&verdict::now_iso()).expect("now parses");
-            let name = binary
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let sha = file_sha256(&binary);
-            match verdict::allows_cutover(&value, (&name, &sha), &compatibility, now, max_age) {
+            let dir = current
+                .canonicalize()
+                .unwrap_or_else(|e| die(format!("{}: {e}", current.display())));
+            let binaries = binaries_in(&dir);
+            let dir_text = dir.display().to_string();
+            let release = verdict::Release {
+                dir: &dir_text,
+                binaries: &binaries,
+            };
+            match verdict::allows_cutover(&value, &binary, &release, &compatibility, now, max_age) {
                 Ok(()) => println!("cutover allowed: {}", value["reason"]),
                 Err(reason) => {
                     println!("cutover refused: {reason}");
@@ -276,12 +300,8 @@ fn run(mut args: Args) {
         poll: Duration::from_millis(100),
         lag_guard,
         binary_sha256: file_sha256(&this_binary()),
-        binaries: release_binaries(),
-        release: this_binary()
-            .parent()
-            .and_then(|d| d.canonicalize().ok())
-            .map(|d| d.display().to_string())
-            .unwrap_or_default(),
+        binaries: binaries_in(&this_release()),
+        release: this_release().display().to_string(),
     };
     eprintln!(
         "fly-shadow: {} mode, {} threads, following {} (stores {} and {}, read only)",

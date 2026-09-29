@@ -160,8 +160,9 @@ pub enum Ended {
 enum SegmentEnd {
     /// The process's file ended (the next one began).
     Completed,
-    /// Nothing more could be compared in it.
-    Skipped(String),
+    /// Nothing more could be compared in it, for a reason outside the session runtime: the
+    /// kind (one of [`verdict::SKIP_KINDS`] or `trace-malformed`) and what happened.
+    Skipped(&'static str, String),
     Diverged(Box<Divergence>),
     Stop(Ended),
 }
@@ -247,6 +248,13 @@ pub fn parse_lag_seconds(text: &str) -> Option<f64> {
         })
 }
 
+/// Writes the heartbeat file (its modification time is what counts).
+fn touch(path: &Path) {
+    if let Err(e) = std::fs::write(path, verdict::now_iso()) {
+        eprintln!("fly-shadow: could not write {}: {e}", path.display());
+    }
+}
+
 /// The live trace's capture ids: `g<N>`.
 fn generation_of_capture(capture: &Value) -> Option<u64> {
     capture["checkpointId"]
@@ -283,6 +291,28 @@ pub async fn run(config: ShadowConfig, stop: StopFlag) -> Result<(Ended, Verdict
         spool = spool.keep_all();
     }
     let spool_thread = spool.spawn(Duration::from_millis(250), Duration::from_secs(3 * 3600));
+    // The consumer heartbeat the live recorder needs to keep tracing (flysim `trace`): written
+    // now, before the live service is (re)started, and every 30 s; removed when the shadow stops,
+    // so a stopped, diverged or dead shadow turns the live trace off by itself.
+    let heartbeat = config.trace_dir.join(flysim::trace::CONSUMER_FILE);
+    touch(&heartbeat);
+    let beating = Arc::new(AtomicBool::new(true));
+    let heartbeat_thread = {
+        let (path, beating) = (heartbeat.clone(), Arc::clone(&beating));
+        std::thread::Builder::new()
+            .name("fly-shadow-heartbeat".to_owned())
+            .spawn(move || {
+                let mut last = Instant::now();
+                while beating.load(Ordering::Relaxed) {
+                    if last.elapsed() >= Duration::from_secs(30) {
+                        touch(&path);
+                        last = Instant::now();
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            })
+            .expect("the heartbeat thread starts")
+    };
     let lag = config
         .lag_guard
         .as_ref()
@@ -323,6 +353,9 @@ pub async fn run(config: ShadowConfig, stop: StopFlag) -> Result<(Ended, Verdict
     };
     shadow.write();
     let ended = shadow.follow().await;
+    beating.store(false, Ordering::Relaxed);
+    let _ = heartbeat_thread.join();
+    let _ = std::fs::remove_file(&heartbeat);
     shadow.spool.stop();
     let _ = spool_thread.join();
     let ended = ended?;
@@ -406,12 +439,14 @@ impl Shadow {
             None
         } else {
             // Only the newest file present at start: older processes are history whose startup
-            // saves are gone.
-            follow::trace_files(&dir)
-                .map_err(|e| format!("{}: {e}", dir.display()))?
-                .into_iter()
-                .rev()
-                .nth(1)
+            // saves are gone, and are pruned.
+            let files = follow::trace_files(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            if !self.config.keep_traces && files.len() > 1 {
+                for old in &files[..files.len() - 1] {
+                    let _ = std::fs::remove_file(old);
+                }
+            }
+            files.into_iter().rev().nth(1)
         };
         loop {
             let next = loop {
@@ -442,11 +477,14 @@ impl Shadow {
                         let _ = std::fs::remove_file(&next);
                     }
                 }
-                SegmentEnd::Skipped(reason) => {
-                    eprintln!("fly-shadow: {name} skipped after {compared} transitions: {reason}");
+                SegmentEnd::Skipped(kind, reason) => {
+                    eprintln!(
+                        "fly-shadow: {name} skipped ({kind}) after {compared} transitions: {reason}"
+                    );
                     self.verdict.skipped.push(Skipped {
                         trace: name,
                         transitions_compared: compared,
+                        kind: kind.to_owned(),
                         reason,
                     });
                     if !self.config.keep_traces {
@@ -470,7 +508,12 @@ impl Shadow {
             match follower.next_line() {
                 Ok(Some(line)) => return Ok(Some(line)),
                 Ok(None) => {}
-                Err(e) => return Err(SegmentEnd::Skipped(format!("reading the trace: {e}"))),
+                Err(e) => {
+                    return Err(SegmentEnd::Skipped(
+                        "trace-malformed",
+                        format!("reading the trace: {e}"),
+                    ));
+                }
             }
             if self.stop.requested() {
                 return Err(SegmentEnd::Stop(Ended::Stopped));
@@ -481,7 +524,10 @@ impl Shadow {
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 return match follower.next_line() {
                     Ok(line) => Ok(line),
-                    Err(e) => Err(SegmentEnd::Skipped(format!("reading the trace: {e}"))),
+                    Err(e) => Err(SegmentEnd::Skipped(
+                        "trace-malformed",
+                        format!("reading the trace: {e}"),
+                    )),
                 };
             }
             self.verdict.lag_transitions = 0;
@@ -497,27 +543,37 @@ impl Shadow {
             .unwrap_or_default();
         let mut follower = match Follower::open(path) {
             Ok(f) => f,
-            Err(e) => return SegmentEnd::Skipped(format!("open: {e}")),
+            Err(e) => return SegmentEnd::Skipped("trace-malformed", format!("open: {e}")),
         };
         // The header.
         let header: Value = match self.next_line(&mut follower).await {
             Ok(Some(line)) => match serde_json::from_str(&line) {
                 Ok(v) => v,
-                Err(e) => return SegmentEnd::Skipped(format!("header: {e}")),
+                Err(e) => return SegmentEnd::Skipped("trace-malformed", format!("header: {e}")),
             },
-            Ok(None) => return SegmentEnd::Skipped("an empty trace".to_owned()),
+            Ok(None) => return SegmentEnd::Skipped("no-transition", "an empty trace".to_owned()),
             Err(end) => return end,
         };
         if header["format"] != trace::FORMAT {
-            return SegmentEnd::Skipped(format!("not {}: {}", trace::FORMAT, header["format"]));
+            return SegmentEnd::Skipped(
+                "trace-malformed",
+                format!("not {}: {}", trace::FORMAT, header["format"]),
+            );
         }
         // The start boundary and its startup save.
         let start: Value = match self.next_line(&mut follower).await {
             Ok(Some(line)) => match serde_json::from_str(&line) {
                 Ok(v) => v,
-                Err(e) => return SegmentEnd::Skipped(format!("start line: {e}")),
+                Err(e) => {
+                    return SegmentEnd::Skipped("trace-malformed", format!("start line: {e}"));
+                }
             },
-            Ok(None) => return SegmentEnd::Skipped("the process ran no transition".to_owned()),
+            Ok(None) => {
+                return SegmentEnd::Skipped(
+                    "no-transition",
+                    "the process ran no transition".to_owned(),
+                );
+            }
             Err(end) => return end,
         };
         let Some(startup) = start["operational"]["captures"]
@@ -526,7 +582,10 @@ impl Shadow {
             .and_then(generation_of_capture)
             .filter(|_| start.get("boundary").is_some())
         else {
-            return SegmentEnd::Skipped("no startup save at the start boundary".to_owned());
+            return SegmentEnd::Skipped(
+                "trace-malformed",
+                "no startup save at the start boundary".to_owned(),
+            );
         };
         let bytes = {
             let mut waited = Duration::ZERO;
@@ -535,9 +594,12 @@ impl Shadow {
                     break bytes;
                 }
                 if waited >= Duration::from_secs(30) {
-                    return SegmentEnd::Skipped(format!(
-                        "the startup save g{startup} is no longer in the stores or the spool"
-                    ));
+                    return SegmentEnd::Skipped(
+                        "startup-save-gone",
+                        format!(
+                            "the startup save g{startup} is no longer in the stores or the spool"
+                        ),
+                    );
                 }
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 waited += Duration::from_millis(500);
@@ -560,10 +622,13 @@ impl Shadow {
             flybrain_gb::GameAdapter::migrates_from(&adapter),
         );
         if let Err(reason) = gate.check(&checkpoint) {
-            return SegmentEnd::Skipped(format!(
-                "the live process's startup save is not this candidate's to restore ({reason}): \
-                 is the shadow the build the live service runs?"
-            ));
+            return SegmentEnd::Diverged(Box::new(self.boot_failure(
+                &name,
+                format!(
+                    "the live process's startup save g{startup} is refused by this candidate's \
+                     restore gate ({reason}): is the shadow the build the live service runs?"
+                ),
+            )));
         }
         let segment_dir = self.config.work_dir.join(format!("segment-{startup}"));
         let _ = std::fs::remove_dir_all(&segment_dir);
@@ -571,7 +636,11 @@ impl Shadow {
         let mut session =
             match LegacySession::start(&segment_dir, self.session_config.clone()).await {
                 Ok(s) => s,
-                Err(e) => return SegmentEnd::Skipped(format!("the session did not start: {e}")),
+                Err(e) => {
+                    return SegmentEnd::Diverged(Box::new(
+                        self.boot_failure(&name, format!("the session did not start: {e}")),
+                    ));
+                }
             };
         // A fresh start (the stores were empty): the live process ran the one-frame scaffold and
         // the warm-up from power-on, and the shadow does the same (`Environment.Initialize`,
@@ -646,6 +715,8 @@ impl Shadow {
         self.verdict.segments_compared += 1;
         // Rollbacks wait for the boundary's captures, as the host orders them (section 16).
         session.coordinator.defer_rollbacks(true);
+        // A segment can run for days: keep the coordinator's in-memory history bounded.
+        session.coordinator.bound_history(4096);
         let end = self
             .run_segment(&name, &mut follower, &mut session, rank_since_ms)
             .await;
@@ -685,10 +756,15 @@ impl Shadow {
             };
             let live: Value = match serde_json::from_str(&line) {
                 Ok(v) => v,
-                Err(e) => return SegmentEnd::Skipped(format!("a trace line: {e}")),
+                Err(e) => {
+                    return SegmentEnd::Skipped("trace-malformed", format!("a trace line: {e}"));
+                }
             };
             if live.get("truncated").is_some() {
-                return SegmentEnd::Skipped("the live trace reached its byte cap".to_owned());
+                return SegmentEnd::Skipped(
+                    "trace-cap",
+                    format!("the live trace stopped ({})", live["reason"]),
+                );
             }
             let Some(behaviour) = live.get("behaviour").cloned() else {
                 continue;
@@ -699,18 +775,27 @@ impl Shadow {
                 match admission_line["kind"].as_str() {
                     Some("sugar") => {
                         let Some(duration) = admission_line["durationMs"].as_f64() else {
-                            return SegmentEnd::Skipped("a sugar with no duration".to_owned());
+                            return SegmentEnd::Skipped(
+                                "trace-malformed",
+                                "a sugar with no duration".to_owned(),
+                            );
                         };
                         admission.replay_sugar(duration);
                     }
                     Some("reward") => {
-                        return SegmentEnd::Skipped(format!(
-                            "an operator reward pulse at step {step:?} (declared \
+                        return SegmentEnd::Skipped(
+                            "operator-reward-pulse",
+                            format!(
+                                "an operator reward pulse at step {step:?} (declared \
                              operator-reward-pulse: not available on the session runtime)"
-                        ));
+                            ),
+                        );
                     }
                     other => {
-                        return SegmentEnd::Skipped(format!("an unknown admission {other:?}"));
+                        return SegmentEnd::Skipped(
+                            "trace-malformed",
+                            format!("an unknown admission {other:?}"),
+                        );
                     }
                 }
             }
@@ -789,7 +874,14 @@ impl Shadow {
                     match session.coordinator.capture_payloads(&checkpoint_id).await {
                         Ok((boundary, world_payload, agents)) => {
                             let Some((_, agent_payload)) = agents.into_iter().next() else {
-                                return SegmentEnd::Skipped("a capture with no agent".to_owned());
+                                return SegmentEnd::Diverged(Box::new(Divergence {
+                                    kind: "session-error".to_owned(),
+                                    trace: name.to_owned(),
+                                    step,
+                                    difference: None,
+                                    detail: "a capture with no agent".to_owned(),
+                                    context: context.into_iter().collect(),
+                                }));
                             };
                             taken.push((
                                 *generation,
@@ -823,12 +915,28 @@ impl Shadow {
             let records = session.task.take_records();
             let elapsed = t0.elapsed().as_secs_f64() * 1000.0;
             self.verdict.cost.record(elapsed);
+            let session_error = |detail: String, context: VecDeque<(Value, Value)>| {
+                SegmentEnd::Diverged(Box::new(Divergence {
+                    kind: "session-error".to_owned(),
+                    trace: name.to_owned(),
+                    step,
+                    difference: None,
+                    detail,
+                    context: context.into_iter().collect(),
+                }))
+            };
             let (Some(details), [record]) = (details, records.as_slice()) else {
-                return SegmentEnd::Skipped("the session recorded no transition".to_owned());
+                return session_error(
+                    format!(
+                        "the session recorded no transition ({} task records)",
+                        records.len()
+                    ),
+                    context,
+                );
             };
             let mut shadow_line = match trace::line(&details, record) {
                 Ok(line) => line["behaviour"].clone(),
-                Err(e) => return SegmentEnd::Skipped(format!("the shadow's trace line: {e}")),
+                Err(e) => return session_error(format!("the shadow's trace line: {e}"), context),
             };
             if behaviour.get("ledgersDigest").is_some() {
                 shadow_line["ledgersDigest"] = Value::String(sha256_hex(record.ledgers.as_bytes()));
@@ -921,6 +1029,12 @@ impl Shadow {
                 .unwrap_or(0.0);
             if self.verdict.status == Status::Running
                 && self.verdict.brain_seconds() >= self.config.required_brain_seconds
+                && verdict::saves_suffice(
+                    self.verdict.brain_seconds(),
+                    self.verdict.checkpoints.identical + self.verdict.checkpoints.declared,
+                    self.verdict.checkpoints.unavailable,
+                )
+                .is_ok()
             {
                 self.verdict.status = Status::Pass;
                 self.verdict.passed_at = Some(verdict::now_iso());

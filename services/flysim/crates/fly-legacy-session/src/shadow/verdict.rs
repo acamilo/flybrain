@@ -19,12 +19,24 @@
 //! before it passed (a `pass` stays `pass` when the shadow stops). `error` is the shadow's own
 //! failure (it could not read its inputs), which proves nothing either way.
 //!
-//! **The cutover rule (for CUT-01).** Cut over only if, read at the moment of cutting over:
-//! `format` is `fly-shadow-verdict-v1`; `status` is `pass`; `firstDivergence` is `null`;
-//! the session-runtime binary being switched to is one of `candidate.binaries`, by name and
-//! SHA-256 (the shadow proved the release it shipped in, not another build);
-//! `candidate.compatibility` is the live service's `--print-compatibility`; and `updatedAt` is no
-//! older than a few minutes (the shadow is still following). Anything else keeps the legacy fly.
+//! **The cutover rule (for CUT-01), [`allows_cutover`].** Cut over only if, read at the moment of
+//! cutting over, every one of these holds; anything else keeps the legacy fly:
+//!
+//! - `format` is `fly-shadow-verdict-v1`, `status` is `pass`, `firstDivergence` is `null`, and
+//!   `compared.brainSeconds` reaches `required.brainSeconds`;
+//! - *the release*: `candidate.release` is the directory `/opt/fly/current` resolves to now,
+//!   every binary in `candidate.binaries` still has its recorded SHA-256 there, and the binary
+//!   being switched to (`flysim-session`, SERVE-01's service) is one of them -- the shadow
+//!   vouches for the release it ran in and nothing else;
+//! - `candidate.compatibility` is the live service's `--print-compatibility`;
+//! - *saves were compared*: at least one live save per [`BRAIN_SECONDS_PER_SAVE`] brain seconds
+//!   compared byte for byte, and no more than [`MAX_UNAVAILABLE_FRACTION`] of the saves the trace
+//!   named were unavailable (a shadow starved past its spool must not pass on transitions alone);
+//! - *nothing was skipped for a reason inside the session runtime*: every `skipped` entry's `kind`
+//!   is one of [`SKIP_KINDS`] (the live side's own events); a session-side failure is a
+//!   divergence, never a skip;
+//! - *the shadow is caught up and alive*: `updatedAt` is no older than `max_age_s`, and
+//!   `lagTransitions` is at most [`MAX_LAG_TRANSITIONS`].
 
 use std::path::Path;
 
@@ -33,6 +45,26 @@ use serde_json::{Value, json};
 use crate::trace::{Agreement, Difference};
 
 pub const FORMAT: &str = "fly-shadow-verdict-v1";
+
+/// Skips that are the live side's own events, not the session runtime's failures: the operator
+/// reward pulse (declared), a startup save rotated away before the shadow reached it, a trace
+/// stopped at its byte cap or for want of a consumer, and a process that ran no transition.
+pub const SKIP_KINDS: [&str; 4] = [
+    "operator-reward-pulse",
+    "startup-save-gone",
+    "trace-cap",
+    "no-transition",
+];
+
+/// At least one live save compared byte for byte per this many brain seconds (the live loop
+/// saves every 5 s; 600 leaves room for a lagging shadow's spool evictions).
+pub const BRAIN_SECONDS_PER_SAVE: f64 = 600.0;
+
+/// At most this fraction of the saves the trace named may have been unavailable.
+pub const MAX_UNAVAILABLE_FRACTION: f64 = 0.1;
+
+/// The shadow at most about a minute behind the live trace.
+pub const MAX_LAG_TRANSITIONS: u64 = 3_600;
 
 /// The declared differences the comparison applies, by name (`legacy-gameboy-v1`).
 pub const DECLARED: [(&str, &str); 5] = [
@@ -100,6 +132,8 @@ pub struct Checkpoints {
 pub struct Skipped {
     pub trace: String,
     pub transitions_compared: u64,
+    /// One of [`SKIP_KINDS`], or `trace-malformed`.
+    pub kind: String,
     pub reason: String,
 }
 
@@ -274,7 +308,7 @@ impl Verdict {
                 },
             },
             "skipped": self.skipped.iter().map(|s| json!({
-                "trace": s.trace, "transitionsCompared": s.transitions_compared, "reason": s.reason,
+                "trace": s.trace, "transitionsCompared": s.transitions_compared, "kind": s.kind, "reason": s.reason,
             })).collect::<Vec<_>>(),
             "declaredDifferences": DECLARED.iter().map(|(name, what)| json!({"name": name, "what": what})).collect::<Vec<_>>(),
             "firstDivergence": self.divergence.as_ref().map(|d| {
@@ -303,12 +337,39 @@ pub fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// Whether the saves compared are enough for the brain time compared ([`BRAIN_SECONDS_PER_SAVE`],
+/// [`MAX_UNAVAILABLE_FRACTION`]).
+pub fn saves_suffice(brain_seconds: f64, compared: u64, unavailable: u64) -> Result<(), String> {
+    let needed = (brain_seconds / BRAIN_SECONDS_PER_SAVE).floor().max(1.0) as u64;
+    if compared < needed {
+        return Err(format!(
+            "{compared} live saves compared over {brain_seconds:.0} brain s; {needed} needed"
+        ));
+    }
+    if unavailable as f64 > MAX_UNAVAILABLE_FRACTION * (compared + unavailable) as f64 {
+        return Err(format!(
+            "{unavailable} of {} live saves were unavailable to compare",
+            compared + unavailable
+        ));
+    }
+    Ok(())
+}
+
+/// The release the cutover would switch into: its resolved directory and the SHA-256 of the
+/// binaries in it, by file name.
+pub struct Release<'a> {
+    pub dir: &'a str,
+    pub binaries: &'a std::collections::BTreeMap<String, String>,
+}
+
 /// Reads a verdict file and says whether it allows the cutover, by the rule in the module notes.
-/// `binary` is the file name and SHA-256 of the session-runtime binary CUT-01 switches to, and
-/// `compatibility` the live service's; `max_age_s` bounds `updatedAt`.
+/// `binary` is the file name of the session-runtime binary CUT-01 switches to, inside `release`
+/// (what `/opt/fly/current` resolves to now), and `compatibility` the live service's;
+/// `max_age_s` bounds `updatedAt`.
 pub fn allows_cutover(
     verdict: &Value,
-    binary: (&str, &str),
+    binary: &str,
+    release: &Release<'_>,
     compatibility: &str,
     now_ms: i64,
     max_age_s: i64,
@@ -322,13 +383,28 @@ pub fn allows_cutover(
     if !verdict["firstDivergence"].is_null() {
         return Err("a divergence is recorded".to_owned());
     }
-    let (name, sha256) = binary;
-    if verdict["candidate"]["binaries"][name] != sha256 {
+    let candidate = &verdict["candidate"];
+    if candidate["release"] != release.dir {
         return Err(format!(
-            "the verdict is for another build: {name} {sha256} is not among the shadowed release's binaries"
+            "the verdict is for the release {}, not {}",
+            candidate["release"], release.dir
         ));
     }
-    if verdict["candidate"]["compatibility"] != compatibility {
+    let shadowed = candidate["binaries"]
+        .as_object()
+        .ok_or("the verdict names no binaries")?;
+    if !shadowed.contains_key(binary) {
+        return Err(format!("{binary} was not in the shadowed release"));
+    }
+    for (name, sha) in shadowed {
+        if release.binaries.get(name).map(String::as_str) != sha.as_str() {
+            return Err(format!(
+                "{name} in {} is not the binary the shadow ran beside",
+                release.dir
+            ));
+        }
+    }
+    if candidate["compatibility"] != compatibility {
         return Err("the verdict is for another compatibility string".to_owned());
     }
     let compared = verdict["compared"]["brainSeconds"].as_f64().unwrap_or(0.0);
@@ -337,6 +413,27 @@ pub fn allows_cutover(
         .unwrap_or(f64::INFINITY);
     if compared < required {
         return Err(format!("{compared} of {required} brain seconds compared"));
+    }
+    let saves = &verdict["compared"]["checkpoints"];
+    saves_suffice(
+        compared,
+        saves["identical"].as_u64().unwrap_or(0) + saves["declared"].as_u64().unwrap_or(0),
+        saves["unavailable"].as_u64().unwrap_or(u64::MAX / 2),
+    )?;
+    for skip in verdict["skipped"].as_array().into_iter().flatten() {
+        let kind = skip["kind"].as_str().unwrap_or("");
+        if !SKIP_KINDS.contains(&kind) {
+            return Err(format!(
+                "a segment was skipped for {kind:?}: {}",
+                skip["reason"]
+            ));
+        }
+    }
+    let lag = verdict["lagTransitions"].as_u64().unwrap_or(u64::MAX);
+    if lag > MAX_LAG_TRANSITIONS {
+        return Err(format!(
+            "the shadow is {lag} transitions behind the live trace"
+        ));
     }
     let updated = verdict["updatedAt"]
         .as_str()
@@ -388,7 +485,7 @@ mod tests {
             status,
             reason: String::new(),
             binary_sha256: "b".repeat(64),
-            binaries: [("fly-session".to_owned(), "b".repeat(64))].into(),
+            binaries: [("flysim-session".to_owned(), "b".repeat(64))].into(),
             release: "/opt/fly/releases/test".to_owned(),
             compatibility: "c".to_owned(),
             execution_mode: "in-process".to_owned(),
@@ -397,7 +494,11 @@ mod tests {
             agreement: Agreement::default(),
             brain_ms,
             ledger_checks: 0,
-            checkpoints: Checkpoints::default(),
+            checkpoints: Checkpoints {
+                identical: 2_000,
+                declared: 1,
+                unavailable: 5,
+            },
             segments_compared: 1,
             skipped: Vec::new(),
             divergence: None,
@@ -415,27 +516,62 @@ mod tests {
     #[test]
     fn the_cutover_rule() {
         let now = parse_iso(&now_iso()).unwrap();
-        let sha = "b".repeat(64);
-        let bin = ("fly-session", sha.as_str());
+        let binaries: std::collections::BTreeMap<String, String> =
+            [("flysim-session".to_owned(), "b".repeat(64))].into();
+        let release = Release {
+            dir: "/opt/fly/releases/test",
+            binaries: &binaries,
+        };
+        let ok = |v: &Value| allows_cutover(v, "flysim-session", &release, "c", now, 300);
         let pass = verdict(Status::Pass, 10_800_000.0);
-        assert_eq!(allows_cutover(&pass, bin, "c", now, 300), Ok(()));
-        let other = "a".repeat(64);
-        assert!(allows_cutover(&pass, ("fly-session", &other), "c", now, 300).is_err());
-        assert!(allows_cutover(&pass, ("fly-other", &sha), "c", now, 300).is_err());
-        assert!(allows_cutover(&pass, bin, "other", now, 300).is_err());
-        assert!(allows_cutover(&pass, bin, "c", now + 301_000, 300).is_err());
-        let short = verdict(Status::Pass, 10_799_000.0);
-        assert!(allows_cutover(&short, bin, "c", now, 300).is_err());
+        assert_eq!(ok(&pass), Ok(()));
+        // Another binary, another release, a changed file in it.
+        assert!(allows_cutover(&pass, "fly-other", &release, "c", now, 300).is_err());
+        let moved = Release {
+            dir: "/opt/fly/releases/other",
+            binaries: &binaries,
+        };
+        assert!(allows_cutover(&pass, "flysim-session", &moved, "c", now, 300).is_err());
+        let changed: std::collections::BTreeMap<String, String> =
+            [("flysim-session".to_owned(), "a".repeat(64))].into();
+        let rebuilt = Release {
+            dir: "/opt/fly/releases/test",
+            binaries: &changed,
+        };
+        assert!(allows_cutover(&pass, "flysim-session", &rebuilt, "c", now, 300).is_err());
+        assert!(allows_cutover(&pass, "flysim-session", &release, "other", now, 300).is_err());
+        assert!(
+            allows_cutover(&pass, "flysim-session", &release, "c", now + 301_000, 300).is_err()
+        );
+        assert!(ok(&verdict(Status::Pass, 10_799_000.0)).is_err());
         for status in [
             Status::Running,
             Status::Diverged,
             Status::Stopped,
             Status::Error,
         ] {
-            assert!(allows_cutover(&verdict(status, 10_800_000.0), bin, "c", now, 300).is_err());
+            assert!(ok(&verdict(status, 10_800_000.0)).is_err());
         }
         let mut diverged = pass.clone();
         diverged["firstDivergence"] = json!({"kind": "transition"});
-        assert!(allows_cutover(&diverged, bin, "c", now, 300).is_err());
+        assert!(ok(&diverged).is_err());
+        // Saves: none compared, or too many unavailable.
+        let mut starved = pass.clone();
+        starved["compared"]["checkpoints"] =
+            json!({"identical": 0, "declared": 0, "unavailable": 0});
+        assert!(ok(&starved).is_err());
+        starved["compared"]["checkpoints"] =
+            json!({"identical": 100, "declared": 0, "unavailable": 50});
+        assert!(ok(&starved).is_err());
+        // Skips: the live side's own are fine, anything else is not.
+        let mut skipped = pass.clone();
+        skipped["skipped"] = json!([{"kind": "startup-save-gone", "reason": "x"}]);
+        assert_eq!(ok(&skipped), Ok(()));
+        skipped["skipped"] = json!([{"kind": "trace-malformed", "reason": "x"}]);
+        assert!(ok(&skipped).is_err());
+        // Behind the live trace.
+        let mut behind = pass.clone();
+        behind["lagTransitions"] = json!(MAX_LAG_TRANSITIONS + 1);
+        assert!(ok(&behind).is_err());
     }
 }
