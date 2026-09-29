@@ -9,6 +9,8 @@
 //! Ready(k) / Paused(k) -> Capturing(k) -> same boundary
 //! any unresolved partial failure -> Failed -> Restoring(new epoch) -> Paused(k)
 //! terminal episode -> Paused(k) -> Resetting(new epoch) -> Ready(0)
+//! declared rollback: Ready(e, k) -> RollingBack(e', k) -> Ready(e', k)
+//! checkpoint as the start: Ready(0), no transition taken -> Restoring(k) -> Paused(k)
 //! ```
 //!
 //! A transition the table does not list is a bug, not a recoverable condition, so it returns
@@ -34,6 +36,9 @@ pub enum Phase {
     Restoring(u64),
     /// `Resetting(k)`: leaving boundary `k` for a new epoch and episode at step 0.
     Resetting(u64),
+    /// A declared rollback policy running at a committed boundary (`step-v1` section 2
+    /// amendment of 2026-09-23): same boundary, new epoch, no capture.
+    RollingBack(u64),
 }
 
 impl Phase {
@@ -50,6 +55,7 @@ impl Phase {
             Phase::Failed => "Failed".to_owned(),
             Phase::Restoring(k) => format!("Restoring({k})"),
             Phase::Resetting(k) => format!("Resetting({k})"),
+            Phase::RollingBack(k) => format!("RollingBack({k})"),
         }
     }
 
@@ -115,6 +121,14 @@ impl PhaseMachine {
             (Restoring(k), Paused(j)) => k == j,
             (Paused(k), Resetting(j)) => k == j,
             (Resetting(_), Ready(0)) => true,
+            // `step-v1` section 2, amendment of 2026-09-23: `Ready(e, k) -> RollingBack(e', k)
+            // -> Ready(e', k)`. The epoch changes, which is the coordinator's; the boundary
+            // does not.
+            (Ready(k), RollingBack(j)) | (RollingBack(k), Ready(j)) => k == j,
+            // A session that bootstrapped and has taken no transition may install a checkpoint
+            // as its start: the legacy composition's FLYSIM01 import (TASK-01). The install is
+            // the group restore of `state-media-v1` section 6 and ends `Paused(k)` like one.
+            (Ready(0), Restoring(_)) => true,
             _ => false,
         }
     }
@@ -149,6 +163,21 @@ impl PhaseMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rollback_keeps_its_boundary_and_an_import_starts_from_an_unstepped_zero() {
+        let mut m = PhaseMachine::new();
+        m.to(Phase::Ready(0)).unwrap();
+        m.to(Phase::Restoring(40)).unwrap();
+        m.to(Phase::Paused(40)).unwrap();
+        m.to(Phase::Ready(40)).unwrap();
+        assert!(m.to(Phase::RollingBack(41)).is_err(), "a rollback keeps the boundary");
+        m.to(Phase::RollingBack(40)).unwrap();
+        assert!(m.to(Phase::Capturing(40)).is_err(), "no capture inside a rollback");
+        assert!(m.to(Phase::Preparing(40)).is_err(), "no Prepare before every reply");
+        m.to(Phase::Ready(40)).unwrap();
+        assert!(m.to(Phase::Restoring(3)).is_err(), "only boundary 0 may take a start");
+    }
 
     #[test]
     fn the_happy_path_walks_the_section_2_diagram() {

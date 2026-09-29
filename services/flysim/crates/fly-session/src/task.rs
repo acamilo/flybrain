@@ -7,6 +7,7 @@
 //! writes a controller or neural state directly.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 
@@ -53,6 +54,48 @@ pub fn controller_schema_ref() -> SchemaRef {
     synthetic_schema("arena.controller.v1", 1)
 }
 
+/// One boundary's inspection as the task and the executor read it: the observation's typed
+/// `inspection` value plus the bytes of the attachments the task declared
+/// ([`Task::inspection_attachments`]).
+///
+/// An artifact-backed inspection (`gameboy-memory-inspection-v1`: a 64 KiB image per boundary)
+/// names its bytes by `ArtifactRef`; the coordinator holds the artifact until the transition
+/// that reads it has been evaluated (`step-v1` section 3, Phase C amendment) and hands the task
+/// the bytes, so neither the task nor the executor ever reads a live world. The synthetic
+/// composition declares no attachment, and its inspection derefs to the typed value it always
+/// was.
+#[derive(Clone, Debug)]
+pub struct Inspection {
+    /// The boundary the observation belongs to.
+    pub boundary: u64,
+    pub value: TypedValue,
+    /// Attachment name to bytes, for the names the task declared.
+    pub attachments: BTreeMap<String, Arc<Vec<u8>>>,
+}
+
+impl Inspection {
+    /// An inspection with no attachment: the synthetic composition's.
+    pub fn plain(boundary: u64, value: TypedValue) -> Inspection {
+        Inspection { boundary, value, attachments: BTreeMap::new() }
+    }
+}
+
+impl std::ops::Deref for Inspection {
+    type Target = TypedValue;
+
+    fn deref(&self) -> &TypedValue {
+        &self.value
+    }
+}
+
+/// What a task's part of a rollback produced (`step-v1` section 6 amendment, step 3): the next
+/// decision contexts for the restored boundary, and any events it reports.
+#[derive(Clone, Debug)]
+pub struct RollbackEvaluation {
+    pub next_contexts: BTreeMap<Id, TypedValue>,
+    pub events: Vec<TaskEvent>,
+}
+
 /// What `Task.bootstrap` produced.
 #[derive(Clone, Debug)]
 pub struct Bootstrap {
@@ -70,16 +113,27 @@ pub struct Evaluation {
     pub progress: TypedValue,
     pub events: Vec<TaskEvent>,
     pub episode: Option<EpisodeRequest>,
+    /// Slot saves the transition asks for at the boundary it reached, applied by the coordinator
+    /// after every Commit and before any capture or rollback there (`step-v1` section 3, Phase C
+    /// amendment; environment capability `gameboy-slots-v1`). Empty in every composition that
+    /// declares no slots.
+    pub slot_saves: Vec<Id>,
 }
 
 /// A checkpointable task ledger and the two evaluation entry points.
 pub trait Task: Send {
     fn schema(&self) -> SchemaRef;
 
+    /// The inspection attachments this task and its executor read, which the coordinator asks
+    /// the environment for, holds and hands over as bytes. None by default.
+    fn inspection_attachments(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Called once, at boundary 0, before any agent is initialized.
     fn bootstrap(
         &mut self,
-        initial_inspection: &TypedValue,
+        initial_inspection: &Inspection,
         bindings: &[PortBinding],
     ) -> DomainResult<Bootstrap>;
 
@@ -87,10 +141,39 @@ pub trait Task: Send {
     fn evaluate_transition(
         &mut self,
         scope: &Scope,
-        old_inspection: &TypedValue,
-        new_inspection: &TypedValue,
+        old_inspection: &Inspection,
+        new_inspection: &Inspection,
         applied_controls: &[PortControl],
     ) -> DomainResult<Evaluation>;
+
+    /// Step 3 of a declared rollback policy, coordinator-local (`step-v1` section 6 amendment):
+    /// the task clears its transient observations and the executor cancels any running action
+    /// and observes the restored boundary, which yields the next decision contexts. `scope` is
+    /// the new epoch at the restored boundary. A task that declares no rollback policy refuses.
+    fn rollback(
+        &mut self,
+        _scope: &Scope,
+        _restored: &Inspection,
+    ) -> DomainResult<RollbackEvaluation> {
+        Err(DomainError::before(
+            ErrorCode::Unsupported,
+            "this task declares no rollback policy",
+        ))
+    }
+
+    /// After a group restore installed this task's ledger: the restored boundary's inspection
+    /// and the agents' restored brain clock. A task whose executor state is transient
+    /// (`restore: legacy-transient-reset`) re-observes the world here and returns the decision
+    /// contexts it would hand the agents, which the coordinator holds against the ones the
+    /// checkpoint recorded. `None` (the default) means the recorded contexts stand unchecked.
+    fn restored(
+        &mut self,
+        _scope: &Scope,
+        _restored: &Inspection,
+        _clock: &RationalNs,
+    ) -> DomainResult<Option<BTreeMap<Id, TypedValue>>> {
+        Ok(None)
+    }
 
     fn progress(&self) -> TypedValue;
 
@@ -127,7 +210,7 @@ pub trait ActionExecutor: Send {
         &mut self,
         scope: &Scope,
         decision: &TypedValue,
-        current_game_state: &TypedValue,
+        current_game_state: &Inspection,
         progress: &TypedValue,
         clock: &RationalNs,
     ) -> DomainResult<(ControllerIntent, Vec<TaskEvent>)>;
@@ -151,7 +234,7 @@ impl ActionExecutor for IdentityExecutor {
         &mut self,
         _scope: &Scope,
         decision: &TypedValue,
-        _current_game_state: &TypedValue,
+        _current_game_state: &Inspection,
         _progress: &TypedValue,
         _clock: &RationalNs,
     ) -> DomainResult<(ControllerIntent, Vec<TaskEvent>)> {
@@ -294,7 +377,7 @@ impl Task for CounterTask {
 
     fn bootstrap(
         &mut self,
-        initial_inspection: &TypedValue,
+        initial_inspection: &Inspection,
         bindings: &[PortBinding],
     ) -> DomainResult<Bootstrap> {
         if initial_inspection.schema != inspection_schema() {
@@ -329,8 +412,8 @@ impl Task for CounterTask {
     fn evaluate_transition(
         &mut self,
         scope: &Scope,
-        old_inspection: &TypedValue,
-        new_inspection: &TypedValue,
+        old_inspection: &Inspection,
+        new_inspection: &Inspection,
         applied_controls: &[PortControl],
     ) -> DomainResult<Evaluation> {
         let old = old_inspection.integer("counter").map_err(DomainError::invalid)?;
@@ -445,6 +528,7 @@ impl Task for CounterTask {
             progress: self.progress_value(),
             events,
             episode,
+            slot_saves: Vec::new(),
         })
     }
 
