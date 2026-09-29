@@ -344,6 +344,53 @@ CUT-01 shadow need.
 the executor over `ImageReader::new(&O[k], &cartridge)` in Phase B and over O[k+1] in Phase C,
 retaining O[k] until then. The `Cartridge` comes from `Cartridge::verified(rom, contentDigest)`.
 
+### TASK-01 — The `pokered-macros-v1` task and executor (port slice)
+
+**2026-09-29: built** on `port/task-01` off `port/integration` (main v0.6.5 + AGENT-01 + MEM-01 +
+ENV-01) and awaiting review. It changes no live behaviour: `flysim` is only a library dependency of
+the new crate, nothing in the service calls it, and the compatibility string is unchanged. With it
+the live fly's whole composition -- agent, world, task and executor -- runs on the session
+framework, from a fresh start or from a FLYSIM01 checkpoint.
+
+- **The object** (`fly-legacy-session::task::PokeredTask`). The task and the executor are one
+  object with two faces, `Task` and `ActionExecutor`, which the coordinator holds where it holds
+  any task and executor (legacy-gameboy-v1 section 10). Phase B runs flysim's `MacroLayer::decide`
+  over `ImageReader(O[k], cartridge)` at the agent's brain time. Phase C runs
+  `PokemonRedReward::sample`, `MacroLayer::observe`, the location, the progress and the ratchet's
+  decision over `ImageReader(O[k+1])`. A rollback runs `clear_transient`, `cancel` and `observe`
+  over `ImageReader(O'[k+1])`. These are the legacy engine's own calls in `LegacyFrame`'s order;
+  there is no port of a rule. The cartridge is `Cartridge::verified(rom, contentDigest)`, and O[k] is
+  retained until Phase C has read it.
+- **The coordinator** (fly-session). A task declares the inspection attachments it reads, and the
+  coordinator holds them and hands over their bytes (`task::Inspection`). The executor's clock is the
+  agent's brain time after Prepare. `Evaluation.slot_saves` asks for `Environment.SaveSlot`. A
+  declared rollback policy now runs itself: `Ready(e, k) -> RollingBack(e', k) -> Ready(e', k)`, with
+  `RestoreSlot`, then `Task::rollback`, then `Agent.Rollback` on every agent. Composition setters
+  cover the backend and task config, the media, the decision schema, the world's state format and
+  per-agent model versions. The admission queue (`AdmissionQueue`) is cut into each Prepare's
+  `preStepStimulations` and reports every admission applied or aborted. `Coordinator::import`
+  installs a checkpoint of another format as a session's start. Step details (`StepDetails`) are
+  kept for a parity run.
+- **FLYSIM01 as the start** (`fly-legacy-session::import`). This is the import AGENT-01 and ENV-01
+  left open. The world, agent and task halves go into each participant's own capture format, and
+  the ordinary group restore installs them: stage, validate, activate, `Paused(k)`, resume. The
+  world is replaced by a fresh one first, because ENV-01 stages only on a replacement. The context
+  the agent resumes with is computed from the checkpoint's own memory image, and the coordinator
+  holds the task to it after the install (`Task::restored`).
+- **Sugar** (`fly-legacy-session::admission`). flysim's `RateLimiter` and clamp run unchanged,
+  against the last commit's `stimulusRemainingMs` (one commit stale). An admission waits for the
+  next cut.
+- **The operator reward pulse is refused.** See the legacy-gameboy-v1 section 15 amendment.
+
+**Parity** (`fly-legacy-session/tests/session_trace.rs`, rom-env). A whole new-runtime session
+writes its own `FLY_TRACE` line per transition (`fly-legacy-session::trace`). Each line is built
+from what crossed its boundaries: `Agent.Prepare`, `Agent.Commit`'s rates and spike bitset, the
+executor's batch, the view, the image and the boundary actions. It is compared field by field with
+the legacy loop's. The decision is compared as a set, because `gameboy-channels-v1` carries no list
+order. Where the legacy side runs in the test, the ledgers are compared after every boundary as
+well: adapter export, ratchet state, and the executor's scene, bound channels, running macro,
+counts and "nearer". Results: see the TASK-01 run report and the amendment below.
+
 ### STATE-01 — Coherent all-participant checkpoint/recovery
 
 **Depends on:** SESSION-02, MEDIA-01; validate with fake agents first, then AGENT-01/ENV-01.
