@@ -529,6 +529,11 @@ pub fn scene_set(scene: Scene, state: &mut dyn MacroState) -> Vec<MacroKind> {
             if inside_center(state) {
                 set.push(Heal);
             }
+            // Row 66: the mart's `HEAL`. One button from the floor that walks to the clerk,
+            // opens the counter and buys one ball ([`floor_ball_goals`]).
+            if inside_mart(state) {
+                set.push(BuyBall);
+            }
             set.extend([GoShop, GoHeal, GoItem, GoNpc, GoFrontier, Talk]);
             set
         }
@@ -692,7 +697,12 @@ pub fn precondition(kind: MacroKind, state: &mut dyn MacroState) -> bool {
         | MacroKind::BuyBall
         | MacroKind::BuyAntidote
         | MacroKind::BuyRepel => match kind.purchase() {
-            Some((id, cost)) => affordable(state, id, cost),
+            Some((id, cost)) => {
+                affordable(state, id, cost)
+                    || (kind == MacroKind::BuyBall
+                        && state.scene() == Scene::Overworld
+                        && !floor_ball_goals(state).is_empty())
+            }
             // Unreachable while [`MacroKind::purchase`] covers the four arms above, and a `false`
             // rather than a panic if it ever stops: an unpriced purchase is a button off the pad.
             None => false,
@@ -1041,6 +1051,30 @@ pub fn heal_goals(state: &mut dyn MacroState) -> Vec<Aim> {
     // which is where `GO HEAL` leaves the fly, and for ten brain minutes after `GO HEAL` had
     // reached her. Only the blocked window is kept: a counter no walk can reach is still that.
     person_aims(state, poke_sprite::NURSE, Ledgers::BlockedOnly, true)
+}
+
+/// `BUY BALL`'s walk from the floor of a mart: the tiles the clerk can be talked to from (row 66).
+///
+/// The operator's decision on row 66: buying a ball is one macro, modelled on `HEAL` -- walk to
+/// the clerk, talk, open BUY, take the first row, answer the price box, done when the wallet says
+/// it is paid. Measured with the connectome before it: `GO SHOP` walked the fly to the Viridian
+/// clerk again and again and the fly never once chose `TALK` there, so the four choices in a row
+/// that a purchase took (`TALK`, the greeting, `CONFIRM`, `BUY BALL`) never happened. The fly
+/// still has to choose this button; it is only on the pad while it can work:
+///
+/// - in a mart whose first stock row is a Poké Ball ([`geography::BALL_FIRST_MARTS`]);
+/// - while [`service_needed`] holds for the mart: no ball in the bag, the money for one, and no
+///   Oak's parcel (the Viridian clerk's text table while it is carried sells nothing);
+/// - with the clerk reachable: the blocked window is kept, the talked and reached ledgers are not
+///   (a counter is a service), and the tile already facing him is a goal (no walk at all).
+///
+/// Empty anywhere else, which is the other half of the precondition.
+pub fn floor_ball_goals(state: &mut dyn MacroState) -> Vec<Aim> {
+    let Some(here) = state.player().map(|player| player.map) else { return Vec::new() };
+    if !geography::BALL_FIRST_MARTS.contains(&here) || !service_needed(state, Amenity::Mart) {
+        return Vec::new();
+    }
+    person_aims(state, poke_sprite::CLERK, Ledgers::BlockedOnly, true)
 }
 
 /// Whether the building of `kind` has something to do for the fly right now: the party needs the

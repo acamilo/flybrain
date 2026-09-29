@@ -4677,3 +4677,117 @@ fn row66_a_counter_walked_away_from_is_not_walked_back_to_by_go_shop() {
         "GO SHOP dealt on the street again after the fly walked away from the counter"
     );
 }
+
+/// Row 66, the operator's decision: `BUY BALL` is one button from a mart's floor, modelled on
+/// `HEAL`, and pressed it rings up a ball.
+///
+/// From the post-parcel Viridian mart (793 in the wallet, no ball): `BUY BALL` whenever it is
+/// dealt, otherwise a uniform pick among the buttons on the pad. The claim is about the pad and the
+/// script, not the fly's choice: on the floor of the mart the button is dealt, and one press of it
+/// walks to the clerk, opens the counter and rings up one ball. On v0.6.5 it was dealt only at an
+/// open counter, which took `TALK`, the greeting and `CONFIRM` first, and the connectome never
+/// chose `TALK` there (three laps of `GO SHOP` and out in eighteen brain seconds).
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_ROW66_MART_CHECKPOINT=.local/checkpoints/survey-rank8-row66-viridian-mart.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture row66
+/// ```
+#[test]
+fn row66_buy_ball_from_the_marts_floor_rings_up_a_ball() {
+    use flybrain_gb::pokemon_red::macros::PokemonPalette;
+    use flybrain_gb::{MacroPalette, Outcome, Started};
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = row66_mart_checkpoint() else {
+        eprintln!("skipped: no FLY_ROW66_MART_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert_eq!(run.bag_count(POKE_BALL), 0, "no ball at the checkpoint");
+    let money = run.money();
+
+    let hold_frames = 48u32;
+    let mut palette = PokemonPalette::new(SEED);
+    let mut running: Option<&'static str> = None;
+    let mut since_decision = hold_frames;
+    let mut ms = run.ms;
+    let mut rng = 0x2026_0929u32;
+    let mut dealt_on_the_floor = 0u32;
+    let mut started = 0u32;
+    let mut done = 0u32;
+    let mut bought_at = None;
+    for frame in 0..20_000u32 {
+        palette.clock(ms);
+        let observed = {
+            let ledger = AdapterLedger(&run.adapter);
+            palette.observe(&mut run.gb, &ledger)
+        };
+        let mut mask = 0u8;
+        {
+            let ledger = AdapterLedger(&run.adapter);
+            if running.is_some() {
+                match palette.step(&mut run.gb, &ledger) {
+                    Some(held) => mask = held,
+                    None => running = None,
+                }
+            } else if since_decision >= hold_frames && !observed.bindings.is_empty() {
+                since_decision = 0;
+                if run.map() == VIRIDIAN_MART
+                    && observed.bindings.iter().any(|binding| binding.name == "BUY BALL")
+                    && !observed.bindings.iter().any(|binding| binding.name == "LEAVE")
+                {
+                    dealt_on_the_floor += 1;
+                }
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                let binding = observed
+                    .bindings
+                    .iter()
+                    .find(|binding| binding.name == "BUY BALL")
+                    .unwrap_or(&observed.bindings[rng as usize % observed.bindings.len()]);
+                if binding.name == "BUY BALL"
+                    && flybrain_gb::pokemon_red::scene::detect(&mut run.gb)
+                        == flybrain_gb::pokemon_red::macros::state::Scene::Overworld
+                {
+                    started += 1;
+                }
+                if let Started::Running(name) = palette.start(binding.slot, &mut run.gb, &ledger) {
+                    running = Some(name);
+                    match palette.step(&mut run.gb, &ledger) {
+                        Some(held) => mask = held,
+                        None => running = None,
+                    }
+                }
+            }
+        }
+        if let Some((name, outcome)) = palette.take_finished()
+            && name == "BUY BALL"
+            && outcome == Outcome::Done
+        {
+            done += 1;
+        }
+        since_decision += 1;
+        run.gb.set_buttons(mask);
+        run.gb.run_frame().expect("a frame should complete");
+        ms += MS_PER_FRAME;
+        run.adapter.sample(&mut run.gb, ms);
+        if run.bag_count(POKE_BALL) > 0 && bought_at.is_none() {
+            bought_at = Some(frame);
+        }
+        if bought_at.is_some() && running.is_none() {
+            break;
+        }
+    }
+    eprintln!(
+        "BUY BALL dealt on the floor on {dealt_on_the_floor} holds, started {started}, done {done}; \
+         a ball at {bought_at:?}; balls {}, money {money} -> {}",
+        run.bag_count(POKE_BALL),
+        run.money()
+    );
+    assert!(dealt_on_the_floor > 0, "BUY BALL is on the mart floor's pad");
+    assert!(started > 0, "and started from the floor");
+    assert_eq!(run.bag_count(POKE_BALL), 1, "one ball rung up");
+    assert_eq!(run.money(), money - 200, "and paid for");
+    assert!(done >= 1, "the macro reports done when paid");
+}

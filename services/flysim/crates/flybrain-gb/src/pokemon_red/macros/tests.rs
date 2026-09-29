@@ -28,6 +28,7 @@ use super::executor::{
 };
 use super::palette::{
     MacroId, MacroKind, Palette, SLOTS, amenity_goals, amenity_wanted, answer_key, errand, facing_nurse,
+    floor_ball_goals,
     healthiest_other, heal_goals, inside_center, nurse_prompt, rested_nurse, service_needed,
     listing, losing, move_slot_bound, objective_goals, party_needs_rest, party_rested,
     poke_sprite, precondition, throw_slot, untalked_objects, untalked_people, ways,
@@ -5843,6 +5844,68 @@ fn a_counter_the_fly_walked_away_from_is_not_walked_back_to_for_the_window() {
     let mut mart = World::mart();
     mart.targets.record_reached(mart.map, TargetKey::Thing(TalkTarget::Sprite(1)));
     assert!(on_the_pad(&mut mart, MacroKind::GoShop), "row 62's rule stands without a counter visit");
+}
+
+#[test]
+fn buy_ball_is_offered_from_a_marts_floor_only_while_a_ball_can_be_bought() {
+    // Row 66, the operator's decision: buying a ball is one button, modelled on `HEAL`.
+    let mut mart = World::mart();
+    assert_eq!(mart.scene, Scene::Overworld);
+    assert!(on_the_pad(&mut mart, MacroKind::BuyBall), "no ball, 3000, the clerk: {:?}", pad_of(&mut mart));
+    assert!(!floor_ball_goals(&mut mart).is_empty());
+
+    // Facing the clerk already: still offered, with no walk (the tile he is faced from is a goal).
+    mart.player = Tile::new(2, 5);
+    mart.facing = Facing::Left;
+    assert!(on_the_pad(&mut mart, MacroKind::BuyBall), "at the counter");
+    mart.player = Tile::new(3, 6);
+
+    // A ball in the bag: nothing to buy it for.
+    mart.bag = vec![(item::POKE_BALL, 1)];
+    assert!(!on_the_pad(&mut mart, MacroKind::BuyBall), "a ball already");
+    mart.bag = vec![(item::GREAT_BALL, 1)];
+    assert!(!on_the_pad(&mut mart, MacroKind::BuyBall), "any ball counts");
+    mart.bag = Vec::new();
+
+    // Under a ball's price.
+    mart.money = price::POKE_BALL - 1;
+    assert!(!on_the_pad(&mut mart, MacroKind::BuyBall), "199");
+    mart.money = price::POKE_BALL;
+    assert!(on_the_pad(&mut mart, MacroKind::BuyBall), "200");
+
+    // Oak's parcel: the Viridian clerk's text table is the parcel's and he sells nothing.
+    mart.bag = vec![(item::OAKS_PARCEL, 1)];
+    assert!(!on_the_pad(&mut mart, MacroKind::BuyBall), "carrying the parcel");
+    mart.bag = Vec::new();
+
+    // The talked and reached ledgers do not retire a counter; the blocked window does.
+    mart.talked.insert(TalkTarget::Sprite(1));
+    mart.targets.record_reached(mart.map, TargetKey::Thing(TalkTarget::Sprite(1)));
+    mart.targets.record_reached(mart.map, TargetKey::Counter);
+    assert!(on_the_pad(&mut mart, MacroKind::BuyBall), "talked, reached, walked away: still a service");
+    mart.targets.record_blocked(mart.map, TargetKey::Thing(TalkTarget::Sprite(1)));
+    assert!(!on_the_pad(&mut mart, MacroKind::BuyBall), "a clerk no walk reaches");
+
+    // Only in a mart whose first row is a ball, and never outside one.
+    let mut pewter = World::mart();
+    pewter.map = maps::PEWTER_MART;
+    assert!(on_the_pad(&mut pewter, MacroKind::BuyBall), "Pewter's first row is a ball");
+    let mut street = viridian();
+    street.money = 3_000;
+    assert!(!on_the_pad(&mut street, MacroKind::BuyBall), "not from the street");
+    let mut elsewhere = World::mart();
+    elsewhere.map = maps::OAKS_LAB;
+    assert!(floor_ball_goals(&mut elsewhere).is_empty(), "not a mart");
+
+    // The open counter keeps its own rule: the greeting is no screen a purchase starts from.
+    let mut counter = World::mart();
+    counter.scene = Scene::Shop;
+    counter.list = List::Shop(ShopScreen::Talking);
+    counter.stock = vec![item::POKE_BALL];
+    assert!(!precondition(MacroKind::BuyBall, &mut counter), "the clerk is still talking");
+    counter.list = List::Shop(ShopScreen::BuySellQuit);
+    counter.cursor_max = 2;
+    assert!(precondition(MacroKind::BuyBall, &mut counter), "BUY / SELL / QUIT");
 }
 
 #[test]
