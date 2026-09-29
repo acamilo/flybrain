@@ -8,6 +8,7 @@ members = [
     "crates/flybrain-gb",
     "crates/flybus",
     "crates/flysim",
+    "crates/flysim-store",
 ]
 
 [workspace.package]

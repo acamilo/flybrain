@@ -31,6 +31,8 @@ cuda = ["flybrain-core/cuda"]
 flybrain-core = { path = "../flybrain-core" }
 flybrain-gb = { path = "../flybrain-gb" }
 flybus = { path = "../flybus" }
+# The FLYSIM01 store and the sugar journal, shared with the session runtime (STATE-02).
+flysim-store = { path = "../flysim-store" }
 
 anyhow = "1.0"
 axum = { version = "0.8", features = ["ws"] }

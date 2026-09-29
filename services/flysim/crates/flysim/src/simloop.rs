@@ -389,6 +389,9 @@ pub struct Sim {
     compatibility: String,
     semantic_rewards: bool,
     restored: bool,
+    /// Where this process started, for the sugar journal's boot header: the restore candidate's
+    /// origin and generation, or a fresh start.
+    boot_origin: (String, Option<u64>),
     /// Per-phase timing, off unless `FLY_PROFILE_SECONDS` is set (`crate::profile`).
     profiler: Profiler,
 }
@@ -595,6 +598,7 @@ impl Sim {
             compatibility,
             semantic_rewards,
             restored: false,
+            boot_origin: ("fresh start".to_string(), None),
             profiler: Profiler::from_env(now),
             agent,
             emulator,
@@ -641,6 +645,17 @@ impl Sim {
         // the whole warm-up — or, after a restore, every neuron that has ever fired, since the
         // checkpoint's `lastSpikeMs` values are absolute brain milliseconds.
         sim.last_publish_ms = sim.agent.network.ms;
+        // The journal's boot header: this process's inputs start here, whatever the previous
+        // process journalled after the checkpoint it restored (`crate::journal`).
+        sim.journal.boot(&crate::journal::BootHeader {
+            runtime: "flysim".to_string(),
+            start_frame: sim.frame.frame_counter,
+            brain_ms: sim.agent.network.ms,
+            origin: sim.boot_origin.0.clone(),
+            generation: sim.boot_origin.1,
+            compatibility: sim.compatibility.clone(),
+            wall_ms: now_wall_ms(),
+        });
         sim.status = FeedStatus::Running;
         // A durable commit immediately after startup or restore (section 8), so the 300-second
         // interval is a ceiling on routine loss only, and so a broken write path is found now
@@ -685,6 +700,7 @@ impl Sim {
                         "restored"
                     );
                     self.restored = true;
+                    self.boot_origin = (candidate.origin.clone(), candidate.generation);
                     self.emit(NewEvent::new(
                         FeedEventKind::System,
                         format!("Restored from {}", candidate.origin),
@@ -1380,6 +1396,7 @@ impl Sim {
             last_event_id: self.log.next_id().saturating_sub(1),
             reward: self.adapter.export_state(),
             ratchet: self.ratchet.state,
+            reinforcements: Some(self.frame.reinforcements),
             emulator: self
                 .emulator
                 .export_state()

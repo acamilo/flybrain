@@ -357,6 +357,136 @@ for new epoch metadata; corrupt any participant and installation fails as a grou
 reply doesn't advance durable metadata; failure during activation cannot resume half a world.
 Checkpoint queue stress remains bounded; verify old media/parser data cannot cross recovery.
 
+### STATE-02 — The legacy composition's checkpoints in `FLYSIM01` (port slice)
+
+**2026-09-29: built** on `port/state-02` off `port/integration` and awaiting review. The operator's
+decision of 2026-09-23 makes `FLYSIM01` the format of record until RETIRE-01, and the session
+runtime exports it on every durable save ([legacy-gameboy-v1](legacy-gameboy-v1.md) section 16).
+This slice is that export, the import back, the store policy and the restore selection. It adds
+no `FLYSESS1` production file. Nothing in `flysim`'s frame, checkpoint bytes or compatibility
+string changes.
+
+- **One store, two runtimes.** `flysim`'s `store.rs` and `journal.rs` move unchanged into the new
+  crate `flysim-store`, which `flysim` re-exports (`flysim::store`, `flysim::journal`) and
+  `fly-session` links. Both runtimes write through the one `store::encode` and commit through the
+  one `Store`, so they share the envelope bytes, the generations, `manifest.json`, the
+  `milestone-<N>` archives, `keep_generations` rotation and the restore order by construction.
+- **Export** (`fly-session::legacy_checkpoint`). A `FLYSIM01` file is assembled from its owners'
+  halves: the agent's `FLYAGT01` capture payload (the seven agent chunks, the remainder already the
+  accumulator's), the world's `FLYENV01` payload (emulator, frame on screen, joypad, frame
+  counter, cartridge digest, and slot `best` as `ratchetGame`/`ratchetFrame`), the task's
+  `{reward, ratchet}` and the host's `{generation, wallMs, compatibility, speed, rankSinceMs,
+  lastEventId}`. `runtime_state` builds the legacy `RuntimeState` field for field as
+  `Sim::snapshot_state` does.
+- **Import.** `split`/`halves` read a `FLYSIM01` file back into those halves. `agent_payload` is
+  the shipped form of AGENT-01's `seed_from_legacy_state` prototype. It builds the `FLYAGT01`
+  payload a replacement agent stages, using the same encoder the worker's own capture uses
+  (`legacy_agent::encode_payload`). The accumulator is `{remainder, executedTicks = network.ms,
+  warmupOffset = 2500}`. `learning.updates` is the file's `reinforcements`. A file from before
+  that member starts at `plasticity.updates` once (`legacy_reinforcements`, section 13
+  amendment). The checkpoint id is the file's generation (`flysim01-g<N>`). No template worker
+  is involved. This fixes the four points the AGENT-01 review raised against the prototype:
+  template dependence, borrowed ids, no compatibility gate (the gate is `restore_from_store`'s,
+  below), and the count falling back on every round trip. The payload also carries the file's
+  `framebuffer` as an `inputFrame` chunk, which `State.StageRestore` installs as the next input.
+  `LegacyFrame::restore` re-projects the framebuffer and does not keep the saved visual drive,
+  and the two differ on the row 65 yard survey checkpoint (found here; see the section 13
+  amendment). `world_payload` is ENV-01's `FLYENV01` from
+  the same world. The source scope of both is `(session, "legacy", emulatorFrame - 1)`.
+  `legacy_parity` now seeds its workers through this import.
+- **`reinforcements`, an optional `FLYSIM01` manifest member.** `LegacyFrame` now counts
+  reinforcement calls the way the agent worker does: one per commit while the rule is enabled,
+  zero sums included. `Sim` writes the count, and `LegacyFrame::restore` reads it (falling back
+  to `plasticity.updates`), so the count survives every round trip in either runtime. Readers
+  that predate it ignore it. The member changes no behaviour and not the compatibility string,
+  but it does change legacy checkpoint bytes: a file written from now on is the old layout plus
+  this member.
+- **Store policy.** `LegacyCheckpointer` follows `Sim` at each call site:
+  - one generation counter over both stores, starting above the highest either has allocated;
+  - a hot copy every `hot_seconds`, and a durable one every `checkpoint_seconds`, which also
+    restarts the hot interval;
+  - a durable save for a climb, archived as `milestone-<rank>` when the rank is above every rank
+    this process has archived (`best_archived_rank`, per process as in the legacy loop);
+  - rank tracking as in `track_rank`;
+  - encoding and fsyncs on a writer thread.
+- **Restore selection.** `restore_from_store` walks `store::restore_order`: hot latest, hot
+  previous, durable latest, durable previous, then the archives by descending rank, each as its
+  generation and then as its `milestone-<N>` file. It checks the legacy gate: the cartridge, and
+  `flybrain_gb::compatibility::decide` with `FLY_ACCEPT_ADAPTERS`. It moves to the next candidate
+  on *any* refusal, including a participant's `State.StageRestore`. It reports `Fresh` when no
+  candidate exists, and `Refused` when every candidate failed. In that case the runtime must exit
+  as `Sim::restore_or_warm_up` does.
+- **The agent worker** now refuses a conflicting stage (a restore already staged, or a token
+  already activated) before it builds a replacement network (AGENT-01 review).
+- **Sugar journal** (the FND-01 review note, before SHADOW-01). A per-process boot header
+  records the runtime, start frame, brain ms, restore origin, generation and compatibility. The
+  journal rotates at 4 MiB and keeps three files; every rotated-in file starts with a
+  `continues` line. `journal::clear` removes the journal. `flysim` writes the header at boot, and
+  `flysim --reset-to-milestone` clears the journal after it has copied both stores aside.
+  `read_segments` cuts the journal into per-process segments. `read` still returns input lines
+  only.
+
+**Boundary order the session host must keep** (section 16, and section 11 step 6). At `Ready(k+1)`
+the order is:
+
+1. `Environment.SaveSlot`, if one is due.
+2. The milestone capture, if the rank climbed.
+3. The rollback, if one was requested.
+4. The durable capture after the rollback, then the hot and durable interval saves.
+
+The capture itself uses `State.Capture` on the world and the agent at the same committed
+boundary, plus the task's ledger, `{reward, ratchet, slotFilled}` (`TaskHalf::to_ledger`). Wiring
+it into the coordinator and the boot-time restore path is left to the legacy composition's
+coordinator (TASK-01); this slice ships the pieces and proves them on the workers.
+
+**Proof** (flysim `tests/state_02.rs`, `tests/state_02_store.rs`; `fly-session`
+`legacy_checkpoint` unit tests):
+
+- *legacy -> session -> legacy on 18 real checkpoints* (every distinct rom-env checkpoint, which
+  includes the row 64, row 65 and row 67 ones). Each file is split and the world is restored
+  into the real environment worker and captured again. The agent goes through the imported
+  `FLYAGT01` payload and the task through the Pokémon adapter and the ratchet. Every export is
+  byte-identical to the legacy loop's own restore outcome of the same file, checkpointed at once.
+  Against the files themselves, every export differs only in named fields. All 18 gain
+  `reinforcements`, because the files predate it. Twelve written by adapters v5 or v6 also
+  differ in `reward`, which the adapter's import migrates. One survey checkpoint also differs in
+  a joypad byte of its emulator state that its own `buttons` field does not match; both runtimes
+  apply `buttons` on restore. Before the counter was added, six of the 18 were byte-identical to
+  the file.
+- *Restore then continue, toy connectome, raw mode* (every ROM run). The legacy frame writes a
+  checkpoint. The session runtime selects it from a store whose hot copy is torn. The legacy
+  loop and the session runtime then each run 600 frames from it. World: 1,800 values identical
+  to `FLY_TRACE` (frame, WRAM). Agent: 600 transitions identical (ticks, clock, exact remainder,
+  rates, spikes, decision). The session runtime's export at the last boundary is byte-identical
+  to the legacy loop's checkpoint of that boundary. That export also survives session -> legacy
+  -> session unchanged: a fresh legacy loop restores it and checkpoints the same bytes, and a
+  fresh world and agent import it and export the same bytes.
+- *The same with `gameboy-legacy-fafb-v783-v1` in macros mode* from the row 67 checkpoint, with
+  sugar and a ratchet rollback (`FLY_STATE02_FAFB=1`). Four checkpoints were run for 1,800 frames
+  each: rows 58, 64 and 67, and the row 65 yard survey. Each run has 5,400 world values and 1,800
+  agent transitions identical to the trace, with 2 sugar and 1 rollback. Each export is
+  byte-identical to the legacy checkpoint and survives session -> legacy -> session.
+- *The tools, both ways* (`tests/state_02_store.rs`, the real `infra/bin` scripts and the real
+  binary). `fly-loop-reset --list` and `--print-state-compatibility` read a store the session
+  runtime wrote. `fly-reset-to-milestone` promotes its rung with the recovery budget back and
+  clears the journal. The legacy order and the session runtime then choose the same candidate,
+  and the session runtime carries on above every generation and archives its next climb. The
+  other way round, the session runtime restores a store the legacy writer wrote and the tool
+  reset, and it would save it as the same bytes.
+
+**Not in this slice, and why:**
+
+- *The coordinator hook and the boot-time restore.* Both need the legacy composition's
+  bootstrap, which is TASK-01's. The restore order is Initialize-free: stage and activate the
+  world, have the task install `{reward, ratchet}` and observe O[k] for the first context
+  (`{boot, bound, location: null}`), then build the agent's payload with that context
+  (`agent_payload`) and stage and activate it.
+- *The task's per-frame half in the proofs.* The executor and the task's evaluation are TASK-01's.
+  The proofs take the joypad masks from the trace and the task's end-of-run `{reward, ratchet}`
+  from the legacy loop.
+- *Declared difference, archive order* (sections 4 and 16). A session-runtime milestone archive
+  holds the post-capture ratchet and slot. It is excluded from the shadow comparison.
+
 ### PUBLISH-01 — Committed snapshots and observer isolation
 
 **Depends on:** SESSION-02, MEDIA-01; public v2 contract work is a separate prerequisite to
