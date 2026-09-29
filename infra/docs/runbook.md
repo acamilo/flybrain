@@ -443,6 +443,50 @@ One `ln -sfn` plus a restart, per `docs/design/infra.md` section 2. Nothing else
 touching: `flycast`/`flypush`/`mediamtx` do not read anything under `/opt/fly/current`.
 On the release container, `<previous-version>` is a tag (e.g. `v0.1.0`) — "Cutting a release" above.
 
+## Switch the runtime (legacy loop or session runtime)
+
+Two binaries in every release from SERVE-01 on run the same fly: `flysim`, the legacy loop, and
+`flysim-session`, the same composition on the session framework (agent, Game Boy environment and
+macro task as participants). They read the same `/etc/fly/fly.env`, write the same checkpoint
+stores, event log, sugar journal and chat sidecar, and serve the same feed, control API and
+metrics through the same listener code, so nothing else on the container can tell them apart.
+`flysim.service` is the fly's one unit name either way; which binary it runs is one drop-in,
+written and removed by `fly-runtime` (`infra/bin/fly-runtime`, installed to `/opt/fly/bin`).
+
+```
+pct exec $CTID -- /opt/fly/bin/fly-runtime status     # legacy | session
+pct exec $CTID -- /opt/fly/bin/fly-runtime session    # CUT-01, after the shadow's verdict
+pct exec $CTID -- /opt/fly/bin/fly-runtime legacy     # the one-command rollback
+```
+
+- **What it does.** `session` writes `/etc/systemd/system/flysim.service.d/10-runtime.conf`
+  (`ExecStart=/opt/fly/current/flysim-session`, `FLY_SESSION_DIR=/run/fly/session`),
+  daemon-reloads and restarts `flysim.service`; `legacy` deletes the file and does the same. No
+  data moves: the store is shared, and each runtime restores the other's checkpoints.
+- **What it checks.** `session` refuses a release without `flysim-session`, and refuses when
+  `flysim --print-compatibility` and `flysim-session --print-compatibility` differ. After the
+  restart both wait for `/healthz` and a `/status` frame that advances
+  (`FLY_RUNTIME_HEALTH_TIMEOUT`, 300 s). If the session runtime does not come up healthy, it
+  switches back to legacy by itself and exits 1 (`--no-fallback` leaves it to the operator).
+  Every switch is logged (`journalctl -t fly-runtime`, `/var/lib/fly/runtime.log`).
+- **What stays the same.** Everything that names `flysim.service` keeps working unchanged:
+  `fly.target`, `flyedge.service`'s `Requires=`, the watchdog, `fly-loop-recover`'s restart and
+  its sudoers line, `fly-loop-reset`, `fly-reset-to-milestone` (run with the service stopped, on
+  the shared store), the unstick rule's `systemctl restart flysim.service`, `journalctl -u
+  flysim`, the cpuset drop-in. The choice survives a reboot and a deploy: `05-deploy.sh`
+  converges unit files but never removes a drop-in, and it refuses a release without
+  `flysim-session` while the drop-in is present (`fly-runtime legacy` first to deploy one).
+- **What differs, by declaration.** `POST /reward` is always 403 on the session runtime (the
+  operator pulse has no session-framework counterpart, `legacy-gameboy-v1` section 15); a
+  fresh start publishes no audio for its one setup frame; `FLY_TRACE` and
+  `FLY_PROFILE_SECONDS` are legacy-loop tools (the session runtime logs a `session profile`
+  line of per-phase timings every minute instead). The sugar journal's boot header says
+  `runtime: fly-session`.
+- **The standalone unit.** `flysim-session.service` is the same service as a unit of its own
+  (flysim's limits, cpuset and environment; `Conflicts=flysim.service`; no `[Install]`, so it
+  cannot be enabled). It is for a rehearsal or a soak on a container whose `flysim.service` is
+  stopped, not for switching the stream.
+
 ## CPU partition (cpuset)
 
 `05-deploy.sh` derives the in-guest `AllowedCPUs=` drop-ins for every app unit

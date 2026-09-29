@@ -533,6 +533,152 @@ else
     pass "flysim.service leaves FLY_FEED_VIA to fly.env"
 fi
 
+# ---------------------------------------------------------------------------
+# 3b3. The session runtime (SERVE-01): flysim-session, its standalone unit and
+# the fly-runtime switch CUT-01 calls.
+#
+# flysim.service stays the fly's one unit name; `fly-runtime session` points it at
+# flysim-session with a drop-in, `fly-runtime legacy` removes it. What would break
+# that: the standalone unit drifting from flysim.service (limits, env, ports),
+# becoming enable-able or pulled in beside flysim, the drop-in naming another
+# binary or session dir, the release not shipping the binary, the deploy
+# forgetting it. fly-runtime itself is driven for real against stubs.
+# ---------------------------------------------------------------------------
+echo "--- the session runtime: flysim-session.service and fly-runtime ---"
+SESSION_UNIT="$INFRA_DIR/units/flysim-session.service"
+if [ ! -f "$SESSION_UNIT" ]; then
+    fail "units/flysim-session.service is missing"
+else
+    grep -qE '^ExecStart=/opt/fly/current/flysim-session$' "$SESSION_UNIT" \
+        && pass "flysim-session.service runs the release's flysim-session" \
+        || fail "flysim-session.service ExecStart must be /opt/fly/current/flysim-session"
+    grep -qE '^Conflicts=flysim\.service$' "$SESSION_UNIT" \
+        && pass "flysim-session.service Conflicts=flysim.service (same ports, same stores)" \
+        || fail "flysim-session.service must Conflict with flysim.service"
+    if grep -qE '^\[Install\]' "$SESSION_UNIT"; then
+        fail "flysim-session.service has an [Install] section; it must not be enable-able beside flysim"
+    else
+        pass "flysim-session.service cannot be enabled (no [Install])"
+    fi
+    # The [Service] section, comments and blank lines dropped: flysim.service's, line for
+    # line, but for ExecStart and the one variable of its own.
+    service_lines() {
+        awk '/^\[/{sec=$0; next} sec=="[Service]" && !/^[[:space:]]*(#|$)/' "$1" \
+            | grep -vE '^(ExecStart=|Environment=FLY_SESSION_DIR=)' || true
+    }
+    if [ "$(service_lines "$INFRA_DIR/units/flysim.service")" = "$(service_lines "$SESSION_UNIT")" ]; then
+        pass "flysim-session.service [Service] is flysim.service's but for ExecStart and FLY_SESSION_DIR"
+    else
+        fail "flysim-session.service [Service] drifted from flysim.service: $(diff <(service_lines "$INFRA_DIR/units/flysim.service") <(service_lines "$SESSION_UNIT") | tr '\n' ' ')"
+    fi
+    grep -qE '^Environment=FLY_SESSION_DIR=/run/fly/session$' "$SESSION_UNIT" \
+        && pass "flysim-session.service keeps its session dir on /run/fly/session" \
+        || fail "flysim-session.service must set FLY_SESSION_DIR=/run/fly/session"
+fi
+if target_pulls "$INFRA_DIR/units/fly.target" | grep -qx 'flysim-session.service'; then
+    fail "fly.target pulls flysim-session.service in beside flysim.service"
+else
+    pass "fly.target does not pull flysim-session.service in"
+fi
+if grep -E '^(ALWAYS_ON_UNITS|APP_UNITS)=' "$INFRA_DIR/07-enable.sh" "$INFRA_DIR/verify.sh" | grep -q 'flysim-session'; then
+    fail "07-enable.sh or verify.sh lists flysim-session.service"
+else
+    pass "07-enable.sh and verify.sh leave flysim-session.service alone"
+fi
+grep -qE '^d /run/fly/session +0700 fly +fly' "$INFRA_DIR/config/fly-tmpfiles.conf" \
+    && pass "tmpfiles creates /run/fly/session 0700 fly" \
+    || fail "config/fly-tmpfiles.conf must create /run/fly/session 0700 fly fly"
+grep -qE 'for name in .*\bfly-runtime\b.*; do$' "$INFRA_DIR/05-deploy.sh" \
+    && pass "05-deploy.sh installs fly-runtime" \
+    || fail "05-deploy.sh must converge bin/fly-runtime to /opt/fly/bin"
+grep -qE '^[[:space:]]*for u in flysim .*\bflysim-session\b.*; do$' "$INFRA_DIR/05-deploy.sh" \
+    && pass "05-deploy.sh writes flysim-session.service's cpuset drop-in" \
+    || fail "05-deploy.sh cpuset loop must include flysim-session (flysim's cores)"
+grep -qF 'flysim.service.d/10-runtime.conf' "$INFRA_DIR/05-deploy.sh" \
+    && grep -qF '"${release_path}/flysim-session"' "$INFRA_DIR/05-deploy.sh" \
+    && pass "05-deploy.sh refuses a release without flysim-session while the session runtime runs" \
+    || fail "05-deploy.sh must refuse a release without flysim-session while 10-runtime.conf is present"
+grep -qE -- '--bin flysim-session' "$INFRA_DIR/build/build-flysim.sh" \
+    && grep -qE 'for extra in flysim-session fly-session' "$INFRA_DIR/build/package-release.sh" \
+    && pass "build-flysim.sh builds flysim-session and package-release.sh ships it" \
+    || fail "build-flysim.sh must build flysim-session (and fly-session) and package-release.sh ship them"
+
+rt_dir="$(mktemp -d "${TMPDIR:-/tmp}/fly-lint-runtime.XXXXXX")"
+mkdir -p "$rt_dir/bin" "$rt_dir/release" "$rt_dir/systemd"
+cat > "$rt_dir/bin/systemctl" <<'RTSTUB'
+#!/usr/bin/env bash
+echo "$*" >> "$RT_DIR/systemctl.log"
+RTSTUB
+cat > "$rt_dir/bin/id" <<'RTSTUB'
+#!/usr/bin/env bash
+echo 0
+RTSTUB
+cat > "$rt_dir/bin/logger" <<'RTSTUB'
+#!/usr/bin/env bash
+true
+RTSTUB
+cat > "$rt_dir/bin/curl" <<'RTSTUB'
+#!/usr/bin/env bash
+# /healthz answers per RT_HEALTHY; /status reports a frame that advances per call.
+url="${*: -1}"
+[ "${RT_HEALTHY:-1}" = 1 ] || exit 22
+case "$url" in
+    */status) n=$(( $(cat "$RT_DIR/frame" 2>/dev/null || echo 100) + 1 )); echo "$n" > "$RT_DIR/frame"
+              echo "{\"status\":\"running\",\"frame\":$n}" ;;
+esac
+RTSTUB
+for b in flysim flysim-session; do
+    printf '#!/usr/bin/env bash\necho "${RT_COMPAT_%s:-same}"\n' "$(echo "$b" | tr 'a-z-' 'A-Z_')" > "$rt_dir/release/$b"
+done
+chmod +x "$rt_dir"/bin/* "$rt_dir"/release/*
+echo 'FLY_GAME=pokemon-red' > "$rt_dir/fly.env"
+fly_runtime() {
+    env RT_DIR="$rt_dir" PATH="$rt_dir/bin:$PATH" FLY_RELEASE_DIR="$rt_dir/release" \
+        FLY_ENV_FILE="$rt_dir/fly.env" FLY_SYSTEMD_DIR="$rt_dir/systemd" \
+        FLY_RUNTIME_LOG="$rt_dir/runtime.log" FLY_RUNTIME_HEALTH_TIMEOUT=4 \
+        "$@" bash "$INFRA_DIR/bin/fly-runtime" "${RT_ARGS[@]}" >/dev/null 2>&1
+}
+rt_dropin="$rt_dir/systemd/flysim.service.d/10-runtime.conf"
+RT_ARGS=(status)
+[ "$(env RT_DIR="$rt_dir" PATH="$rt_dir/bin:$PATH" FLY_SYSTEMD_DIR="$rt_dir/systemd" bash "$INFRA_DIR/bin/fly-runtime" status 2>/dev/null | head -n1)" = legacy ] \
+    && pass "fly-runtime status: legacy with no drop-in" \
+    || fail "fly-runtime status must say legacy with no drop-in"
+RT_ARGS=(session)
+if fly_runtime && [ -f "$rt_dropin" ] \
+    && grep -qx "ExecStart=$rt_dir/release/flysim-session" "$rt_dropin" \
+    && grep -qx 'ExecStart=' "$rt_dropin" \
+    && grep -qx 'Environment=FLY_SESSION_DIR=/run/fly/session' "$rt_dropin" \
+    && grep -qx 'restart flysim.service' "$rt_dir/systemctl.log" \
+    && [ "$(env RT_DIR="$rt_dir" PATH="$rt_dir/bin:$PATH" FLY_SYSTEMD_DIR="$rt_dir/systemd" bash "$INFRA_DIR/bin/fly-runtime" status 2>/dev/null | head -n1)" = session ]; then
+    pass "fly-runtime session: the drop-in names flysim-session and /run/fly/session, flysim.service restarted, healthy"
+else
+    fail "fly-runtime session: drop-in/restart/health wrong ($(cat "$rt_dropin" 2>/dev/null | tr '\n' ' '))"
+fi
+RT_ARGS=(legacy)
+if fly_runtime && [ ! -f "$rt_dropin" ]; then
+    pass "fly-runtime legacy: the drop-in is gone, flysim.service restarted"
+else
+    fail "fly-runtime legacy must remove the drop-in and succeed"
+fi
+RT_ARGS=(session)
+if ! fly_runtime RT_COMPAT_FLYSIM_SESSION=other && [ ! -f "$rt_dropin" ]; then
+    pass "fly-runtime session refuses when the two compatibility strings differ"
+else
+    fail "fly-runtime session must refuse differing compatibility strings and write nothing"
+fi
+if ! fly_runtime RT_HEALTHY=0 && [ ! -f "$rt_dropin" ] && grep -q 'automatic fallback' "$rt_dir/runtime.log"; then
+    pass "fly-runtime session falls back to legacy by itself when the session runtime is not healthy"
+else
+    fail "fly-runtime session must fall back to legacy (drop-in removed, logged) when unhealthy"
+fi
+mv "$rt_dir/release/flysim-session" "$rt_dir/flysim-session.away"
+if ! fly_runtime && [ ! -f "$rt_dropin" ]; then
+    pass "fly-runtime session refuses a release without flysim-session"
+else
+    fail "fly-runtime session must refuse a release without flysim-session"
+fi
+rm -rf "$rt_dir"
+
 echo "--- fly-watchdog check 2: the feed counters follow FLY_FEED_VIA ---"
 if ! tail -n1 "$INFRA_DIR/bin/fly-watchdog" | grep -qE '^main "\$@"$'; then
     fail "fly-watchdog: expected the last line to be 'main \"\$@\"' — the check-2 fixture strips it"

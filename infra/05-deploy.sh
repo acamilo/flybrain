@@ -386,6 +386,28 @@ The 'current' symlink has NOT been moved; the running release is untouched."
         fi
     fi
 
+    # The session runtime (SERVE-01). While `fly-runtime session` has pointed flysim.service at
+    # flysim-session (the drop-in below), a release without that binary would leave the fly
+    # unable to start at all, and one whose session string differs from flysim's would write
+    # checkpoints the other runtime refuses. Refused here, before the symlink moves; to deploy
+    # such a release anyway, `fly-runtime legacy` first.
+    if ct_exec "$CTID" -- test -f /etc/systemd/system/flysim.service.d/10-runtime.conf; then
+        ct_exec "$CTID" -- test -x "${release_path}/flysim-session" \
+            || die "05-deploy: REFUSING to deploy release ${version}: flysim.service runs the session runtime (fly-runtime session) and this release has no flysim-session. Run \`fly-runtime legacy\` in the container first, or deploy a release that ships it. The 'current' symlink has NOT been moved."
+        session_compat="$(ct_exec "$CTID" -- env \
+            "FLY_GAME=${GAME}" \
+            "FLY_DATASET=${release_path}/data/fafb-v783" \
+            "FLY_ROM=/srv/fly/rom/${ROM_SHA256:-none}.gb" \
+            "${release_path}/flysim-session" --print-compatibility 2>/dev/null | tr -d '\r' || true)"
+        if [ -n "${new_compat:-}" ] && [ "$session_compat" != "$new_compat" ]; then
+            die "05-deploy: REFUSING to deploy release ${version}: flysim.service runs the session runtime and its compatibility string differs from flysim's.
+  flysim:         ${new_compat}
+  flysim-session: ${session_compat}
+The 'current' symlink has NOT been moved."
+        fi
+        log "05-deploy: flysim.service runs the session runtime; this release ships flysim-session with flysim's compatibility string"
+    fi
+
     log "05-deploy: flipping /opt/fly/current -> ${release_path} atomically"
     ct_exec "$CTID" -- sh -c "ln -sfn '$release_path' /opt/fly/current.tmp && mv -T /opt/fly/current.tmp /opt/fly/current"
 else
@@ -676,9 +698,11 @@ if [ -n "${CPUSET:-}" ]; then
         tmp_dropin="$(mktemp)"
         # flyedge is off by default, but its drop-in is written with the rest so that the day
         # it is enabled it serves the page from the page's CPUs, never from flysim's.
-        for u in flysim xvfb flystage flystage-web flycast pulse mediamtx flyedge; do
+        # flysim-session (SERVE-01) is the session runtime's standalone unit: flysim's cores.
+        # (`fly-runtime session` runs it AS flysim.service, which already has them.)
+        for u in flysim xvfb flystage flystage-web flycast pulse mediamtx flyedge flysim-session; do
             case "$u" in
-                flysim)  cpus="$sim_cpus" ;;
+                flysim|flysim-session) cpus="$sim_cpus" ;;
                 flycast) cpus="$encoder_cpus" ;;
                 *)       cpus="$page_cpus" ;;
             esac
@@ -707,7 +731,7 @@ fi
 # ---------------------------------------------------------------------------
 log "05-deploy: converging bin/ helpers to /opt/fly/bin"
 ct_exec "$CTID" -- mkdir -p /opt/fly/bin
-for name in fly-watchdog fly-loop-recover fly-loop-reset fly-recap fly-retention fly-reset-to-milestone flypush flystage-launch flycast-launch wait-for-x wait-for-stage wait-for-health; do
+for name in fly-watchdog fly-loop-recover fly-loop-reset fly-recap fly-retention fly-reset-to-milestone fly-runtime flypush flystage-launch flycast-launch wait-for-x wait-for-stage wait-for-health; do
     converge_file "$CTID" "$INFRA_DIR/bin/$name" "/opt/fly/bin/$name" 0755 root:root >/dev/null
 done
 

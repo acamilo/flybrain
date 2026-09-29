@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# infra/bin/fly-runtime — which runtime the live fly runs: the legacy loop (`flysim`) or the
+# session runtime (`flysim-session`, SERVE-01).
+#
+# Usage (INSIDE the container, as root):
+#   fly-runtime status              print `legacy` or `session`, and what flysim.service runs
+#   fly-runtime session [--no-restart] [--no-fallback]
+#   fly-runtime legacy  [--no-restart]
+#
+# CUT-01 calls `fly-runtime session` after its zero-divergence shadow; `fly-runtime legacy` is
+# the one-command rollback (port decisions, 2026-09-23). Neither migrates any data: both
+# binaries read and write the same FLYSIM01 stores, event log, sugar journal and chat sidecar.
+#
+# How the switch works. flysim.service stays the fly's one unit name, and the runtime it runs
+# is chosen by one drop-in, ${DROPIN}:
+#
+#   [Service]
+#   ExecStart=
+#   ExecStart=/opt/fly/current/flysim-session
+#   Environment=FLY_SESSION_DIR=/run/fly/session
+#
+# i.e. flysim-session.service's ExecStart and its one extra variable (the standalone unit and
+# this drop-in are kept identical by infra/tests/lint.sh). Everything else that names
+# flysim.service -- fly.target, flyedge.service's Requires=, fly-watchdog's checks and escalation,
+# fly-loop-recover's `sudo systemctl restart flysim.service` and its sudoers line,
+# fly-loop-reset, fly-reset-to-milestone, the unstick rule, `journalctl -u flysim`, the cpuset
+# drop-in -- therefore keeps working unchanged, a reboot keeps the choice, and 05-deploy.sh (which
+# converges unit files but never removes a drop-in) keeps it across deploys. 05-deploy.sh refuses
+# a release without flysim-session while the drop-in is present.
+#
+# `session` refuses unless the release has flysim-session and its --print-compatibility equals
+# flysim's (the store is shared, so the two must restore each other's checkpoints). After the
+# restart it waits for /healthz (FLY_RUNTIME_HEALTH_TIMEOUT, default 300 s: the connectome load and
+# the restore) and a snapshot that has advanced; if the session runtime does not come up healthy
+# it switches back to legacy by itself and exits 1 (--no-fallback leaves it to the operator).
+#
+# Every switch is logged to the journal (tag fly-runtime) and appended to ${RUNTIME_LOG}.
+set -euo pipefail
+
+: "${FLY_RELEASE_DIR:=/opt/fly/current}"
+: "${FLY_ENV_FILE:=/etc/fly/fly.env}"
+: "${FLY_SERVICE:=flysim.service}"
+: "${FLY_RUNTIME_HEALTH_TIMEOUT:=300}"
+: "${FLY_CONTROL_URL:=http://127.0.0.1:7401}"
+: "${FLY_SYSTEMD_DIR:=/etc/systemd/system}"
+: "${FLY_RUNTIME_LOG:=/var/lib/fly/runtime.log}"
+DROPIN_DIR="${FLY_SYSTEMD_DIR}/${FLY_SERVICE}.d"
+DROPIN="${DROPIN_DIR}/10-runtime.conf"
+RUNTIME_LOG="$FLY_RUNTIME_LOG"
+SESSION_BIN="${FLY_RELEASE_DIR}/flysim-session"
+LEGACY_BIN="${FLY_RELEASE_DIR}/flysim"
+SESSION_DIR=/run/fly/session
+
+log() { echo "fly-runtime: $*" >&2; }
+die() { log "$*"; exit 1; }
+
+usage() {
+    echo "usage: fly-runtime status | session [--no-restart] [--no-fallback] | legacy [--no-restart]" >&2
+    exit 2
+}
+
+current() {
+    if [ -f "$DROPIN" ]; then echo session; else echo legacy; fi
+}
+
+record() {
+    local line
+    line="$(date -u '+%Y-%m-%dT%H:%M:%SZ') $*"
+    if command -v logger >/dev/null 2>&1; then
+        logger -t fly-runtime -- "$*" || true
+    fi
+    mkdir -p "$(dirname "$RUNTIME_LOG")" 2>/dev/null || true
+    echo "$line" >>"$RUNTIME_LOG" 2>/dev/null || log "could not append to $RUNTIME_LOG"
+}
+
+# The compatibility string a binary would write, with the service's own environment: fly.env is
+# systemd's EnvironmentFile syntax, read as KEY=VALUE lines rather than sourced as shell.
+compat_of() {
+    local -a vars=()
+    local line key value
+    if [ -f "$FLY_ENV_FILE" ]; then
+        while IFS= read -r line || [ -n "$line" ]; do
+            [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+            key="${line%%=*}"
+            value="${line#*=}"
+            value="${value%\"}"
+            value="${value#\"}"
+            vars+=("${key}=${value}")
+        done <"$FLY_ENV_FILE"
+    fi
+    env "${vars[@]}" "$1" --print-compatibility 2>/dev/null | tr -d '\r'
+}
+
+write_dropin() {
+    mkdir -p "$DROPIN_DIR"
+    local tmp="${DROPIN}.tmp.$$"
+    cat >"$tmp" <<EOF
+# Written by fly-runtime session (SERVE-01): flysim.service runs the session runtime.
+# \`fly-runtime legacy\` removes this file. Keep in step with units/flysim-session.service.
+[Service]
+ExecStart=
+ExecStart=${SESSION_BIN}
+Environment=FLY_SESSION_DIR=${SESSION_DIR}
+EOF
+    chmod 0644 "$tmp"
+    mv -f "$tmp" "$DROPIN"
+}
+
+# /healthz 200, then a snapshot whose frame moved: the loop is running, not just listening.
+healthy() {
+    local deadline=$(( $(date +%s) + FLY_RUNTIME_HEALTH_TIMEOUT ))
+    local first=""
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if curl -fsS -o /dev/null "${FLY_CONTROL_URL}/healthz" 2>/dev/null; then
+            local frame
+            frame="$(curl -fsS "${FLY_CONTROL_URL}/status" 2>/dev/null \
+                | sed -n 's/.*"frame":\([0-9][0-9]*\).*/\1/p' | head -n1)"
+            if [ -n "$frame" ]; then
+                if [ -z "$first" ]; then
+                    first="$frame"
+                elif [ "$frame" -gt "$first" ]; then
+                    log "healthy: frame ${first} -> ${frame}"
+                    return 0
+                fi
+            fi
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+restart_and_check() {
+    systemctl daemon-reload
+    systemctl reset-failed "$FLY_SERVICE" 2>/dev/null || true
+    log "restarting ${FLY_SERVICE} on the $(current) runtime"
+    systemctl restart "$FLY_SERVICE"
+    healthy
+}
+
+[ $# -ge 1 ] || usage
+command="$1"; shift
+restart=1
+fallback=1
+for arg in "$@"; do
+    case "$arg" in
+        --no-restart) restart=0 ;;
+        --no-fallback) fallback=0 ;;
+        *) usage ;;
+    esac
+done
+
+case "$command" in
+    status)
+        current
+        systemctl show -p ExecStart --value "$FLY_SERVICE" 2>/dev/null | sed -n 's/.*path=\([^ ;]*\).*/  flysim.service runs \1/p' || true
+        exit 0
+        ;;
+    session|legacy) ;;
+    *) usage ;;
+esac
+
+[ "$(id -u)" -eq 0 ] || die "run as root (it writes ${DROPIN} and restarts ${FLY_SERVICE})"
+
+if [ "$command" = session ]; then
+    [ -x "$SESSION_BIN" ] || die "this release has no ${SESSION_BIN}; the session runtime ships from SERVE-01 on"
+    [ -x "$LEGACY_BIN" ] || die "no ${LEGACY_BIN}"
+    legacy_compat="$(compat_of "$LEGACY_BIN")"
+    session_compat="$(compat_of "$SESSION_BIN")"
+    [ -n "$session_compat" ] || die "${SESSION_BIN} --print-compatibility printed nothing (see its stderr); not switching"
+    if [ "$legacy_compat" != "$session_compat" ]; then
+        die "the two runtimes would write different checkpoints; not switching.
+  flysim:         ${legacy_compat}
+  flysim-session: ${session_compat}"
+    fi
+    before="$(current)"
+    write_dropin
+    record "session (was ${before}); compatibility ${session_compat}"
+    [ "$restart" -eq 1 ] || { systemctl daemon-reload; log "drop-in written; restart ${FLY_SERVICE} to apply"; exit 0; }
+    if restart_and_check; then
+        log "flysim.service runs the session runtime"
+        exit 0
+    fi
+    log "the session runtime did not come up healthy within ${FLY_RUNTIME_HEALTH_TIMEOUT}s"
+    if [ "$fallback" -eq 1 ]; then
+        rm -f "$DROPIN"
+        record "legacy (automatic fallback: the session runtime was not healthy)"
+        if restart_and_check; then
+            log "fell back to the legacy runtime; it is healthy"
+        else
+            log "fell back to the legacy runtime, and it is NOT healthy either: check journalctl -u ${FLY_SERVICE}"
+        fi
+    fi
+    exit 1
+fi
+
+# legacy
+before="$(current)"
+rm -f "$DROPIN"
+rmdir "$DROPIN_DIR" 2>/dev/null || true
+record "legacy (was ${before})"
+[ "$restart" -eq 1 ] || { systemctl daemon-reload; log "drop-in removed; restart ${FLY_SERVICE} to apply"; exit 0; }
+if restart_and_check; then
+    log "flysim.service runs the legacy runtime"
+    exit 0
+fi
+die "the legacy runtime did not come up healthy within ${FLY_RUNTIME_HEALTH_TIMEOUT}s: check journalctl -u ${FLY_SERVICE}"

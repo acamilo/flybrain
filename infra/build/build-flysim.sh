@@ -85,6 +85,11 @@ log "building in $crate_dir for target-cpu=haswell (the host is E5-2660 v3, Hasw
     # without a rebuild. It lands next to OUT_PATH, where package-release.sh
     # looks for it.
     RUSTFLAGS="-C target-cpu=haswell" cargo build --release --target "$CARGO_TARGET" --bin fly-edge
+    # flysim-session (SERVE-01): the live fly on the session runtime, a drop-in for flysim
+    # that `fly-runtime session` points flysim.service at; and fly-session, its worker program
+    # (FLY_SESSION_MODE=process only). Same features as flysim, built every time so a release
+    # can switch runtimes without a rebuild. Both land next to OUT_PATH.
+    RUSTFLAGS="-C target-cpu=haswell" cargo build --release --target "$CARGO_TARGET" --bin flysim-session --bin fly-session "${features_args[@]}"
 )
 
 built="${crate_dir}/target/${CARGO_TARGET}/release/flysim"
@@ -118,4 +123,12 @@ edge_out="$(dirname "$OUT_PATH")/fly-edge"
 cp "$edge_built" "$edge_out"
 chmod 0755 "$edge_out"
 log "built $edge_out ($(du -h "$edge_out" | cut -f1))"
+for extra in flysim-session fly-session; do
+    extra_built="${crate_dir}/target/${CARGO_TARGET}/release/${extra}"
+    [ -x "$extra_built" ] || die "expected binary not found after build: $extra_built"
+    extra_out="$(dirname "$OUT_PATH")/${extra}"
+    cp "$extra_built" "$extra_out"
+    chmod 0755 "$extra_out"
+    log "built $extra_out ($(du -h "$extra_out" | cut -f1))"
+done
 log "next: infra/build/package-release.sh VERSION $OUT_PATH <stage-dir> <bridge-dir> <out-dir>"
