@@ -22,14 +22,16 @@ use std::process::ExitCode;
 use crate::agent::AgentFaults;
 use crate::environment::EnvironmentFaults;
 use crate::launcher::{
-    AgentLaunch, EnvironmentLaunch, ExecutionMode, Started, flags, serve_one,
+    AgentLaunch, EnvironmentLaunch, ExecutionMode, LegacyAgentLaunch, Started, flags, serve_one,
 };
+use crate::legacy_agent::LegacyProfileKind;
 use crate::types::*;
 
 const USAGE: &str = "\
 fly-session <command> [options]
 
   agent          serve one agent worker on a launcher-created endpoint
+  legacy-agent   serve one legacy Game Boy agent worker (AGENT-01) on a launcher endpoint
   environment    serve the environment worker on a launcher-created endpoint
   measure        compare the execution modes and print the measurement table
   measure-row    measure one row and print it as JSON (one child per row)
@@ -47,6 +49,8 @@ Worker options (agent and environment):
                 --warmup-ticks N [--prepare-delay-ms N] [--commit-delay-ms N]
                 [--fail-commit-at-step N]
                 [--fail-stage-restore 0|1] [--fail-activate-restore 0|1]
+  legacy-agent: --agent ID --port ID --dataset DIR --profile production|toy
+                --macro-channels c1,c2 (empty in raw mode)
   environment:  --worker ID --ports p1,p2 --step-numerator N --step-denominator N
                 [--advance-delay-ms N] [--omit-view-at-boundary N]
                 [--fail-stage-restore 0|1] [--fail-activate-restore 0|1]
@@ -74,6 +78,8 @@ pub fn main() -> ExitCode {
     let rest: Vec<String> = args.map(|a| a.to_string_lossy().into_owned()).collect();
     let result = match command.as_str() {
         "agent" => Options::parse(&rest, &[flags::COMMON, flags::AGENT_ONLY])
+            .and_then(|o| serve(&command, &o)),
+        "legacy-agent" => Options::parse(&rest, &[flags::COMMON, flags::LEGACY_AGENT_ONLY])
             .and_then(|o| serve(&command, &o)),
         "environment" => Options::parse(&rest, &[flags::COMMON, flags::ENVIRONMENT_ONLY])
             .and_then(|o| serve(&command, &o)),
@@ -220,6 +226,18 @@ fn serve(role: &str, options: &Options) -> Result<(), String> {
             client_id: client_id.clone(),
             service: service.clone(),
         }),
+        "legacy-agent" => Started::LegacyAgent(LegacyAgentLaunch {
+            session_id,
+            agent_id: options.id(flags::AGENT)?,
+            port_id: options.id(flags::PORT)?,
+            incarnation_id,
+            worker_threads: threads,
+            dataset_dir: options.path(flags::DATASET)?,
+            profile: LegacyProfileKind::parse(options.required(flags::PROFILE)?)?,
+            macro_channels: parse_channels(options.required(flags::MACRO_CHANNELS)?)?,
+            client_id: client_id.clone(),
+            service: service.clone(),
+        }),
         _ => Started::Environment(EnvironmentLaunch {
             session_id,
             worker_id: options.id(flags::WORKER)?,
@@ -257,6 +275,20 @@ fn serve(role: &str, options: &Options) -> Result<(), String> {
         handle.join().await;
         Ok(())
     })
+}
+
+fn parse_channels(value: &str) -> Result<Vec<String>, String> {
+    value
+        .split(',')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            if fly_session_types::gameboy::is_channel_name(part) {
+                Ok(part.to_owned())
+            } else {
+                Err(format!("--macro-channels: {part:?} is not a channel name"))
+            }
+        })
+        .collect()
 }
 
 fn parse_ports(value: &str) -> Result<Vec<Id>, String> {

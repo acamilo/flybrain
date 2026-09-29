@@ -176,6 +176,35 @@ window and last location as private readout state; report `stimulusRemainingMs`;
 legacy rate-role names (`command_0`, `macro_*`, which are not `Id`s) to `AgentGraph.rateRoles`,
 which that contract leaves open.
 
+**2026-09-23 (AGENT-01 built, `feat/agent-legacy-worker`).** `LegacyAgentWorker`
+(`fly-session/src/legacy_agent.rs`) serves the legacy profile under the launcher in all three
+execution modes (`legacy-agent` subcommand). Its parity harness (`legacy_parity.rs`) drives
+`NeuralAgent` directly in `Sim::step_frame` order from recorded inputs. On the committed toy
+connectome, the worker's records match that reference exactly in every mode, including a
+rollback and a restore, and are pinned as goldens. A gated FAFB run
+(`FLY_AGENT01_FAFB=1`) shows the same on `gameboy-legacy-fafb-v783-v1`. The rate-role mapping
+turned out to be the identity: the legacy names are already `Id`s. It is recorded in
+[legacy-gameboy-v1](legacy-gameboy-v1.md) section 13, with the other agent-adapter choices. The
+harness's `ReferenceSource` is the seam for FND-01's `FLY_TRACE`.
+
+**2026-09-29 (AGENT-01 rebased onto v0.6.5 and checked against FND-01's trace).** The rebase onto
+main had no conflicts. Main changed nothing the worker reads except the adapter id in the
+fixtures (v7). The toy goldens and the FAFB reference digest are unchanged. `FLY_TRACE` carries
+the frames only as digests and not the `{boot, bound, location}` context, so it checks a worker
+and cannot drive one. `legacy_parity::read_frame_trace` and `check_against_trace` hold a run's
+records to it: ticks, clock, exact remainder, rates digest, spike-set digest and decision. The
+script is checked too: the same sugar, frames, reward events and rollback.
+`flysim/tests/agent_trace_parity.rs` is the host. It runs `LegacyFrame` on the ROM with the trace
+on, records the missing inputs and checks the worker (in-process, thread and process) and the
+direct reference against the trace:
+
+- the toy connectome in raw mode from power-on, for every ROM run;
+- `gameboy-legacy-fafb-v783-v1` in macros mode from stream checkpoints (`FLY_AGENT01_FAFB=1`),
+  with sugar and a ratchet rollback, the worker seeded from the checkpoint's agent state.
+
+Both are identical. Found on the way: a `FLYSIM01` import must start `learning.updates` at the
+legacy `plasticity.updates` (legacy-gameboy-v1 section 13, amendment of 2026-09-29).
+
 **Implement:** adapter over existing LIF, plasticity, retina and fixed readout primitives;
 reference-first composition/goldens; independently seeded agent state and shared immutable data.
 Avoid using the old whole-frame `tick` wrapper if it changes the specified phase ordering.
