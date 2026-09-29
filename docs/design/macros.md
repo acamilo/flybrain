@@ -1913,6 +1913,45 @@ a door is taken the way the cartridge takes it, and the map graph says what the 
 decoder, the reward catalog, the adapter version, the roles and the compatibility string are
 untouched.
 
+### 12.31 A battle lost on repeat is the readout's choice when the pad offers the move that wins (2026-09-29, row 67)
+
+Live on v0.6.5, rung 10, an hour and a half in the Pewter Gym (map 54): per 3,000 events `NEXT`
+1,332, `MOVE 2` 83, `MOVE 3` 13, `MOVE 1` 0, `GO OBJECTIVE` 30, `NO` 17, no battle won. The feed
+read `battle` most of the time, but the fly was not in one battle. It was in a ring. It lost
+29 battles in a row to the gym's Jr. Trainer (Diglett L11, Sandshrew L11), whited out to Pewter
+(`wLastBlackoutMap` `$02`, money 0) and walked straight back in. Reproduced from the live
+checkpoint (`FLY_ROW67_CHECKPOINT`).
+
+- **The pad was right.** Squirtle L11 has TACKLE 35/35, TAIL WHIP 30/30 and BUBBLE 30/30, and
+  the trainer's Pokémon are Ground type. In a trainer battle with a party of one and no Potion,
+  the menu's pad is `MOVE 1`, `MOVE 2`, `MOVE 3`, which is every move with PP and an effect.
+  RUN, ITEM, SWITCH and THROW BALL each have nothing behind them there. Every turn advances.
+  In 932 own-turn frames, no move with PP and an effect was missing from the pad.
+- **The choice was the readout's.** Per live battle, TAIL WHIP was 155 of 178 moves and BUBBLE
+  23. TAIL WHIP has an effect until the stage reaches -6, and 12.23 withholds it from there. Squirtle
+  faints at about the sixth turn, so the rule arrives as the battle ends (live: `22222233`).
+  A readout with no favourite wins with the same pad: uniform over it, the trainer is beaten on
+  all three seeds, and on the committed seed in the third battle. The live readout's favourite,
+  replayed, loses 17 of 17 battles.
+- **PP never runs out.** Each loss spends about six TAIL WHIPs of 30, and the whiteout heals the party and
+  restores PP. The out-of-PP path is sound anyway: from the no-PP checkpoint, a trainer battle
+  with a party of one and every move at 0, the pad is `MOVE 1` alone (FIGHT's backstop, 12.8),
+  and "has no moves left!" and Struggle end the battle in 1,487 frames.
+- **Nothing in the macros changes.** Moving the fly off TAIL WHIP would be ranking a move. The
+  one pad rule measured that would work, withholding a stat-lowering move once the target's
+  stage has moved, wins the first battle on both seeds (two stages: the second). It is a rule
+  about which move is good rather than one about what the cartridge refuses, so it waits for
+  the operator, like the reward options (`infra/docs/macros-traps.md` row 67).
+- **What ships is detection.** The watchdog's check 10 gains `unwon-battles`: 24 or more `MOVE
+  n` decisions and no battle-won reward (`wildwin`, `trainer`, `badge`) in the ten-brain-minute
+  window, on two probes, with no new ground. Replayed on the live log, it flags from 14:01. The
+  existing rules first flag at 14:46, because a stray tile reward on a walk back reset
+  `unrewarded`. The recovery ladder acts on the flag as on any other, and a restart alone
+  does not change the readout.
+
+Nothing is ranked, weighted or pressed for the fly. The decoder, the reward catalog, the adapter
+version, the roles and the compatibility string are untouched.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")
