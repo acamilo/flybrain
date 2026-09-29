@@ -165,10 +165,16 @@ pub fn reset_to_milestone(
          memory-only and are reset by stopping flysim)"
     ));
 
-    // 6. The sugar journal, copied aside in step 1.
-    let journals = crate::journal::clear(hot_dir)
-        .with_context(|| format!("clearing the sugar journal in {}", hot_dir.display()))?;
-    report.push(format!("cleared the sugar journal: {journals} files removed"));
+    // 6. The sugar journal, copied aside in step 1. The reset itself is complete by now, so a
+    // journal that cannot be cleared is reported, not an error: an error here made
+    // fly-loop-reset call a finished reset a failure (review-state-02 N3).
+    match crate::journal::clear(hot_dir) {
+        Ok(journals) => report.push(format!("cleared the sugar journal: {journals} files removed")),
+        Err(error) => report.push(format!(
+            "WARNING: the reset is complete but the sugar journal in {} was not cleared: {error:#}",
+            hot_dir.display()
+        )),
+    }
 
     Ok(report)
 }
