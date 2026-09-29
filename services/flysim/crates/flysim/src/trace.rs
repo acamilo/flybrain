@@ -38,8 +38,15 @@
 //!   instead of the one `FLY_TRACE` path a restart would truncate. File names sort in start order;
 //!   a process's file ends where the next one begins.
 //! - `FLY_TRACE_MAX_BYTES` caps one file (default 4 GiB in directory mode, none otherwise). At the
-//!   cap the recorder writes `{"truncated":true}` and stops, so a shadow that is not consuming the
-//!   files cannot fill the disk; the loop runs on untouched.
+//!   cap the recorder writes `{"truncated":true}` and stops; the loop runs on untouched.
+//! - *A consumer must be alive* (directory mode). The shadow touches `<dir>/consumer` every 30 s.
+//!   A process starts no trace when that file is missing or older than
+//!   `FLY_TRACE_CONSUMER_STALE_SECONDS` (default 600), and a running one checks it once a minute
+//!   of frames and stops the same way as at the cap, with `"reason":"no-consumer"`. A dead or
+//!   diverged shadow therefore turns the trace off by itself, with no root action and no restart.
+//! - *The directory is bounded* (directory mode). Before a process creates its file it deletes
+//!   the oldest `trace-*.jsonl` until the ones left and the new file's cap fit in
+//!   `FLY_TRACE_DIR_MAX_BYTES` (default 8 GiB). The shadow deletes each file once compared.
 //! - `FLY_TRACE_LEDGERS=<n>` adds `ledgersDigest` to every transition whose `step` is a multiple
 //!   of `n`: the SHA-256 of [`crate::frame::ledgers_string`] after the boundary (adapter export,
 //!   ratchet, slot, executor scene/bound/running/counts/nearer). `1` is every transition. The
@@ -74,6 +81,56 @@ pub const LEDGERS_ENV: &str = "FLY_TRACE_LEDGERS";
 
 /// The default per-file cap in directory mode: about 23 hours of stream.
 pub const DEFAULT_DIR_MAX_BYTES: u64 = 4 << 30;
+
+/// The consumer's heartbeat file in [`DIR_ENV`] mode.
+pub const CONSUMER_FILE: &str = "consumer";
+
+/// How old the heartbeat may be (seconds).
+pub const CONSUMER_STALE_ENV: &str = "FLY_TRACE_CONSUMER_STALE_SECONDS";
+pub const DEFAULT_CONSUMER_STALE_SECONDS: u64 = 600;
+
+/// The cap over every trace file in the directory.
+pub const DIR_MAX_BYTES_ENV: &str = "FLY_TRACE_DIR_MAX_BYTES";
+pub const DEFAULT_DIR_TOTAL_BYTES: u64 = 8 << 30;
+
+/// Transitions between two heartbeat checks: about a minute of frames.
+const CONSUMER_CHECK_EVERY: u64 = 3_600;
+
+/// Whether `dir`'s consumer heartbeat is at most `stale` old.
+pub fn consumer_alive(dir: &Path, stale: std::time::Duration) -> bool {
+    std::fs::metadata(dir.join(CONSUMER_FILE))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| std::time::SystemTime::now().duration_since(t).ok())
+        .is_some_and(|age| age <= stale)
+}
+
+/// Deletes the oldest trace files in `dir` until those left total at most `keep` bytes.
+pub fn prune_dir(dir: &Path, keep: u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(std::path::PathBuf, u64)> = entries
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with("trace-") && n.ends_with(".jsonl"))
+        })
+        .filter_map(|e| Some((e.path(), e.metadata().ok()?.len())))
+        .collect();
+    files.sort();
+    let mut total: u64 = files.iter().map(|(_, len)| len).sum();
+    for (path, len) in files {
+        if total <= keep {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            tracing::warn!(path = %path.display(), "removed an old frame trace to bound its directory");
+            total -= len;
+        }
+    }
+}
 
 /// The per-process file name in [`DIR_ENV`] mode: start wall time (13 digits, so names sort in
 /// start order) and pid.
@@ -178,6 +235,9 @@ pub struct FrameTrace {
     stopped: bool,
     /// `FLY_TRACE_LEDGERS`: a ledger digest every this many transitions.
     ledgers_every: Option<u64>,
+    /// Directory mode: the directory whose consumer heartbeat keeps the trace on, and its limit.
+    consumer: Option<(std::path::PathBuf, std::time::Duration)>,
+    transitions: u64,
 }
 
 impl FrameTrace {
@@ -208,17 +268,26 @@ impl FrameTrace {
         let max_bytes = number(MAX_BYTES_ENV)?;
         if let Some(dir) = var(DIR_ENV) {
             let dir = Path::new(&dir);
-            std::fs::create_dir_all(dir)?;
+            let stale = std::time::Duration::from_secs(
+                number(CONSUMER_STALE_ENV)?.unwrap_or(DEFAULT_CONSUMER_STALE_SECONDS),
+            );
+            if !consumer_alive(dir, stale) {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    "FLY_TRACE_DIR is set but no consumer is alive there: no frame trace this run"
+                );
+                return Ok(None);
+            }
+            let cap = max_bytes.unwrap_or(DEFAULT_DIR_MAX_BYTES);
+            let total = number(DIR_MAX_BYTES_ENV)?.unwrap_or(DEFAULT_DIR_TOTAL_BYTES);
+            prune_dir(dir, total.saturating_sub(cap));
             let wall_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_millis() as u64);
             let path = dir.join(dir_file_name(wall_ms, std::process::id()));
-            return Self::create_with(
-                &path,
-                max_bytes.or(Some(DEFAULT_DIR_MAX_BYTES)),
-                ledgers_every,
-            )
-            .map(Some);
+            let mut trace = Self::create_with(&path, Some(cap), ledgers_every)?;
+            trace.consumer = Some((dir.to_owned(), stale));
+            return Ok(Some(trace));
         }
         match var(ENV) {
             Some(path) => Self::create_with(Path::new(&path), max_bytes, ledgers_every).map(Some),
@@ -254,7 +323,26 @@ impl FrameTrace {
             max_bytes,
             stopped: false,
             ledgers_every,
+            consumer: None,
+            transitions: 0,
         })
+    }
+
+    /// Stops the trace: one marker line, then nothing more. The loop is unaffected.
+    fn stop(&mut self, reason: &str) {
+        if self.stopped {
+            return;
+        }
+        self.stopped = true;
+        if let Err(error) = writeln!(
+            self.out,
+            "{}",
+            json!({ "truncated": true, "reason": reason })
+        ) {
+            tracing::warn!(%error, "could not write the frame trace");
+        }
+        let _ = self.out.flush();
+        tracing::warn!(reason, "the frame trace stopped");
     }
 
     fn write(&mut self, value: &Value) {
@@ -266,13 +354,7 @@ impl FrameTrace {
         if let Some(cap) = self.max_bytes
             && self.written + len > cap
         {
-            // The cap: one marker, then silence. The loop is unaffected.
-            self.stopped = true;
-            if let Err(error) = writeln!(self.out, "{}", json!({ "truncated": true })) {
-                tracing::warn!(%error, "could not write the frame trace");
-            }
-            let _ = self.out.flush();
-            tracing::warn!(cap, "the frame trace reached its byte cap and stopped");
+            self.stop("byte-cap");
             return;
         }
         self.written += len;
@@ -326,6 +408,15 @@ impl FrameTrace {
     /// Transition `step -> step + 1` begins: the previous one is complete.
     pub fn begin(&mut self, step: u64, ms_before: f64) {
         self.flush_open();
+        self.transitions += 1;
+        let consumer_gone = self.transitions.is_multiple_of(CONSUMER_CHECK_EVERY)
+            && self
+                .consumer
+                .as_ref()
+                .is_some_and(|(dir, stale)| !consumer_alive(dir, *stale));
+        if consumer_gone {
+            self.stop("no-consumer");
+        }
         if let Some(start) = self.initial_step.take() {
             let initial = std::mem::take(&mut self.initial);
             self.write(&json!({
@@ -493,6 +584,59 @@ mod tests {
     }
 
     #[test]
+    fn the_directory_is_bounded_and_needs_a_live_consumer() {
+        let dir = std::env::temp_dir().join(format!("fly-trace-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let minute = std::time::Duration::from_secs(60);
+        assert!(!consumer_alive(&dir, minute), "no heartbeat file");
+        std::fs::write(dir.join(CONSUMER_FILE), b"x").unwrap();
+        assert!(consumer_alive(&dir, minute));
+        for (name, len) in [
+            ("trace-1-1.jsonl", 100),
+            ("trace-2-1.jsonl", 100),
+            ("trace-3-1.jsonl", 100),
+        ] {
+            std::fs::write(dir.join(name), vec![b'x'; len]).unwrap();
+        }
+        std::fs::write(dir.join("other.txt"), vec![b'x'; 1000]).unwrap();
+        prune_dir(&dir, 150);
+        assert!(!dir.join("trace-1-1.jsonl").exists());
+        assert!(!dir.join("trace-2-1.jsonl").exists());
+        assert!(dir.join("trace-3-1.jsonl").exists());
+        assert!(
+            dir.join("other.txt").exists(),
+            "only trace files are pruned"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_running_trace_stops_when_its_consumer_goes_away() {
+        let dir = std::env::temp_dir().join(format!("fly-trace-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(CONSUMER_FILE), b"x").unwrap();
+        let path = dir.join("t.jsonl");
+        let mut trace = FrameTrace::create_with(&path, None, None).unwrap();
+        trace.consumer = Some((dir.clone(), std::time::Duration::from_secs(600)));
+        for step in 0..CONSUMER_CHECK_EVERY {
+            trace.begin(step, 0.0);
+        }
+        assert!(!trace.stopped, "a live consumer keeps it on");
+        std::fs::remove_file(dir.join(CONSUMER_FILE)).unwrap();
+        for step in CONSUMER_CHECK_EVERY..3 * CONSUMER_CHECK_EVERY {
+            trace.begin(step, 0.0);
+        }
+        trace.finish();
+        drop(trace);
+        let all = lines(&path);
+        assert_eq!(all.last().unwrap()["reason"], "no-consumer");
+        assert!(all.len() < (2 * CONSUMER_CHECK_EVERY) as usize + 3);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn directory_files_sort_in_start_order() {
         assert!(dir_file_name(999, 70_000) < dir_file_name(1000, 5));
         assert_eq!(dir_file_name(1, 2), "trace-0000000000001-2.jsonl");
@@ -511,7 +655,8 @@ mod tests {
         drop(trace);
         let all = lines(&path);
         assert_eq!(all.first().unwrap()["format"], FORMAT);
-        assert_eq!(all.last().unwrap(), &json!({ "truncated": true }));
+        assert_eq!(all.last().unwrap()["truncated"], true);
+        assert_eq!(all.last().unwrap()["reason"], "byte-cap");
         assert!(all.len() > 2 && all.len() < 40);
         let size = std::fs::metadata(&path).unwrap().len();
         assert!(size <= 1500 + 20, "{size}");
