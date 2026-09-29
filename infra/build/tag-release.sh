@@ -56,7 +56,19 @@ if [ -d "$flysim_dir" ]; then
     # --release, not debug (Makefile's `rust:` target and the reason it gives): the flysim
     # integration test that asserts the feed's 30 Hz contract only reaches ~9.5-10.4 Hz in a debug
     # build, so a debug run would fail or flake that gate.
-    log "running cargo test --workspace --release in services/flysim"
+    # The ROM suites (tests/rom_*.rs) return early and count as PASSED when FLY_ROM or their
+    # checkpoint variable is unset, so a gate run without them proves nothing about the macros.
+    # v0.6.4's gate ran that way. Refuse without the ROM; name every checkpoint suite skipped.
+    if [ -z "${FLY_ROM:-}" ] || [ ! -r "${FLY_ROM}" ]; then
+        die "FLY_ROM is unset or unreadable: the ROM test suites would pass without running. Export FLY_ROM and the FLY_*_CHECKPOINT variables (the operator's rom env) first."
+    fi
+    skipped=""
+    while IFS= read -r var; do
+        [ -n "${!var:-}" ] || skipped="${skipped} ${var}"
+    done < <(grep -rhoE 'var_os\("FLY_[A-Z0-9_]*_CHECKPOINT"\)' "$flysim_dir"/crates/*/tests/rom_*.rs \
+                 | sed -E 's/.*"(FLY_[A-Z0-9_]*)".*/\1/' | sort -u)
+    [ -z "$skipped" ] || log "WARNING: ROM checkpoint suites that will pass WITHOUT running (unset):${skipped}"
+    log "running cargo test --workspace --release in services/flysim (FLY_ROM set)"
     (cd "$flysim_dir" && cargo test --workspace --release)
 else
     log "WARNING: services/flysim does not exist in this checkout — skipping cargo test --workspace"
