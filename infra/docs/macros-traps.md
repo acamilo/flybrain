@@ -3207,3 +3207,90 @@ pressing `ITEM` whenever dealt, 12,000 frames in the one battle, `ITEM` 119 and 
 party list left waiting 119 times, the Potion never used, and pressing `BACK` then `MOVE 1`
 whenever dealt, `MOVE 1` 125 and `BACK` 125, the battle never ends: **fails**. Branch: the Potion
 used (8 to 28 HP) and the battle over in 555 frames; `MOVE 4` and the battle over in 773: passes.
+
+## 2026-09-28, row 64: Mt. Moon's far side, a ladder underfoot and three ledges down
+
+### What was live
+
+v0.6.2/v0.6.4 binary, adapter `pokered-unique8-v7`, macros mode, rank 12 (MT. MOON), objective
+Cerulean City, from 2026-09-26 to 09-28. The watchdog flagged it as `unrewarded`: about 750 macro
+decisions per ten brain minutes, all `done`, no reward, places delta 0. The 09-28 event log has
+`GO OBJECTIVE` 41,990 starts, `GO WARP` 25,554, `GO FRONTIER refused` 27 (about one per restore),
+and nothing else: no battle and no step. Forty-eight hourly flysim restarts did not clear it. The
+milestone-12 reset of 09-26 bought hours; nobs had recorded a "GO OUT / GO OBJECTIVE" pad just
+before that reset.
+
+### Reproduction (the pulled checkpoint, hot generation 218910)
+
+The fly is on Mt. Moon B2F (`$3d`) at (5, 7), which is warp 3, the ladder up to B1F's exit chamber
+(23, 3). With the ledgers **empty** the pad is `GO OBJECTIVE`, `GO WARP`, `GO FRONTIER`:
+
+- `objective_goals` is `Exit(Warp(3))` at (5, 7), and `ways(Passage)` is `[Warp(3)]` (tier 2,
+  toward the objective).
+- `GO FRONTIER` is refused `no route` and the map is marked exhausted. Correctly: all 452 reachable
+  tiles are stood on, and the 439 unstood ones are in B2F's north and south pieces and the border.
+- Per-frame trace: `GO OBJECTIVE` runs 27 frames with mask `0x00` on every one (a `Settle` arrival
+  on the tile underfoot) and ends `done`. The next hold does the same. Route survey on main,
+  20,000 frames: `GO OBJECTIVE` 205 and `GO WARP` 211 `done`, all on (5, 7).
+
+With the ledgers rebuilt (`EXHAUSTED=1`, `STOOD=1`) the pad is `GO OBJECTIVE`, `GO WARP` from frame
+0. **The coordinator's lead (`GO WARP` and `GO FRONTIER` exhausted) is refuted.** The frontier mark
+is correct, and `GO WARP` is never withheld: it is dealt the whole time, at the ladder underfoot.
+No ledger removes the way on. Both ways on execute as no-ops.
+
+**Why it came back after the reset.** Off the ladder (a raw right/left step, then the drive), the
+fly goes B1F exit chamber, then (27, 3), then Route 4 (24, 6). There `GO OBJECTIVE` is refused
+`no route`, because every road from there to Cerulean's west edge crosses a ledge: the column at
+x = 62 on rows 10-15, and the rows at y = 5 and 9. The route search read a ledge as a wall both
+ways. The east edge rests, and `GO ITEM` or `GO FRONTIER` walk back into the cave mouth (24, 5).
+The fly lands on B1F (27, 3), where `GO OBJECTIVE` settles in place (618 times in 30,000 frames),
+or on B2F (5, 7) after a walk over (23, 3). The geometry re-creates the ring; nothing persisted.
+
+### Fix (three commits)
+
+1. `014d869`: a walk that starts on its own step-fired warp steps onto free ground beside it (never
+   another warp) and back on (`CheckWarpsNoCollision` runs only after a step).
+2. `e10f48e`: `LedgeTiles` hops. The grid marks them (OVERWORLD tileset only, lower-left anchor
+   tiles). The route search takes a hop from above as one press that lands two tiles on. The walk
+   holds while `HandleLedges` carries the fly, so the hop is not written as a push-back.
+3. `83e842a` (general, separable): a `Settle` on an exit key that leaves the fly on its map ends
+   `blocked`. From the tile it pressed from, row 57's refused-from-here ledger also holds the
+   button off for the window.
+
+Ablations from the checkpoint:
+
+- 1 alone becomes a B1F/Route 4 ring (`GO OBJECTIVE` done on Route 4 151 times, `GO ROUTE` on B1F
+  150).
+- 3 alone breaks the in-place ring (1,500 done in place drops to 0 in 72,000 frames), but the fly
+  does not reach Cerulean.
+- 1 + 2 reach Cerulean at frame 1,972.
+
+### Before and after
+
+Route survey from the live checkpoint, 72,000 frames per arm, `main` `eecd574` vs the branch:
+
+| driver | base | branch |
+| --- | --- | --- |
+| prefer GO OBJECTIVE, GO WARP | rank 12, 3,290 tiles, 1,500 of 1,500 done on B2F | rank 13 CERULEAN, 3,434 tiles, Cerulean f1973 |
+| uniform, seed 7 | rank 12, 3,290, 1,499/1,500 | rank 15 NUGGET BRIDGE, 3,551, Cerulean f3331 |
+| uniform, seed 12345 | rank 12, 3,290, 1,499/1,500 | rank 13, 3,436, Cerulean f3041 |
+| uniform, default seed | rank 12, 3,290, 1,499/1,500 | rank 13, 3,447, Cerulean f1973 |
+
+ROM test `the_fly_takes_the_ladder_it_stands_on_and_hops_down_to_cerulean_from_mt_moons_far_side`
+(`FLY_ROW64_CHECKPOINT`):
+
+- base: 167 done in place, never leaves B2F, **fails**;
+- branch: the first `GO OBJECTIVE` goes to B1F, 80 hop frames under a walk on Route 4, Cerulean at
+  f1972, pushed ledger empty, passes.
+
+### Why nothing inside the fly broke it, and the general guarantee
+
+The in-place ring wrote no ledger. `Done` records nothing, and every ledger with a window was
+empty after a restore anyway. The per-macro form of 12.2's rule had no case for a warp underfoot.
+Commit 3 makes the rule structural for every way out.
+
+Rows 58, 59 and 61 were rings in which each macro crossed a door, so no effect-based rule sees
+them. A repetition budget keyed on the fly's own starts was considered and not built. It is a rule
+about the choice, not knowledge in a macro, and it would turn a ring into a wait or a wander
+without adding the missing fact. Those rings stay guarded outside the fly: the watchdog, the
+recovery ladder, and the ROM road tests.

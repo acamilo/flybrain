@@ -162,3 +162,37 @@ fn the_cache_holds_one_map_and_drops_it_on_arrival_somewhere_else() {
     assert_eq!(grids.held(), Some(4));
     assert!(grids.get(3, 4, 4).is_none());
 }
+
+#[test]
+fn a_ledge_is_a_hop_from_above_on_the_overworld_tileset_only() {
+    // `LedgeTiles`: facing down from `$2C` onto `$37` hops two tiles down. Row 64, Route 4.
+    let mut grid = MapGrid::new(0x0f, 2, 5);
+    for y in 0..5 {
+        grid.set(0, y, 0x2c, Walkable::Yes);
+    }
+    grid.set(1, 0, 0x2c, Walkable::Yes);
+    grid.set(1, 1, 0x37, Walkable::No);
+    grid.set(1, 2, 0x2c, Walkable::Yes);
+    grid.set(1, 3, 0x2c, Walkable::Yes);
+    grid.set(1, 4, 0x2c, Walkable::Yes);
+    add_ledge_hops(&mut grid, tileset::OVERWORLD);
+    assert!(grid.hops(1, 0, Facing::Down), "down over the ledge from above");
+    assert!(!grid.hops(1, 2, Facing::Up), "never up it from below");
+    assert!(!grid.hops(0, 0, Facing::Down), "plain ground is not a ledge");
+    assert!(!grid.hops(1, 0, Facing::Right), "only the direction the table names");
+
+    // `HandleLedges` returns at once on any other tileset.
+    let mut plain = MapGrid::new(0x3d, 2, 5);
+    for y in 0..5 {
+        plain.set(1, y, grid.tile_id(1, y).unwrap_or(0), grid.walkable(1, y));
+    }
+    add_ledge_hops(&mut plain, tileset::CAVERN);
+    assert!(!plain.hops(1, 0, Facing::Down), "no ledges in a cave");
+
+    // A ledge whose landing would be off the map is not a hop the table can promise.
+    let mut edge = MapGrid::new(0x0f, 1, 2);
+    edge.set(0, 0, 0x2c, Walkable::Yes);
+    edge.set(0, 1, 0x37, Walkable::No);
+    add_ledge_hops(&mut edge, tileset::OVERWORLD);
+    assert!(!edge.hops(0, 0, Facing::Down));
+}

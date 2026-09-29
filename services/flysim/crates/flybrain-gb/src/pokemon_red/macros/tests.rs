@@ -204,6 +204,17 @@ struct World {
     bought: u32,
     /// Whether the cartridge is driving the player right now ([`MacroState::scripted`]).
     scripted: bool,
+    /// Ledges, as the tile a press hops from and its direction (row 64). Empty everywhere but the
+    /// tests about them, and with it empty the world has no decoded grid, as before.
+    ledges: Vec<(Tile, Facing)>,
+    /// A hop the cartridge is carrying the player through: frames left, the ledge tile, the
+    /// landing. `HandleLedges` takes the joypad for the length of it, so the scene reads
+    /// `Unknown` and the world is scripted.
+    hop: Option<(u32, Tile, Tile)>,
+    /// Warps a step onto does not fire: the "turns out to need some other press" of
+    /// [`path::exits`]'s `outward`, for the executor's rule about a way out that did not take the
+    /// fly anywhere.
+    duds: BTreeSet<Tile>,
     /// A frame at which the cartridge takes the joypad, which is what the Viridian gate does.
     scripted_at: Option<u32>,
     /// Every completed pulse, in order.
@@ -287,6 +298,9 @@ impl World {
             price_at: None,
             bought: 0,
             scripted: false,
+            ledges: Vec::new(),
+            hop: None,
+            duds: BTreeSet::new(),
             scripted_at: None,
             pulses: Vec::new(),
             held: 0,
@@ -415,6 +429,23 @@ impl World {
 
     fn frame(&mut self, mask: u8) {
         self.frames += 1;
+        // A ledge hop in flight: the cartridge's own joypad states, whatever is pressed.
+        if let Some((left, over, landing)) = self.hop {
+            let left = left.saturating_sub(1);
+            if left == 8 {
+                self.player = over;
+            }
+            if left == 0 {
+                self.player = landing;
+                self.scene = Scene::Overworld;
+                self.scripted = false;
+                self.hop = None;
+            } else {
+                self.hop = Some((left, over, landing));
+            }
+            self.previous = mask;
+            return;
+        }
         if let Some((at, next)) = self.pending
             && self.frames >= at
         {
@@ -588,6 +619,15 @@ impl World {
             return;
         }
         let next = Tile::new(x as u8, y as u8);
+        // `HandleLedges`: the press over a ledge takes the joypad and hops two tiles.
+        if self.ledges.contains(&(self.player, facing))
+            && let Some(landing) = next.step(facing)
+        {
+            self.scene = Scene::Unknown;
+            self.scripted = true;
+            self.hop = Some((16, next, landing));
+            return;
+        }
         if self.walkable(next.x, next.y) != Walkable::Yes {
             return;
         }
@@ -597,6 +637,9 @@ impl World {
         else {
             return;
         };
+        if self.duds.contains(&next) {
+            return;
+        }
         // An interior warp fires on the step onto it; a doormat only when the step onto it is the
         // same direction the step off the map would be.
         match outward(next, self.size.height) {
@@ -809,6 +852,25 @@ impl MacroState for World {
     fn objective(&mut self) -> Option<Objective> {
         self.objective
     }
+
+    /// The decoded grid, only for a world with ledges in it (row 64): the same walls the window
+    /// reads, plus the hops. Every other fixture keeps answering from the window, as before.
+    fn map_grid(&mut self) -> Option<std::sync::Arc<super::state::MapGrid>> {
+        if self.ledges.is_empty() {
+            return None;
+        }
+        let mut grid = super::state::MapGrid::new(self.map, self.size.width, self.size.height);
+        for y in 0..self.size.height {
+            for x in 0..self.size.width {
+                let wall = self.walls.contains(&Tile::new(x, y));
+                grid.set(x, y, if wall { 0x60 } else { 0x01 }, if wall { Walkable::No } else { Walkable::Yes });
+            }
+        }
+        for (tile, facing) in &self.ledges {
+            grid.ledge(tile.x, tile.y, *facing);
+        }
+        Some(std::sync::Arc::new(grid))
+    }
 }
 
 fn direction_of(mask: u8) -> Option<Facing> {
@@ -906,6 +968,10 @@ fn settle(machine: &mut MacroMachine, world: &mut World) {
     while let Some((map, tile)) = machine.take_pushed() {
         assert_eq!(map, world.map);
         world.pushes.insert(tile);
+    }
+    // `PokemonPalette::record_talk` drains this after every finish, not only after a refusal.
+    if let Some((map, slot, tile)) = machine.take_refused() {
+        world.targets.record_refused(map, slot, tile);
     }
     if let Some((map, target)) = machine.take_talked() {
         assert_eq!(map, world.map);
@@ -5920,4 +5986,119 @@ fn a_service_does_not_walk_the_fly_out_of_the_rungs_room() {
     assert!(super::palette::objective_targets(&mut world).is_empty());
     assert_eq!(amenity_wanted(&mut world, Amenity::Center), Some(maps::PEWTER_POKECENTER));
     assert_eq!(amenity_wanted(&mut world, Amenity::Mart), Some(maps::PEWTER_MART));
+
+#[test]
+fn a_walk_that_starts_on_the_ladder_it_wants_steps_off_and_back_on_to_take_it() {
+    // Row 64, Mt. Moon B2F (5, 7): the fly came down the ladder and is standing on it, and the
+    // ladder is the one way on. The cartridge fires a ladder at the end of a step onto it and at
+    // no other time, so a walk that "arrives" on the tile it is already standing on and settles
+    // there presses nothing, reports `done` and changes nothing -- `GO OBJECTIVE` and `GO WARP`,
+    // 27 frames each, for two days. The walk takes it the way the cartridge does: a step onto
+    // free ground beside it and the step back.
+    for kind in [MacroKind::GoWarp, MacroKind::GoObjective] {
+        let mut world = World::room().at(3, 3);
+        world.warps = vec![Warp { x: 3, y: 3, destination_warp: 0, destination_map: 0x26 }];
+        if kind == MacroKind::GoObjective {
+            world.objective = Some(Objective { map: 0x26, tile: None, warp: None, edge: None, target: None });
+        }
+        assert_eq!(run(&mut world, kind), Ok(MacroAbort::Done), "{}", kind.name());
+        assert_eq!(world.map, 0x26, "{} took the ladder it was standing on", kind.name());
+        assert!(!world.pulses.is_empty(), "{} pressed something to take it", kind.name());
+    }
+}
+
+#[test]
+fn a_walk_off_its_ladder_does_not_step_onto_another_warp() {
+    // Stepping onto a warp is what fires it, so the step off the one underfoot goes to plain
+    // ground. With the only free side another ladder there is nowhere to step off to, and the
+    // walk ends `blocked` -- its exit rests in the window -- rather than taking the other ladder.
+    let mut world = World::room().at(3, 3).wall(&[(3, 2), (2, 3), (3, 4)]);
+    world.warps = vec![
+        Warp { x: 3, y: 3, destination_warp: 0, destination_map: 0x26 },
+        Warp { x: 4, y: 3, destination_warp: 0, destination_map: 0x27 },
+    ];
+    world.seen_maps = BTreeSet::from([0x27]);
+    // Only one side is free and it is the other ladder: nowhere to step off to without firing it.
+    assert_eq!(run(&mut world, MacroKind::GoWarp), Ok(MacroAbort::Blocked));
+    assert_eq!(world.map, 0x25, "the other ladder was not taken for this one");
+}
+
+#[test]
+fn a_ledge_the_walk_presses_into_is_hopped_and_is_not_a_push_back() {
+    // Row 64, Route 4 east of Mt. Moon: Cerulean is three ledges down from the cave's exit, and a
+    // ledge read as a wall both ways, so `GO OBJECTIVE` refused `no route` there. The route search
+    // takes a hop the one way the cartridge does, and the walk waits while the cartridge carries
+    // the fly over -- `HandleLedges` takes the joypad for it, which is the same reading as a
+    // scripted push-back, and a push-back walls the tile for the session.
+    let mut world = World::room().at(3, 1);
+    world.map = 0x0f;
+    for x in 0..8 {
+        world.walls.insert(Tile::new(x, 3));
+        world.ledges.push((Tile::new(x, 2), Facing::Down));
+    }
+    let goal = Tile::new(3, 6);
+    world.objective = Some(Objective { map: 0x0f, tile: Some(goal), warp: None, edge: None, target: None });
+    let mut machine = MacroMachine::new(0x1234_5678);
+    assert_eq!(run_with(&mut machine, &mut world, MacroKind::GoObjective), Ok(MacroAbort::Done));
+    assert_eq!(world.player, goal, "over the ledge and on to the goal in one walk");
+    hand_back(&mut machine, &mut world);
+    assert!(world.pushes.is_empty(), "the hop the walk asked for walled nothing: {:?}", world.pushes);
+    assert!(!world.targets.blocked(world.map, TargetKey::Tile(goal)), "nor rested the goal");
+
+    // From below, the ledge is a wall: nothing plans up it.
+    let mut below = World::room().at(3, 6);
+    below.map = 0x0f;
+    for x in 0..8 {
+        below.walls.insert(Tile::new(x, 3));
+        below.ledges.push((Tile::new(x, 2), Facing::Down));
+    }
+    below.objective =
+        Some(Objective { map: 0x0f, tile: Some(Tile::new(3, 1)), warp: None, edge: None, target: None });
+    assert!(run(&mut below, MacroKind::GoObjective).is_err(), "a ledge is not climbed");
+    assert_eq!(below.player, Tile::new(3, 6));
+}
+
+#[test]
+fn a_way_out_that_does_not_take_the_fly_anywhere_is_not_done() {
+    // The general half of row 64 (section 12.2's rule, held by the executor): a way out's promise
+    // is another map, so settling on one that leaves the fly on this map is not an arrival. Live,
+    // `GO OBJECTIVE` and `GO WARP` reported that `done` ~750 times per ten brain minutes on one
+    // tile for two days. Here the warp does not fire at all, whatever the walk does.
+    let mut world = World::room().at(1, 1);
+    world.warps = vec![Warp { x: 5, y: 5, destination_warp: 0, destination_map: 0x26 }];
+    world.duds = BTreeSet::from([Tile::new(5, 5)]);
+    let mut machine = MacroMachine::new(0x1234_5678);
+    assert_eq!(run_with(&mut machine, &mut world, MacroKind::GoWarp), Ok(MacroAbort::Blocked));
+    assert_eq!((world.map, world.player), (0x25, Tile::new(5, 5)), "walked to it; it did not fire");
+    let exit = TargetKey::Exit(ExitId::Warp(0));
+    assert!(world.targets.blocked(world.map, exit), "the dead exit rests in the window");
+    // Walked to from elsewhere, so the button is not held against the tile it now stands on:
+    // a different tile is a different press.
+    assert!(!world.targets.refused(world.map, MacroKind::GoWarp.slot(), world.player));
+}
+
+#[test]
+fn a_way_out_pressed_from_where_it_does_not_fire_is_not_dealt_again_from_there() {
+    // Standing on it: step off, step back on, nothing. The blocked entry rests the exit for every
+    // list but a last resort, and the last resort ignores the blocked ledger by design, so on a
+    // map with nothing else on it the same button would be dealt at the same dead exit once per
+    // hold. Row 57's ledger ends that: not from this tile, for the window.
+    let mut world = World::room().at(3, 3);
+    world.warps = vec![Warp { x: 3, y: 3, destination_warp: 0, destination_map: 0x26 }];
+    world.duds = BTreeSet::from([Tile::new(3, 3)]);
+    world.seen_maps = BTreeSet::from([0x26]);
+    world.stood = (0..8).flat_map(|y| (0..8).map(move |x| Tile::new(x, y))).collect();
+    let mut machine = MacroMachine::new(0x1234_5678);
+    // Nothing else on this map: the last resort is what deals `GO WARP` here.
+    assert!(pick_opt(&mut world, MacroKind::GoWarp), "the last resort deals the only way out");
+    assert_eq!(run_with(&mut machine, &mut world, MacroKind::GoWarp), Ok(MacroAbort::Blocked));
+    assert_eq!((world.map, world.player), (0x25, Tile::new(3, 3)));
+    assert!(world.targets.refused(world.map, MacroKind::GoWarp.slot(), world.player));
+    assert!(!pick_opt(&mut world, MacroKind::GoWarp), "not dealt again from the tile it failed on");
+}
+
+/// Whether `kind` is on the pad the world's scene deals now.
+fn pick_opt(world: &mut World, kind: MacroKind) -> bool {
+    let scene = world.scene();
+    Palette::for_scene(scene, world).slots.iter().any(|slot| slot.is_some_and(|spec| spec.kind == kind))
 }

@@ -4290,3 +4290,165 @@ fn row62_east_of_mt_moon_go_heal_is_not_dealt_back_into_the_mountain() {
     assert!(east_frames > 0, "the fly was never hurt on the exit chamber: {:?}", run.route);
     assert_eq!(go_heal_east, 0, "GO HEAL dealt east of the mountain, first at {first:?}");
 }
+
+fn row64_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_ROW64_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// Mt. Moon's far side, from the checkpoint pulled during the two-day ring.
+///
+/// **What was live** (2026-09-26 to 09-28, v0.6.2/v0.6.4, rank 12 MT. MOON, the objective Cerulean
+/// City): about 750 macros per ten brain minutes, every one `done`, no reward, no new ground --
+/// `GO OBJECTIVE` and `GO WARP`, 27 frames each. Forty-eight hourly flysim restarts did not clear
+/// it and a milestone reset bought hours (`infra/docs/macros-traps.md` row 64). The fly stands on
+/// B2F (5, 7), the ladder up to B1F's exit chamber, which is the one road on. Two things stacked:
+///
+/// - a warp whose exit has no press fires at the end of a **step onto it**
+///   (`CheckWarpsNoCollision`), and both buttons aimed at the tile underfoot, settled on it and
+///   reported `done` without a press -- section 12.2's trap with no ledger in it, so a restore
+///   restores it;
+/// - off the ladder, the road reaches Route 4's east side, where Cerulean is three **ledges** down.
+///   The route search read a ledge as a wall both ways, so `GO OBJECTIVE` refused `no route`, the
+///   edge rested in the blocked ledger, and the other walks took the fly back into the cave --
+///   onto B1F's exit (27, 3), the same trap one floor up.
+///
+/// The driver is the real palette with the live brain's measured favourites pressed whenever they
+/// are dealt (`GO OBJECTIVE`, then `GO WARP`) and one xorshift choice per hold otherwise: a harness
+/// choice, not the fly's. On the base it never leaves (5, 7). The claims:
+///
+/// - **the first `GO OBJECTIVE`, started on the ladder, takes it**: the map has changed when it ends;
+/// - **the fly hops a ledge on Route 4** under a walk (`wMovementFlags` bit 6 with a macro running),
+///   and **no tile enters the pushed ledger on the way down**: a hop the walk asked for is not a push-back;
+/// - **the fly reaches Cerulean City** inside the budget.
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_ROW64_CHECKPOINT=<the rank-12 checkpoint pulled during the ring, under .local/checkpoints> \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture mt_moons_far_side
+/// ```
+#[test]
+fn the_fly_takes_the_ladder_it_stands_on_and_hops_down_to_cerulean_from_mt_moons_far_side() {
+    use flybrain_gb::pokemon_red::macros::PokemonPalette;
+    use flybrain_gb::pokemon_red::state;
+    use flybrain_gb::{MacroPalette, MemoryReader, Outcome, Started};
+    const MT_MOON_B2F: u8 = 0x3d;
+    const ROUTE_4: u8 = 0x0f;
+    const CERULEAN: u8 = 0x03;
+    const LEDGE_OR_FISHING: u8 = 1 << 6;
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = row64_checkpoint() else {
+        eprintln!("skipped: no FLY_ROW64_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    let start = state::player(&mut run.gb).expect("a loaded map");
+    assert_eq!((start.map, start.x, start.y), (MT_MOON_B2F, 5, 7), "the checkpoint is on B2F's exit ladder");
+
+    let budget = 8_000u32;
+    let hold_frames = 48u32;
+    let mut palette = PokemonPalette::new(SEED);
+    let mut rng = 20_260_928u32 | 1;
+    let mut running = false;
+    let mut since_decision = hold_frames;
+    let mut ms = run.ms;
+    let mut arrivals: Vec<(u32, u8)> = Vec::new();
+    let mut last = None;
+    let mut first_objective: Option<(u8, u8)> = None;
+    let mut first_started_on: Option<u8> = None;
+    let mut hop_frames = 0u32;
+    let mut done_in_place = 0u32;
+    // The pushed ledger as it stood when the fly first arrived in Cerulean City: the road from the
+    // ladder over the ledges.
+    let mut pushed_on_the_way: Option<String> = None;
+    let mut walled = false;
+    for frame in 0..budget {
+        palette.clock(ms);
+        let observed = {
+            let ledger = AdapterLedger(&run.adapter);
+            palette.observe(&mut run.gb, &ledger)
+        };
+        let before = state::player(&mut run.gb).map(|player| (player.map, player.x, player.y));
+        let mut mask = 0u8;
+        {
+            let ledger = AdapterLedger(&run.adapter);
+            if running {
+                match palette.step(&mut run.gb, &ledger) {
+                    Some(held) => mask = held,
+                    None => running = false,
+                }
+            } else if since_decision >= hold_frames && !observed.bindings.is_empty() {
+                since_decision = 0;
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                let binding = ["GO OBJECTIVE", "GO WARP"]
+                    .iter()
+                    .find_map(|want| observed.bindings.iter().find(|binding| binding.name == *want))
+                    .unwrap_or(&observed.bindings[rng as usize % observed.bindings.len()]);
+                if let Started::Running(_) = palette.start(binding.slot, &mut run.gb, &ledger) {
+                    if first_started_on.is_none() && binding.name == "GO OBJECTIVE" {
+                        first_started_on = before.map(|(map, _, _)| map);
+                    }
+                    running = true;
+                    match palette.step(&mut run.gb, &ledger) {
+                        Some(held) => mask = held,
+                        None => running = false,
+                    }
+                }
+            }
+        }
+        since_decision += 1;
+        run.gb.set_buttons(mask);
+        run.gb.run_frame().expect("a frame should complete");
+        ms += MS_PER_FRAME;
+        run.adapter.sample(&mut run.gb, ms);
+        if let Some((name, outcome)) = palette.take_finished() {
+            let after = state::player(&mut run.gb).map(|player| player.map);
+            if name == "GO OBJECTIVE" && first_objective.is_none() {
+                first_objective = first_started_on.zip(after);
+            }
+            if matches!(outcome, Outcome::Done)
+                && matches!(name, "GO OBJECTIVE" | "GO WARP")
+                && after == Some(MT_MOON_B2F)
+                && state::player(&mut run.gb).is_some_and(|player| (player.x, player.y) == (5, 7))
+            {
+                done_in_place += 1;
+            }
+        }
+        if running
+            && state::player(&mut run.gb).is_some_and(|player| player.map == ROUTE_4)
+            && run.gb.read8(flybrain_gb::pokemon_red::symbols::ram::wMovementFlags) & LEDGE_OR_FISHING != 0
+        {
+            hop_frames += 1;
+        }
+        if let Some(player) = state::player(&mut run.gb)
+            && last != Some(player.map)
+        {
+            last = Some(player.map);
+            arrivals.push((frame, player.map));
+            if player.map == CERULEAN && pushed_on_the_way.is_none() {
+                pushed_on_the_way = Some(format!("{:?}", palette.fences().0));
+                walled = !palette.fences().0.is_empty();
+            }
+        }
+    }
+    let cerulean = arrivals.iter().find(|(_, map)| *map == CERULEAN).map(|(frame, _)| *frame);
+    let route_4_pushed = pushed_on_the_way.unwrap_or_else(|| format!("{:?}", palette.fences().0));
+    eprintln!(
+        "{:.1} brain minutes: first GO OBJECTIVE {first_objective:?}, done on the ladder in place \
+         {done_in_place}, hop frames under a walk on Route 4 {hop_frames}, Cerulean City at \
+         {cerulean:?}, pushed on the way {route_4_pushed}, rank {}, arrivals {arrivals:?}",
+        (ms - run.ms) / 60_000.0,
+        run.adapter.progress().rank,
+    );
+    assert_eq!(done_in_place, 0, "a walk reported done on the ladder it had not taken");
+    let (from, to) = first_objective.expect("GO OBJECTIVE was never started and finished");
+    assert_eq!(from, MT_MOON_B2F, "the first GO OBJECTIVE started on B2F's ladder");
+    assert_ne!(to, MT_MOON_B2F, "the first GO OBJECTIVE ended where it began: {arrivals:?}");
+    assert!(hop_frames > 0, "no ledge was hopped under a walk on Route 4: {arrivals:?}");
+    assert!(!walled, "a tile was walled on the way down to Cerulean City: {route_4_pushed}");
+    assert!(cerulean.is_some(), "the fly never reached Cerulean City: {arrivals:?}");
+}

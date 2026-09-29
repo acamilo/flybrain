@@ -25,7 +25,7 @@ use crate::adapter::MemoryReader;
 use crate::emulator::buttons;
 
 use super::cartridge::{
-    FACINGS, ListKind, MacroState, TalkTarget, TargetKey, Tile, battle_entry, button, item,
+    ExitId, FACINGS, ListKind, MacroState, TalkTarget, TargetKey, Tile, battle_entry, button, item,
     opposite,
 };
 use super::geography::Amenity;
@@ -449,6 +449,36 @@ struct Walk {
     /// without this the same tile is aimed at once per hold for ever, which is what a ledge, a
     /// tile-pair rule or a person on the far side of it looks like.
     stalled: bool,
+    /// The ledge hop the held press is making, as the tile it was pressed from and its direction.
+    ///
+    /// Row 64. The route search takes a ledge the one way the cartridge does
+    /// ([`path::route_avoiding`]), and the cartridge's way is to take the joypad: `HandleLedges`
+    /// sets `wJoyIgnore` and simulates the two tiles of the jump, so the scene reads
+    /// [`Scene::Unknown`] for the length of it. Without this the walk ended on that scene change
+    /// like any other, `scripted` and all, and [`MacroMachine::observe_push`] wrote a hop the walk
+    /// asked for as a push-back: the tile walled for the session and the target rested for the
+    /// window. Set when the press begins, cleared when the fly has moved.
+    hop: Option<(Tile, Facing)>,
+    /// The warp this walk began standing on, while it has not yet stepped off it.
+    ///
+    /// Row 64, Mt. Moon, two days. A ladder, a cave mouth, a staircase -- every warp whose exit
+    /// has no press -- fires at the end of a *step onto it* (`CheckWarpsNoCollision`, run after a
+    /// step completes), and nothing else fires it: a press into the wall beside it warps only at
+    /// a map's edge (`ExtraWarpCheck`, `IsPlayerFacingEdgeOfMap` off the overworld). A fly that
+    /// arrived on B2F's exit ladder by coming down it is standing on the one way on, and
+    /// `GO OBJECTIVE` and `GO WARP` both aimed at the tile underfoot, settled on it, and reported
+    /// `done` without a press -- section 12.2's trap, with no ledger in it for a restart to clear.
+    /// So a walk that starts on its own step-fired warp takes it the way the cartridge does: one
+    /// step onto free ground beside it, and the step back.
+    step_off: Option<Tile>,
+    /// Whether the walk settled on a way out and the map did not change: the exit did not take it.
+    ///
+    /// The general half of row 64 (section 12.2's rule, held by the executor instead of by each
+    /// macro): a way out's whole promise is a different map, so a `Settle` arrival on one that
+    /// leaves the fly on this map has not arrived anywhere. It ends `Blocked` -- the exit rests in
+    /// the window -- and, when the fly never left the tile it pressed from,
+    /// [`MacroMachine::unfired_here`] keeps the button off this tile for the window too.
+    unfired: bool,
 }
 
 /// Progress through one cursor navigation.
@@ -881,6 +911,13 @@ impl MacroMachine {
         // ended every walk north this way, `Done` with nothing recorded, once per hold for eight
         // hours.
         let now = class(state.scene());
+        // A ledge the walk pressed into is the cartridge carrying the fly where the walk asked it
+        // to go, not the world moving on under it ([`Walk::hop`]): the walk waits it out and
+        // re-plans from the landing.
+        if now != started_in && !spans.contains(&now) && self.hopping(state) {
+            self.active.as_mut()?.frames += 1;
+            return Some(buttons::NONE);
+        }
         if now != started_in && !spans.contains(&now) {
             let pushed = state.scripted() || self.moved_away(state);
             let at = pushed.then(|| state.player()).flatten();
@@ -907,6 +944,9 @@ impl MacroMachine {
                 Decided::End(outcome) => {
                     let pushed = state.scripted();
                     let at = pushed.then(|| state.player()).flatten();
+                    if outcome == MacroAbort::Blocked {
+                        self.unfired_here(state);
+                    }
                     return self.finish(outcome, true, pushed, at);
                 }
                 Decided::Pop => {
@@ -1017,6 +1057,44 @@ impl MacroMachine {
         // Nor the cartridge refusing a step: the frames it happened in are being thrown away too.
         self.pending_push.clear();
         self.pending_push_calm = 0;
+    }
+
+    /// A way out that did not fire, pressed from the tile the fly is still standing on: the button
+    /// is not dealt again from here for the window (row 57's ledger, [`Walk::unfired`]).
+    ///
+    /// The blocked entry alone rests the exit for every list but a last resort, and a last resort
+    /// ignores the blocked ledger by design -- so on a map with nothing else on it the same button
+    /// would be dealt at the same dead exit once per hold, which is the ring this is here to end.
+    /// A pad with nothing left that can run is empty and the fly waits, section 13.1's answer.
+    fn unfired_here(&mut self, state: &mut dyn MacroState) {
+        let Some(active) = self.active.as_ref() else { return };
+        let Some(Step::Walk(walk)) = active.plan.front() else { return };
+        if !walk.unfired {
+            return;
+        }
+        let Some(player) = state.player() else { return };
+        let here = Tile::new(player.x, player.y);
+        if player.map == walk.map && active.from == Some(here) {
+            self.refused_at = Some((player.map, active.kind.slot(), here));
+        }
+    }
+
+    /// Whether the running walk is mid-hop: it pressed into a ledge ([`Walk::hop`]), the
+    /// cartridge has the joypad with no text up, and the fly is on the hop's own line -- the tile
+    /// it pressed from, the ledge, or the landing -- on the walk's own map. A wild battle on the
+    /// landing is a battle, and ends the walk as a scene change always has.
+    fn hopping(&self, state: &mut dyn MacroState) -> bool {
+        let Some(active) = self.active.as_ref() else { return false };
+        let Some(Step::Walk(walk)) = active.plan.front() else { return false };
+        let Some((from, facing)) = walk.hop else { return false };
+        if state.scene() != Scene::Unknown || !state.scripted() || state.text_open() {
+            return false;
+        }
+        let Some(player) = state.player() else { return false };
+        let at = Tile::new(player.x, player.y);
+        let over = from.step(facing);
+        let landing = over.and_then(|tile| tile.step(facing));
+        player.map == walk.map && (at == from || Some(at) == over || Some(at) == landing)
     }
 
     /// Whether the fly is standing somewhere other than where the running macro began.
@@ -1560,6 +1638,11 @@ fn walk_frame(walk: &mut Walk, state: &mut dyn MacroState) -> Progress {
                 walk.held += 1;
                 if walk.held <= SETTLE_FRAMES {
                     Progress::Hold(buttons::NONE)
+                } else if settled_on_a_way_out(walk) {
+                    // Still on this map (the top of this function ends the walk on any other):
+                    // the way out did not take the fly anywhere ([`Walk::unfired`]).
+                    walk.unfired = true;
+                    Progress::Blocked
                 } else {
                     arrived(walk.continues)
                 }
@@ -1608,10 +1691,12 @@ fn walk_frame(walk: &mut Walk, state: &mut dyn MacroState) -> Progress {
     if let Some((facing, from)) = walk.holding {
         if here != from {
             // Moved: this tile is done and the failure run is broken. The plan's head is spent,
-            // and the next one steps from where the player now stands.
+            // and the next one steps from where the player now stands -- two tiles on, after a
+            // ledge ([`Walk::hop`]).
             walk.plan.pop_front();
             walk.expect = Some(here);
             walk.holding = None;
+            walk.hop = None;
             walk.held = 0;
             walk.failures = 0;
             walk.gap = STEP_GAP;
@@ -1631,6 +1716,7 @@ fn walk_frame(walk: &mut Walk, state: &mut dyn MacroState) -> Progress {
         walk.plan.clear();
         walk.expect = None;
         walk.holding = None;
+        walk.hop = None;
         walk.held = 0;
         walk.gap = STEP_GAP;
         walk.failures += 1;
@@ -1641,8 +1727,15 @@ fn walk_frame(walk: &mut Walk, state: &mut dyn MacroState) -> Progress {
         };
     }
 
+    // Off the warp it began on: from here the way back onto it is an ordinary step, and the
+    // step is what fires it ([`Walk::step_off`]).
+    if walk.step_off.is_some_and(|tile| tile != here) {
+        walk.step_off = None;
+    }
     // Plan, or re-plan.
-    if let Some(goal) = walk.goals.iter().find(|goal| goal.tile == here) {
+    if walk.step_off.is_none()
+        && let Some(goal) = walk.goals.iter().find(|goal| goal.tile == here)
+    {
         walk.arrival = Some(goal.arrival);
         walk.arrived = Some(here);
         walk.plan.clear();
@@ -1657,7 +1750,11 @@ fn walk_frame(walk: &mut Walk, state: &mut dyn MacroState) -> Progress {
     // walkable window that has moved with the player, which is the oscillation [`Walk::plan`]
     // documents; the plan is only remade when the ground has said something new.
     if walk.plan.is_empty() || walk.expect != Some(here) {
-        let tiles: Vec<Tile> = walk.goals.iter().map(|goal| goal.tile).collect();
+        let tiles: Vec<Tile> = if walk.step_off.is_some() {
+            beside(state, here)
+        } else {
+            walk.goals.iter().map(|goal| goal.tile).collect()
+        };
         let Some(Route { steps, .. }) = path::route_avoiding(state, &tiles, &walk.refused) else {
             return Progress::Blocked;
         };
@@ -1672,7 +1769,33 @@ fn walk_frame(walk: &mut Walk, state: &mut dyn MacroState) -> Progress {
     };
     walk.holding = Some((first, here));
     walk.held = 1;
+    walk.hop = state
+        .map_grid()
+        .is_some_and(|grid| grid.map() == walk.map && grid.hops(here.x, here.y, first))
+        .then_some((here, first));
     Progress::Hold(button(first))
+}
+
+/// Whether the goal the walk is settling on is a way out: an exit key, whose promise is a map
+/// change. A tile the objective names is not one -- standing on it is the point.
+fn settled_on_a_way_out(walk: &Walk) -> bool {
+    walk.arrived.is_some_and(|tile| {
+        walk.goals
+            .iter()
+            .any(|goal| goal.tile == tile && matches!(goal.key, Some(TargetKey::Exit(_))))
+    })
+}
+
+/// The tiles one step from `here` that are not themselves warps: where a walk standing on a warp
+/// it has to fire steps to first ([`Walk::step_off`]). Stepping onto another warp would fire that
+/// one instead. Which of them is ground is the route search's answer, as it is for every goal.
+fn beside(state: &mut dyn MacroState, here: Tile) -> Vec<Tile> {
+    let warps: Vec<Tile> = state.warps().iter().map(|warp| Tile::new(warp.x, warp.y)).collect();
+    FACINGS
+        .iter()
+        .filter_map(|facing| here.step(*facing))
+        .filter(|tile| !warps.contains(tile))
+        .collect()
 }
 
 /// The extra scene classes a macro is allowed to run through ([`Active::spans`]).
@@ -2207,6 +2330,18 @@ fn walk_then(
         .or(nearest);
     let here = Tile::new(player.x, player.y);
     let budget = walk_budget(route.steps.len());
+    // Standing on the goal already, and the goal is a warp that fires by itself: the arrival
+    // would settle where the warp has plainly not fired ([`Walk::step_off`]).
+    let step_off = route
+        .goal
+        .and_then(|index| goals.get(index))
+        .filter(|goal| {
+            route.steps.is_empty()
+                && goal.tile == here
+                && goal.arrival == Arrival::Settle
+                && matches!(goal.key, Some(TargetKey::Exit(ExitId::Warp(_))))
+        })
+        .map(|goal| goal.tile);
     Some((
         Walk {
             goals,
@@ -2226,6 +2361,9 @@ fn walk_then(
             best_distance: distance,
             continues,
             stalled: false,
+            hop: None,
+            step_off,
+            unfired: false,
         },
         target,
     ))
