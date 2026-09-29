@@ -225,6 +225,14 @@ EXTRA_RAM = (
     'wToggleableObjectFlags',
     'wToggleableObjectList',
     'wObtainedHiddenItemsFlags',
+    # The damage reward (`docs/rewards-learning.md`, the operator 2026-09-29).
+    # ExecutePlayerMove loads the executing move into wPlayerMoveNum (STRUGGLE, $a5,
+    # when the cartridge chose it for a Pokemon with no PP), and battle_struct's third
+    # field, wEnemyMonPartyPos, names which enemy party slot is out -- so two Pokemon of
+    # one species and level in a trainer's party are two targets, not one.
+    # services/flysim/tools/resolve_wram.py is the second reading of both.
+    'wPlayerMoveNum',
+    'wEnemyMonPartyPos',
 )
 
 

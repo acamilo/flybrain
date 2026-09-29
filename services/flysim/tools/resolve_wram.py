@@ -89,6 +89,15 @@ WANTED = {
     # poisoning one, and a target that must recharge is put to sleep whatever
     # its status (MoveHitTest, CheckTargetSubstitute, SleepEffect).
     'wEnemyBattleStatus2': "the enemy's Mist, substitute and recharge bits",
+    # The damage reward (`docs/rewards-learning.md`, the operator 2026-09-29).
+    # ExecutePlayerMove loads the executing move's six bytes here; the move id is
+    # STRUGGLE ($a5) when the cartridge picked Struggle for a Pokemon with no PP,
+    # which is the one attack the fly did not choose, and pays nothing.
+    'wPlayerMoveNum': 'the move the player is executing this turn',
+    # battle_struct's third field (macros/ram.asm: Species db, HP dw, PartyPos):
+    # which enemy party slot is out, $ff until a trainer's first send-out. It is
+    # what tells a trainer's two Weedles of one level apart.
+    'wEnemyMonPartyPos': "the enemy's party slot",
 }
 
 

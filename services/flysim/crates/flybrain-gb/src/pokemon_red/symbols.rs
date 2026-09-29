@@ -35,8 +35,10 @@ pub mod ram {
     pub const wListMenuID: u16 = 0xcf94;                  // 53140
     pub const wFontLoaded: u16 = 0xcfc4;                  // 53188
     pub const wWalkCounter: u16 = 0xcfc5;                 // 53189
+    pub const wPlayerMoveNum: u16 = 0xcfd2;               // 53202
     pub const wEnemyMonSpecies: u16 = 0xcfe5;             // 53221
     pub const wEnemyMonHP: u16 = 0xcfe6;                  // 53222
+    pub const wEnemyMonPartyPos: u16 = 0xcfe8;            // 53224
     pub const wEnemyMonStatus: u16 = 0xcfe9;              // 53225
     pub const wEnemyMonType1: u16 = 0xcfea;               // 53226
     pub const wEnemyMonLevel: u16 = 0xcff3;               // 53235
