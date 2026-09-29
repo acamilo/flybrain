@@ -54,7 +54,15 @@ const SEED: u32 = 20_260_922;
 const HOT: f64 = 16.0;
 const REST: f64 = 10.0;
 /// `THROW BALL`'s channel (`pokemon_red::macros::palette`).
+///
+/// Row 66's note: this is the button's *tag*; its channel is `macro_throw_ball`
+/// ([`THROW_BALL_CHANNEL`]), so the lean below sets a rate the decoder does not read and the drive
+/// in a wild battle is the calibrated tie. It is kept as it is because that drive is the one that
+/// catches from the forest checkpoint (with the real channel hot the checkpoint's one ball misses
+/// on this frame timing), and the row 66 test reuses it up to the catch.
 const BALL: &str = "MB·BALL";
+/// `THROW BALL`'s channel as the macro layer binds it.
+const THROW_BALL_CHANNEL: &str = "macro_throw_ball";
 /// Frames the stub leans on one channel before the rotation moves on, the shape of the real
 /// group's hysteresis-then-fatigue rotation.
 const BURST_FRAMES: u32 = 24;
@@ -190,9 +198,9 @@ fn a_catch_on_the_cartridge_pays_the_catch_rule_once_with_the_species_in_its_lab
         eprintln!("skipped: no FLY_CATCH_CHECKPOINT");
         return;
     };
-    let mut run = Run::resume(&rom, &checkpoint);
-    let balls = run.balls();
+    let balls = Run::resume(&rom, &checkpoint).balls();
     if balls == 0 {
+        let run = Run::resume(&rom, &checkpoint);
         eprintln!(
             "skipped: the checkpoint's bag holds no ball (map {:#04x}). `BUY BALL` can buy one \
              inside a mart; point FLY_CATCH_CHECKPOINT at a state that already has one.",
@@ -200,24 +208,47 @@ fn a_catch_on_the_cartridge_pays_the_catch_rule_once_with_the_species_in_its_lab
         );
         return;
     }
-    eprintln!("bag holds {balls} balls; map {:#04x}", run.adapter.map_id().unwrap_or(u32::MAX));
+    eprintln!("bag holds {balls} balls");
 
-    // Twenty brain minutes is generous for a forest checkpoint: the live run threw 28 balls in
-    // its first Viridian Forest session (`pokemon_red::macros::palette`).
-    let budget = 20 * 60 * 60;
-    let mut battles = 0u32;
-    let mut was_in_battle = false;
-    for _ in 0..budget {
-        run.step();
-        let now = run.in_wild_battle();
-        if now && !was_in_battle {
-            battles += 1;
+    // Five brain minutes per attempt is generous for a forest checkpoint: the live run threw 28
+    // balls in its first Viridian Forest session (`pokemon_red::macros::palette`). An attempt
+    // starts after `5 * attempt` frames with nothing pressed, so each one meets the wild battle,
+    // and the ball meets the random number, on a different frame (row 66): one ball misses about
+    // two throws in three, and which throw a checkpoint's one ball is depends on frame timing
+    // that any change to the pad moves.
+    let budget = 5 * 60 * 60;
+    let mut battles;
+    let mut attempt = 0u32;
+    let mut run = loop {
+        let mut run = Run::resume(&rom, &checkpoint);
+        for _ in 0..attempt * 5 {
+            run.ms += MS_PER_FRAME;
+            run.frame += 1;
+            let evaluated = run
+                .legacy
+                .stub_advance(Some(&mut run.layer), &mut run.gb, &mut run.adapter, run.ms)
+                .expect("a frame should complete");
+            run.payouts.extend(evaluated.rewards);
         }
-        was_in_battle = now;
-        if !run.catches().is_empty() {
-            break;
+        battles = 0;
+        let mut was_in_battle = false;
+        for _ in 0..budget {
+            run.step();
+            let now = run.in_wild_battle();
+            if now && !was_in_battle {
+                battles += 1;
+            }
+            was_in_battle = now;
+            if !run.catches().is_empty() {
+                break;
+            }
         }
-    }
+        if !run.catches().is_empty() || attempt == 23 {
+            break run;
+        }
+        eprintln!("attempt {attempt}: no catch ({battles} wild battles, {} balls left)", run.balls());
+        attempt += 1;
+    };
 
     let catches = run.catches();
     assert!(
@@ -254,4 +285,137 @@ fn a_catch_on_the_cartridge_pays_the_catch_rule_once_with_the_species_in_its_lab
     // And a species the run is paid for catching is a species the Pokédex knows: the same event
     // sets the bit the `species` rule reads, whether or not it was new to this run.
     assert!(run.balls() < balls, "a ball was spent");
+}
+
+/// What one drive from the checkpoint saw after its catch.
+struct AfterCatch {
+    caught_at: u32,
+    ended_at: u32,
+    /// Frames between the catch and the battle's end on which `THROW BALL` was on the pad.
+    ball_dealt: u32,
+    /// Every pad the fly could decide on in that stretch.
+    pads: std::collections::BTreeSet<Vec<String>>,
+}
+
+/// One drive: `idle` frames with nothing pressed first (so each attempt reaches the wild battle
+/// on a different frame, and the ball meets a different random number), then the first test's
+/// drive up to the catch, then the pad's own buttons in turn. `None` when no ball kept anything
+/// within the budget: one ball in the bag misses about two throws in three.
+fn drive_past_a_catch(rom: &[u8], checkpoint: &flysim::store::Checkpoint, idle: u32) -> Option<AfterCatch> {
+    let mut run = Run::resume(rom, checkpoint);
+    for _ in 0..idle {
+        run.ms += MS_PER_FRAME;
+        run.frame += 1;
+        let evaluated = run
+            .legacy
+            .stub_advance(Some(&mut run.layer), &mut run.gb, &mut run.adapter, run.ms)
+            .expect("a frame should complete");
+        run.payouts.extend(evaluated.rewards);
+    }
+    let budget = 5 * 60 * 60;
+    let mut caught_at: Option<u32> = None;
+    let mut ball_dealt = 0u32;
+    let mut pads = std::collections::BTreeSet::new();
+    let mut hold = 0usize;
+    for frame in 0..budget {
+        let bound = run.layer.bound_channels();
+        let hot = if caught_at.is_none() {
+            if run.in_wild_battle() {
+                Some(BALL.to_string())
+            } else {
+                let slot = (run.frame / BURST_FRAMES) as usize % run.channels.len();
+                Some(run.channels[slot].to_string())
+            }
+        } else if bound.is_empty() {
+            None
+        } else {
+            if frame % BURST_FRAMES == 0 {
+                hold += 1;
+            }
+            Some(bound[hold % bound.len()].clone())
+        };
+        if caught_at.is_some() {
+            if bound.iter().any(|channel| channel == THROW_BALL_CHANNEL) {
+                ball_dealt += 1;
+            }
+            if run.layer.running().is_none() && !bound.is_empty() {
+                pads.insert(bound.clone());
+            }
+        }
+        let active = run.decoder.decode_bound(&rates(hot.as_deref()), run.ms, false, None, Some(&bound));
+        run.legacy.execute(Some(&mut run.layer), &active, 0, run.ms, &mut run.gb, &run.adapter);
+        run.ms += MS_PER_FRAME;
+        run.frame += 1;
+        let evaluated = run
+            .legacy
+            .stub_advance(Some(&mut run.layer), &mut run.gb, &mut run.adapter, run.ms)
+            .expect("a frame should complete");
+        run.payouts.extend(evaluated.rewards);
+        if caught_at.is_none() && run.byte(ram::wCapturedMonSpecies) != 0 {
+            caught_at = Some(frame);
+        }
+        if let Some(caught_at) = caught_at
+            && run.byte(ram::wIsInBattle) == 0
+        {
+            assert!(!run.catches().is_empty(), "the catch pays at the battle's end");
+            return Some(AfterCatch { caught_at, ended_at: frame, ball_dealt, pads });
+        }
+    }
+    assert!(caught_at.is_none(), "a battle still running {budget} frames after its catch");
+    None
+}
+
+/// Row 66: once a ball has kept a Pokémon, nothing to the end of the battle is the bag.
+///
+/// After the throw `wListMenuID` still says `ITEMLISTMENU` -- it is written when a list opens and
+/// never cleared -- so on v0.6.5 every frame from "All right! … was caught!" through the Pokédex
+/// page, the nickname offer and the naming screen read as an open battle bag. The pad was `BACK`
+/// and `THROW BALL`, a `THROW BALL` that threw nothing and whose A presses typed the nickname;
+/// driven from the rung-8 survey checkpoint the battle took 6,900 frames to end after the catch.
+///
+/// The drive after the catch leans on the pad's own buttons in turn (not the whole channel
+/// list), so what it measures is what the pad offers, not how often a rotation over every channel
+/// lands on it.
+#[test]
+fn row66_after_a_catch_the_pad_is_not_the_bag_and_the_battle_ends() {
+    let Some(rom) = rom() else {
+        eprintln!("skipped: FLY_ROM is not set");
+        return;
+    };
+    let Some(checkpoint) = checkpoint() else {
+        eprintln!("skipped: no FLY_CATCH_CHECKPOINT");
+        return;
+    };
+    if Run::resume(&rom, &checkpoint).balls() == 0 {
+        eprintln!("skipped: the checkpoint's bag holds no ball");
+        return;
+    }
+    let after = (0..24)
+        .find_map(|attempt| {
+            let after = drive_past_a_catch(&rom, &checkpoint, attempt * 5);
+            if after.is_none() {
+                eprintln!("attempt {attempt}: the ball missed");
+            }
+            after
+        })
+        .expect("one of 24 attempts should keep a Pokémon");
+    eprintln!(
+        "caught at f{}, battle over at f{} ({} frames); THROW BALL dealt on {} of them; pads {:?}",
+        after.caught_at,
+        after.ended_at,
+        after.ended_at - after.caught_at,
+        after.ball_dealt,
+        after.pads
+    );
+    assert_eq!(after.ball_dealt, 0, "THROW BALL on the pad after the catch: {:?}", after.pads);
+    assert!(
+        after.pads.iter().all(|pad| !pad.iter().any(|channel| channel == "macro_back")),
+        "BACK on the pad after the catch, with no list up: {:?}",
+        after.pads
+    );
+    assert!(
+        after.ended_at - after.caught_at < 3_000,
+        "the battle took {} frames to end after the catch",
+        after.ended_at - after.caught_at
+    );
 }
