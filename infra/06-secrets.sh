@@ -26,7 +26,7 @@
 # docs/design/stage-bridge.md section B1 has flybridge read
 # TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET as two separate
 # LoadCredentialEncrypted= values sourced from
-# twitch/fly-pokemon-client-{id,secret}. This script follows infra.md (the
+# twitch/<app>-client-{id,secret}. This script follows infra.md (the
 # doc this task implements) and writes ONE twitch-app.cred containing both
 # values as two lines ("<client_id>\n<client_secret>\n"); flybridge's own
 # implementation (out of scope here, not yet written) will need to parse
@@ -118,9 +118,14 @@ fi
 # docs/stream-mvp-plan.md's rollout order) — install only if both pass
 # entries already exist, so running this before the Twitch app is
 # registered is a clean no-op rather than a hard failure.
-BRIDGE_ID_KEY="${BRIDGE_ID_KEY:-twitch/helix-client-id}"
-BRIDGE_SECRET_KEY="${BRIDGE_SECRET_KEY:-twitch/helix-client-secret}"
-if command -v pass >/dev/null 2>&1 \
+# The two entry NAMES come from the env file (BRIDGE_ID_KEY, BRIDGE_SECRET_KEY): a
+# `pass` entry name identifies the operator's store, so it is not spelled here.
+BRIDGE_ID_KEY="${BRIDGE_ID_KEY:-}"
+BRIDGE_SECRET_KEY="${BRIDGE_SECRET_KEY:-}"
+if [ -z "$BRIDGE_ID_KEY" ] || [ -z "$BRIDGE_SECRET_KEY" ]; then
+    log "06-secrets: WARNING: BRIDGE_ID_KEY / BRIDGE_SECRET_KEY are not set in the env file, skipping twitch-app." \
+        "Set both to the pass entry names of the Twitch app id and secret (infra/env/example.env) to install it."
+elif command -v pass >/dev/null 2>&1 \
     && pass show "$BRIDGE_ID_KEY" >/dev/null 2>&1 \
     && pass show "$BRIDGE_SECRET_KEY" >/dev/null 2>&1; then
     log "06-secrets: installing twitch-app from pass:${BRIDGE_ID_KEY} + pass:${BRIDGE_SECRET_KEY}"
