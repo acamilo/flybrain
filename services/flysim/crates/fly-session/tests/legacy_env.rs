@@ -506,25 +506,21 @@ fn the_memory_image_leaves_the_emulator_as_it_found_it() {
     let before = read.export_state().unwrap();
     let image = legacy_env::memory_image(&mut read).unwrap();
     assert_eq!(image.len(), 65_536);
-    assert_eq!(
-        read.export_state().unwrap(),
-        before,
-        "the guarded read is neutral"
-    );
+    // MEM-01's bulk read is neutral by construction: no guard around it.
+    assert_eq!(read.export_state().unwrap(), before, "the bulk read is neutral");
     for (address, byte) in image.iter().enumerate() {
-        assert_eq!(
-            *byte,
-            unread.read_uncached(address as u16),
-            "byte {address:04x} is fly_gb_read_mem's"
-        );
+        let address = address as u16;
+        if flybrain_gb::captured(address) {
+            assert_eq!(*byte, unread.read_uncached(address), "byte {address:04x} is fly_gb_read_mem's");
+        } else {
+            assert_eq!(*byte, flybrain_gb::NOT_CAPTURED, "register byte {address:04x} is not captured");
+        }
     }
+    // Why the register windows are not captured: reading them through `emulator_read_mem` runs
+    // binjgb's lazy catch-up, which moves the exported state.
     let mut fresh = boot();
     let _: Vec<u8> = (0..=u16::MAX).map(|a| fresh.read_uncached(a)).collect();
-    assert_ne!(
-        fresh.export_state().unwrap(),
-        before,
-        "an unguarded read is not neutral"
-    );
+    assert_ne!(fresh.export_state().unwrap(), before, "a register read is not neutral");
     let mut unread = boot();
     for e in [&mut read, &mut unread] {
         e.set_buttons(32);

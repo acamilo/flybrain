@@ -249,13 +249,20 @@ is not the environment's `contentDigest`. The emulator answers its own bank read
   completes before any `State.Capture` or FLYSIM01 export at that boundary (section 16).
 
 **Amendment, 2026-09-29 (ENV-01).** Two consequences of building this section, recorded in the
-[implementation guide](implementation.md) ENV-01 entry: the memory image cannot be taken with a
+[implementation guide](implementation.md) ENV-01 entry: ~~the memory image cannot be taken with a
 plain loop of `emulator_read_mem`, because reading OAM, VRAM, the serial and timer registers,
 `IF`, `STAT` or `LY` advances binjgb's lazy synchronisation and changes what `export_state` writes
 -- the environment reads it between an export and an import of the same bytes, so slots and
-captures stay byte for byte the legacy loop's; and a `FLYSIM01` world is restored at boundary
+captures stay byte for byte the legacy loop's;~~ and a `FLYSIM01` world is restored at boundary
 `emulatorFrame - 1`, its world time and audio position derived from that boundary, with the
 ratchet's snapshot as the slot `best`.
+
+*Struck 2026-09-29 (ENV-01 review, R1).* The first consequence is superseded by section 8's MEM-01
+amendment of the same day: the register windows are not captured and read `$FF`, so the image is
+MEM-01's one bulk read with no export/import guard around it, read-only by construction
+(`legacy_env::memory_image`). With it the service's traces still reproduce every frame, WRAM and
+slot-state digest (rollback 3,199, climb 3,156, r58 11,043 transitions), because the legacy
+adapter and macros never read VRAM, OAM or I/O.
 
 ## 10. Executor `pokered-macros-v1`
 

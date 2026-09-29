@@ -82,34 +82,22 @@ pub fn capabilities() -> Vec<Id> {
 // -------------------------------------------------------------------------------------------
 // The emulator seams
 
-/// The boundary's memory image: byte `i` is `fly_gb_read_mem(i)` (`legacy-gameboy-v1` section 8),
-/// read without leaving a trace in the emulator.
+/// The boundary's memory image (`legacy-gameboy-v1` section 8 and its MEM-01 amendment of
+/// 2026-09-29): MEM-01's one read-only bulk read, `Emulator::read_memory_image`.
 ///
-/// **The MEM-01 seam.** MEM-01 adds one read-only bulk read to the binjgb shim; when it lands the
-/// 65,536 reads below become that one call and nothing else in this worker changes. The interim
-/// body is the same function called 65,536 times through the existing `read_uncached`, so the
-/// bytes are already the specified ones; the per-frame read cache is neither consulted nor
-/// filled.
+/// Every memory byte (`flybrain_gb::captured`) is what `fly_gb_read_mem(i)` returns at this
+/// boundary; the three register windows -- VRAM, OAM, I/O with the APU and wave RAM -- are not
+/// captured and read `$FF` (`flybrain_gb::NOT_CAPTURED`). binjgb answers every captured address
+/// straight out of an array, so the read is state-neutral by construction: nothing is saved or
+/// imported around it, and `export_state` before and after is byte-identical
+/// (`tests/legacy_env.rs`, `the_memory_image_leaves_the_emulator_as_it_found_it`).
 ///
-/// **Why the save and the import.** `emulator_read_mem` is not state-neutral: reading OAM, VRAM,
-/// the serial and timer registers, `IF`, `STAT` or `LY` runs binjgb's lazy synchronisation up to
-/// the current tick, which changes the bytes `export_state` writes (never, in a 3,199-frame
-/// replay, a frame or WRAM). The legacy loop reads none of them between a frame and the ratchet's
-/// capture, so a slot saved after an unguarded image read would not be the slot the service
-/// saves. The image is therefore read between an `export_state` and an `import_state` of the same
-/// bytes, which leaves the emulator exactly as the frame left it (`tests/legacy_env.rs`,
-/// `the_memory_image_leaves_the_emulator_as_it_found_it`).
+/// (Until the ENV-01 review, 2026-09-29, R1, this body read all 65,536 addresses through
+/// `read_uncached` between an `export_state` and an `import_state` of the same bytes, because a
+/// read of a register window runs binjgb's lazy catch-up and moves the exported state. MEM-01's
+/// rule removes the cause: a register window is never read.)
 pub fn memory_image(emulator: &mut Emulator) -> Result<Vec<u8>, String> {
-    let saved = emulator
-        .export_state()
-        .map_err(|e| format!("saving before the image: {e}"))?;
-    let image = (0..=u16::MAX)
-        .map(|address| emulator.read_uncached(address))
-        .collect();
-    emulator
-        .import_state(&saved)
-        .map_err(|e| format!("restoring after the image: {e}"))?;
-    Ok(image)
+    Ok(emulator.read_memory_image().as_bytes().to_vec())
 }
 
 /// binjgb's unsigned 8-bit interleaved stereo as the declared `f32le-interleaved`, with binjgb's

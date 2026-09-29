@@ -270,7 +270,7 @@ the FLYSIM01 export from the three halves (STATE-02; the world's half is
 
 **Amendment, 2026-09-29 (ENV-01).** Four readings the contract left open, fixed by this slice:
 
-- *The image read is not state-neutral, so it is guarded.* `emulator_read_mem` of OAM, VRAM,
+- ~~*The image read is not state-neutral, so it is guarded.* `emulator_read_mem` of OAM, VRAM,
   `FF01`/`FF02`, `FF04`-`FF06`, `IF`, `STAT` or `LY` runs binjgb's lazy synchronisation, and
   `export_state` afterwards differs (never, over 17,398 replayed frames, a frame or WRAM). The
   legacy loop reads none of these between a frame and the ratchet's capture, so an unguarded image
@@ -278,7 +278,11 @@ the FLYSIM01 export from the three halves (STATE-02; the world's half is
   between `export_state` and `import_state` of the same bytes, which leaves the emulator exactly as
   the frame left it; `legacy-gameboy-v1` section 8's proof ("export before and after, compare")
   therefore fails for a plain 65,536-read loop and holds for the guarded one. MEM-01's bulk read
-  must keep that guard (or equivalent).
+  must keep that guard (or equivalent).~~
+  *Struck 2026-09-29 (ENV-01 review, R1):* superseded by MEM-01 (legacy-gameboy-v1 section 8
+  amendment). The register windows are not captured, so `legacy_env::memory_image` is MEM-01's
+  `Emulator::read_memory_image` with no guard, neutral by construction; the service traces still
+  match, and the toy golden's image digests were regenerated.
 - *A `FLYSIM01` world starts at `k = emulatorFrame - setupFrames`.* The legacy file has no
   boundary, world clock or audio position. The frame counter advances once per transition and
   never across a rollback, so `engineFrame = k + 1` from a fresh start on; `worldTime` is
