@@ -85,6 +85,10 @@ log "building in $crate_dir for target-cpu=haswell (the host is E5-2660 v3, Hasw
     # without a rebuild. It lands next to OUT_PATH, where package-release.sh
     # looks for it.
     RUSTFLAGS="-C target-cpu=haswell" cargo build --release --target "$CARGO_TARGET" --bin fly-edge
+    # fly-shadow (SHADOW-01, infra/units/flyshadow.service): the session runtime shadowing the
+    # live fly, and fly-session, its worker program for the process execution mode. Both land
+    # next to OUT_PATH, where package-release.sh looks for them.
+    RUSTFLAGS="-C target-cpu=haswell" cargo build --release --target "$CARGO_TARGET" --bin fly-shadow --bin fly-session
 )
 
 built="${crate_dir}/target/${CARGO_TARGET}/release/flysim"
@@ -118,4 +122,11 @@ edge_out="$(dirname "$OUT_PATH")/fly-edge"
 cp "$edge_built" "$edge_out"
 chmod 0755 "$edge_out"
 log "built $edge_out ($(du -h "$edge_out" | cut -f1))"
+for extra in fly-shadow fly-session; do
+    extra_built="${crate_dir}/target/${CARGO_TARGET}/release/${extra}"
+    [ -x "$extra_built" ] || die "expected binary not found after build: $extra_built"
+    cp "$extra_built" "$(dirname "$OUT_PATH")/${extra}"
+    chmod 0755 "$(dirname "$OUT_PATH")/${extra}"
+    log "built $(dirname "$OUT_PATH")/${extra}"
+done
 log "next: infra/build/package-release.sh VERSION $OUT_PATH <stage-dir> <bridge-dir> <out-dir>"

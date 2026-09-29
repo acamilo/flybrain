@@ -507,6 +507,56 @@ if grep -E '^(ALWAYS_ON_UNITS|APP_UNITS)=' "$INFRA_DIR/07-enable.sh" "$INFRA_DIR
 else
     pass "07-enable.sh and verify.sh leave flyedge.service alone"
 fi
+# ---------------------------------------------------------------------------
+# 3b3. The shadow run (SHADOW-01, infra/units/flyshadow.service).
+#
+# Report-only and off by default. What would break it is statically visible: the unit ending up
+# in a target or 07-enable's list; being bound to flysim (every flysim restart would take the
+# shadow with it, and it must follow restarts, not die of them); restarting after a divergence
+# (the verdict must stay); losing its idle scheduling (it must never take a live cycle); or
+# landing on flysim's cpuset.
+# ---------------------------------------------------------------------------
+echo "--- flyshadow.service: off by default, report-only, idle, never bound to flysim ---"
+SHADOW_UNIT="$INFRA_DIR/units/flyshadow.service"
+if [ ! -f "$SHADOW_UNIT" ]; then
+    fail "units/flyshadow.service is missing"
+else
+    grep -qE '^ExecStart=/opt/fly/current/fly-shadow run$' "$SHADOW_UNIT" \
+        && pass "flyshadow.service runs the release's fly-shadow" \
+        || fail "flyshadow.service ExecStart must be /opt/fly/current/fly-shadow run"
+    grep -qE '^ConditionPathExists=/opt/fly/current/fly-shadow$' "$SHADOW_UNIT" \
+        && pass "flyshadow.service stays inactive on a release without fly-shadow" \
+        || fail "flyshadow.service needs ConditionPathExists=/opt/fly/current/fly-shadow"
+    if grep -qE '^(Requires|BindsTo|PartOf|Requisite)=.*flysim' "$SHADOW_UNIT"; then
+        fail "flyshadow.service must not be bound to flysim.service: it follows flysim's restarts"
+    else
+        pass "flyshadow.service outlives flysim restarts (not bound to flysim.service)"
+    fi
+    grep -qE '^RestartPreventExitStatus=3$' "$SHADOW_UNIT" \
+        && pass "flyshadow.service stays stopped after a divergence (exit 3)" \
+        || fail "flyshadow.service needs RestartPreventExitStatus=3 so a diverged verdict stays"
+    grep -qE '^CPUSchedulingPolicy=idle$' "$SHADOW_UNIT" \
+        && pass "flyshadow.service runs SCHED_IDLE" \
+        || fail "flyshadow.service must be CPUSchedulingPolicy=idle: it may only use idle CPU"
+    grep -qE '^\[Install\]' "$SHADOW_UNIT" \
+        && fail "flyshadow.service has an [Install] section; it is started by fly-shadow-run only" \
+        || pass "flyshadow.service has no [Install] section (never enabled)"
+fi
+if target_pulls "$INFRA_DIR/units/fly.target" | grep -qx 'flyshadow.service'; then
+    fail "fly.target pulls flyshadow.service in; it must stay off until fly-shadow-run starts it"
+else
+    pass "fly.target does not pull flyshadow.service in"
+fi
+if grep -E '^(ALWAYS_ON_UNITS|APP_UNITS)=' "$INFRA_DIR/07-enable.sh" "$INFRA_DIR/verify.sh" | grep -q 'flyshadow'; then
+    fail "07-enable.sh or verify.sh lists flyshadow.service as always-on"
+else
+    pass "07-enable.sh and verify.sh leave flyshadow.service alone"
+fi
+if grep -qF 'flyshadow) cpus="${page_cpus},${encoder_cpus}" ;;' "$INFRA_DIR/05-deploy.sh"; then
+    pass "05-deploy.sh keeps flyshadow.service off flysim's CPUs"
+else
+    fail "05-deploy.sh must give flyshadow.service the page and encoder CPUs, never flysim's"
+fi
 if grep -qF 'FLY_FEED_VIA_EFFECTIVE="$(feed_via_normalize "${FLY_FEED_VIA:-}")"' "$INFRA_DIR/05-deploy.sh" \
     && grep -qF 'echo "FLY_FEED_VIA=${FLY_FEED_VIA_EFFECTIVE}"' "$INFRA_DIR/05-deploy.sh"; then
     pass "05-deploy.sh validates FLY_FEED_VIA and writes the normalized value"

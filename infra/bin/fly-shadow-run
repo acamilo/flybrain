@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# infra/bin/fly-shadow-run — start, stop and read SHADOW-01's shadow run on the release container.
+# Pushed to /opt/fly/bin/fly-shadow-run by 05-deploy.sh. Run as root inside the container, by the
+# coordinator, with the container claimed in the host's agent claim log (one agent at a time).
+#
+#   fly-shadow-run start     turn flysim's trace on, start flyshadow.service, restart flysim once
+#   fly-shadow-run stop      stop flyshadow.service, turn the trace off (at flysim's next restart;
+#                            --restart-flysim restarts it now), remove the trace and the spool
+#   fly-shadow-run status    the verdict in one screen
+#   fly-shadow-run check     CUT-01's hook: exit 0 only if the verdict allows the automatic cutover
+#
+# The shadow is report-only (infra/units/flyshadow.service). `start` restarts flysim.service once,
+# the same operator action as the unstick rule's restart: a restore keeps the rung and clears the
+# ledgers. It is needed because flysim reads FLY_TRACE_DIR at start, and because the shadow can
+# only follow a process from that process's own startup save.
+#
+# Files (all owned by fly):
+#   /srv/fly/shadow/trace/trace-<ms>-<pid>.jsonl   flysim's per-process trace (capped at 4 GiB each)
+#   /srv/fly/shadow/spool/                          copies of the live saves, bounded (512 MiB)
+#   /srv/fly/shadow/verdict.json                    fly-shadow-verdict-v1 (the CUT-01 contract)
+#   /srv/fly/shadow/divergence.json                 the first divergence with its context
+set -euo pipefail
+
+SHADOW_DIR=/srv/fly/shadow
+DROPIN_DIR=/etc/systemd/system/flysim.service.d
+DROPIN="$DROPIN_DIR/shadow-trace.conf"
+BIN=/opt/fly/current/fly-shadow
+# The ledger digest period in transitions: about one a second. Every boundary is proved in the
+# offline rehearsal (the SHADOW-01 report); on the stream a digest a second bounds the extra work.
+LEDGERS_EVERY="${FLY_SHADOW_LEDGERS_EVERY:-60}"
+
+die() { echo "fly-shadow-run: $*" >&2; exit 2; }
+log() { echo "fly-shadow-run: $*"; }
+
+need_root() { [ "$(id -u)" = 0 ] || die "run as root (it installs a drop-in and restarts flysim)"; }
+
+start() {
+    need_root
+    [ -x "$BIN" ] || die "$BIN is missing: this release predates SHADOW-01"
+    systemctl is-active --quiet flyshadow.service && die "flyshadow.service is already running"
+    install -d -o fly -g fly -m 0755 "$SHADOW_DIR" "$SHADOW_DIR/trace"
+    # A previous run's verdict is kept beside, never read as this run's.
+    if [ -f "$SHADOW_DIR/verdict.json" ]; then
+        mv "$SHADOW_DIR/verdict.json" "$SHADOW_DIR/verdict.$(date -u +%Y%m%dT%H%M%SZ).json"
+    fi
+    rm -f "$SHADOW_DIR/divergence.json"
+    mkdir -p "$DROPIN_DIR"
+    cat > "$DROPIN" <<EOF
+# written by fly-shadow-run start (SHADOW-01); removed by fly-shadow-run stop.
+[Service]
+Environment=FLY_TRACE_DIR=$SHADOW_DIR/trace
+Environment=FLY_TRACE_LEDGERS=$LEDGERS_EVERY
+EOF
+    systemctl daemon-reload
+    systemctl start flyshadow.service
+    log "flyshadow.service started; restarting flysim.service so the shadow follows it from its start"
+    systemctl restart flysim.service
+    log "started. Read progress with: fly-shadow-run status"
+}
+
+stop() {
+    need_root
+    local restart_flysim=0 keep=0
+    for arg in "$@"; do
+        case "$arg" in
+            --restart-flysim) restart_flysim=1 ;;
+            --keep) keep=1 ;;
+            *) die "stop: unknown option $arg" ;;
+        esac
+    done
+    systemctl stop flyshadow.service || true
+    rm -f "$DROPIN"
+    systemctl daemon-reload
+    if [ "$restart_flysim" = 1 ]; then
+        systemctl restart flysim.service
+        log "flysim.service restarted without the trace"
+    else
+        log "flysim keeps writing its current trace file until its next restart (capped at 4 GiB)"
+    fi
+    if [ "$keep" = 0 ]; then
+        rm -rf "$SHADOW_DIR/spool" "$SHADOW_DIR/work"
+        # The running flysim still holds its file open; removing the name frees the space when it
+        # exits, and a restarted flysim writes no new one.
+        find "$SHADOW_DIR/trace" -name 'trace-*.jsonl' -delete 2>/dev/null || true
+    fi
+    log "stopped; the verdict stays in $SHADOW_DIR/verdict.json"
+}
+
+status() {
+    systemctl is-active flyshadow.service || true
+    [ -f "$SHADOW_DIR/verdict.json" ] || { echo "no verdict yet"; return 0; }
+    python3 - "$SHADOW_DIR/verdict.json" <<'PY'
+import json, sys
+v = json.load(open(sys.argv[1]))
+c = v["compared"]
+print(f"verdict {v['status']}: {v['reason']}")
+print(f"  compared {c['brainSeconds']:.0f} of {v['required']['brainSeconds']:.0f} brain s "
+      f"({c['transitions']} transitions, {c['segments']} segments); updated {v['updatedAt']}")
+print(f"  sugar {c['sugar']}, rewards {c['rewards']} {c['rewardKinds']}, macro events {c['macroEvents']}, "
+      f"slot saves {c['slotSaves']}, rollbacks {c['rollbacks']}, ledger checks {c['ledgerChecks']}")
+print(f"  checkpoints {c['checkpoints']}; skipped {len(v['skipped'])}; spool evicted {v['spoolEvicted']}")
+print(f"  behind the live trace ~{v['lagTransitions']} transitions; live lag {v['liveLagSeconds']} s; cost {v['cost']}")
+if v["firstDivergence"]:
+    print(f"  FIRST DIVERGENCE: {json.dumps(v['firstDivergence'])}")
+PY
+}
+
+check() {
+    [ -x "$BIN" ] || die "$BIN is missing"
+    # The live service's configuration, for its compatibility string.
+    set -a
+    # shellcheck disable=SC1091
+    . /etc/fly/fly.env
+    set +a
+    # The binary CUT-01 switches to: SERVE-01's session runtime, from the release the shadow ran in.
+    "$BIN" check --verdict "$SHADOW_DIR/verdict.json" "$@"
+}
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+    start) start ;;
+    stop) stop "$@" ;;
+    status) status ;;
+    check) check "$@" ;;
+    *) echo "usage: fly-shadow-run start|stop [--restart-flysim] [--keep]|status|check [--max-age-seconds N]" >&2; exit 2 ;;
+esac
