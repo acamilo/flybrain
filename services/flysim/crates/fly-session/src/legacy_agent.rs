@@ -312,6 +312,19 @@ pub fn encode_payload(
     encode_envelope(PAYLOAD_MAGIC, &manifest, &chunks.chunks).map_err(|e| e.to_string())
 }
 
+/// The reinforcement calls a `FLYAGT01` capture payload records (`learning.updates`).
+pub fn decode_payload_reinforcements(bytes: &[u8]) -> Result<u64, String> {
+    let parts = decode_envelope(bytes, PAYLOAD_MAGIC)
+        .map_err(|e| format!("not a {PAYLOAD_MAGIC} envelope: {e}"))?;
+    let session = parts.manifest.get("session").ok_or("the agent payload has no session member")?;
+    let session: Value = serde_json::from_str(&session.stringify()).map_err(|e| e.to_string())?;
+    session
+        .get("reinforcements")
+        .and_then(Value::as_str)
+        .and_then(|text| text.parse().ok())
+        .ok_or_else(|| "the agent payload has no reinforcement count".to_owned())
+}
+
 /// The agent state a `FLYAGT01` capture payload carries, with the accumulator's remainder in it.
 /// The `session` member is not validated here; `State.StageRestore` does that.
 pub fn decode_payload_state(bytes: &[u8]) -> Result<AgentState, String> {
@@ -1536,6 +1549,29 @@ impl LegacyAgentWorker {
         if !state.warmed_up {
             return Err(incompatible("the staged agent state was never warmed up"));
         }
+        // The conflicts first: a worker already holding a staged restore, or a token already
+        // activated, is refused before a replacement network is built for nothing.
+        if let Some(staged) = &self.staged {
+            return Err(DomainError::before(
+                ErrorCode::Conflict,
+                format!(
+                    "this worker already holds the staged restore {} for checkpoint {}",
+                    staged.token, staged.checkpoint_id
+                ),
+            ));
+        }
+        let token = crate::agent::restore_token(
+            &params.checkpoint_id,
+            &scope,
+            &actual,
+            &self.config.incarnation_id,
+        );
+        if self.activated.contains(&token) {
+            return Err(DomainError::before(
+                ErrorCode::Conflict,
+                "this exact restore was already activated on this worker",
+            ));
+        }
         // A replacement fly: the dataset is loaded and checked here, not trusted.
         let dataset = self.dataset()?;
         let (mut agent, graph) = self.build_agent(dataset.clone(), seed)?;
@@ -1559,27 +1595,6 @@ impl LegacyAgentWorker {
                 return Err(incompatible("the staged input frame is not the profile's view"));
             }
             agent.network.set_visual_frame(frame, width, height);
-        }
-        if let Some(staged) = &self.staged {
-            return Err(DomainError::before(
-                ErrorCode::Conflict,
-                format!(
-                    "this worker already holds the staged restore {} for checkpoint {}",
-                    staged.token, staged.checkpoint_id
-                ),
-            ));
-        }
-        let token = crate::agent::restore_token(
-            &params.checkpoint_id,
-            &scope,
-            &actual,
-            &self.config.incarnation_id,
-        );
-        if self.activated.contains(&token) {
-            return Err(DomainError::before(
-                ErrorCode::Conflict,
-                "this exact restore was already activated on this worker",
-            ));
         }
         self.staged = Some(StagedAgent {
             token: token.clone(),

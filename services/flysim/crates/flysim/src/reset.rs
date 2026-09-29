@@ -326,6 +326,7 @@ mod tests {
             },
         };
         let runtime = store::RuntimeState {
+            reinforcements: None,
             generation,
             wall_ms: 1_700_000_000_000,
             rom_sha256: "ab".repeat(32),

@@ -112,6 +112,9 @@ pub struct HostHalf {
 #[derive(Clone, Debug)]
 pub struct Halves {
     pub agent: AgentState,
+    /// The agent's reinforcement calls (`learning.updates`): the file's `reinforcements`, or
+    /// [`legacy_reinforcements`] for a file from before the counter.
+    pub reinforcements: u64,
     pub world: WorldState,
     pub task: TaskHalf,
     pub host: HostHalf,
@@ -132,6 +135,7 @@ pub fn world_state(world_payload: &[u8]) -> Result<WorldState, String> {
 
 /// The `FLYSIM01` runtime fields of one boundary, exactly as `Sim::snapshot_state` fills them.
 pub fn runtime_state(
+    reinforcements: u64,
     world: &WorldState,
     slot_id: &Id,
     task: &TaskHalf,
@@ -158,6 +162,7 @@ pub fn runtime_state(
         last_event_id: host.last_event_id,
         reward: task.reward.clone(),
         ratchet: task.ratchet,
+        reinforcements: Some(reinforcements),
         emulator,
         framebuffer,
         ratchet_game,
@@ -169,12 +174,14 @@ pub fn runtime_state(
 /// and the host's.
 pub fn export_states(
     agent: &AgentState,
+    reinforcements: u64,
     world: &WorldState,
     slot_id: &Id,
     task: &TaskHalf,
     host: &HostHalf,
 ) -> Result<Vec<u8>, String> {
-    store::encode(agent, &runtime_state(world, slot_id, task, host)).map_err(|e| format!("{e:#}"))
+    store::encode(agent, &runtime_state(reinforcements, world, slot_id, task, host))
+        .map_err(|e| format!("{e:#}"))
 }
 
 /// The `FLYSIM01` envelope of one boundary, from the two participants' capture payloads.
@@ -186,8 +193,9 @@ pub fn export(
     host: &HostHalf,
 ) -> Result<Vec<u8>, String> {
     let agent = agent_state(agent_payload)?;
+    let reinforcements = legacy_agent::decode_payload_reinforcements(agent_payload)?;
     let world = world_state(world_payload)?;
-    export_states(&agent, &world, slot_id, task, host)
+    export_states(&agent, reinforcements, &world, slot_id, task, host)
 }
 
 // -------------------------------------------------------------------------------------------
@@ -213,6 +221,9 @@ pub fn halves(
     }
     .into_state(episode_id, slot_id, audio_sample_rate)?;
     Ok(Halves {
+        reinforcements: runtime
+            .reinforcements
+            .unwrap_or_else(|| legacy_reinforcements(&checkpoint.agent)),
         agent: checkpoint.agent.clone(),
         world,
         task: TaskHalf {
@@ -288,6 +299,7 @@ pub struct AgentImport {
 /// outcome and not to its own bytes (`legacy-gameboy-v1` section 16 amendment of 2026-09-29).
 pub fn agent_payload(
     state: &AgentState,
+    reinforcements: u64,
     frame_on_screen: &[u8],
     import: &AgentImport,
     checkpoint_id: &Id,
@@ -304,7 +316,7 @@ pub fn agent_payload(
             committed_step: source_scope.step,
             profile: &import.profile,
             seed: import.seed,
-            reinforcements: legacy_reinforcements(state),
+            reinforcements,
             macro_channels: &import.macro_channels,
         },
         &accumulator,
@@ -327,6 +339,12 @@ pub fn world_payload(
         source_scope: source_scope.clone(),
         configuration_digest: configuration_digest.clone(),
     })
+}
+
+/// The checkpoint id of the payloads imported from a `FLYSIM01` file: its generation, so two
+/// imports of one file name the same checkpoint and imports of two files never do.
+pub fn import_checkpoint_id(generation: u64) -> Id {
+    id(&format!("flysim01-g{generation}"))
 }
 
 /// The scope a payload made from a `FLYSIM01` file records as its source: the session, the
@@ -852,7 +870,7 @@ mod tests {
     fn the_export_is_the_legacy_encoder_on_the_same_values_and_splits_back_into_its_halves() {
         let agent = agent(9_000.0, 0.75, 3.0);
         let world = world_at(12_344, true);
-        let bytes = export_states(&agent, &world, &id("best"), &task(), &host(4)).unwrap();
+        let bytes = export_states(&agent, 55, &world, &id("best"), &task(), &host(4)).unwrap();
         // Field for field what `Sim::snapshot_state` builds, through the one encoder.
         let legacy = store::encode(
             &agent,
@@ -868,6 +886,7 @@ mod tests {
                 last_event_id: 77,
                 reward: task().reward,
                 ratchet: task().ratchet,
+                reinforcements: Some(55),
                 emulator: vec![7; 64],
                 framebuffer: vec![9; FRAMEBUFFER_LEN],
                 ratchet_game: vec![1, 2, 3],
@@ -878,11 +897,12 @@ mod tests {
         assert_eq!(bytes, legacy);
         let back = split(&bytes, &id("ep1"), &id("best"), 48_000).unwrap();
         assert_eq!(back.agent, agent);
+        assert_eq!(back.reinforcements, 55);
         assert_eq!(back.world, world);
         assert_eq!(back.task, task());
         assert_eq!(back.host, host(4));
         // And no slot is an empty ratchet snapshot, both ways.
-        let bytes = export_states(&agent, &world_at(5, false), &id("best"), &task(), &host(1)).unwrap();
+        let bytes = export_states(&agent, 3, &world_at(5, false), &id("best"), &task(), &host(1)).unwrap();
         let back = split(&bytes, &id("ep1"), &id("best"), 48_000).unwrap();
         assert!(back.world.slots.is_empty());
     }
@@ -899,13 +919,13 @@ mod tests {
         };
         let scope = legacy_source_scope(&id("s1"), world.boundary);
         let context = gameboy::ReadoutContext { boot: false, bound: vec![], location: None }.to_typed();
-        let agent_bytes = agent_payload(&agent, &world.framebuffer, &import, &id("c1"), &scope, &context).unwrap();
+        let agent_bytes = agent_payload(&agent, 70, &world.framebuffer, &import, &id("c1"), &scope, &context).unwrap();
         let world_bytes = world_payload(&world, &id("world"), &id("c1"), &scope, &"cd".repeat(32));
         assert_eq!(agent_state(&agent_bytes).unwrap(), agent);
         assert_eq!(world_state(&world_bytes).unwrap(), world);
         assert_eq!(
             export(&agent_bytes, &world_bytes, &id("best"), &task(), &host(9)).unwrap(),
-            export_states(&agent, &world, &id("best"), &task(), &host(9)).unwrap()
+            export_states(&agent, 70, &world, &id("best"), &task(), &host(9)).unwrap()
         );
         assert!(export(&world_bytes, &agent_bytes, &id("best"), &task(), &host(9)).is_err());
     }
@@ -935,6 +955,7 @@ mod tests {
                 gameboy::ReadoutContext { boot: true, bound: vec![], location: None }.to_typed();
             let bytes = agent_payload(
                 &state,
+                legacy_reinforcements(&state),
                 &[0; FRAMEBUFFER_LEN],
                 &import,
                 &id("c1"),
@@ -956,6 +977,50 @@ mod tests {
         assert_eq!(session["sourceScope"]["epoch"], LEGACY_SOURCE_EPOCH);
         assert_eq!(session["accumulator"]["executedTicks"], "108246189");
         assert_eq!(session["accumulator"]["warmupOffset"], "2500");
+    }
+
+    #[test]
+    fn the_reinforcement_count_survives_every_round_trip_and_starts_at_the_lower_bound_once() {
+        // A file from before the counter: the import starts at plasticity.updates.
+        let agent = agent(9_000.0, 0.75, 40.0);
+        let world = world_at(10, true);
+        let mut runtime = runtime_state(0, &world, &id("best"), &task(), &host(1));
+        runtime.reinforcements = None;
+        let old = store::encode(&agent, &runtime).unwrap();
+        let halves = split(&old, &id("ep1"), &id("best"), 48_000).unwrap();
+        assert_eq!(halves.reinforcements, 40);
+        // The session runs on and counts 900 more calls than the gains moved; the export carries
+        // them, and every later import, legacy or session, starts where the last one stopped.
+        let bytes = export_states(&agent, 940, &world, &id("best"), &task(), &host(2)).unwrap();
+        let again = split(&bytes, &id("ep1"), &id("best"), 48_000).unwrap();
+        assert_eq!(again.reinforcements, 940);
+        let import = AgentImport {
+            agent_id: id("fly"),
+            profile: gameboy::profile_asset_ref(),
+            seed: 22_222,
+            macro_channels: Vec::new(),
+        };
+        let context = gameboy::ReadoutContext { boot: false, bound: vec![], location: None }.to_typed();
+        let payload = agent_payload(
+            &again.agent,
+            again.reinforcements,
+            &again.world.framebuffer,
+            &import,
+            &import_checkpoint_id(again.host.generation),
+            &legacy_source_scope(&id("s1"), again.world.boundary),
+            &context,
+        )
+        .unwrap();
+        assert_eq!(crate::legacy_agent::decode_payload_reinforcements(&payload).unwrap(), 940);
+        let world_bytes = world_payload(
+            &again.world,
+            &id("world"),
+            &import_checkpoint_id(again.host.generation),
+            &legacy_source_scope(&id("s1"), again.world.boundary),
+            &"cd".repeat(32),
+        );
+        assert_eq!(export(&payload, &world_bytes, &id("best"), &again.task, &again.host).unwrap(), bytes);
+        assert_eq!(import_checkpoint_id(2), id("flysim01-g2"));
     }
 
     #[test]
@@ -984,7 +1049,7 @@ mod tests {
         let context = gameboy::ReadoutContext { boot: false, bound: vec![], location: None }.to_typed();
         LegacyCapture {
             boundary,
-            agent_payload: agent_payload(&agent, &world.framebuffer, &import, &id("c"), &scope, &context)
+            agent_payload: agent_payload(&agent, 3, &world.framebuffer, &import, &id("c"), &scope, &context)
                 .unwrap(),
             world_payload: world_payload(&world, &id("world"), &id("c"), &scope, &"cd".repeat(32)),
             task: task(),

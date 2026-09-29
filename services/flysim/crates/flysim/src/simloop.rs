@@ -1396,6 +1396,7 @@ impl Sim {
             last_event_id: self.log.next_id().saturating_sub(1),
             reward: self.adapter.export_state(),
             ratchet: self.ratchet.state,
+            reinforcements: Some(self.frame.reinforcements),
             emulator: self
                 .emulator
                 .export_state()

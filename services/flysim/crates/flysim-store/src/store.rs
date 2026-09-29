@@ -290,6 +290,11 @@ pub struct RuntimeState {
     /// The adapter's own lifetime reward state.
     pub reward: serde_json::Value,
     pub ratchet: flybrain_gb::RatchetState,
+    /// Reinforcement calls the fly has had: one per committed frame while the rule is enabled,
+    /// zero sums included (the session runtime's `learning.updates`). An optional manifest member
+    /// since STATE-02 (2026-09-29): a file without it predates the counter, and a reader starts
+    /// from its `plasticity.updates`, a lower bound. Readers that do not know it ignore it.
+    pub reinforcements: Option<u64>,
     pub emulator: Vec<u8>,
     pub framebuffer: Vec<u8>,
     /// The ratchet's best safe snapshot, if it has one.
@@ -322,6 +327,9 @@ pub fn encode(
     manifest.set("lastEventId", (runtime.last_event_id as f64).into());
     manifest.set("reward", to_json_value(&runtime.reward)?);
     manifest.set("ratchet", to_json_value(&serde_json::to_value(runtime.ratchet)?)?);
+    if let Some(reinforcements) = runtime.reinforcements {
+        manifest.set("reinforcements", (reinforcements as f64).into());
+    }
 
     let mut chunks = parts.chunks;
     chunks.push((EMULATOR_CHUNK.to_string(), runtime.emulator.clone()));
@@ -389,6 +397,7 @@ pub fn decode(bytes: &[u8]) -> Result<Checkpoint> {
             last_event_id: number("lastEventId").unwrap_or(0.0) as u64,
             reward,
             ratchet,
+            reinforcements: number("reinforcements").ok().map(|n| n as u64),
             emulator: chunk(EMULATOR_CHUNK)?,
             framebuffer: chunk(FRAMEBUFFER_CHUNK)?,
             ratchet_game: chunk(RATCHET_GAME_CHUNK)?,
@@ -456,6 +465,7 @@ mod tests {
             last_event_id: 77,
             reward: serde_json::json!({ "version": 3, "total": 1.25 }),
             ratchet: flybrain_gb::RatchetState { best: 3, ..Default::default() },
+            reinforcements: Some(1_234),
             emulator: vec![7; 64],
             framebuffer: vec![9; 32],
             ratchet_game: vec![1, 2, 3],
@@ -521,6 +531,16 @@ mod tests {
         assert_eq!(back.runtime, runtime);
 
         // Re-encoding the decoded state is byte-identical, so a restore-and-save cycle is stable.
+        assert_eq!(encode(&back.agent, &back.runtime).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_file_without_the_reinforcement_count_still_reads_and_writes_as_before() {
+        let runtime = RuntimeState { reinforcements: None, ..runtime(4) };
+        let bytes = encode(&agent_state(), &runtime).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes[..4096.min(bytes.len())]).contains("reinforcements"));
+        let back = decode(&bytes).unwrap();
+        assert_eq!(back.runtime.reinforcements, None);
         assert_eq!(encode(&back.agent, &back.runtime).unwrap(), bytes);
     }
 

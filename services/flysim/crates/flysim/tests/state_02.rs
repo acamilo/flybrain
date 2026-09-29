@@ -127,6 +127,7 @@ fn first_difference(left: &[u8], right: &[u8]) -> String {
         ("lastEventId", a.runtime.last_event_id == b.runtime.last_event_id),
         ("reward", a.runtime.reward == b.runtime.reward),
         ("ratchet", a.runtime.ratchet == b.runtime.ratchet),
+        ("reinforcements", a.runtime.reinforcements == b.runtime.reinforcements),
         ("emulator", a.runtime.emulator == b.runtime.emulator),
         ("framebuffer", a.runtime.framebuffer == b.runtime.framebuffer),
         ("ratchetGame", a.runtime.ratchet_game == b.runtime.ratchet_game),
@@ -290,6 +291,7 @@ async fn every_real_checkpoint_round_trips_legacy_session_legacy() {
         let restored_context = ReadoutContext { boot: false, bound: vec![], location: None };
         let agent_bytes = lc::agent_payload(
             &halves.agent,
+            halves.reinforcements,
             &halves.world.framebuffer,
             &import,
             &id("c1"),
@@ -328,6 +330,7 @@ async fn every_real_checkpoint_round_trips_legacy_session_legacy() {
         let legacy = store::encode(
             &checkpoint.agent,
             &RuntimeState {
+                reinforcements: Some(halves.reinforcements),
                 emulator: emulator.export_state().expect("the emulator exports"),
                 reward: legacy_task.reward,
                 ratchet: legacy_task.ratchet,
@@ -453,6 +456,7 @@ impl LegacyWorld {
             last_event_id: host.last_event_id,
             reward: self.adapter.export_state(),
             ratchet: self.ratchet.state,
+            reinforcements: Some(self.frame.reinforcements),
             emulator: self.emulator.export_state().expect("the emulator exports"),
             framebuffer: self.frame.frame_buffer.clone(),
             ratchet_game: self.ratchet.game().map(<[u8]>::to_vec).unwrap_or_default(),
@@ -650,7 +654,7 @@ async fn restore_then_continue(
         &mut agents,
         &id("fly"),
         &script,
-        Some(&halves.agent),
+        Some((&halves.agent, halves.reinforcements)),
     )
     .await
     .expect("the agent runs");
@@ -693,7 +697,7 @@ async fn restore_then_continue(
         &mut agents,
         &id("fly"),
         &one_step,
-        Some(&again.agent),
+        Some((&again.agent, again.reinforcements)),
     )
     .await
     .expect("the agent imports the export");

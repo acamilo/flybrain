@@ -1463,6 +1463,20 @@ impl AgentDriver {
         initial_frame: usize,
         state: &flybrain_core::agent::AgentState,
     ) -> Result<ParityRecord, String> {
+        self.seed_with_reinforcements(rig, agent_id, initial_frame, state, legacy_reinforcements(state))
+            .await
+    }
+
+    /// [`AgentDriver::seed_from_legacy_state`] with the reinforcement count a `FLYSIM01` file
+    /// records (`legacy_checkpoint::Halves::reinforcements`).
+    pub async fn seed_with_reinforcements(
+        &mut self,
+        rig: &mut LegacyRig,
+        agent_id: &Id,
+        initial_frame: usize,
+        state: &flybrain_core::agent::AgentState,
+        reinforcements: u64,
+    ) -> Result<ParityRecord, String> {
         self.initialize(initial_frame).await?;
         let template = self.capture().await?;
         // The shipped import (STATE-02, `legacy_checkpoint::agent_payload`); the template capture
@@ -1478,6 +1492,7 @@ impl AgentDriver {
         };
         let bytes = crate::legacy_checkpoint::agent_payload(
             state,
+            reinforcements,
             &self.frames[initial_frame],
             &import,
             &template.result.checkpoint_id,
@@ -1544,6 +1559,7 @@ pub async fn run_on_worker_from(
     script: &LegacyScript,
     start: Option<&flybrain_core::agent::AgentState>,
 ) -> Result<Vec<ParityRecord>, String> {
+    let start = start.map(|state| (state, legacy_reinforcements(state)));
     run_script(rig, agent_id, script, start, false)
         .await
         .map(|(records, _)| records)
@@ -1555,7 +1571,7 @@ pub async fn run_on_worker_from_then_capture(
     rig: &mut LegacyRig,
     agent_id: &Id,
     script: &LegacyScript,
-    start: Option<&flybrain_core::agent::AgentState>,
+    start: Option<(&flybrain_core::agent::AgentState, u64)>,
 ) -> Result<(Vec<ParityRecord>, Vec<u8>), String> {
     let (records, captured) = run_script(rig, agent_id, script, start, true).await?;
     Ok((records, captured.expect("a capture was asked for")))
@@ -1565,15 +1581,15 @@ async fn run_script(
     rig: &mut LegacyRig,
     agent_id: &Id,
     script: &LegacyScript,
-    start: Option<&flybrain_core::agent::AgentState>,
+    start: Option<(&flybrain_core::agent::AgentState, u64)>,
     capture_at_end: bool,
 ) -> Result<(Vec<ParityRecord>, Option<Vec<u8>>), String> {
     let mut driver = rig.driver(agent_id, script);
     let first = match start {
         None => driver.initialize(script.initial_frame).await?,
-        Some(state) => {
+        Some((state, reinforcements)) => {
             driver
-                .seed_from_legacy_state(rig, agent_id, script.initial_frame, state)
+                .seed_with_reinforcements(rig, agent_id, script.initial_frame, state, reinforcements)
                 .await?
         }
     };

@@ -105,7 +105,7 @@ fn capture(k: u64, ratchet: RatchetState) -> LegacyCapture {
     let context = gameboy::ReadoutContext { boot: false, bound: vec![], location: None }.to_typed();
     LegacyCapture {
         boundary: k,
-        agent_payload: lc::agent_payload(&agent(9_000.0 + k as f64), &world(k).framebuffer, &import, &id("c"), &scope, &context)
+        agent_payload: lc::agent_payload(&agent(9_000.0 + k as f64), 17 + k, &world(k).framebuffer, &import, &id("c"), &scope, &context)
             .unwrap(),
         world_payload: lc::world_payload(&world(k), &id("world"), &id("c"), &scope, &"cd".repeat(32)),
         task: TaskHalf { reward: serde_json::Value::Null, ratchet },
@@ -306,6 +306,7 @@ fn a_store_the_legacy_loop_wrote_and_the_tools_reset_is_restored_by_the_session_
                 last_event_id: k,
                 reward: serde_json::Value::Null,
                 ratchet,
+                reinforcements: None,
                 emulator: vec![(k % 251) as u8; 256],
                 framebuffer: vec![9; FRAMEBUFFER_LEN],
                 ratchet_game: vec![1; 32],
@@ -328,7 +329,23 @@ fn a_store_the_legacy_loop_wrote_and_the_tools_reset_is_restored_by_the_session_
     assert_eq!(restored.installed.task.ratchet.attempts, 0);
     // And what the session runtime would save from it is the legacy bytes again.
     let halves = &restored.installed;
-    let again = lc::export_states(&halves.agent, &halves.world, &id("best"), &halves.task, &halves.host)
-        .unwrap();
-    assert_eq!(again, std::fs::read(&restored.candidate.path).unwrap());
+    // And the session runtime would save it as the legacy loop's own restore would: the same
+    // bytes plus the reinforcement count the legacy loop now also writes (from the lower bound).
+    assert_eq!(halves.reinforcements, 17);
+    let again = lc::export_states(
+        &halves.agent,
+        halves.reinforcements,
+        &halves.world,
+        &id("best"),
+        &halves.task,
+        &halves.host,
+    )
+    .unwrap();
+    let file = store::load(&restored.candidate.path).unwrap();
+    let expected = store::encode(
+        &file.agent,
+        &RuntimeState { reinforcements: Some(17), ..file.runtime },
+    )
+    .unwrap();
+    assert_eq!(again, expected);
 }
