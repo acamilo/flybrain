@@ -1,6 +1,6 @@
 # Rewards and learning
 
-The live reward catalog of the Pokémon Red adapter, `pokered-unique8-v7`. The code of record is
+The live reward catalog of the Pokémon Red adapter, `pokered-unique8-v8`. The code of record is
 `services/flysim/crates/flybrain-gb/src/pokemon_red/` (`catalog.rs` holds the values, `mod.rs` the
 gates and the rules); this page says what each rule pays for and why it is allowed to. The
 prototype's own `docs/rewards-learning.md` in `fly-plays-pokemon` is where the first seven rules
@@ -27,6 +27,7 @@ change what the fly can do.
 | `catch` | `wildwin` | +0.30, +0.10 | 150 ms | A wild Pokémon kept by a ball: +0.30 for a species this run had never owned, +0.10 for a repeat; at most three payouts per species for the lifetime of the ledger |
 | `talk` | `explore` | +0.10 | 100 ms | A conversation the fly opened with a person or a sign **indoors**, paid when its box closes; once per `(map, sprite slot or sign text id)` for the lifetime of the ledger |
 | `item` | `explore` | +0.15 | 120 ms | An item ball or a hidden item picked up, on any map; once per item for the lifetime of the ledger |
+| `damage` | -- | +0.20 per whole Pokémon, in proportion; +0.05 knockout | 80 ms | HP the fly's own attack removed from the enemy (since v8): its share of the target's max HP, below the lowest HP that target has shown this battle; +0.05 when the hit knocks out a trainer's Pokémon; at most 0.50 a battle; a wild battle at 1, 1/2, 1/3 for its first three per `(map, species, level)`, then nothing |
 
 Every value is positive: there are no loss or blackout penalties, and `catalog::rule("blackout")`
 is `None` by test. The values in one frame sum into `R`, and the network reinforces once with
@@ -34,7 +35,8 @@ is `None` by test. The values in one frame sum into `R`, and the network reinfor
 
 The feed-kind column is `RewardKind::from_adapter` in `services/flysim/crates/flysim/src/snapshot.rs`:
 `docs/feed-protocol.md` publishes seven counters, and an adapter kind that has no counter of its
-own shares the nearest one. It still reaches the page as an event with its own label.
+own shares the nearest one. It still reaches the page as an event with its own label. `damage` is
+the one Pokémon kind with no counter at all ("Damage rewards" below says why).
 
 Two consequences of that sharing are worth stating rather than discovering. `catch` publishes on
 `wildwin` because a catch is a wild battle the fly won by keeping the Pokémon, and *not* on
@@ -177,6 +179,85 @@ half, 0.10, once, keyed under the building's id as it always was; walking out pa
 person, far below a badge. Everything is once per thing for the lifetime of the ledger, so no
 building can be farmed.
 
+## Damage rewards
+
+The operator's decision of 2026-09-29, chosen over a pad rule that would have withheld a stat move
+once it had been used: pay the fly for the HP its own attack removes from the Pokémon it is
+fighting. It is a catalog change, an operator decision like the catch and engagement rewards, not a
+loop-review fix. It answers row 67 (`infra/docs/macros-traps.md`): the live fly lost the Pewter
+Gym's Jr. Trainer 29 times running, choosing TAIL WHIP 155 times, BUBBLE 23 and TACKLE 0, and
+nothing in the catalog paid for anything that happened inside a battle it did not win. The pad
+offered every move; the readout's favourite was the one move that cannot win. The code is
+`pokemon_red/damage.rs`.
+
+**What counts as the fly's attack.** A drop in `wEnemyMonHP` on a sample where `hWhoseTurn`
+(`$FFF3`) reads 0 and `wPlayerMoveNum` is not `STRUGGLE`. At the pinned commit
+(`engine/battle/core.asm`), `ApplyDamageToEnemyPokemon` subtracts the damage inside
+`ExecutePlayerMove`, with `hWhoseTurn` 0, once per hit of a multi-hit move. Everything else that
+lowers the enemy's HP lands with it 1: the enemy's poison and burn ticks and a Leech Seed on the
+enemy (`HandlePoisonBurnLeechSeed` picks whose HP to cut *by* `hWhoseTurn`), its recoil, its
+confusion self-hit, its own Explosion or Self-Destruct, and the HP it pays for a Substitute. A
+Leech Seed on the fly heals the enemy, and HP going up never pays. Damage into an enemy Substitute
+never touches `wEnemyMonHP`. `STRUGGLE` is the move the cartridge executes for a Pokémon with no
+PP; the fly chose FIGHT, not the move, so it pays nothing (winning still pays what winning pays).
+`tests/rom_damage.rs` pins the address on the cartridge from the live row 67 state: every drop of
+the enemy's HP lands with `hWhoseTurn` 0 and every drop of the fly's own with 1.
+
+**How much.** 0.20 per whole enemy Pokémon's max HP, paid in proportion on the sample the HP
+drops -- BUBBLE for 10 of Diglett's 24 is 0.083, TACKLE for 4 of Sandshrew's 33 is 0.024. The hit
+that knocks out a trainer's Pokémon adds 0.05 on the same event. At most **0.50 a battle**, which is
+the `trainer` rule's own value: a battle's worth of damage is worth what winning it is, and the
+Jr. Trainer's two Pokémon reach it exactly (2 x (0.20 + 0.05)). A wild knockout adds nothing here
+because the `battle` rule already pays it, on the way out of the battle. Next to the rest of the
+catalog: a wild battle's damage (0.20) is twice its knockout (0.10) and equal to a new area (0.20);
+a trainer battle's (0.50) is the trainer's flag; a gym's is a sixth of the badge (3.0).
+
+**What cannot be farmed.**
+
+- *Heal.* Each target keeps the lowest HP it has shown this battle, and only HP below that pays. A
+  Potion, Recover, Rest or a drain lifts the HP; the same HP is not paid twice.
+- *Switch.* A target is `(wEnemyMonPartyPos, species, level)`, so a trainer's Pokémon that goes out
+  and comes back keeps its mark, and two Weedles of one level are two targets.
+- *A stale enemy.* `InitBattleVariables` does not clear `wEnemyMon`, and a trainer battle sets
+  `wIsInBattle` a whole transition before `LoadEnemyMonData` runs, so the first samples of a
+  battle can hold the last battle's Pokémon at the HP it finished on -- in the row 67 ring, the
+  same trainer's Diglett in the same slot. A target is marked the first time it reads full HP,
+  which is how every enemy Pokémon enters a battle in this game, so the stale one neither pays nor
+  hides the real one's first hit.
+- *The battle.* 0.50 at most, whatever the party size.
+- *Wild Pokémon.* A wild battle pays at the wild-KO rule's scale, 1, 1/2, 1/3, for its first three
+  battles per `(map, species, level)` that paid any damage (`damageCounts`), then nothing; attacking
+  a wild Pokémon and running from it counts. A rollback blocks every key that has paid, the way it
+  blocks a paid wild KO or catch.
+- *Trainers* keep no lifetime ledger. A trainer is fought again only after the fly has lost to it
+  (or after a rollback), and each of those battles is bounded by the cap. In the row 67 ring that
+  is the point: every lost battle pays for the hits that landed, and the hits that land are the
+  moves that win.
+
+**Feed.** `damage` publishes on no counter (`RewardKind::from_adapter` is `None`). Every other
+Pokémon kind shares the nearest counter, and the nearest here is `wildwin`, but the stage folds
+that row into "N wild wins": false of a trainer battle, and false of a battle the fly goes on to
+lose. A hit reaches the page as a reward event with its own label, `HIT #<species> FOR <n> HP`
+(`... KO` for a knockout; the species is the cartridge's internal index, as `CAUGHT #<species>` is),
+and the event log, `/status` and the checkpoint carry it; it is only left out of
+`game.rewardCounts` and the ticker's per-kind copy, the way the platformer's `started` and `clear`
+are. No feed kind was added. One visible consequence the operator should review on a PNG before
+release: those rows are not folded, so a battle adds one ticker row per hit.
+
+**Learning.** A payout reinforces the recent spike history with `m = tanh(R)` over a 5 s
+eligibility trace ([plasticity](plasticity.md)). Measured on the cartridge from the row 67 state
+(`tests/rom_damage.rs`), the HP drops 176 frames (2.9 s) after the `MOVE n` press when the fly
+moves first and about 420 frames (7 s) when the Jr. Trainer's Pokémon does -- its attack and text
+come first. So the choice's trace is at a half to a quarter when its hit is paid, and the previous
+turn's choice, one turn (about 7.5 s) earlier still, at a tenth to a twentieth. That ratio is the
+whole mechanism: nothing tells the readout which move to press. A hit is small (0.02 to 0.10), so what it can move per battle is small too; whether
+the brain learns the attacking move inside a few brain hours is a measurement, not a promise, and
+the first one is `infra/docs/macros-traps.md`, row 68.
+
+**Migration.** `v7` -> `v8` adds `damageCounts` and, inside a battle in flight, `battle.damage`;
+both are optional and a `v7` state restores with no wild key paid and its battle's Pokémon marked
+where they stand. See `docs/design/flysim.md`, "Restoring across an adapter version".
+
 ## Gates
 
 Semantic rewards are enabled for exactly one cartridge, the SHA-256 in `SUPPORTED_ROM`. Any other
@@ -275,6 +356,15 @@ body picks the macro; the descending neurons press the buttons.**
   that follows it is now one macro long rather than one button press long.
 
 ## Honesty
+
+The catalog now includes damage (v8). It is the first rule that pays for something inside a battle
+the fly may still lose, and the closest the catalog has come to grading a *choice*: the moves are
+all on the pad, and the one that lands pays. It is still a reward read out of WRAM after the frame,
+not a press: nothing in the adapter picks a move, removes one from the pad or tells the readout
+which is good, and a move pays only if the cartridge says it took HP off the enemy. The pad rule
+the operator declined (withholding a stat move once used) would have been the doctrine change; this
+one leaves the pad exactly as the scene deals it. It is also bounded on purpose: at most what winning
+pays, per battle, and a wild Pokémon only three times.
 
 The catalog now includes conversations and items (v7). Paying for a conversation is the closest
 the catalog has come to paying for a *button*: A is what opens one. It is still a reward, not a

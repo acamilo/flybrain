@@ -178,8 +178,9 @@ achievements.
 | Badge | +3 | each newly set badge bit |
 
 That is the prototype's catalog as it shipped, kept here as history. The live one is
-`docs/rewards-learning.md`: `pokered-unique8-v7` adds `boundary` (v5), `catch` (v6), and `talk` and
-`item` with no `boundary` payout indoors (v7, the operator's decision of 2026-09-23).
+`docs/rewards-learning.md`: `pokered-unique8-v8` adds `boundary` (v5), `catch` (v6), `talk` and
+`item` with no `boundary` payout indoors (v7, the operator's decision of 2026-09-23), and `damage`
+(v8, the operator's decision of 2026-09-29).
 
 Every value is positive; there were no loss or blackout penalties. Values in a frame summed into
 `R`, then `m = tanh(R)`. PAM stimulation ran 80 to 400 ms depending on reward kind, with
