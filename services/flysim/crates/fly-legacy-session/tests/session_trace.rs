@@ -753,6 +753,9 @@ async fn fafb_reward_segments() {
             "FLY_DOOR_CHECKPOINT",
             "FLY_CATCH_CHECKPOINT",
             "FLY_ENGAGE_CHECKPOINT",
+            // The live fly's largest task ledgers (42 and 46 KB, TASK-01 review B1).
+            "FLY_ROW64_CHECKPOINT",
+            "FLY_ROW65_YARD_CHECKPOINT",
         ]
         .iter()
         .filter_map(|var| std::env::var_os(var).map(|p| ((*var).to_owned(), PathBuf::from(p))))
