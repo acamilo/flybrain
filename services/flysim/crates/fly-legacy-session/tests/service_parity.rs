@@ -131,6 +131,8 @@ fn script() -> Vec<Action> {
 
 /// What one run produced.
 struct Recording {
+    /// False when the recorder missed a frame; such a run is repeated, never compared.
+    complete: bool,
     /// Every running snapshot: the comparable header and the attachments' digests.
     running: Vec<(Value, [String; 3])>,
     /// The idle headers a pause published (compared for shape, not count).
@@ -267,6 +269,7 @@ fn record(
         let mut idle = Vec::new();
         let mut pending = Vec::new();
         let mut last_frame: Option<u64> = None;
+        let mut complete = true;
         let deadline = Instant::now() + Duration::from_secs(1800);
         while running.len() < frames {
             assert!(Instant::now() < deadline, "{}: the run stalled", runtime.label());
@@ -285,13 +288,17 @@ fn record(
                 FeedStatus::Running | FeedStatus::Recovering => {
                     // Every frame publishes; a gap means the recorder fell behind the loop.
                     let frame = snapshot.header.frame;
-                    if let Some(last) = last_frame {
-                        assert_eq!(
-                            frame,
-                            last + 1,
-                            "{}: the recorder missed a frame (pace the loop slower)",
-                            runtime.label()
+                    if let Some(last) = last_frame
+                        && frame != last + 1
+                    {
+                        // The recorder fell behind the loop (a loaded box): this run cannot be
+                        // compared, and the caller runs it again.
+                        eprintln!(
+                            "  {}: the recorder missed frames {}..{frame}; the run will be repeated",
+                            runtime.label(),
+                            last + 1
                         );
+                        complete = false;
                     }
                     last_frame = Some(frame);
                     let index = running.len();
@@ -349,13 +356,13 @@ fn record(
             .filter_map(|l| l.split([' ', '{']).next())
             .map(str::to_owned)
             .collect();
-        (running, idle, responses, status, metric_names)
+        (running, idle, responses, status, metric_names, complete)
     });
     thread
         .join()
         .expect("the loop thread")
         .unwrap_or_else(|e| panic!("{}: {e:#}", runtime.label()));
-    let (running, idle, responses, status, metric_names) = recording;
+    let (running, idle, responses, status, metric_names, complete) = recording;
     assert_eq!(running.len(), frames, "{}: the loop stopped early", runtime.label());
 
     let events: Vec<Value> = shared
@@ -396,6 +403,7 @@ fn record(
     .unwrap();
     let final_checkpoint = checkpoint_json(&bytes);
     Recording {
+        complete,
         running,
         idle,
         responses,
@@ -597,28 +605,31 @@ fn run_pair(
     init_tracing();
     let actions = script();
     let root = tempfile::tempdir().unwrap();
-    let dir = root.path().join("legacy");
-    seed(seeded, &dir);
+    // One run of `runtime` from a freshly seeded copy of the store, repeated (up to three times)
+    // when the recorder fell behind the loop on a loaded box.
+    let run = |runtime: Runtime, name: &str| -> Recording {
+        for attempt in 1..=3 {
+            let dir = root.path().join(format!("{name}-{attempt}"));
+            seed(seeded, &dir);
+            let recording = record(
+                runtime,
+                config(rom, dataset, &dir, mode, speed),
+                profile,
+                frames,
+                &actions,
+            );
+            if recording.complete {
+                return recording;
+            }
+        }
+        panic!("{}: the recorder fell behind three times", runtime.label());
+    };
     let started = Instant::now();
-    let legacy = record(
-        Runtime::Legacy,
-        config(rom, dataset, &dir, mode, speed),
-        profile,
-        frames,
-        &actions,
-    );
+    let legacy = run(Runtime::Legacy, "legacy");
     eprintln!("{label}: legacy {} running snapshots in {:.1?}", legacy.running.len(), started.elapsed());
     for exec in modes() {
-        let dir = root.path().join(format!("session-{}", exec.label()));
-        seed(seeded, &dir);
         let started = Instant::now();
-        let session = record(
-            Runtime::Session(exec),
-            config(rom, dataset, &dir, mode, speed),
-            profile,
-            frames,
-            &actions,
-        );
+        let session = run(Runtime::Session(exec), &format!("session-{}", exec.label()));
         let label = format!("{label}, {}", exec.label());
         compare(&legacy, &session, &label);
         let rewards = legacy
