@@ -1,0 +1,28 @@
+[package]
+name = "fly-legacy-session"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "The live fly's composition on the session framework: the pokered-macros-v1 task and executor, the FLYSIM01 import, and the parity harness against the legacy loop's FLY_TRACE."
+
+[lib]
+name = "fly_legacy_session"
+path = "src/lib.rs"
+
+[dependencies]
+# The session framework and its legacy workers (AGENT-01, ENV-01).
+fly-session = { path = "../fly-session" }
+flybus = { path = "../flybus" }
+# The unchanged legacy engine the task and executor run: flysim's macro layer, flybrain-gb's
+# palette, macro executor, PokeState, reward adapter and ratchet, read through MEM-01's image.
+# flysim is a library dependency only; nothing here changes the service it builds.
+flysim = { path = "../flysim" }
+flybrain-gb = { path = "../flybrain-gb" }
+flybrain-core = { path = "../flybrain-core" }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"

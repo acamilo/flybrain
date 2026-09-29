@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/fly-edge",
+    "crates/fly-legacy-session",
     "crates/fly-session",
     "crates/fly-session-types",
     "crates/flybrain-core",

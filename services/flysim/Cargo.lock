@@ -436,6 +436,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fly-legacy-session"
+version = "0.1.1"
+dependencies = [
+ "fly-session",
+ "flybrain-core",
+ "flybrain-gb",
+ "flybus",
+ "flysim",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "fly-session"
 version = "0.1.1"
 dependencies = [
