@@ -4077,7 +4077,7 @@ fn row62_east_of_mt_moon_go_heal_is_not_dealt_back_into_the_mountain() {
     let mut east_frames = 0u32;
     let mut on_route_4 = 0u32;
     let mut go_heal_east = 0u32;
-    let mut first: Option<(u32, Option<(u8, u8, u8)>)> = None;
+    let mut first: Option<(u32, (u8, u8, u8))> = None;
     run.force_hot = Some("macro_go_objective");
     for frame in 0..12_000u32 {
         run.frame();
@@ -4090,8 +4090,9 @@ fn row62_east_of_mt_moon_go_heal_is_not_dealt_back_into_the_mountain() {
         }
         if run.layer.bound_channels().iter().any(|channel| channel == "macro_go_heal") {
             go_heal_east += 1;
-            let here = at(&mut run);
-            first.get_or_insert((frame, here));
+            if let Some(here) = at(&mut run) {
+                first.get_or_insert((frame, here));
+            }
         }
     }
     eprintln!(
