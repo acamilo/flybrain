@@ -213,11 +213,34 @@ export function recoveryVisible(notice: RecoveryNotice, nowS: number): boolean {
   }
 }
 
+/**
+ * Ladder rungs (`docs/design/ladder.md`) whose label is a place the fly can be "back at". The rest
+ * are events (BOULDER BADGE, GOT A STARTER, HM CUT) and read as "the BOULDER BADGE milestone".
+ */
+const PLACE_RUNGS: ReadonlySet<string> = new Set([
+  'PALLET TOWN', "OAK'S LAB", 'VIRIDIAN CITY', 'VIRIDIAN FOREST', 'PEWTER CITY', 'MT. MOON',
+  'CERULEAN CITY', 'NUGGET BRIDGE', 'VERMILION CITY', 'ROCK TUNNEL', 'LAVENDER TOWN',
+  'CELADON CITY', 'FUCHSIA CITY', 'CINNABAR ISLAND', 'INDIGO PLATEAU',
+]);
+
+/**
+ * Where a reset goes, in words: `PEWTER CITY`, `the BOULDER BADGE milestone`, and `the start of
+ * MT. MOON` when the target is the rung the fly is already on (the ladder's first reset: it goes
+ * back to where it first reached that rung). Empty without a label.
+ */
+export function resetTarget(notice: RecoveryNotice): string {
+  const label = notice.toLabel;
+  if (label === '') return '';
+  const named = PLACE_RUNGS.has(label) ? label : `the ${label} milestone`;
+  const same = notice.toRung !== null && notice.toRung === notice.fromRung;
+  return same ? `the start of ${named}` : named;
+}
+
 /** The splash at `nowS`, or null when nothing should be on screen. */
 export function recoveryView(notice: RecoveryNotice | null, nowS: number): RecoveryView | null {
   if (notice === null || !recoveryVisible(notice, nowS)) return null;
   const reset = notice.action === 'reset';
-  const to = notice.toLabel;
+  const to = resetTarget(notice);
   const base = {
     id: notice.id,
     phase: notice.phase,
@@ -276,7 +299,7 @@ export function recoveryView(notice: RecoveryNotice | null, nowS: number): Recov
         layout: 'box',
         chip: 'AUTO RECOVERY',
         headline: "That didn't work",
-        body: 'A human will take a look',
+        body: 'Trying something else next',
         countdown: '',
         loop: '',
         stuck: '',

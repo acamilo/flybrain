@@ -2,9 +2,12 @@
 Description=Check for repeated macro loops after watchdog probes
 
 [Timer]
-OnBootSec=7min
-OnUnitActiveSec=5min
-AccuracySec=10s
+# Every minute: a run only reads /run/fly/wd/loop.json unless a step is due, and the ladder's
+# state ignores a probe it has already seen. On a 5-minute cadence the timer's phase can sit just
+# before each loop probe (live, 2026-09-28: one second), costing ~5 minutes per confirmation.
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=5s
 Unit=fly-loop-recover.service
 
 [Install]

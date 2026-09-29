@@ -234,6 +234,15 @@ def run(now=None, sleep=time.sleep, clock=None):
     state["resets"] = [at for at in state.get("resets", []) if now - at < DAY]
 
     at = report.get("at")
+    # The last probe that saw progress (new places, or a higher rung than the last probe), kept across
+    # restarts and reboots so the stream's STUCK time counts the whole trap, not the last streak.
+    delta = (report.get("places") or {}).get("delta")
+    if type(at) is int and 0 <= now - at <= 600 and (
+            (type(delta) is int and delta > 0)
+            or (type(rank) is int and type(state.get("rank")) is int and rank > state["rank"])):
+        state["lastProgressAt"] = at
+    if type(rank) is int:
+        state["rank"] = rank
     if (report.get("suspected") != 1 or type(at) is not int
             or not 0 <= now - at <= 600 or report.get("action") != "none"):
         state.pop("observedAt", None)
@@ -272,7 +281,8 @@ def run(now=None, sleep=time.sleep, clock=None):
     base = {"v": 1, "id": f"{now}-{action}", "action": action,
             "fromRung": rank, "fromLabel": (report.get("milestone") or {}).get("label"),
             "reason": report.get("reason"), "loop": (report.get("sequence") or [])[:4],
-            "stuckSeconds": max(0, now - observed) + 600,
+            "stuckSeconds": now - state["lastProgressAt"] if state.get("lastProgressAt")
+            else max(0, now - observed) + 600,
             "announcedAt": now, "executeAt": now + COUNTDOWN}
     if action == "reset":
         base.update(toRung=target, toLabel=LADDER[target] if 0 <= target < len(LADDER) else None)

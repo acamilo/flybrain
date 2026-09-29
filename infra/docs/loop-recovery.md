@@ -1,7 +1,7 @@
 # Automated loop recovery
 
 `fly-watchdog` remains report-only. The separate `fly-loop-recover.timer` reads its
-`/run/fly/wd/loop.json` every five minutes and unsticks a confirmed trap on its own, climbing
+`/run/fly/wd/loop.json` every minute and unsticks a confirmed trap on its own, climbing
 a ladder one step per trap that outlives the previous step:
 
 | level | step | cost |

@@ -240,6 +240,18 @@ class RecoveryTests(unittest.TestCase):
         with patch.object(recover.subprocess, "run", return_value=recover.subprocess.CompletedProcess([], 1, "12", "")):
             self.assertEqual(RESTORABLE_RUNGS(), set())
 
+    def test_stuck_time_counts_from_the_last_progress_across_restarts(self):
+        self.report(at=T0 - 7200, suspected=0, places={"uniqueLocations": 10, "delta": 4})
+        recover.run(T0 - 7195)
+        recover.write_json(recover.STATE, dict(json.loads(recover.STATE.read_text()), vetoes=0))
+        self.confirm(T0)
+        self.assertEqual(json.loads(recover.NOTICE.read_text())["stuckSeconds"], 7505)
+        self.assertEqual(json.loads(recover.STATE.read_text())["lastProgressAt"], T0 - 7200)
+
+    def test_stuck_time_falls_back_to_the_streak_without_a_progress_mark(self):
+        self.confirm(T0)
+        self.assertEqual(json.loads(recover.NOTICE.read_text())["stuckSeconds"], 305 + 600)
+
     def test_history_records_every_step(self):
         self.confirm(T0)
         lines = [json.loads(line) for line in recover.HISTORY.read_text().splitlines()]
