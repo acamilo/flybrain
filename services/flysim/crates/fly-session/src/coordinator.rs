@@ -4727,7 +4727,7 @@ impl Coordinator {
                 "capture",
             )
         })?;
-        self.acknowledge_replies(&worker, &[reply.request_id.clone()]).await?;
+        self.acknowledge_replies(&worker, std::slice::from_ref(&reply.request_id)).await?;
         Ok(bytes)
     }
 
