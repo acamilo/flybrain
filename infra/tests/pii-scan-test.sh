@@ -168,5 +168,13 @@ git -C "$W" checkout -q main
 cp "$T/other-hook" "$W/.git/hooks/pre-push"
 expect 1 "install-hooks refuses to clobber a foreign hook" -- "$W/tools/install-hooks.sh"
 
+# --- review-pii-guard N2/N3 (2026-09-29) ----------------------------------------------
+printf 'broken - (unclosed\n' > "$T/private/bad-patterns.txt"
+expect 2 "an invalid private regex refuses to scan (never 'clean')" -- env FLY_PII_PATTERNS="$T/private/bad-patterns.txt" "$SCAN" --tree
+printf '++ %s\n' "$LAN" > "$W/src/plusplus.txt"
+git -C "$W" add -A && git -C "$W" commit -qm "a line that starts with ++"
+expect 1 "an added line starting '++ ' is still scanned" -- "$SCAN" --range HEAD~1..HEAD
+git -C "$W" rm -qf src/plusplus.txt && git -C "$W" commit -qm "drop it"
+
 echo "==="
 if [ "$FAILS" -eq 0 ]; then echo "pii-scan-test: ALL PASSED"; else echo "pii-scan-test: ${FAILS} FAILED"; exit 1; fi

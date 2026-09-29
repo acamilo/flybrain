@@ -73,7 +73,15 @@ trap 'rm -rf "$TMP"' EXIT
 # itself; they are not proper nouns.
 # --------------------------------------------------------------------------------------
 NAMES=(); FLAGS=(); RES=(); KIND=()
-pat() { NAMES+=("$1"); FLAGS+=("$2"); RES+=("$3"); KIND+=(re); }
+# Every pattern is compiled once up front: grep exits 2 on a bad regex, and a scan that
+# silently skipped a broken private pattern would report "clean" (fail open).
+pat() {
+    local rc=0 f=-E
+    [ "$2" = -i ] && f=-iE
+    grep $f -e "$3" </dev/null >/dev/null 2>&1 || rc=$?
+    [ "$rc" -le 1 ] || die "pattern '$1' is not a valid extended regex; refusing to scan"
+    NAMES+=("$1"); FLAGS+=("$2"); RES+=("$3"); KIND+=(re)
+}
 
 #   name                  flags  extended regex
 pat lan-address           -i  '\b192\.168\.[0-9]{1,3}\.[0-9]{1,3}\b|\b2600:[0-9a-f]'
@@ -234,9 +242,10 @@ scan_range() {
     git -C "$REPO_ROOT" log -p --no-color --no-ext-diff --no-renames --unified=0 \
         --format='PIISCAN-COMMIT %H' "$@" -- . ':!data' ':!package-lock.json' \
     | awk -v corpus="$corpus" -v index_f="$index" '
-        /^PIISCAN-COMMIT / { commit = $2; path = ""; next }
-        /^\+\+\+ /         { path = substr($0, 5); sub(/^b\//, "", path); if (path == "/dev/null") path = ""; next }
-        /^@@ /             { if (match($0, /\+[0-9]+/)) ln = substr($0, RSTART + 1, RLENGTH - 1) + 0; next }
+        /^PIISCAN-COMMIT / { commit = $2; path = ""; hdr = 0; next }
+        /^--- /            { hdr = 1; next }
+        /^\+\+\+ / && hdr  { path = substr($0, 5); sub(/^b\//, "", path); if (path == "/dev/null") path = ""; hdr = 0; next }
+        /^@@ /             { hdr = 0; if (match($0, /\+[0-9]+/)) ln = substr($0, RSTART + 1, RLENGTH - 1) + 0; next }
         /^\+/              { if (path != "") { print substr($0, 2) > corpus; print commit "\t" path "\t" ln > index_f }; ln++; next }
     '
     touch "$corpus" "$index"
