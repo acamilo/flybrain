@@ -188,6 +188,13 @@ pub struct SlotBinding {
 pub struct Observed {
     pub scene: SceneId,
     pub bindings: Vec<SlotBinding>,
+    /// The fly's own buttons this scene lets through to the cartridge while no macro is running
+    /// and nothing is bound, as a joypad mask; 0 for every scene but the one that is typed on.
+    ///
+    /// Row 69 (`docs/design/macros.md` 12.32): the naming screen is spelled with the D-pad, A, B
+    /// and START, and its pad is those buttons rather than a macro per key. The title's raw
+    /// buttons are not this field -- a scene that is not playable passes all of them, by section 2.
+    pub raw: u8,
 }
 
 /// How a macro ended: `docs/design/macros.md` section 5's `outcome` field.

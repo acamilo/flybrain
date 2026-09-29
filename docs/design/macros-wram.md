@@ -1024,3 +1024,22 @@ the latch keeps that A until the next list first asks. Measured on the Potion's 
 list reads open on the frame after the pulse, an A in the next 22 frames is lost, and across 120
 rollback delays `hJoyLast`, `hJoyPressed`, `hJoyHeld` and `hJoy5` are the only bytes of WRAM and
 HRAM whose values never overlap between lost and answered frames.
+
+## 15. The naming screen (2026-09-29, `docs/design/macros.md` 12.32)
+
+Row 69. Two bytes of a `UNION` in `ram/wram.asm` that the reviewed list does not carry, pinned the
+way `hJoyLast` is and read back from the code that stores them by
+`row69_the_naming_bytes_are_where_the_cartridge_stores_them` (FLY_ROM).
+
+| name | where | what reads it |
+| --- | --- | --- |
+| `wNamingScreenNameLength` | `$CEE9` | the letters typed; the operand of `PrintNicknameAndUnderscores`'s `ld [wNamingScreenNameLength], a` before `hlcoord 10, 2` |
+| `wNamingScreenSubmitName` | `$CEEA` | non-zero once START or ED is taken; the operand of `.pressedStart`'s `ld [wNamingScreenSubmitName], a` |
+
+**`state::naming_screen`** is the keyboard only when the menu bytes `DisplayNamingScreen` writes
+(`wTopMenuItemY` 3, `wMaxMenuItem` 7, `wMenuWatchedKeys` `$ff`) **and** its figure are on screen:
+the whole `TextBoxBorder` at (0, 4)-(19, 14) and a run of seven or ten underscores (`$76`, the raised
+one `$77`) from (10, 3). The run's length is the capacity (`PLAYER_NAME_LENGTH - 1` or
+`NAME_LENGTH - 1`). The menu bytes outlive the screen, so both halves are needed, as for
+`yes_no_prompt`. The player's and rival's names at the start of a game are this screen before
+`wStatusFlags6`'s game-timer bit is set, and `scene::detect` answers `Title` for them first.

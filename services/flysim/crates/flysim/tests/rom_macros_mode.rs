@@ -1011,8 +1011,11 @@ impl Run {
             }
         }
         // Section 12.13's claim, per frame: an `Unknown` with nothing drawn deals nothing.
+        // The keyboard (row 69) is drawn -- its own box, not the text font -- and its bound's
+        // `CONFIRM` is a pad on something drawn, so it is not counted.
         if self.layer.scene_name() == "unknown"
             && !flybrain_gb::pokemon_red::state::text_box(&mut self.gb).open
+            && flybrain_gb::pokemon_red::state::naming_screen(&mut self.gb).is_none()
             && !self.layer.bound_channels().is_empty()
         {
             self.unknown_pads_with_no_box += 1;

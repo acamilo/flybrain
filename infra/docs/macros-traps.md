@@ -3498,3 +3498,57 @@ is harness choice, not the fly's:
   (13 to 46 `MOVE n`, 1 to 4 wins each) are not flagged. The ladder's restart does not change the
   readout, and a reset to PEWTER CITY replays the same gym. Only the reset to the rung below adds
   forest battles, and whether that is enough was not measured.
+
+## 2026-09-29, row 69: throw on low HP only, and the fly names its catch
+
+### What was asked
+
+Two operator decisions after row 66 (`docs/design/macros.md` 12.32). Row 66 measured the connectome
+choosing `THROW BALL` 0 times in 35 decisions with a ball in the bag (66e), and every catch named
+`AAAAAAAAAA`: `NEXT` answered the nickname offer YES and its A presses typed on the keyboard (66d).
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 69 | at low HP the ball sat beside four moves, `SWITCH` and `RUN`, and the fly never chose it (66e) | a wild battle with a ball, the enemy at a third of its HP | `row69_at_low_hp_in_a_wild_battle_the_ball_is_the_only_attack` and four more unit tests, `row69_at_low_hp_a_wild_battles_pad_is_the_ball` (`FLY_ROW69_CHECKPOINT`) | **operator decision, built**: with `THROW BALL` dealt and `ItemUseBall`'s HP factor saturated (`W >= 255`), the moves, `SWITCH`, `RUN` and the bag's `BACK` are withheld; `ITEM` stays for a hurt thrower |
+| 69b | the keyboard read as the battle's between-turns frame, so `NEXT` typed the name (66d) | every catch | `row69_after_a_catch_the_keyboard_is_the_flys_own_buttons_and_it_ends`, `the_naming_screen_is_its_menu_and_its_box_and_its_underscores` | **operator decision, built**: the keyboard reads `Unknown` and its pad is the fly's own D-pad, A, B and START |
+| 69c | a keyboard nobody ends is a stall: B never leaves it and A stops typing at ten letters | a fly that does not press ED or START | `row69_a_fly_that_types_nothing_is_ended_by_the_bound`, `row69_confirm_on_the_keyboard_presses_start_until_it_closes` | **fixed**: once the name is full or sixty brain seconds have run, `CONFIRM` alone, which presses START until the keyboard closes (`blocked` after 160 frames) |
+| 69d | row 66's `unknown_pads_with_no_box` counted the bound's `CONFIRM` on the keyboard, which is drawn without the text font | the rung-10 Pewter gym drive, which buys a ball and catches | `the_fly_reaches_the_pewter_gym_from_the_rung_ten_checkpoint` | **fixed in the test**: the keyboard is a drawn screen |
+| 69e | the catch checkpoint's lead one-shots every forest Pokémon, so no wild HP is ever low there | `FLY_CATCH_CHECKPOINT` | -- | **left, named**: the low-HP ROM test uses a rung-9 Route 2 checkpoint (rung-9 A below: a Bulbasaur at 5/30, one ball) as `FLY_ROW69_CHECKPOINT` |
+
+### Before and after
+
+ROM tests (rom-env sourced, the build box), a69a258 against the branch:
+
+| test | a69a258 | branch |
+| --- | --- | --- |
+| `row69_at_low_hp_a_wild_battles_pad_is_the_ball` | 664 low-HP frames with the ball dealt, pad `MOVE 1`, `MOVE 2`, `MOVE 3`, `THROW BALL`. **Fails** | 58 frames, pad `THROW BALL` alone, thrown. Passes |
+| `row69_after_a_catch_the_keyboard_is_the_flys_own_buttons_and_it_ends` | keyboard 511 frames, 11 `NEXT` starts, 0 raw frames, name `AAAAAAAAAA`. **Fails** | keyboard 1,516 frames, no macro, 1,516 frames of the fly's buttons, 7 letters at most, name `RIJ?`, closed by the fly (ED). Passes |
+| `row69_a_fly_that_types_nothing_is_ended_by_the_bound` | `NEXT` types ten A's and ED. **Fails** | nothing typed; `CONFIRM` dealt once at the bound, span 3,587 frames, name empty (the species' own). Passes |
+| `row66_after_a_catch_the_pad_is_not_the_bag_and_the_battle_ends` | passes | passes (battle over 2,468 frames after the catch) |
+
+With the connectome (`trap_hunt`, one sweep thread, 15 brain minutes, macro log). The runs vary the
+starting state, as row 66's did: four rung-9 checkpoints with one ball each.
+
+| checkpoint (lead, balls) | arm | wild battles with a ball | `THROW BALL` dealt frames / chosen | the throw's pad (frames) | catches | keyboard | rung, tiles, windows flagged |
+| --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| rung-9 A, Route 2 (Bulbasaur 5/30, 1) | a69a258 | 5 | 414 / 0 | -- | 0 | -- | 10, 520, 40 |
+| | branch | 2 | 96 / 1, at low HP from the pad `THROW BALL` alone | 32 | 1 | 16.8 brain s, A 32, B 30, longest 1, name empty (the species'), ended by the fly (ED) | 10, 482, 51 |
+| rung-9 B, Route 2 (Wartortle 9/70, 1) | a69a258 | 1 | 32 / 1, at full HP on the first frame | 0 | 1 | `NEXT` | 9, 300, 46 |
+| | branch | 1 | 32 / 1, the same throw | 0 | 1 | 28.1 brain s, A 55, B 52, longest 1, name empty, ended by the fly (ED) | 9, 236, 43 |
+| rung-9 C, the forest (`FLY_CATCH_CHECKPOINT`, Wartortle 18/70, 1) | both, identical | 1 | 32 / 1, at full HP, missed | 0 | 0 | -- | 9, 278, 18 |
+| rung-9 D, the forest (the no-PP state, Bulbasaur 6/34, 1) | both, identical | 2 | 282 / 0 | 0 (never low with the ball dealt) | 0 | -- | 9, 285, 21 |
+
+- **Throws and catches.** Three balls thrown in four runs on the branch, two catches; on a69a258
+  two thrown and one catch. The one run where they differ is the one whose wild HP passed a third
+  with the ball dealt: the fly threw from the throw's pad at once and caught. Two of the throws
+  were the fly's own choice from the ordinary pad on a battle's first frame, on both arms.
+- **Names.** Both keyboards were ended by the fly's own A on ED, in 17 and 28 brain seconds, well
+  inside the bound. The brain's A and B fire at nearly the same rate there, so each letter it typed
+  it deleted again and both names came out empty, which the cartridge turns into the species'
+  name. That is the fly's spelling, kept as it is.
+- **Stalls.** None from this row. Every run ends its battles; no keyboard reached the bound. The
+  flagged windows are `NEXT` runs through battle text on both arms (and on the branch's rung-9 A run
+  five `GO ROUTE, GO HEAL` windows, row 62's tug, 65h). The branch's rung-9 B run covers fewer tiles
+  after the keyboard because its frames after the catch differ from a69a258's (the keyboard took
+  28 brain seconds instead of `NEXT`'s few), not because anything waited: 635 macros started, 633
+  done, one refusal and one timeout, against 803, 802, one and one.

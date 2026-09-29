@@ -33,7 +33,7 @@ use super::macros::geography::Amenity;
 use super::mapgrid::{self, MapGrids};
 use super::macros::state::{
     BagItem, Battle, BattleKind, BattleMenu, Connections, Cursor, EnemyMon, Facing, GameState,
-    MapGrid, MapSize, Mon, Move, Npc, Party, Pc, Player, Scene, Shop, ShopScreen, Sign, StartMenu,
+    MapGrid, MapSize, Mon, Move, Naming, Npc, Party, Pc, Player, Scene, Shop, ShopScreen, Sign, StartMenu,
     Status, TextBox, Walkable, Warp,
 };
 use super::symbols::ram;
@@ -127,6 +127,30 @@ pub mod poke {
     /// Where `MoveSelectionMenu` parks the shared cursor: row 12, column 5.
     pub const MOVE_LIST_CURSOR_Y: u8 = 12;
     pub const MOVE_LIST_CURSOR_X: u8 = 5;
+
+    /// The naming screen (row 69, `engine/menus/naming_screen.asm`).
+    ///
+    /// `wNamingScreenNameLength` and `wNamingScreenSubmitName` are two consecutive bytes in a
+    /// `UNION` of `ram/wram.asm` and are not in the reviewed address list, so they are pinned the
+    /// way `H_JOY_LAST` is: read from the operands of the cartridge's own instructions and checked
+    /// by the ROM-gated test. `PrintNicknameAndUnderscores` opens `call CalcStringLength / ld a, c
+    /// / ld [wNamingScreenNameLength], a / hlcoord 10, 2`, whose store is `$CEE9`, and
+    /// `DisplayNamingScreen.pressedStart` is `ld a, 1 / ld [wNamingScreenSubmitName], a / ret`,
+    /// whose store is `$CEEA`, the next byte.
+    pub const NAMING_LENGTH: u16 = 0xcee9;
+    pub const NAMING_SUBMIT: u16 = 0xceea;
+    /// `DisplayNamingScreen`'s box: `TextBoxBorder` at (0, 4), nine rows by eighteen, so its
+    /// corners are (0, 4) and (19, 14). The keyboard is inside it.
+    pub const NAMING_BOX: (u16, u16, u16, u16) = (0, 4, 19, 14);
+    /// Where the underscores under the name start (`hlcoord 10, 3`), and their two tiles: `$76`
+    /// for an empty place and `$77` for the raised one under the next letter.
+    pub const NAMING_UNDERSCORES: (u16, u16) = (10, 3);
+    pub const NAMING_UNDERSCORE: u8 = 0x76;
+    pub const NAMING_UNDERSCORE_RAISED: u8 = 0x77;
+    /// The keyboard's menu: `wTopMenuItemY` 3, `wMaxMenuItem` 7 and every key watched (`$ff`),
+    /// written once by `DisplayNamingScreen` and by nothing else in the game in that combination.
+    pub const NAMING_TOP_Y: u8 = 3;
+    pub const NAMING_MAX_ITEM: u8 = 7;
 
     /// `constants/ram_constants.asm`: `wMiscFlags` bit 3.
     pub const BIT_USING_GENERIC_PC: u8 = 1 << 3;
@@ -1044,6 +1068,49 @@ pub fn yes_no_prompt(memory: &mut dyn MemoryReader) -> bool {
     two_option_box_drawn(memory, cursor.top_x, cursor.top_y)
 }
 
+/// The naming screen, when it is up (row 69, `docs/design/macros.md` 12.32).
+///
+/// Red has no "the keyboard is open" byte, so this is the construction `yes_no_prompt` makes: the
+/// menu bytes `DisplayNamingScreen` writes (`wTopMenuItemY` 3, `wMaxMenuItem` 7, every key
+/// watched), **and** the figure it draws -- the keyboard's whole `TextBoxBorder` at (0, 4)-(19, 14)
+/// and the underscores under the name at (10, 3). Both halves, because the menu bytes are not
+/// cleared when the screen closes.
+///
+/// The capacity is the underscores counted on screen (seven or ten), and the length is
+/// `wNamingScreenNameLength`, which `PrintNicknameAndUnderscores` writes after every key that
+/// changes the name.
+pub fn naming_screen(memory: &mut dyn MemoryReader) -> Option<Naming> {
+    let cursor = cursor(memory);
+    if cursor.top_y != poke::NAMING_TOP_Y
+        || cursor.max != poke::NAMING_MAX_ITEM
+        || cursor.watched_keys != 0xff
+    {
+        return None;
+    }
+    let (left, top, right, bottom) = poke::NAMING_BOX;
+    if !border_drawn(memory, left, top, right, bottom) {
+        return None;
+    }
+    let (x, y) = poke::NAMING_UNDERSCORES;
+    let capacity = (x..poke::SCREEN_WIDTH)
+        .take_while(|column| {
+            matches!(
+                screen_tile(memory, *column, y),
+                poke::NAMING_UNDERSCORE | poke::NAMING_UNDERSCORE_RAISED
+            )
+        })
+        .count();
+    // `PLAYER_NAME_LENGTH - 1` or `NAME_LENGTH - 1`: nothing else is the keyboard.
+    if capacity != 7 && capacity != 10 {
+        return None;
+    }
+    Some(Naming {
+        length: read(memory, poke::NAMING_LENGTH),
+        capacity: capacity as u8,
+        submitted: read(memory, poke::NAMING_SUBMIT) != 0,
+    })
+}
+
 /// Whether `DisplayTwoOptionMenu`'s own box is drawn around the cursor the game parked in it.
 ///
 /// One fact about the routine rather than about any one script (row 56): the cursor goes in the
@@ -1076,6 +1143,12 @@ fn two_option_box_drawn(memory: &mut dyn MemoryReader, cursor_x: u8, cursor_y: u
     })
 }
 
+/// Whether the battle bag's list box is whole on screen ([`poke::ITEM_LIST_BOX`], row 66).
+fn item_list_drawn(memory: &mut dyn MemoryReader) -> bool {
+    let (left, top, right, bottom) = poke::ITEM_LIST_BOX;
+    border_drawn(memory, left, top, right, bottom)
+}
+
 /// Whether `MoveSelectionMenu`'s own box is the figure on screen (`infra/docs/macros-traps.md`,
 /// row 50).
 ///
@@ -1094,12 +1167,6 @@ fn two_option_box_drawn(memory: &mut dyn MemoryReader, cursor_x: u8, cursor_y: u
 /// becomes a horizontal run and (10, 12) becomes the `┘` junction with the PP box above. The
 /// mimic and relearn menus draw at row 7 and never reach a battle's own turn. Read whole, like
 /// every other box in this module, because a single tile id is an ordinary character.
-/// Whether the battle bag's list box is whole on screen ([`poke::ITEM_LIST_BOX`], row 66).
-fn item_list_drawn(memory: &mut dyn MemoryReader) -> bool {
-    let (left, top, right, bottom) = poke::ITEM_LIST_BOX;
-    border_drawn(memory, left, top, right, bottom)
-}
-
 fn move_list_drawn(memory: &mut dyn MemoryReader) -> bool {
     let (left, top, right, bottom) = poke::MOVE_LIST_BOX;
     if screen_tile(memory, left, top) != poke::frame::HORIZONTAL
@@ -2343,6 +2410,11 @@ impl MacroState for PokeState<'_> {
     fn parcel_delivered(&mut self) -> bool {
         let bit = super::symbols::events::EVENT_OAK_GOT_PARCEL;
         read(self.memory, ram::wEventFlags + (bit >> 3)) & (1 << (bit & 7)) != 0
+    }
+
+    /// The naming screen (row 69), [`naming_screen`].
+    fn naming(&mut self) -> Option<super::macros::state::Naming> {
+        naming_screen(self.memory)
     }
 
     /// Where the ladder's next unreached rung is (`GO OBJECTIVE`).
