@@ -550,6 +550,91 @@ coordinator (TASK-01); this slice ships the pieces and proves them on the worker
 - *Declared difference, archive order* (sections 4 and 16). A session-runtime milestone archive
   holds the post-capture ratchet and slot. It is excluded from the shadow comparison.
 
+### SERVE-01 — The session runtime as the live service (port slice)
+
+**2026-09-29: built** on `port/serve-01` off `port/task-01` and awaiting review. It makes the
+session runtime a drop-in for the live `flysim` service, so CUT-01 can switch the stream over
+with one command and roll back with one. It changes no live behaviour: the legacy loop's frame,
+feed, checkpoint bytes and compatibility string are unchanged, and nothing runs the new binary
+until `fly-runtime session` is run on a container.
+
+- **One service shell, two runtimes** (`flysim::serve`). `flysim::run` is split: `serve(config,
+  sim)` binds the feed (`:7400`, or the feed bus that `fly-edge` serves), the control API
+  (`:7401`) and the metrics listener (`:9101`), handles SIGTERM/SIGINT/SIGHUP, and runs `sim` on
+  the calling thread with the `Shared` state, the snapshot slot and the command queue. The
+  legacy loop is `serve(config, Sim::boot + Sim::run)`. The pieces of a feed header that come
+  from the fly (`feed_rates`, `feed_learning`, `feed_game`, `feed_milestone`, `feed_sugar`) and
+  the chat admission (`admit_chat`) move out of `Sim` into free functions both runtimes call.
+  The feed codec, the bus publisher, the router, `/status`, `/events`, `/metrics` and the
+  WebSocket framing are therefore one copy of the code whichever runtime is behind them.
+- **The service host** (`fly-legacy-session::service`, binary `flysim-session`). It reads
+  `flysim`'s own `Config` (so `/etc/fly/fly.env`, `FLY_ACCEPT_ADAPTERS` through STATE-02's
+  `RestoreGate`, the macro mode, speed, threads, chat, the store paths) and keeps `Sim`'s order
+  call site for call site: boot by TASK-01's `boot_unsaved` (the legacy candidate order and gate),
+  the boot event, the chat sidecar, the journal's boot header (`runtime: fly-session`), the
+  startup durable save, then per frame the command drain, `Coordinator::step`, the task's macro
+  and reward events, the rank and its milestone archive, the deferred ratchet rollback with its
+  recovery event and durable save, the 30 Hz publish, the hot (5 s) and durable (300 s) wall-clock
+  saves, the event log fsync and flysim's `Pacer`. Saves are queued (`save_queued`) so the
+  encoding and the fsyncs stay off the loop, as the legacy writer thread keeps them.
+- **Where each header field comes from.** The frame is the committed `lcd` view; the audio is
+  each transition's `apu` chunk through the legacy DC blocker (`DcBlocker::process_f32_into`,
+  the same filter on the environment's `v / 255`); the spike bitset is the OR of the commits'
+  `telemetry.spikes` since the last publish, which equals the legacy window exactly; `buttons`
+  is the executor's mask (the checkpoint's after an import, 0 after a rollback, as
+  `LegacyFrame` has it); the game, milestone and macro fields are the task's own adapter,
+  ratchet and macro layer (`PokeredTask::inspect`, `take_feed`). The numbers from inside the
+  network that no session message carries -- the plasticity statistics (`learning.changed`,
+  `learning.synapses`), the decoder's baselines and scores for `/status`, and the rates and pulse
+  at the boundary -- come from one declared extension of the legacy agent,
+  `Legacy.FeedStatus` (capability `legacy-feed-status-v1`): read-only, answered at a committed
+  `Ready(k)`, once per published snapshot, never in a trace. `Coordinator::read_agent_extension`
+  calls it without fencing the epoch; `Coordinator::media_bytes` reads the committed view and
+  audio chunk.
+- **Sugar.** flysim's `RateLimiter` and clamp, over the pulse the network holds: the last commit's
+  `stimulusRemainingMs`, raised by each sugar admitted since (`network.stimulate` is a maximum),
+  so a second request in one drain is refused with the legacy `retryAfterMs`. The admission lands
+  in the next Prepare, which is the frame the legacy drain applies it before, and the journal
+  stamps it with that frame.
+- **Long-running hygiene.** The coordinator kept every transition's trace, every phase change,
+  an audit line per step and every timing sample: about 120 KB/s of heap on the live fly
+  (the first soak's RSS). `Coordinator::trim_records` bounds them at each boundary; the timings
+  are logged once a minute as a `session profile` line and cleared.
+- **Declared differences** (the rest is byte-equal, below): `POST /reward` is always 403
+  (`control.allow_reward` is forced off; the operator pulse has no session-framework
+  counterpart, `legacy-gameboy-v1` section 15); a fresh start publishes no audio for its setup
+  frame (the environment discards O[0]'s); `FLY_TRACE` and `FLY_PROFILE_SECONDS` are the legacy
+  loop's tools; only the Pokémon composition exists (another `FLY_GAME` is refused at start); the
+  toy connectome cannot run macros mode (AGENT-01 refuses a macro channel the dataset does not
+  track, and the toy tracks none).
+- **Infra.** `flysim.service` stays the fly's one unit. `infra/bin/fly-runtime session|legacy|status`
+  switches the binary it runs with one drop-in (`flysim.service.d/10-runtime.conf`), so every
+  consumer that names `flysim.service` -- `fly.target`, `flyedge.service`'s `Requires=`, the
+  watchdog, `fly-loop-recover`'s sudoers-granted restart, `fly-loop-reset`,
+  `fly-reset-to-milestone`, the unstick rule -- works unchanged and the choice survives reboots and
+  deploys. It refuses a release without `flysim-session` or with a different compatibility
+  string, waits for `/healthz` and an advancing frame, and falls back to legacy by itself if the
+  session runtime does not come up. `flysim-session.service` is the standalone unit (flysim's
+  limits and cpuset, `Conflicts=flysim.service`, no `[Install]`) for rehearsals.
+  `build-flysim.sh`/`package-release.sh` ship `flysim-session` and `fly-session`; `05-deploy.sh`
+  installs `fly-runtime`, writes the standalone unit's cpuset drop-in and refuses a release
+  without `flysim-session` while the drop-in is present; tmpfiles creates `/run/fly/session`.
+  The runbook's "Switch the runtime" is the operator's page.
+
+**Proof** (`fly-legacy-session/tests/service_parity.rs`, `journal_replay.rs`, rom-env; the SERVE-01
+run report has the numbers). Both runtimes are started from the same seeded store behind
+flysim's own control router and driven by one script of control requests, each landing before
+the same frame: every running feed header is equal field by field (wall-clock fields excepted)
+and every frame, audio and spike attachment byte for byte; every control response is equal
+(`/stimulate` 202/429 with the same `retryAfterMs`, `/reward` 403, `/chat` 202/422,
+`/checkpoint` the same generation, `/pause`, `/resume`, `/events`, 404s); the event log, the
+journal and the final checkpoint are equal. Toy connectome raw mode, and the real connectome in
+macros mode through a ratchet rollback, each in-process and as processes. A soak of both
+runtimes side by side with the stage's decoder and the bridge's `HttpSimClient`
+(`tools/runtime-soak.ts`), the hot/durable cadence sampled from the stores, and a `SIGKILL`
+whose journal is replayed from the seed in the legacy loop onto the killed process's last hot
+checkpoint.
+
 ### PUBLISH-01 — Committed snapshots and observer isolation
 
 **Depends on:** SESSION-02, MEDIA-01; public v2 contract work is a separate prerequisite to
