@@ -635,6 +635,29 @@ runtimes side by side with the stage's decoder and the bridge's `HttpSimClient`
 whose journal is replayed from the seed in the legacy loop onto the killed process's last hot
 checkpoint.
 
+Results (2026-09-29, the build boxes; the run report has the logs):
+
+| Proof | Result |
+| --- | --- |
+| Toy raw, 120 frames, 19 scripted requests incl. two sugars in one drain | identical, in-process and process |
+| Real connectome, macros, `rollback` checkpoint (ratchet rollback on frame 1), 120 frames | identical, both modes, before and after the TASK-01 fixes |
+| Real connectome, macros, engage checkpoint (ledger thinned), 2400 frames, 46 macro and 2 reward events | identical, both modes |
+| Real connectome, macros, row 64 (a 42 KB adapter ledger, TASK-01 B1), 1200 frames | identical, both modes |
+| Soak, 35 min, both runtimes from the row 67 checkpoint, production configuration | 0 decode or schema errors, no 2 s stall, `/healthz` 100 %, event ids gapless, hot every 5 s and durable at 300 s on both (same intervals) |
+| Soak, 36 min, the session killed -9 at +6 min | back in about 1 s from the hot checkpoint 3.5 s old, 1 `/healthz` 503, the feed client reconnected (533 ms gap), two journal segments |
+| The killed process's journal, 17 sugars, replayed from the seed in the legacy loop | 18,838 frames onto its last hot checkpoint: agent, emulator, frame, adapter, ratchet equal |
+| Feed over the bus (`FLY_FEED_VIA=bus`) with `fly-edge` | 3,050 snapshots through the edge, 0 errors |
+
+Open for CUT-01: **speed.** Unpaced on a shared box the session ran 54-61 fps where the legacy
+loop ran 68-118 (per frame p50: `Agent.Prepare` 7.8 ms, `Environment.Advance` 2.6,
+`Agent.Commit` 1.6, publication 0.4; `Legacy.FeedStatus` 0.9 ms at 30 Hz). The live container
+must be measured (SHADOW-01's cost run) before cutover. **Memory.** After `trim_records` the
+session's RSS still grows about 5-8 MB an hour, tied to the saves (an unpaced run without saves
+is flat); at `MemoryMax=4G` that is weeks, and a restart clears it, but it is not explained yet.
+**Number form.** A checkpoint the session writes carries the adapter ledger's integral numbers
+as `7580031` where the legacy loop writes `7580031.0` (the ledger crossed canonical JSON); equal
+values, and both runtimes read both.
+
 ### PUBLISH-01 — Committed snapshots and observer isolation
 
 **Depends on:** SESSION-02, MEDIA-01; public v2 contract work is a separate prerequisite to
