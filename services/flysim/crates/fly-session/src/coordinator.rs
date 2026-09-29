@@ -381,6 +381,8 @@ pub struct Coordinator {
     pending_rollback: Option<(u64, EpisodeRequest)>,
     /// [`Coordinator::bound_history`].
     history_limit: Option<usize>,
+    /// [`Coordinator::snapshot_every`].
+    snapshot_every: u64,
     lifecycle_acks: Vec<(WorkerRef, DomainRequestId)>,
     stats: Stats,
     /// The ordered actions this session took, for the ordering assertions.
@@ -501,6 +503,7 @@ impl Coordinator {
             defer_rollbacks: false,
             pending_rollback: None,
             history_limit: None,
+            snapshot_every: 1,
             lifecycle_acks: Vec::new(),
             stats: Stats::default(),
             audit: Vec::new(),
@@ -640,6 +643,15 @@ impl Coordinator {
         self.history_limit = Some(keep);
     }
 
+    /// Publishes the committed snapshot of every `n`-th boundary, and of every boundary with task
+    /// events or boundary actions. Presentation reads snapshots as latest values
+    /// (`publishing-v1`), and the legacy feed publishes at `snapshot_hz` (30 Hz) from its 60 Hz
+    /// loop, so a live composition need not pay a publication on every frame. 1 (every boundary)
+    /// by default.
+    pub fn snapshot_every(&mut self, n: u64) {
+        self.snapshot_every = n.max(1);
+    }
+
     fn trim_history(&mut self) {
         let Some(keep) = self.history_limit else { return };
         fn trim<T>(items: &mut Vec<T>, keep: usize) {
@@ -726,9 +738,11 @@ impl Coordinator {
                     "capture",
                 ));
             };
+            let span = crate::profile::span("coord.capture.read");
             let bytes = artifact.read_all().await.map_err(|e| {
                 self.fail_now(DomainError::before(ErrorCode::BufferInvalid, e.message.clone()), "capture")
             })?;
+            drop(span);
             self.acknowledge_replies(&worker, std::slice::from_ref(&reply.request_id)).await?;
             payloads.push((worker.worker_id.clone(), bytes));
         }
@@ -2439,7 +2453,16 @@ impl Coordinator {
             slot.prepare_request = None;
         }
         self.publish_events(k + 1, &evaluation.events).await?;
-        self.publish_snapshot(k + 1, &decisions, &controls, &event_ids).await?;
+        // Every boundary with events or boundary actions is published; otherwise every
+        // `snapshot_every`-th (1 unless the composition thins it, as the legacy feed publishes at
+        // `snapshot_hz`, 30 Hz, from a 60 Hz loop).
+        if self.snapshot_every <= 1
+            || (k + 1).is_multiple_of(self.snapshot_every)
+            || !evaluation.events.is_empty()
+            || !boundary_actions.is_empty()
+        {
+            self.publish_snapshot(k + 1, &decisions, &controls, &event_ids).await?;
+        }
 
         // A rollback request was applied above and is not an episode end; only a terminal one
         // pauses the session for the episode policy.

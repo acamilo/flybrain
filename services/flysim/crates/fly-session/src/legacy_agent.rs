@@ -1332,7 +1332,9 @@ impl LegacyAgentWorker {
         let params: CaptureParams = ctx.params()?;
         let previous = self.status.state();
         self.status.set_state(WorkerState::Capturing);
+        let span = crate::profile::span("agent.capture.encode");
         let bytes = self.payload(&params.checkpoint_id, &scope, k);
+        drop(span);
         let bytes = match bytes {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -1340,8 +1342,12 @@ impl LegacyAgentWorker {
                 return Err(e);
             }
         };
+        let span = crate::profile::span("agent.capture.digest");
         let digest = digest_of_bytes(&bytes);
+        drop(span);
+        let span = crate::profile::span("agent.capture.seal");
         let artifact = crate::state::seal_payload(ctx.client, &bytes, &digest).await;
+        drop(span);
         self.status.set_state(previous);
         let artifact = artifact?;
         let graph = self.graph.as_ref().expect("initialized");

@@ -41,6 +41,9 @@ fn grants(f: impl FnOnce(&mut Grants)) -> Grants {
 /// The transitions a service session keeps in memory for diagnosis (about a minute at 60 Hz).
 const HISTORY: usize = 4096;
 
+/// Every other boundary's snapshot: the legacy feed's `snapshot_hz` (30 Hz) at 60 Hz.
+const SNAPSHOT_EVERY: u64 = 2;
+
 const COORDINATOR_CLIENT: &str = "coordinator";
 const ENV_CLIENT: &str = "legacy-world";
 const ENV_SERVICE: &str = "env.world";
@@ -305,7 +308,9 @@ impl LegacySession {
         let mut launcher = Launcher::start(
             router,
             config.mode,
-            Via::Unix,
+            // In-process participants reach the router in memory: no socket between two tasks
+            // of one process (a separate process always uses the socket).
+            Via::Memory,
             &store_root,
             &sockets,
             budget,
@@ -413,6 +418,8 @@ impl LegacySession {
         } else {
             // A service session runs indefinitely: its in-memory history stays bounded.
             coordinator.bound_history(HISTORY);
+            // The legacy feed publishes at `snapshot_hz` (30 Hz) from a 60 Hz loop.
+            coordinator.snapshot_every(SNAPSHOT_EVERY);
         }
         Ok(LegacySession {
             coordinator,
