@@ -378,14 +378,25 @@ string changes.
   the shipped form of AGENT-01's `seed_from_legacy_state` prototype. It builds the `FLYAGT01`
   payload a replacement agent stages, using the same encoder the worker's own capture uses
   (`legacy_agent::encode_payload`). The accumulator is `{remainder, executedTicks = network.ms,
-  warmupOffset = 2500}`, and `learning.updates` starts at `plasticity.updates`
-  (`legacy_reinforcements`, section 13 amendment). The payload also carries the file's
+  warmupOffset = 2500}`. `learning.updates` is the file's `reinforcements`. A file from before
+  that member starts at `plasticity.updates` once (`legacy_reinforcements`, section 13
+  amendment). The checkpoint id is the file's generation (`flysim01-g<N>`). No template worker
+  is involved. This fixes the four points the AGENT-01 review raised against the prototype:
+  template dependence, borrowed ids, no compatibility gate (the gate is `restore_from_store`'s,
+  below), and the count falling back on every round trip. The payload also carries the file's
   `framebuffer` as an `inputFrame` chunk, which `State.StageRestore` installs as the next input.
   `LegacyFrame::restore` re-projects the framebuffer and does not keep the saved visual drive,
   and the two differ on the row 65 yard survey checkpoint (found here; see the section 13
   amendment). `world_payload` is ENV-01's `FLYENV01` from
   the same world. The source scope of both is `(session, "legacy", emulatorFrame - 1)`.
   `legacy_parity` now seeds its workers through this import.
+- **`reinforcements`, an optional `FLYSIM01` manifest member.** `LegacyFrame` now counts
+  reinforcement calls the way the agent worker does: one per commit while the rule is enabled,
+  zero sums included. `Sim` writes the count, and `LegacyFrame::restore` reads it (falling back
+  to `plasticity.updates`), so the count survives every round trip in either runtime. Readers
+  that predate it ignore it. The member changes no behaviour and not the compatibility string,
+  but it does change legacy checkpoint bytes: a file written from now on is the old layout plus
+  this member.
 - **Store policy.** `LegacyCheckpointer` follows `Sim` at each call site:
   - one generation counter over both stores, starting above the highest either has allocated;
   - a hot copy every `hot_seconds`, and a durable one every `checkpoint_seconds`, which also
@@ -401,6 +412,8 @@ string changes.
   on *any* refusal, including a participant's `State.StageRestore`. It reports `Fresh` when no
   candidate exists, and `Refused` when every candidate failed. In that case the runtime must exit
   as `Sim::restore_or_warm_up` does.
+- **The agent worker** now refuses a conflicting stage (a restore already staged, or a token
+  already activated) before it builds a replacement network (AGENT-01 review).
 - **Sugar journal** (the FND-01 review note, before SHADOW-01). A per-process boot header
   records the runtime, start frame, brain ms, restore origin, generation and compatibility. The
   journal rotates at 4 MiB and keeps three files; every rotated-in file starts with a
@@ -430,10 +443,12 @@ coordinator (TASK-01); this slice ships the pieces and proves them on the worker
   into the real environment worker and captured again. The agent goes through the imported
   `FLYAGT01` payload and the task through the Pokémon adapter and the ratchet. Every export is
   byte-identical to the legacy loop's own restore outcome of the same file, checkpointed at once.
-  Six exports are byte-identical to the file itself. The other twelve differ in named fields
-  only. Eleven were written by adapters v5 or v6, and the adapter's import migrates their
-  `reward` state. One, a survey checkpoint, also has a joypad byte in the emulator state that
-  its own `buttons` field does not match; both runtimes apply `buttons` on restore.
+  Against the files themselves, every export differs only in named fields. All 18 gain
+  `reinforcements`, because the files predate it. Twelve written by adapters v5 or v6 also
+  differ in `reward`, which the adapter's import migrates. One survey checkpoint also differs in
+  a joypad byte of its emulator state that its own `buttons` field does not match; both runtimes
+  apply `buttons` on restore. Before the counter was added, six of the 18 were byte-identical to
+  the file.
 - *Restore then continue, toy connectome, raw mode* (every ROM run). The legacy frame writes a
   checkpoint. The session runtime selects it from a store whose hot copy is torn. The legacy
   loop and the session runtime then each run 600 frames from it. World: 1,800 values identical

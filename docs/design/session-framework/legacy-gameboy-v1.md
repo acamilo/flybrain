@@ -544,7 +544,7 @@ current `flysim` reads, under the unchanged compatibility string. The deploy gat
 checkpoint may be written beside it, but it is not what a restore selects until RETIRE-01
 says so.
 
-**Amendment, 2026-09-29 (STATE-02).** Five readings of this section, fixed by building it
+**Amendment, 2026-09-29 (STATE-02).** Six readings of this section, fixed by building it
 ([implementation guide](implementation.md) STATE-02):
 
 - *"A FLYSIM01 envelope that the current `flysim` reads" means the same bytes.* The session
@@ -554,7 +554,8 @@ says so.
   owners of the fields are: the agent (the seven agent chunks, the remainder), the environment
   (`emulator`, `framebuffer`, `emulatorFrame`, `buttons`, `romHash`, and slot `best` as
   `ratchetGame` and `ratchetFrame`), the task (`reward`, `ratchet`) and the host (`generation`,
-  `wallMs`, `compatibility`, `speed`, `rankSinceMs`, `lastEventId`).
+  `wallMs`, `compatibility`, `speed`, `rankSinceMs`, `lastEventId`); the agent's reinforcement
+  count, `reinforcements`, is new (below).
 - *The milestone archive is per process, as in the legacy loop.* A rank climb is archived when
   the rank is above every rank *this process* has archived. After a restart, the first climb
   rewrites `milestone-<rank>` even if an older process had archived that rank. That is the
@@ -573,6 +574,11 @@ says so.
   the agent payload (chunk `inputFrame`), and `State.StageRestore` installs it after the import,
   as `LegacyFrame::restore` does. A worker's own capture carries no such chunk and restores
   exactly.
+- *`learning.updates` is carried in `FLYSIM01`.* This corrects section 13's *Learning telemetry*
+  amendment, which started every import at `plasticity.updates` and so dropped the count on
+  every round trip. Both runtimes count reinforcement calls the same way and write the count
+  as the optional manifest member `reinforcements`. A file without it (every file from before
+  2026-09-29) starts at `plasticity.updates` once.
 - *The sugar journal is the shadow run's input record.* It gets a per-process boot header, is
   rotated at 4 MiB with three kept files, and `fly-reset-to-milestone` clears it
   (`flysim-store::journal`). It is not a checkpoint and nothing restores from it.
