@@ -46,6 +46,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 [ $# -ge 1 ] || die "usage: $0 ENVFILE [RELEASE_TARBALL]"
 load_env "$1"
+# flybridge refuses to start on an empty GAME_TITLE, and the generated fly.env below writes the
+# variable whether or not the env file sets it. It only reads the file at start, so a missing
+# value surfaced as dead chat at the next reboot, a day and a deploy later (2026-09-28). A release
+# with a channel therefore needs the title before anything is touched.
+if [ "$ROLE" = release ] && [ -n "${TWITCH_CHANNEL:-}" ] && [ -z "${GAME_TITLE:-}" ]; then
+    die "TWITCH_CHANNEL is set but GAME_TITLE is empty in $1: flybridge would refuse to start. Set GAME_TITLE (infra/env/example.env)."
+fi
 RELEASE_TARBALL="${2:-}"
 
 # The label this script writes into the files it GENERATES (/etc/fly/fly.env,
