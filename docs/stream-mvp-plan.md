@@ -916,3 +916,18 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   approved copy and STUCK from the last progress, flybridge refreshes expired tokens on load (and
   redacts Twitch errors), a release deploy refuses an empty GAME_TITLE. Reviews: row 62 r2, 63,
   64, 65 APPROVE-WITH-NOTES.
+- 2026-09-29 (v0.6.6, loop review + port foundation): the fly shops, throws and names what it
+  catches. Row 66: a counter walked away from is not walked back to for the ledger window (the
+  GO SHOP/GO OUT re-entry ring: 31 to 0), BUY BALL is one walk-talk-buy button like HEAL (the
+  operator's call; offered in a mart that sells balls, with no ball and 200 in the wallet), and a
+  closed battle bag is not the pad (post-catch presses typed the nickname). Row 67: the live fly
+  lost the Pewter Gym's Jr. Trainer 29 times in a row choosing TAIL WHIP (the pad offered every
+  move); a report-only `unwon-battles` watchdog reason lets the recovery ladder act 45 minutes
+  sooner, and the no-PP ROM test is fixed (Struggle is the cartridge's answer). Row 69 (the
+  operator's calls): in a wild battle at the catch formula's low-HP threshold with a ball in the
+  bag, THROW BALL is the only attack-side button; the naming screen takes the fly's own buttons
+  ("AAAAAAAAAA" before), bounded by CONFIRM after a full name or 60 brain seconds. Port
+  foundation merged, dormant on the stream: AGENT-01, MEM-01, ENV-01, STATE-02 (the checkpoint
+  store is now the shared `flysim-store` crate; FLYSIM01 gains an optional `reinforcements`
+  field, downgrade-safe both ways). A PII guard scans lint, tag-release and pushes. Reviews: all
+  APPROVE-WITH-NOTES.
