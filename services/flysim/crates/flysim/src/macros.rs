@@ -184,6 +184,8 @@ pub struct MacroLayer {
     last_decision_ms: Option<f64>,
     scene: SceneId,
     bindings: Vec<SlotBinding>,
+    /// The raw buttons the last observation lets through ([`flybrain_gb::Observed::raw`]).
+    raw: u8,
     running: Option<Running>,
     finished: Option<Finished>,
     /// The brain millisecond the pad became empty in a playable scene, or `None` while it has
@@ -241,6 +243,7 @@ impl MacroLayer {
             // `observe` has not happened and guessing the intro would be a guess.
             scene: SceneId::Unknown,
             bindings: Vec::new(),
+            raw: 0,
             running: None,
             finished: None,
             pad_empty_since_ms: None,
@@ -282,6 +285,18 @@ impl MacroLayer {
                 mask: raw_mask,
                 events: Vec::new(),
                 silence: (raw_mask == 0).then_some(Silence::Channels),
+            };
+        }
+
+        // Row 69: a scene typed on with the fly's own buttons (the naming screen). With nothing
+        // bound and nothing running, the readout's buttons reach the cartridge through the
+        // scene's mask, exactly as the title's do; the macro group has nothing to choose from.
+        if self.raw != 0 && self.bindings.is_empty() && self.running.is_none() {
+            let mask = raw_mask & u32::from(self.raw);
+            return Decision {
+                mask,
+                events: Vec::new(),
+                silence: (mask == 0).then_some(Silence::Channels),
             };
         }
 
@@ -377,6 +392,7 @@ impl MacroLayer {
         let observed = self.palette.observe(memory, ledger);
         self.scene = observed.scene;
         self.bindings = observed.bindings;
+        self.raw = observed.raw;
         self.watch_pad(ms);
         let mut decision = Decision::default();
         if !self.scene.playable()
@@ -415,7 +431,11 @@ impl MacroLayer {
     /// Only a *playable* scene counts: the title screen deals no palette by contract (section 2),
     /// and raw mode has no palette at all, so neither is an empty pad in the sense that matters.
     fn watch_pad(&mut self, ms: f64) {
-        let empty = self.scene.playable() && self.bindings.is_empty() && self.running.is_none();
+        // A scene whose pad is the fly's own buttons (row 69) is not empty.
+        let empty = self.scene.playable()
+            && self.bindings.is_empty()
+            && self.raw == 0
+            && self.running.is_none();
         match (empty, self.pad_empty_since_ms) {
             (false, _) => self.pad_empty_since_ms = None,
             (true, None) => self.pad_empty_since_ms = Some(ms),
@@ -434,6 +454,12 @@ impl MacroLayer {
             Some(since) if ms > since => ms - since,
             _ => 0.0,
         }
+    }
+
+    /// The fly's own buttons the last observation lets through while nothing is bound (row 69's
+    /// naming screen), as a joypad mask; 0 in every other scene. For a survey line and the tests.
+    pub fn raw_buttons(&self) -> u8 {
+        self.raw
     }
 
     /// The scene the last [`MacroLayer::observe`] found.
@@ -612,6 +638,8 @@ mod tests {
         /// Name sets the next `observe`s use instead, oldest first: a plan whose head changes.
         rename: Vec<Vec<&'static str>>,
         bound: Vec<u8>,
+        /// The raw buttons the scene lets through (row 69).
+        raw: u8,
         /// Masks `step` returns, in order; a `None` ends the macro.
         plan: Vec<Option<u8>>,
         running: Option<&'static str>,
@@ -629,6 +657,7 @@ mod tests {
                 names: Vec::new(),
                 rename: Vec::new(),
                 bound: Vec::new(),
+                raw: 0,
                 plan: Vec::new(),
                 running: None,
                 finished: None,
@@ -652,6 +681,7 @@ mod tests {
             }
             Observed {
                 scene: self.scene,
+                raw: self.raw,
                 bindings: self
                     .bound
                     .iter()
@@ -922,6 +952,36 @@ mod tests {
         assert!(fourth.events.is_empty());
         assert_eq!(layer.counts().started, 1);
         assert_eq!(layer.counts().done, 1);
+    }
+
+    /// Row 69: the naming screen's pad is the fly's own buttons, through the scene's mask, while
+    /// nothing is bound; it is not an empty pad; and once a button is bound the raw path is shut.
+    #[test]
+    fn a_scene_typed_on_passes_the_raw_buttons_through_its_mask_while_nothing_is_bound() {
+        let naming = 0b0111_1111;
+        let mut layer = layer(Fake { scene: SceneId::Unknown, raw: naming, ..Fake::default() });
+        // Up and A, pressed by the readout: through. Select: not in the mask.
+        let decision = decide(&mut layer, &channels(&["up", "a"]), 0b0001_0001, 0.0);
+        assert_eq!(decision.mask, 0b0001_0001);
+        assert!(decision.events.is_empty());
+        let decision = decide(&mut layer, &channels(&["select"]), 0b1000_0000, 16.0);
+        assert_eq!(decision.mask, 0, "SELECT is not one of the keyboard's buttons");
+        assert_eq!(decision.silence, Some(Silence::Channels));
+        layer.observe(&mut Zeroes, &NoLedger, 1_000.0);
+        assert_eq!(layer.pad_empty_ms(9_000.0), 0.0, "the fly's own buttons are a pad");
+
+        // A bound button (the bound's `CONFIRM`) shuts the raw path: only the macro can press.
+        let mut ending = super::tests::layer(Fake {
+            scene: SceneId::Unknown,
+            raw: 0,
+            bound: vec![0],
+            plan: vec![Some(0b0100_0000), None],
+            ..Fake::default()
+        });
+        let decision = decide(&mut ending, &channels(&["up"]), 0b0000_0001, 0.0);
+        assert_eq!(decision.mask, 0, "raw UP does not reach the cartridge beside a bound button");
+        let decision = decide(&mut ending, &holding(0), 0b0000_0001, 16.0);
+        assert_eq!(decision.mask, 0b0100_0000, "the macro's START");
     }
 
     #[test]

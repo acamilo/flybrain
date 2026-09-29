@@ -269,6 +269,31 @@ pub struct TextBox {
     pub waiting: bool,
 }
 
+/// The naming screen, while it is up (`DisplayNamingScreen`, `engine/menus/naming_screen.asm`;
+/// row 69, `docs/design/macros.md` 12.32).
+///
+/// The keyboard the cartridge draws for a Pokémon's nickname, the Name Rater, and the player's and
+/// rival's names at the start of a game. The last two are before the game timer starts and read
+/// as the title (section 2), so this is only ever asked of the first two in practice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Naming {
+    /// Letters typed so far (`wNamingScreenNameLength`).
+    pub length: u8,
+    /// How many letters the name can hold: ten for a Pokémon, seven for the player or the rival
+    /// (`NAME_LENGTH - 1`, `PLAYER_NAME_LENGTH - 1`), counted from the underscores on screen.
+    pub capacity: u8,
+    /// START or ED has been taken and the name is being handed back (`wNamingScreenSubmitName`).
+    pub submitted: bool,
+}
+
+impl Naming {
+    /// Whether no further letter fits. The cartridge moves the cursor onto ED itself then
+    /// (`PrintNicknameAndUnderscores`), and an A press on a letter adds nothing.
+    pub fn full(self) -> bool {
+        self.length >= self.capacity
+    }
+}
+
 /// A menu cursor, as `HandleMenuInput` keeps it. Shared by every menu in the game.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cursor {

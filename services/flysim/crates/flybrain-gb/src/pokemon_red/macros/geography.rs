@@ -761,17 +761,17 @@ pub fn route_within(from: Region, to: u8, area: u8) -> bool {
     false
 }
 
-/// Which kind of amenity `map` *is*, when it is one.
-///
-/// The reverse lookup, and what tells the fly it is standing in a mart rather than in a house: the
-/// shop scene's own buttons and the centre's `HEAL` are dealt on this answer rather than on a
-/// tileset read, because a map id is a byte the adapter already has and a tileset is not.
 /// The marts on [`AMENITIES`] whose counter stocks `POKE_BALL` as its first row
 /// (`data/items/marts.asm` at the pinned commit): Viridian, Pewter and Cerulean all open their buy
 /// list on it. `BUY BALL` from the floor (row 66) is offered only in these, and its script still
 /// reads the stock once the counter is open and refuses if the first row is anything else.
 pub const BALL_FIRST_MARTS: [u8; 3] = [maps::VIRIDIAN_MART, maps::PEWTER_MART, maps::CERULEAN_MART];
 
+/// Which kind of amenity `map` *is*, when it is one.
+///
+/// The reverse lookup, and what tells the fly it is standing in a mart rather than in a house: the
+/// shop scene's own buttons and the centre's `HEAL` are dealt on this answer rather than on a
+/// tileset read, because a map id is a byte the adapter already has and a tileset is not.
 pub fn amenity_at(map: u8) -> Option<Amenity> {
     AMENITIES.iter().find(|(_, _, id)| *id == map).map(|(_, kind, _)| *kind)
 }

@@ -1372,3 +1372,43 @@ fn the_joypad_latch_is_hjoylast_bit_zero() {
     wram.set(poke::H_JOY_LAST, poke::pad::DOWN);
     assert!(!a_latched(&mut wram), "a direction down is not an A down");
 }
+
+/// Row 69: the naming screen is the keyboard's menu bytes **and** its figure on screen.
+#[test]
+fn the_naming_screen_is_its_menu_and_its_box_and_its_underscores() {
+    let mut wram = Wram::new();
+    wram.started().naming_screen(3, 10);
+    let naming = naming_screen(&mut wram).expect("the keyboard");
+    assert_eq!((naming.length, naming.capacity, naming.submitted), (3, 10, false));
+    assert!(!naming.full());
+
+    let mut wram = Wram::new();
+    wram.started().naming_screen(7, 7);
+    assert!(naming_screen(&mut wram).expect("a player's keyboard").full());
+
+    let mut wram = Wram::new();
+    wram.started().naming_screen(0, 10).set(poke::NAMING_SUBMIT, 1);
+    assert!(naming_screen(&mut wram).unwrap().submitted);
+
+    // The menu bytes outlive the screen: with the box cleared it is not the keyboard.
+    let mut wram = Wram::new();
+    wram.started().naming_screen(3, 10).fill_screen(0x7f);
+    assert_eq!(naming_screen(&mut wram), None);
+
+    // And another menu with every key watched is not it either.
+    let mut wram = Wram::new();
+    wram.started().naming_screen(3, 10).cursor(3, 1, 1, 6, 0xff);
+    assert_eq!(naming_screen(&mut wram), None);
+}
+
+/// Row 69: the keyboard is `Unknown` even inside a battle, where a nickname is typed.
+#[test]
+fn the_naming_screen_reads_unknown_in_a_battle_and_title_before_the_game() {
+    let mut wram = Wram::new();
+    wram.started().battle(1).naming_screen(0, 10);
+    assert_eq!(crate::pokemon_red::scene::detect(&mut wram), Scene::Unknown);
+    // The player's name at the start of the game is before the game timer: the title's raw pad.
+    let mut wram = Wram::new();
+    wram.naming_screen(0, 7);
+    assert_eq!(crate::pokemon_red::scene::detect(&mut wram), Scene::Title);
+}

@@ -637,6 +637,12 @@ pub trait MacroState: GameState {
         true
     }
 
+    /// The naming screen, when it is up (row 69). `None` for any other screen, and for a state
+    /// that cannot read it, so a reader without it deals no naming pad.
+    fn naming(&mut self) -> Option<super::state::Naming> {
+        None
+    }
+
     /// Where the ladder's next unreached rung is, when the adapter's rung catalog knows.
     ///
     /// `None` leaves `GO OBJECTIVE` unbound, which is section 9's own fall-through: the plan's

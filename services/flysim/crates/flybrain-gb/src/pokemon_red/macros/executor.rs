@@ -131,6 +131,10 @@ const PROMPT_WAIT: u32 = 360;
 /// [`PRESS_HOLD`] of A, then released, so the press is a new one each time.
 const PROMPT_PULSE: u32 = 40;
 
+/// Frames `CONFIRM` on the naming screen waits for the keyboard to close ([`Step::Submit`]).
+/// The cartridge whites the screen out over three frames and clears it; four pulses of START fit.
+const SUBMIT_WAIT: u32 = 160;
+
 /// Extra presses a cursor navigation may spend beyond twice the length of its list, to cover a
 /// press the game swallows while a menu is still drawing.
 const CURSOR_SLACK: u8 = 6;
@@ -377,6 +381,11 @@ enum Step {
     /// [`Step::Prompt`] does and reads the screen every frame, so the menu is caught before the
     /// next pulse could choose BUY on it.
     Counter { waited: u32 },
+    /// Pulse START until the naming screen is gone, which is the name handed back (row 69);
+    /// `Blocked` if it is still up after [`SUBMIT_WAIT`] frames. START is `.pressedStart` in
+    /// `DisplayNamingScreen`, taken on its edge, so each pulse is a new press like
+    /// [`Step::Prompt`]'s.
+    Submit { waited: u32 },
 }
 
 /// Progress through one A* walk.
@@ -1607,6 +1616,20 @@ fn advance(step: &mut Step, state: &mut dyn MacroState) -> Progress {
                 Progress::Hold(buttons::NONE)
             }
         }
+        Step::Submit { waited } => {
+            if state.naming().is_none() {
+                Progress::Finished
+            } else if *waited >= SUBMIT_WAIT {
+                Progress::Blocked
+            } else {
+                *waited += 1;
+                if *waited % PROMPT_PULSE < PRESS_HOLD {
+                    Progress::Hold(buttons::START)
+                } else {
+                    Progress::Hold(buttons::NONE)
+                }
+            }
+        }
         Step::Counter { waited } => {
             if shop_screen(state) == Some(ShopScreen::BuySellQuit) {
                 if stock_index(state, item::POKE_BALL) == Some(0) {
@@ -2122,6 +2145,9 @@ fn script(
         // A is YES and B is NO in every yes/no box Red draws. Agent A's seam reports no cursor
         // for one, so there is none to read and nothing to navigate: these are the two presses
         // the table names and no more.
+        // On the naming screen `CONFIRM` is the bound's one button (row 69): it hands the name
+        // back with START, whatever the fly has spelled, and is done when the keyboard is gone.
+        MacroKind::Confirm if state.naming().is_some() => vec![Step::Submit { waited: 0 }],
         MacroKind::Yes | MacroKind::Confirm => vec![press(buttons::A)],
         MacroKind::No | MacroKind::Back => vec![press(buttons::B)],
         MacroKind::Close | MacroKind::Leave => {
@@ -2169,7 +2195,8 @@ fn script(
         // Section 14's addition: the ball comes out of the bag, so the script is `ITEM`'s with a
         // ball's index instead of a potion's -- and it stops at the confirmation. The throw
         // animation, the shake count, the "Gotcha!" and the nickname prompt are all text the fly
-        // answers with the between-turns `NEXT` and the dialog's `NO` (section 12).
+        // answers with the between-turns `NEXT` (a YES at the prompt), and the keyboard after it
+        // is the fly's own buttons (row 69, section 12.32).
         MacroKind::ThrowBall => {
             let bag_slot = throw_slot(state)?;
             let mut steps = Vec::new();

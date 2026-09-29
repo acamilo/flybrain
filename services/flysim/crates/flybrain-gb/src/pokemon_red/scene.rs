@@ -30,7 +30,9 @@ use super::symbols::ram;
 /// The order of the tests is the contract:
 ///
 /// 1. **Not started** — `wStatusFlags6`'s game-timer bit is clear, so the cartridge is on the
-///    title, in the intro or on a naming screen: [`Scene::Title`].
+///    title, in the intro or on a naming screen: [`Scene::Title`]. After it, **the naming
+///    screen** once the game has started -- the keyboard, in or out of a battle -- is
+///    [`Scene::Unknown`], whose pad the palette deals from [`state::naming_screen`] (row 69).
 /// 2. **Not readable** — the map header or the party count is outside its range, which is what a
 ///    frame in the middle of a load or a warp looks like: [`Scene::Unknown`].
 /// 3. **Battle** — `wIsInBattle` says a wild or trainer battle is running:
@@ -46,6 +48,13 @@ use super::symbols::ram;
 pub fn detect(memory: &mut dyn MemoryReader) -> Scene {
     if !state::started(memory) {
         return Scene::Title;
+    }
+    // The naming screen (row 69) before the battle test: a nickname is typed with `wIsInBattle`
+    // still set, and the keyboard is no battle menu. It has no scene of its own on the feed's
+    // closed set; it is the `Unknown` that 13.1 already listed it under, and its pad is the fly's
+    // own buttons (`docs/design/macros.md` 12.32).
+    if state::naming_screen(memory).is_some() {
+        return Scene::Unknown;
     }
     if state::map_size(memory).is_none() || memory.read8(ram::wPartyCount) > 6 {
         return Scene::Unknown;
