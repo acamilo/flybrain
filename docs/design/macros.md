@@ -1650,6 +1650,68 @@ Nothing is ranked or pressed for the fly: frames that were never the fly's deal 
 decoder, the reward catalog, the adapter version, the roles and the compatibility string are
 untouched.
 
+### 12.28 A ladder underfoot is taken by stepping off it, a ledge is a hop one way, and a way out that goes nowhere is not done (2026-09-28, row 64)
+
+(12.26 and 12.27 are rows 62 and 63, on their own branches.) Live on v0.6.2/v0.6.4 at rank 12
+(MT. MOON), from 2026-09-26 to 09-28: about 750 macros per ten brain minutes, all `done`, no reward
+and no new ground. They were `GO OBJECTIVE` (61%) and `GO WARP`, 27 frames each. Forty-eight flysim
+restarts did not clear it. A milestone reset bought a few hours before it came back.
+
+The pulled checkpoint has the fly on **Mt. Moon B2F (5, 7)**, the ladder up to B1F's exit chamber,
+which is the one road on. It reproduces the ring with the ledgers empty; nothing needs rebuilding.
+
+- **A ladder fires at the end of a step onto it, and at no other time.** `CheckWarpsNoCollision`
+  runs after a step completes. A bump into the wall beside a warp fires only at a map's edge off the
+  overworld (`ExtraWarpCheck` uses `IsPlayerFacingEdgeOfMap` for every tileset but the overworld's).
+  The fly had come down the ladder and was standing on it. `GO OBJECTIVE`, whose first hop is B1F's
+  exit chamber, and `GO WARP`, whose second tier is the same ladder, both aimed at the tile
+  underfoot. Both settled there for twenty frames, pressed nothing, and reported `done`. That is
+  12.2's trap, with no ledger in it. `GO FRONTIER` was refused `no route` once per restore and marked
+  the map exhausted (12.14). The mark was **correct**: every reachable tile of B2F's main piece had
+  been stood on, and the 439 unstood tiles are in its two other pieces. The pad never lacked a way
+  on. Its two ways on did nothing.
+- **A walk that starts on its own step-fired warp steps off and back on.** Taking the warp this way
+  is what the cartridge requires. The step off goes to free ground, never onto another warp. With
+  nowhere free it ends `blocked`.
+- **Route 4 east of the mountain had no road to Cerulean.** The ledge tile is absent from every
+  passable list, so the route search read a ledge as a wall in both directions. From B1F's exit the
+  way down is over ledges (the column at x = 62 and the rows at y = 5 and 9). So `GO OBJECTIVE`
+  refused `no route`, the east edge rested in the blocked ledger, and `GO FRONTIER` or `GO ITEM`
+  walked the fly back through the cave mouth (24, 5). It arrived on B1F (27, 3) with a pad of
+  `GO OBJECTIVE` and `GO OUT`, the same trap one floor up (nobs' "GO OUT / GO OBJECTIVE" of 09-26).
+  A stray walk over B1F (23, 3) put it back on B2F (5, 7). This is why a milestone reset only
+  bought hours.
+- **A ledge is a hop, one way.** The decoded grid now marks `LedgeTiles`
+  (`data/tilesets/ledge_tiles.asm`). These count on the OVERWORLD tileset only, read from the
+  lower-left anchor tiles `HandleLedges` reads. The route search takes a hop from above as one press
+  that lands two tiles on, if the landing is ground. From below a ledge is still a wall. The flood
+  that 12.24's pieces are measured with is unchanged.
+
+  `HandleLedges` takes the joypad for the jump, and that reads as a scripted push-back. So the walk
+  holds while the cartridge carries the fly along the hop's own line. It then plans again from the
+  landing. Nothing is written to the push-back or blocked ledgers. A wild battle on the landing
+  still ends the walk.
+- **The general half: a way out that does not take the fly anywhere is not `done`.** 12.2's rule is
+  now held by the executor for every way out instead of by each macro. A `Settle` arrival on an exit
+  key that leaves the fly on the same map ends `blocked`, and the exit rests in the window. If the
+  fly never left the tile it pressed from, row 57's refused-from-here ledger (12.21) also keeps the
+  button off that tile for the window. Without that, the last resort, which ignores the blocked
+  ledger, would re-deal the dead exit once per hold. This guarantees that **no in-place ring
+  persists**: at most one no-op per button per tile per window. It cannot supply knowledge the
+  macros lack. With it alone on base, the live ring broke (1,500 `done` in place dropped to 0 in
+  72,000 frames), but the fly still did not reach Cerulean.
+
+What does *not* guarantee the fly is never stuck, and why it was not built: a repetition budget
+that withholds a button after N unrewarded starts. Rows 58, 59 and 61 were rings in which every
+macro *moved* the fly across a door, so no effect-based rule sees them. A budget keyed on the fly's
+own choice history is a rule about the choice, not knowledge inside a macro (section 12's first
+line and the ethos check). In every one of those rows it would have turned a ring into a wait or a
+wander, without adding the fact that was missing. The guarantee for those rings stays outside the
+fly: the watchdog, the recovery ladder, and the ROM road tests from each trap's checkpoint.
+
+The decoder, the reward catalog, the adapter version, the roles and the compatibility string are
+untouched. Nothing presses for the fly.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")
