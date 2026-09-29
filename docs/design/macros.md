@@ -1971,6 +1971,76 @@ Nothing ranks a button or presses for the fly. The walk back is withheld for a w
 is one offer, and the bag is read off the screen. The decoder, the reward catalog, the adapter
 version, the roles and the compatibility string are untouched.
 
+### 12.32 A ball at low HP is the only attack, and the fly spells its catch's name (2026-09-29, row 69)
+
+(12.31 is row 67.) Two operator decisions of 2026-09-29, after row 66 measured the connectome
+choosing `THROW BALL` 0 times in 35 decisions with a ball in the bag, and every catch named
+`AAAAAAAAAA` by `NEXT`'s A presses on the keyboard.
+
+**"Throw on low HP only."** In a wild battle, when `THROW BALL` is on the pad and the wild
+Pokémon's HP is low, the ball is the only attack-side button: `MOVE 1` to `MOVE 4` are withheld on
+the top-level menu, and so are `SWITCH` and `RUN`, and `BACK` in the bag.
+
+- **Low is the cartridge's number.** `ItemUseBall` (`engine/items/item_effects.asm`) computes
+  `W = (MaxHP * 255 / BallFactor) / max(HP / 4, 1)`, floored at each step, with a `BallFactor`
+  of 8 for a Great Ball and 12 for every other. The ball holds on HP when a random byte is at most
+  `W`, so at `W >= 255` HP stops mattering. For a Poké Ball that is HP at about a third of its
+  maximum (7 of a Weedle's 20), for a Great Ball about a half. Lower HP buys nothing more; what is
+  left is the catch rate and the status, which no press changes. So low is where the throw stops
+  getting better (`palette::ball_holds_on_hp`, `palette::throw_only`), for the ball
+  `THROW BALL` would throw.
+- **What stays beside the ball.** `ITEM`, because it is dealt only for a Pokémon that is out,
+  under half its HP, with a Potion the cartridge would take: the one non-attack need that keeps
+  the thrower standing. `SWITCH` is about a healthier fighter; `RUN` forfeits the catch the pad
+  exists for, with the enemy at its weakest; `BACK` in the bag leads to a menu whose pad is the
+  same ball. `palette::WITHHELD_FOR_THE_THROW` is the list.
+- **It cannot loop.** It applies only while `THROW BALL` itself is dealt, so every precondition
+  of that button still holds it: a wild battle, a ball, room in the party, a species the party does
+  not hold. A missed throw is an ordinary turn (`NEXT` between turns, the ball again on the next
+  own turn while one is left). With no ball left the button is off the pad and so is the rule, and
+  the moves are back. An enemy that faints ends the battle as always. A catch goes to the nickname
+  offer, which `NEXT` answers YES as before.
+
+**"Let the fly name it."** The keyboard (`DisplayNamingScreen`) is a screen of its own. It reads
+`Unknown` in or out of a battle (the detector checks it before `wIsInBattle`), and its pad is the
+fly's **own buttons**: the D-pad moves over the letters, A types one (or ED, which hands the name
+back, or the case switch), B deletes, START hands the name back. SELECT is not on the operator's
+list and is masked. No macro is dealt while the fly spells.
+
+- **Why raw buttons and not a macro per key.** A macro per key is new types, and a new type
+  re-deals every macro population (`docs/readout.md`). The fly's raw buttons are already decoded
+  every frame in macros mode, and the title already passes them through (section 2). The player's
+  and rival's names at the start of a game are the same screen before the game timer starts, so
+  they read `Title` and the fly has always typed them with these buttons; the nickname is now
+  consistent with them. `Observed::raw` carries the scene's mask and the layer presses
+  `raw_mask & raw` while nothing is bound and nothing runs.
+- **The bound.** Once the name is full (`wNamingScreenNameLength` at the capacity the underscores
+  show, ten or seven; the cartridge moves the cursor onto ED itself then), or sixty brain seconds
+  after the keyboard opened (`palette::NAMING_BOUND_MS`), the raw buttons are shut and `CONFIRM`
+  is the only button. On the keyboard `CONFIRM` pulses START until the screen is gone
+  (`Step::Submit`), `blocked` after 160 frames. `CONFIRM` is not offered earlier: a macro group of
+  one always has a winner at its next decision, so a lone `CONFIRM` would hand back an empty name
+  within a second.
+- **What the name is.** Whatever the fly typed stays. An empty name is the species' own name,
+  which is the cartridge (`AskName.declinedNickname`).
+- **The reading.** Red has no "keyboard open" byte, so `state::naming_screen` is the construction
+  `yes_no_prompt` makes: the menu bytes `DisplayNamingScreen` writes (`wTopMenuItemY` 3,
+  `wMaxMenuItem` 7, every key watched), the keyboard's whole box at (0, 4)-(19, 14), and the
+  underscores at (10, 3). `wNamingScreenNameLength` (`$CEE9`) and `wNamingScreenSubmitName`
+  (`$CEEA`) are read from the operands of the cartridge's own instructions, like `hJoyLast`, and
+  pinned by the ROM tests.
+- `game.scene` is `unknown` on the keyboard, `game.palette` is `[]` while the fly spells, and
+  `game.padEmptyMs` stays 0: the fly's own buttons are a pad.
+
+ROM tests (`tests/rom_catch.rs`): `row69_at_low_hp_a_wild_battles_pad_is_the_ball`
+(`FLY_ROW69_CHECKPOINT`), `row69_after_a_catch_the_keyboard_is_the_flys_own_buttons_and_it_ends`
+and `row69_a_fly_that_types_nothing_is_ended_by_the_bound` (`FLY_CATCH_CHECKPOINT`). Survey
+numbers are in `infra/docs/macros-traps.md` row 69.
+
+Nothing presses for the fly on the keyboard but the bound's one button, dealt as a button and
+chosen by the fly's own macro group. The decoder, the reward catalog, the adapter version, the
+roles and the compatibility string are untouched.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")
@@ -2051,7 +2121,9 @@ observe is not a precondition, it is a guess.
 | Dialog, a readable YES/NO box (**the box the cartridge drew**, 12.20) | YES, NO — or **one of them** at a Pokémon Center's nurse | **new, 12.12.** `NEXT` is off it: an A press at a two-option menu confirms the option the cursor is on, which is what `YES` is, so the two are one press under two names (12.10). At the nurse's own prompt the bound answer is the one that changes something — `YES` with a hurt or statused party, `NO` with a full one. An answer whose prompt comes straight back is excluded for the blocked window, and the exclusion never empties the pad |
 | Menu (the start menu) | CLOSE, CONFIRM, BACK | unchanged as a *scene*, and since **12.11** nothing on any other pad opens it: the fly reaches it with the **raw** START button, which still reaches the cartridge in macros mode, and moves its cursor with the raw D-pad. A SAVE or a POKéDEX button would be a macro per start-menu entry and is not asked for -- which is precisely why `MENU` had nothing behind it |
 | Menu (the bag, an elevator, the party list outside a battle) | CLOSE, CONFIRM, BACK | unchanged |
-| Unknown (the Pokédex, the trainer card, OPTION, a naming screen, a mid-warp frame) | NEXT, **BACK** | **BACK added** (row 9): B is what leaves the first three, and A leaves none of them |
+| Unknown (the Pokédex, the trainer card, OPTION, a mid-warp frame) | NEXT, **BACK** | **BACK added** (row 9): B is what leaves the first three, and A leaves none of them |
+| Unknown, the naming screen (**12.32**) | the fly's own D-pad, A, B and START; **CONFIRM** alone once the name is full or after sixty brain seconds | new, row 69: read before the battle test, so a nickname typed in a battle is here too |
+| Battle, own turn, main menu, a wild Pokémon at low HP with THROW BALL dealt (**12.32**) | THROW BALL, and ITEM for a hurt thrower | new, row 69: the moves, SWITCH and RUN withheld; the bag's BACK too |
 | Battle, own turn, main menu | MOVE 1..4, SWITCH, ITEM, THROW BALL, RUN (whose cursor indices are FIGHT 0, **ITEM 1, PKMN 2**, RUN 3 -- two columns, 12.11) | four move buttons for `ATTACK` (section 14); THROW BALL added, and gated on the species since 12.9; **RUN gated**, below. No `BACK`: the four entries are the answers to this menu. **`NEXT` removed by 12.10** — an A press here confirms FIGHT and reopens the list the move list's `BACK` just closed, and `MOVE 1` is the backstop instead, bound here whatever the battler reads as |
 | Battle, own turn, move list (**the box on screen**, 12.18) | MOVE 1..4, BACK -- or **MOVE 1 alone** | as above, plus **12.11**: `BACK` is dealt here only while `wBattleMon*` reads, because a list that binds no `MOVE n` has a pad whose one button closes the list `MOVE 1` underneath had just opened. With nothing readable the pad is `MOVE 1` and its script confirms where the cursor stands |
 | Battle, own turn, party list | SWITCH, BACK | unchanged |
@@ -2102,7 +2174,7 @@ measured where it cannot.
 | a running macro aborts and the pad is not re-dealt until the next frame | not a cause: `observe` runs after every frame and the decoder is handed the bound channels again on the very next one |
 | a restore, before the first `observe` | not a cause: the loop calls `observe` once at the end of boot and once after a ratchet recovery, so the first frame is decided on a real palette |
 | the title screen, and raw mode | not an empty pad by contract: the readout's boot variant applies and no palette is dealt |
-| a scene the detector cannot name | `Unknown` deals `NEXT` and `BACK`; a screen neither press leaves (the naming screen, row 14) is a genuine stall and still needs START, which is a contract change |
+| a scene the detector cannot name | `Unknown` deals `NEXT` and `BACK`. The naming screen (row 14), which neither press leaves, is read since **12.32** and its pad is the fly's own buttons, then `CONFIRM` (START) once the name is full or the bound runs |
 | an `Unknown` frame that is the **overworld with the cartridge driving** -- a warp in flight, a scripted push-back, a guide walking the fly through a door | **empty on purpose** (12.13). There is no box to advance and no screen to leave, so an A or a B press is a press into somebody else's script: it changes nothing and completes where the fly stands. This is the one empty pad that ends itself -- the cartridge gives the buttons back within a few frames -- and `game.padEmptyMs` reports it like any other |
 | the fly's own turn while the cartridge holds the A it last took (`hJoyLast`) | **empty on purpose** (12.27): a menu the game is acting on or has not started reading. Ends itself on the game's next joypad read |
 | the fly's own turn where the seam cannot read the battler, now that `NEXT` is off that row (12.10) | **fixed**: `MOVE 1` is bound over the top-level menu whatever `wBattleMon*` reads as, because FIGHT is one of that menu's four entries and always opens |
