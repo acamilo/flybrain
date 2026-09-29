@@ -544,6 +544,39 @@ current `flysim` reads, under the unchanged compatibility string. The deploy gat
 checkpoint may be written beside it, but it is not what a restore selects until RETIRE-01
 says so.
 
+**Amendment, 2026-09-29 (STATE-02).** Five readings of this section, fixed by building it
+([implementation guide](implementation.md) STATE-02):
+
+- *"A FLYSIM01 envelope that the current `flysim` reads" means the same bytes.* The session
+  runtime writes through the legacy loop's own encoder and store, which now live in the crate
+  `flysim-store` that both link. For the same state it writes the same bytes, and it keeps the
+  same generations, `manifest.json`, `milestone-<N>` archives, rotation and restore order. The
+  owners of the fields are: the agent (the seven agent chunks, the remainder), the environment
+  (`emulator`, `framebuffer`, `emulatorFrame`, `buttons`, `romHash`, and slot `best` as
+  `ratchetGame` and `ratchetFrame`), the task (`reward`, `ratchet`) and the host (`generation`,
+  `wallMs`, `compatibility`, `speed`, `rankSinceMs`, `lastEventId`).
+- *The milestone archive is per process, as in the legacy loop.* A rank climb is archived when
+  the rank is above every rank *this process* has archived. After a restart, the first climb
+  rewrites `milestone-<rank>` even if an older process had archived that rank. That is the
+  legacy behaviour, and the reset tools rely on the newest archive of a rung.
+- *A restore is the legacy restore, candidate for candidate.* The candidate order is hot latest,
+  hot previous, durable latest, durable previous, then the archives by descending rank. The gate
+  is the cartridge and the compatibility decision. A refusal at any step, including a
+  participant's `State.StageRestore`, moves to the next candidate. If every candidate fails, the
+  runtime does not start. The world applies the recorded `buttons` on restore, as
+  `LegacyFrame::restore` does, so a file whose emulator state disagrees with its own `buttons`
+  restores to the same state in both runtimes, not to the file's bytes.
+- *The visual drive after a `FLYSIM01` import is the framebuffer's projection* (a correction to
+  section 13's *Restore*, "the two are the same values"). They are the same on stream
+  checkpoints. On the row 65 yard survey checkpoint they are not: the first transition's rates
+  and spikes differed from the legacy loop's. The import therefore carries the framebuffer in
+  the agent payload (chunk `inputFrame`), and `State.StageRestore` installs it after the import,
+  as `LegacyFrame::restore` does. A worker's own capture carries no such chunk and restores
+  exactly.
+- *The sugar journal is the shadow run's input record.* It gets a per-process boot header, is
+  rotated at 4 MiB with three kept files, and `fly-reset-to-milestone` clears it
+  (`flysim-store::journal`). It is not a checkpoint and nothing restores from it.
+
 ## 17. PROF-02b: MaleCNS bundles (later)
 
 Dataset manifests, original-ID mapping, anatomical roles, sensory and readout bindings, strict
