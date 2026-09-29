@@ -1240,10 +1240,52 @@ LPCAT
         fail "check 10: a rewarded busy window gave suspected=$(lp_metric fly_loop_suspected) rewards=$(lp_metric fly_loop_rewards)"
     fi
 
+    # (8) Row 67: the Pewter Gym, one trainer lost on repeat. MOVE 2 six turns in
+    # seven, a whiteout, the walk back and the guide's YES/NO -- six names,
+    # every macro done, and one stray tile reward in the window, so neither the
+    # sequence, dominance nor unrewarded rule fires. No battle is won: two probes
+    # flag as unwon-battles; the same window with one wild win in it does not.
+    lp_reset
+    lp_cycle 25 "GO OBJECTIVE" "TALK" "NO" "NEXT" "NEXT" "NEXT" "MOVE 2" "NEXT" \
+        "MOVE 2" "NEXT" "MOVE 3" "NEXT" | lp_outcomes "$lp_fixture/events.jsonl" "done"
+    printf '{"id":999997,"wallMs":1758000999997,"brainMs":100000,"kind":"reward","label":"AREA 54: 24 UNIQUE LOCATIONS","value":0.05,"rewardKind":"explore"}\n' \
+        >> "$lp_fixture/events.jsonl"
+    lp_status "$lp_fixture/status.json" 2311
+    lp_pass
+    lp_pass
+    lp_first="$(lp_metric fly_loop_suspected)"
+    lp_pass
+    if [ "$lp_first" = "0" ] && [ "$(lp_metric fly_loop_suspected)" = "1" ] \
+       && [ "$(lp_metric fly_loop_rewards)" = "1" ] \
+       && [ "$(lp_metric fly_loop_fights)" = "75" ] \
+       && [ "$(lp_metric fly_loop_wins)" = "0" ] \
+       && grep -q 'loop suspected (unwon-battles): 75 moves chosen in battle and no battle won' "$lp_fixture/journal.log"; then
+        pass "check 10: battles lost on repeat, a stray tile reward in the window, no win over two probes flag as unwon-battles"
+    else
+        fail "check 10: the row-67 log gave first=${lp_first} then suspected=$(lp_metric fly_loop_suspected) rewards=$(lp_metric fly_loop_rewards) fights=$(lp_metric fly_loop_fights) wins=$(lp_metric fly_loop_wins), journal: $(cat "$lp_fixture/journal.log")"
+    fi
+    if lp_report="$(jq -e -r '[.reason, (.window.fights|tostring), (.window.wins|tostring), .action] | join(" ")' "$lp_fixture/run/loop.json" 2>/dev/null)" \
+       && [ "$lp_report" = "unwon-battles 75 0 none" ]; then
+        pass "check 10: loop.json carries the moves chosen and the battles won in the window"
+    else
+        fail "check 10: loop.json read back as '${lp_report:-UNREADABLE}' — expected 'unwon-battles 75 0 none'"
+    fi
+    lp_reset
+    printf '{"id":999998,"wallMs":1758000999998,"brainMs":150000,"kind":"reward","label":"BEAT PEWTER GYM TRAINER 1","value":0.5,"rewardKind":"trainer"}\n' \
+        >> "$lp_fixture/events.jsonl"
+    lp_pass
+    lp_pass
+    lp_pass
+    if [ "$(lp_metric fly_loop_suspected)" = "0" ] && [ "$(lp_metric fly_loop_wins)" = "1" ]; then
+        pass "check 10: the same battles with one of them won do not flag"
+    else
+        fail "check 10: a won battle gave suspected=$(lp_metric fly_loop_suspected) wins=$(lp_metric fly_loop_wins)"
+    fi
+
     # The ethos, asserted rather than reviewed: over every case above, check 10
     # restarted nothing. It reports; a human or a review agent decides.
     if [ ! -s "$lp_fixture/systemctl.log" ]; then
-        pass "check 10: never acts — no unit was restarted across any of the eight cases"
+        pass "check 10: never acts — no unit was restarted across any of the cases"
     else
         fail "check 10 ACTED, which it must never do: $(cat "$lp_fixture/systemctl.log")"
     fi
