@@ -1976,10 +1976,19 @@ fn gate_checkpoint() -> Option<flysim::store::Checkpoint> {
 /// is `BACK`. 600,000 frames of it.
 ///
 /// What is asserted: `ATTACK` is on the pad of the fly's own turn, the macro behind it **starts
-/// and runs on the cartridge** from this state, that turn never deals one button, and the battle
+/// and runs on the cartridge** from this state, that turn never deals an empty pad, and the battle
 /// ends — which is the whole claim, because a turn that can be ended is a battle that finishes one
 /// way or the other. Which way is not asserted: with 6 of 34 HP against a trainer the measured run
 /// faints and blacks out, and that is the game rather than the macro layer.
+///
+/// **The checkpoint is a trainer battle** (a Bug Catcher, `wIsInBattle` 2) with one Poké Ball and
+/// no Potion in the bag, not the wild battle of the live stall. Its own turn is `MOVE 1` alone,
+/// and that is the pad the rules deal (row 67, 2026-09-29, measured): `RUN` is a wild battle's,
+/// `THROW BALL` too, `ITEM` needs a Potion, `SWITCH` a reserve, and a spent move beside `MOVE 1`
+/// is off the pad since 12.23 and 12.27. `MOVE 1` is FIGHT's backstop (12.8): FIGHT opens,
+/// "has no moves left!", Struggle, and the battle ends in 1,487 frames. The assertion used to be
+/// "more than one button", which only a button that does nothing could satisfy here; it had been
+/// red on main since before row 63 and skipped wherever `FLY_NOPP_CHECKPOINT` was unset.
 ///
 /// Gated on `FLY_ROM` and on a checkpoint in that state, which
 /// `examples/scene_probe.rs` writes with `FLY_PROBE_CATCH=noattack FLY_PROBE_SAVE=…` — 99 brain
@@ -2026,7 +2035,7 @@ fn macros_mode_ends_a_turn_with_no_move_left_on_the_cartridge() {
         run.started
     );
     assert!(
-        run.battle_pad.is_some_and(|dealt| dealt > 1),
+        run.battle_pad.is_some_and(|dealt| dealt >= 1),
         "the fly's own turn dealt a pad of {:?} buttons: by name {:?}",
         run.battle_pad,
         run.started
