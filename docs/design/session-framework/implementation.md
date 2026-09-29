@@ -213,6 +213,60 @@ the frame order maps one to one (section 4), the legacy clock equals the rationa
 (section 3), and the fingerprint and compatibility string are embedded unchanged (sections 2
 and 12). The acceptance criteria below stand.
 
+**2026-09-29: built on `port/env-01` (off main `9f2345d`).** `fly-session::legacy_env` is the
+environment worker (`LegacyGameboyEnvironment`), launched by `Launcher::launch_legacy_environment`
+and the `legacy-environment` subcommand in all three execution modes. It makes exactly the emulator
+calls flysim's `LegacyFrame` makes, in the same order: `Environment.Initialize` runs the one-frame
+setup scaffold with no button down (O[0] has `engineFrame` "1", no audio chunk);
+`Environment.Advance` takes one complete `gameboy-joypad-v1` batch for the one port, runs one frame
+and returns the `lcd` view, the `apu` chunk as `f32le` (`sample / 255`, unfiltered) and the
+`gameboy-memory-inspection-v1` image; `Environment.SaveSlot` / `RestoreSlot` are
+`gameboy-slots-v1` (a restore imports, releases the pad, shows the slot's frame, runs no frame and
+moves to the new epoch at the same boundary); `State.Capture` / `StageRestore` / `ActivateRestore`
+carry every slot and stage on a stopped replacement emulator. The joypad is the only write into a
+running game. The coordinator now refuses `episodeRequest.kind = "rollback"` (task failure, epoch
+fenced) unless the composition declares `legacy-ratchet-rollback-v1`
+(`Coordinator::declare_rollback_policy`); with the policy declared it still pauses at the boundary,
+because the rollback sequence is TASK-01's. Parity (`tests/legacy_env.rs`, harness
+`legacy_env_parity`): records equal to the emulator driven directly, frame by frame (view, 64 KiB
+image, WRAM, audio chunk, slot and capture state digests), in-process, thread and process, on a
+toy cartridge the harness assembles (committed golden `fixtures/legacy-env/toy-cart.golden.json`)
+and, with rom-env, on the real cartridge from the row-58 checkpoint; and the service's own
+`FLY_TRACE`s (FND-01's harness; `FLY_ENV01_TRACE_DIR`) replayed through the worker reproduce every
+recorded frame, WRAM and slot-state digest, including a ratchet slot save and a rollback. Not in
+this slice: the shim's bulk read (MEM-01, behind the one seam `legacy_env::memory_image`), the
+coordinator's save/rollback/`Agent.Rollback` sequence and the executor (TASK-01), and assembling
+the FLYSIM01 export from the three halves (STATE-02; the world's half is
+`Flysim01World::{manifest_entries, chunks}`).
+
+**Amendment, 2026-09-29 (ENV-01).** Four readings the contract left open, fixed by this slice:
+
+- *The image read is not state-neutral, so it is guarded.* `emulator_read_mem` of OAM, VRAM,
+  `FF01`/`FF02`, `FF04`-`FF06`, `IF`, `STAT` or `LY` runs binjgb's lazy synchronisation, and
+  `export_state` afterwards differs (never, over 17,398 replayed frames, a frame or WRAM). The
+  legacy loop reads none of these between a frame and the ratchet's capture, so an unguarded image
+  would make every slot and capture differ from the service's bytes. The worker reads the image
+  between `export_state` and `import_state` of the same bytes, which leaves the emulator exactly as
+  the frame left it; `legacy-gameboy-v1` section 8's proof ("export before and after, compare")
+  therefore fails for a plain 65,536-read loop and holds for the guarded one. MEM-01's bulk read
+  must keep that guard (or equivalent).
+- *A `FLYSIM01` world starts at `k = emulatorFrame - setupFrames`.* The legacy file has no
+  boundary, world clock or audio position. The frame counter advances once per transition and
+  never across a rollback, so `engineFrame = k + 1` from a fresh start on; `worldTime` is
+  `k x stepDuration` and the audio position is that time's sample at the configured rate, rounded
+  down. The first chunk after the restore marks the discontinuity. The ratchet's one slot is the
+  composition's first declared slot (`best`).
+- *Names.* The image travels as the attachment `inspection.memory`; the audio stream is `apu`;
+  the port is `p1`. `backendConfig` is the canonical JSON of `gameboy-backend-config-v1`
+  `{form, romDigest, portId, slots, audio {sampleRate, channels, bufferFrames}, setupFrames, view,
+  controllerSchema, inspectionSchema}`; `Environment.Initialize` naming any other document, and a
+  cartridge on disk that is not `romDigest`, are refused `INCOMPATIBLE_STATE` with nothing mutated.
+  The capture payload is flybrain-core's envelope with magic `FLYENV01`, and its participant
+  compatibility uses the state format `fly-gb-env-v1`.
+- *`legacy-transient-reset` for the world is empty.* Everything the environment holds is restored:
+  emulator, frame on screen, joypad, frame counter, slots, clock and audio position. The reset
+  applies to the executor, the agent's readout transient and the task's transient observations.
+
 **Implement:** binjgb environment, task-local memory inspector and identity/existing action
 adapter. Keep `legacy-gameboy-v1` separately routed with exact old ordering/hash semantics.
 
