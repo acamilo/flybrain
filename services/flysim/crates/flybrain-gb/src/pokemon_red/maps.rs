@@ -92,3 +92,7 @@ pub const CERULEAN_MART: u8 = 0x43;
 pub const MT_MOON_POKECENTER: u8 = 0x44;
 pub const ROCK_TUNNEL_1F: u8 = 0x52;
 pub const INDIGO_PLATEAU_LOBBY: u8 = 0xae;
+/// The house beside Cerulean's west road whose back door is the one way into the closed yard at
+/// (9, 9) (row 65). Confirmed by the cartridge rather than by counting: Cerulean City's warp table
+/// names `$e6` at (9, 11) and at (9, 9), read from the yard's own survey checkpoint.
+pub const CERULEAN_BADGE_HOUSE: u8 = 0xe6;

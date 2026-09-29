@@ -1608,6 +1608,15 @@ fn route_survey(
     let (pushed, frontiers) = macros.fences();
     println!("- pushed tiles (no window): {pushed:?}");
     println!("- frontier marks (no window): {frontiers:?}");
+    // `FLY_PROBE_SAVE` without `FLY_PROBE_SAVE_RANK` writes the caught frame itself (row 65: the
+    // Cerulean yard, reached by the survey and by nothing else). The ledgers stay behind, as they
+    // do in every checkpoint.
+    if save_rank.is_none()
+        && let Some(path) = std::env::var_os("FLY_PROBE_SAVE")
+    {
+        let bytes = save_state(checkpoint, gb, adapter, frame, &path);
+        println!("- saved the caught frame to `{}` ({bytes} bytes)", std::path::Path::new(&path).display());
+    }
     let ledger = AdapterLedger(&*adapter);
     macros.inspect(gb, &ledger, |state: &mut dyn MacroState| {
         let player = state.player().expect("a loaded map");
