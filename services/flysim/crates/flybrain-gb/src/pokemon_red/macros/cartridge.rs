@@ -629,6 +629,14 @@ pub trait MacroState: GameState {
         false
     }
 
+    /// Whether Oak has been given his parcel (`EVENT_OAK_GOT_PARCEL`). Until then the Viridian
+    /// clerk's text table is the parcel's and his counter sells nothing (row 66: `BUY BALL` from
+    /// the floor is not offered there before it). Defaulted to true, so a state that cannot read
+    /// the event flags withholds nothing on its account.
+    fn parcel_delivered(&mut self) -> bool {
+        true
+    }
+
     /// Where the ladder's next unreached rung is, when the adapter's rung catalog knows.
     ///
     /// `None` leaves `GO OBJECTIVE` unbound, which is section 9's own fall-through: the plan's

@@ -2339,6 +2339,12 @@ impl MacroState for PokeState<'_> {
         self.targets.reached(map, TargetKey::Counter)
     }
 
+    /// `EVENT_OAK_GOT_PARCEL`, bit 56 of `wEventFlags`.
+    fn parcel_delivered(&mut self) -> bool {
+        let bit = super::symbols::events::EVENT_OAK_GOT_PARCEL;
+        read(self.memory, ram::wEventFlags + (bit >> 3)) & (1 << (bit & 7)) != 0
+    }
+
     /// Where the ladder's next unreached rung is (`GO OBJECTIVE`).
     ///
     /// The adapter's [`crate::adapter::MapPlace`] in the executor's own types, which is the only

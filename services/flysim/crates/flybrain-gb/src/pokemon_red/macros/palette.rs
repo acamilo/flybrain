@@ -1064,7 +1064,8 @@ pub fn heal_goals(state: &mut dyn MacroState) -> Vec<Aim> {
 ///
 /// - in a mart whose first stock row is a Poké Ball ([`geography::BALL_FIRST_MARTS`]);
 /// - while [`service_needed`] holds for the mart: no ball in the bag, the money for one, and no
-///   Oak's parcel (the Viridian clerk's text table while it is carried sells nothing);
+///   Oak's parcel (the Viridian clerk's text table while it is carried sells nothing) -- and in
+///   Viridian not before Oak has the parcel at all ([`MacroState::parcel_delivered`]);
 /// - with the clerk reachable: the blocked window is kept, the talked and reached ledgers are not
 ///   (a counter is a service), and the tile already facing him is a goal (no walk at all).
 ///
@@ -1072,6 +1073,11 @@ pub fn heal_goals(state: &mut dyn MacroState) -> Vec<Aim> {
 pub fn floor_ball_goals(state: &mut dyn MacroState) -> Vec<Aim> {
     let Some(here) = state.player().map(|player| player.map) else { return Vec::new() };
     if !geography::BALL_FIRST_MARTS.contains(&here) || !service_needed(state, Amenity::Mart) {
+        return Vec::new();
+    }
+    // Before the parcel is even in the bag the Viridian counter is the parcel's too: the clerk's
+    // script hands it over on the fly's first visit, and sells nothing until Oak has it.
+    if here == super::super::maps::VIRIDIAN_MART && !state.parcel_delivered() {
         return Vec::new();
     }
     person_aims(state, poke_sprite::CLERK, Ledgers::BlockedOnly, true)

@@ -3370,3 +3370,63 @@ gives these results:
 - **65b to 65d**: out, but seed 3 then stands outside the front door with an empty pad for the rest
   of the window (65e).
 - **branch**: all six leave with no empty pad, and three win the Cascade Badge.
+
+## 2026-09-29, row 66: shop, Poké Balls and catching from the rung-8 restart
+
+### What was found
+
+The operator restarted the live run from the rung-8 archive (VIRIDIAN CITY) on v0.6.5 to watch
+shopping and catching. In the first 35 minutes: `GO SHOP` done 33, `TALK` 5, `BUY BALL` never
+dealt, `THROW BALL` 0, no catch. The sequences after `GO SHOP` were `GO SHOP`, `GO OUT`, `GO SHOP`,
+`GO OUT` (`docs/design/macros.md` 12.30).
+
+### Reproduction
+
+- `survey-rank8-row66-viridian-mart.checkpoint` (`FLY_ROW66_MART_CHECKPOINT`, not committed) was
+  saved by the offers survey (`FLY_PROBE_SAVE_MART=2a`, `FLY_PROBE_SAVE_AFTER=3000`) from
+  `survey-rank7-row62` on the frame the fly walked into the Viridian mart after delivering the
+  parcel: 793 in the wallet, no ball.
+- The connectome from it (`trap_hunt`, `FLY_TRAP_LOG_MACROS=1`): `GO SHOP` from the door to the
+  clerk, `GO OBJECTIVE` out of the door, `GO SHOP` from the street. Three laps in 18 brain seconds.
+  `TALK` was on the pad at the counter every time and was never chosen.
+- A catch on the stub survey (`FLY_PROBE_SCREEN_*` dumps): from "All right! WEEDLE was caught!"
+  to the end of the battle, 6,900 frames under a pad of `BACK` and `THROW BALL`. `THROW BALL`'s A
+  said YES to the nickname and typed AAAAAAAAAA.
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 66 | row 62's service walk is dealt again whenever the service is needed, with no window, so a fly that walks away from the counter is walked straight back | the Viridian mart after the parcel, no ball, money for one | `a_counter_the_fly_walked_away_from_is_not_walked_back_to_for_the_window`, `row66_a_counter_walked_away_from_is_not_walked_back_to_by_go_shop` | **fixed**: a completed `GO SHOP` / `GO HEAL` facing the counter records `TargetKey::Counter` on the building's map. The service walk toward it is withheld for the reached window |
+| 66b | a purchase took four choices in a row at the counter (`TALK`, the greeting, `CONFIRM`, `BUY BALL`). The connectome never chose `TALK` there | any mart | `buy_ball_is_offered_from_a_marts_floor_only_while_a_ball_can_be_bought`, `row66_buy_ball_from_the_marts_floor_rings_up_a_ball` | **operator decision, built**: `BUY BALL` is also one button from the mart's floor, like `HEAL`. It walks to the clerk, talks, opens BUY, buys the first row and is done when paid. It is offered only in Viridian (after Oak has the parcel), Pewter and Cerulean, with no ball, 200 in the wallet, no parcel, and the clerk not blocked |
+| 66c | `wListMenuID` outlives the battle bag, so every frame after a throw read as an open bag | a catch (the Pokédex page, the nickname, the naming screen) and the text after any throw or potion | `row66_after_a_catch_the_pad_is_not_the_bag_and_the_battle_ends`, the state unit test | **fixed**: the bag is the bag only while its box (4, 2)-(19, 12) is drawn |
+| 66d | after a catch, `NEXT` says YES to the nickname offer and names the Pokémon with A's | every catch | -- | **left, named**: offering the box's two answers in a battle is a pad change for the operator |
+| 66e | the connectome did not choose `THROW BALL` in any wild battle with a ball (35 decisions over seven battles, three runs) | Viridian Forest with a ball bought by 66b | -- | **left, the fly's**: dealt as designed (12.9). Whether to make throwing likelier is the operator's |
+| 66f | whiteouts halve the wallet: 3,175 to 793 to 396 to 0 on one stub run before Pewter | early fights lost | -- | **left**: the cartridge's rule. It is why the restart rung matters |
+| 66g | `rom_catch`'s `BALL` is the button's tag (`MB·BALL`), not its channel, so the lean sets a rate nobody reads | the test's drive | -- | **left, documented**: that drive is the one that catches from `FLY_CATCH_CHECKPOINT`. Both tests now retry from idle offsets, because one ball misses about two throws in three |
+
+### Before and after
+
+ROM tests (rom-env sourced):
+
+| test | v0.6.5 | branch |
+| --- | --- | --- |
+| `row66_a_counter_walked_away_from_is_not_walked_back_to_by_go_shop` (10,000 frames, the drive declines the counter) | 31 street `GO SHOP`s, 31 walks back in. **Fails** | 0 and 0. Passes |
+| `row66_buy_ball_from_the_marts_floor_rings_up_a_ball` | `BUY BALL` never dealt on the floor, no ball. **Fails** | dealt, started, done. One ball, 793 to 593, at f491. Passes |
+| `row66_after_a_catch_the_pad_is_not_the_bag_and_the_battle_ends` | `THROW BALL` dealt on 666 frames after the catch, pad `BACK`/`THROW BALL`. **Fails** | 0, pad `NEXT`, battle over 1,463 frames after the catch. Passes |
+
+With the connectome (`trap_hunt`, one sweep thread). `FLY_TRAP_SEED` seeds only the palette, and
+three seeds from one checkpoint were byte-identical. So the runs vary the starting state: three
+post-parcel Viridian mart entrances saved from stub seeds 1, 3 and 5, and the Pewter gym
+(`survey-rank11-row59`, 1,606 in the wallet). A decision is a macro start whose pad held the
+button.
+
+| run | brain min | counter `TALK` dealt / chosen | floor `BUY BALL` dealt / chosen / done | balls bought | `THROW BALL` dealt / chosen |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| base, Viridian mart (s1 entrance) | 5 | 4 / 0 | -- | 0 | 0 / 0 |
+| branch, Viridian mart (s1 entrance) | 5 | 1 / 0 | 2 / 0 / 0 | 0 | 0 / 0 |
+| branch, Viridian mart (s3 entrance) | 5 | 3 / 0 | 3 / 1 / 1 | 1 (431 to 231) | 4 / 0 |
+| branch, Viridian mart (s5 entrance) | 5 | 3 / 0 | 4 / 1 / 1 | 1 (1,587 to 1,387) | 16 / 0 |
+| branch, Pewter gym, then the Pewter mart | 10 | 1 / 0 | 4 / 1 / 1 | 1 (1,606 to 1,406) | 15 / 0 |
+
+`TALK` at a counter: 0 of 12 decisions on either arm. The floor `BUY BALL`: chosen 3 of 13, and
+done (paid) all 3 times. The ring: 4 mart entries in 16 brain seconds on base, one visit on the
+branch.

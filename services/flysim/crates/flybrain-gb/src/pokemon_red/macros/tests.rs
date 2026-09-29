@@ -182,6 +182,8 @@ struct World {
     /// A frame at which the cartridge heals the party, which is what a Pokémon Center does while
     /// its text box is open (`docs/design/macros.md` section 13).
     heal_at: Option<u32>,
+    /// Oak has not been given the parcel yet (row 66); false in every fixture unless set.
+    parcel_undelivered: bool,
     /// Whether a text box is drawn on a scene that is not [`Scene::Dialog`]
     /// ([`MacroState::text_open`]).
     ///
@@ -303,6 +305,7 @@ impl World {
             refused_items: BTreeSet::new(),
             switch: None,
             heal_at: None,
+            parcel_undelivered: false,
             box_open: false,
             prompt: false,
             price_after: None,
@@ -878,6 +881,10 @@ impl MacroState for World {
 
     fn counter_walked_to(&mut self, map: u8) -> bool {
         self.targets.reached(map, TargetKey::Counter)
+    }
+
+    fn parcel_delivered(&mut self) -> bool {
+        !self.parcel_undelivered
     }
 
     fn refused_here(&mut self, slot: u8) -> bool {
@@ -5877,6 +5884,10 @@ fn buy_ball_is_offered_from_a_marts_floor_only_while_a_ball_can_be_bought() {
     mart.bag = vec![(item::OAKS_PARCEL, 1)];
     assert!(!on_the_pad(&mut mart, MacroKind::BuyBall), "carrying the parcel");
     mart.bag = Vec::new();
+    // ...or before the clerk has even handed it over: nothing to buy until Oak has it.
+    mart.parcel_undelivered = true;
+    assert!(!on_the_pad(&mut mart, MacroKind::BuyBall), "before the parcel");
+    mart.parcel_undelivered = false;
 
     // The talked and reached ledgers do not retire a counter; the blocked window does.
     mart.talked.insert(TalkTarget::Sprite(1));
