@@ -898,3 +898,21 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   and every refresh is persisted under its own role (serialized atomic 0600 writes), so both roles
   survive when they are one account. Only a refresh Twitch refuses is fatal, one line pointing at
   the runbook's re-authorize step; Twitch errors are logged without URLs, tokens or the secret.
+- 2026-09-29 (v0.6.5, loop review, auto, plus infra/stage): the two-day Mt. Moon trap and what the
+  merge of its fixes surfaced. Row 64: the fly stood on B2F's exit ladder (5,7), the only road on;
+  GO OBJECTIVE and GO WARP both aimed at the tile underfoot and reported done without a step, and
+  the cartridge fires a ladder only at the end of a step onto it (1,500 of 1,500 macros from the
+  checkpoint, no ledger involved, so 48 restarts restored it). A walk standing on its warp now steps
+  off and back on; Route 4's ledges are one-way hops the route search takes (they read as walls,
+  so the road to Cerulean was "no route"); a way out that leaves the fly on its own map is not done
+  (the effect-based guarantee against in-place rings). The operator's GO WARP / GO FRONTIER
+  exhaustion lead was checked and refuted (GO WARP 25,554 starts; the frontier correctly spent).
+  Row 62 round 2 (shop, balls, nurse): no GO HEAL east of Mt. Moon, no service out of the rung's
+  room; Pewter buys a ball. Row 63: a confirming A waits for the cartridge's release (ITEM/BACK
+  with a usable Potion). Row 65: the merge of 62+63+64 failed row 59's ROM test (a Mt. Moon 1F
+  mouth door ring, 34 crossings) and review found a Cerulean badge-house yard stall; both fixed.
+  The release gate now refuses to run without FLY_ROM: the ROM suites had been passing vacuously
+  whenever it was unset, v0.6.4's gate included. Also: recovery timer every minute, the splash's
+  approved copy and STUCK from the last progress, flybridge refreshes expired tokens on load (and
+  redacts Twitch errors), a release deploy refuses an empty GAME_TITLE. Reviews: row 62 r2, 63,
+  64, 65 APPROVE-WITH-NOTES.
