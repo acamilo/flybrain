@@ -135,8 +135,11 @@ fn damage_pays_on_bubble_and_tackle_and_not_on_tail_whip() {
     let mut last_own: Option<u16> = None;
     let mut trainer_battles = 0u32;
     let mut fighting = gb.read8(ram::wIsInBattle);
+    // Frames from the `MOVE n` start to the payout it earned: how old the choice's trace is.
+    let mut chose_at: Option<u32> = None;
+    let mut delays: Vec<u32> = Vec::new();
 
-    for _frame in 0..90_000u32 {
+    for frame in 0..90_000u32 {
         palette.clock(ms);
         let observed = {
             let ledger = AdapterLedger(&adapter);
@@ -169,6 +172,7 @@ fn damage_pays_on_bubble_and_tackle_and_not_on_tail_whip() {
                 {
                     let id = gb.read8(ram::wBattleMonMoves + n - 1);
                     *chosen.entry(id).or_default() += 1;
+                    chose_at = Some(frame);
                 }
                 if let Started::Running(_) = palette.start(binding.slot, &mut gb, &ledger) {
                     running = true;
@@ -223,6 +227,7 @@ fn damage_pays_on_bubble_and_tackle_and_not_on_tail_whip() {
             assert_eq!(whose, 0, "a damage payout on the enemy's turn: {event:?}");
             assert_eq!(in_battle, 2, "the walk to the gym has no grass: {event:?}");
             paid.entry(move_id).or_default().push(event);
+            delays.extend(chose_at.map(|at| frame - at));
         }
         let hits = |id: u8| paid.get(&id).map_or(0, Vec::len);
         if hits(BUBBLE) >= 2
@@ -244,7 +249,7 @@ fn damage_pays_on_bubble_and_tackle_and_not_on_tail_whip() {
         "{:.1} brain minutes, {trainer_battles} trainer battle(s). moves chosen {chosen:?}; \
          enemy HP drops on the fly's turn by move {drops:?}; enemy drops by hWhoseTurn \
          {enemy_drop_turns:?}; own drops by hWhoseTurn {own_drop_turns:?}; damage paid by move \
-         {summary:?}",
+         {summary:?}; frames from the MOVE press to its payout {delays:?}",
         ms / 60_000.0
     );
     assert!(trainer_battles > 0, "the run never reached the trainer's battle");
