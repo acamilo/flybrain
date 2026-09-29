@@ -236,6 +236,37 @@ struct Trace {
     move_starts: (u64, u64),
     wall_seconds: f64,
     row66: Row66,
+    row69: Row69,
+}
+
+/// Row 69's tally: frames the throw's pad was up, and every naming screen -- how long, the fly's
+/// own presses on it, the name, and what ended it.
+#[derive(Default)]
+struct Row69 {
+    throw_pad_frames: u64,
+    keyboard_frames: u64,
+    keyboard_presses: u64,
+    /// The keyboard up now: brain ms it opened, frames, presses, longest, name, CONFIRM started.
+    open: Option<(f64, u64, u64, u8, String, bool)>,
+    keyboards: Vec<String>,
+    previous_mask: u32,
+    /// A, B and START going down on the keyboard, over the run.
+    keys: BTreeMap<&'static str, u64>,
+}
+
+/// `wStringBuffer` (`CalcStringLength`'s operand on the cartridge), in Red's charmap.
+fn row69_name(gb: &mut flybrain_gb::Emulator) -> String {
+    use flybrain_gb::MemoryReader;
+    (0..11u16)
+        .map(|index| gb.read8(0xcf4b + index))
+        .take_while(|byte| *byte != 0x50)
+        .map(|byte| match byte {
+            0x80..=0x99 => char::from(b'A' + (byte - 0x80)),
+            0xa0..=0xb9 => char::from(b'a' + (byte - 0xa0)),
+            0x7f => ' ',
+            _ => '?',
+        })
+        .collect()
 }
 
 /// Row 66's shop/ball/catch tally: pad frames, starts and outcomes of the watched buttons, and
@@ -367,6 +398,9 @@ impl FrameObserver for Hunt {
             && layer.running().is_none()
         {
             let names: Vec<String> = layer.feed_palette().into_iter().map(|slot| slot.name).collect();
+            if names == ["THROW BALL"] || names == ["ITEM", "THROW BALL"] {
+                self.trace.row69.throw_pad_frames += 1;
+            }
             if !names.is_empty() {
                 let row = &mut self.trace.row66;
                 row.free_frames += 1;
@@ -390,6 +424,51 @@ impl FrameObserver for Hunt {
         let ms = parts.agent.network.ms;
         let location = frame.location;
         let trace = &mut self.trace;
+        {
+            let naming = flybrain_gb::pokemon_red::state::naming_screen(parts.emulator);
+            let row = &mut trace.row69;
+            match (naming, row.open.take()) {
+                (Some(naming), open) => {
+                    let (since, frames, presses, longest, _, confirm) =
+                        open.unwrap_or((ms, 0, 0, 0, String::new(), false));
+                    // A press is a button going down while no macro runs: each of the eight bits
+                    // on its own edge, since the D-pad group is almost always holding one.
+                    let press = if executed.events.is_empty() {
+                        (executed.mask & !row.previous_mask).count_ones()
+                    } else {
+                        0
+                    };
+                    let letters = executed.mask & !row.previous_mask;
+                    for (bit, name) in [(0x10u32, "A"), (0x20, "B"), (0x40, "START")] {
+                        if executed.events.is_empty() && letters & bit != 0 {
+                            *row.keys.entry(name).or_default() += 1;
+                        }
+                    }
+                    let confirm = confirm || executed.events.iter().any(|event| event.name == "CONFIRM");
+                    row.keyboard_frames += 1;
+                    row.keyboard_presses += u64::from(press);
+                    row.open = Some((
+                        since,
+                        frames + 1,
+                        presses + u64::from(press),
+                        longest.max(naming.length),
+                        row69_name(parts.emulator),
+                        confirm,
+                    ));
+                }
+                (None, Some((since, frames, presses, longest, name, confirm))) => {
+                    row.keyboards.push(format!(
+                        "{:.2} min: {frames} frames ({:.1} brain s), {presses} presses, longest {longest}, \
+                         name {name:?}, ended by {}",
+                        (since - trace.began_ms) / MINUTE_MS,
+                        (ms - since) / 1000.0,
+                        if confirm { "CONFIRM (the bound)" } else { "the fly (ED or START)" }
+                    ));
+                }
+                (None, None) => {}
+            }
+            row.previous_mask = executed.mask;
+        }
         for event in &executed.events {
             if std::env::var("FLY_TRAP_LOG_MACROS").is_ok_and(|value| value == "1") {
                 let pad: Vec<String> = parts.macros.as_deref().map(|layer| layer.feed_palette().into_iter().map(|slot| slot.name).collect()).unwrap_or_default();
@@ -626,6 +705,7 @@ fn run(
             move_starts: (0, 0),
             wall_seconds: 0.0,
             row66: Row66::default(),
+            row69: Row69::default(),
             seeded: seeded_note,
             refusals: BTreeMap::new(),
             refusal_run: (None, 0),
@@ -1099,6 +1179,25 @@ fn main() {
         println!("\n- counts: {:?}", row.counts);
         if let Some(last) = row.last { println!("- end: balls {} money {} party+box {} owned {} map {:#04x}", last.0, last.1, last.2, last.3, last.4); }
         for line in row.log.iter().take(150) { println!("- {line}"); }
+    }
+    {
+        let row = &trace.row69;
+        println!(
+            "\n## Row 69: the throw's pad and the keyboard\n\n- free frames with the throw's pad \
+             (THROW BALL alone, or with ITEM): {}\n- keyboard frames {}, the fly's own button presses \
+             on it {} (of them {:?})",
+            row.throw_pad_frames, row.keyboard_frames, row.keyboard_presses, row.keys
+        );
+        for line in &row.keyboards {
+            println!("- keyboard at {line}");
+        }
+        if let Some((since, frames, presses, longest, name, _)) = &row.open {
+            println!(
+                "- keyboard still up at the end: opened {:.2} min, {frames} frames, {presses} presses, \
+                 longest {longest}, name {name:?}",
+                (since - trace.began_ms) / MINUTE_MS
+            );
+        }
     }
     for (rank, label, ms) in &trace.rungs {
         println!("- rung {rank} {label} at {:.2} brain minutes", ms / MINUTE_MS);
