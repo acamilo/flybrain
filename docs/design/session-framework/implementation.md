@@ -481,7 +481,7 @@ reads.
 
 **Offline rehearsal** (a build box, `tools/shadow-rehearsal.sh`, FAFB in macros mode). The real
 service ran at real time or unthrottled, with sugar posted every 10 to 20 s and a restart in every
-run. It totalled **3,489 brain seconds (58 brain minutes), 208,410 transitions, 11 processes and
+run. It totalled **4,090 brain seconds (68 brain minutes), 244,327 transitions, 13 processes and
 zero divergence**:
 
 | Run | Start | Brain s | Transitions | What it covered |
@@ -491,6 +491,7 @@ zero divergence**:
 | rollback | FND-01's `rollback` checkpoint | 302 | 18,056 | a ratchet rollback and the durable save after it; a `talk` reward |
 | climb | FND-01's `climb` checkpoint | 303 | 18,069 | a ratchet slot save, and the milestone archive before it compared under `archive-order` |
 | smoke | row 67, unthrottled | 122 | 7,305 | the first run |
+| final | row 67, real time, the final binary, the lag guard on | 601 | 35,917 | the box was contended by other runs, so the live loop fell behind real time 5 times; each time the guard paused the shadow (667 s in all), and all 143 saves were still compared |
 
 The reward run's box was loaded: the shadow ran at 25 frames a second against the live 52 and
 finished 12 minutes behind. Every save was still compared, from the spool.
@@ -515,7 +516,8 @@ agents' runs made paired measurements vary by up to 2x.
   - in-process with 1, 2 and 3 threads: 23.7, 19.7 and 17.0 ms;
   - thread mode with 2 threads: 18.5 ms;
   - process mode with 2 threads: 18.5 ms.
-  Every replay was identical again.
+
+  Every replay was identical again: five more comparisons of 20,000 transitions each.
 - *Memory.* The shadow's resident size was about 130 MB, against the live service's 54 MB.
 - *The live trace* with a ledger digest every frame costs about 1 ms of CPU a frame in the best
   paired sample, which is within this box's noise; FND-01 measured about 2 ms. The live loop has
