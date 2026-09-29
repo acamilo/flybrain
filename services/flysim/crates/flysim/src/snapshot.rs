@@ -658,14 +658,26 @@ impl DcBlocker {
     pub fn process_into(&mut self, raw: &[u8], out: &mut Vec<f32>) {
         out.reserve(raw.len());
         for (index, sample) in raw.iter().enumerate() {
-            let channel = index & 1;
-            let input = f32::from(*sample) / 255.0;
-            let output =
-                input - self.previous_in[channel] + DC_BLOCK_POLE * self.previous_out[channel];
-            self.previous_in[channel] = input;
-            self.previous_out[channel] = output;
-            out.push(output);
+            self.push(index, f32::from(*sample) / 255.0, out);
         }
+    }
+
+    /// Filter samples already converted with `v / 255` (the session environment's native audio,
+    /// `legacy_env::audio_f32le`) onto the end of `out`: the same filter, the same state, so the
+    /// edge of the session runtime publishes the bytes [`DcBlocker::process_into`] does.
+    pub fn process_f32_into(&mut self, converted: &[f32], out: &mut Vec<f32>) {
+        out.reserve(converted.len());
+        for (index, input) in converted.iter().enumerate() {
+            self.push(index, *input, out);
+        }
+    }
+
+    fn push(&mut self, index: usize, input: f32, out: &mut Vec<f32>) {
+        let channel = index & 1;
+        let output = input - self.previous_in[channel] + DC_BLOCK_POLE * self.previous_out[channel];
+        self.previous_in[channel] = input;
+        self.previous_out[channel] = output;
+        out.push(output);
     }
 }
 
