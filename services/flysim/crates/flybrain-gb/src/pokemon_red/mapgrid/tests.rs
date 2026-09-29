@@ -196,3 +196,41 @@ fn a_ledge_is_a_hop_from_above_on_the_overworld_tileset_only() {
     add_ledge_hops(&mut edge, tileset::OVERWORLD);
     assert!(!edge.hops(0, 0, Facing::Down));
 }
+
+#[test]
+fn a_warp_carpet_in_front_is_marked_where_extra_warp_check_reads_it() {
+    // Row 65, the Cerulean badge house's back door: a warp whose own tile is no door, with a
+    // carpet tile in front of it facing down (`$12`, `warp_carpet_tile_ids.asm`). The bump that
+    // way is how the cartridge takes it from where the fly stands.
+    let mut grid = MapGrid::new(0x03, 1, 3);
+    grid.set(0, 0, 0x2c, Walkable::Yes);
+    grid.set(0, 1, 0x2c, Walkable::Yes);
+    grid.set(0, 2, 0x12, Walkable::No);
+    add_warp_carpets(&mut grid, tileset::OVERWORLD, 0x03);
+    assert_eq!(grid.carpet_press(0, 1), Some(Facing::Down), "a bump down, into the carpet");
+    assert_eq!(grid.carpet_press(0, 0), None, "two tiles off is not in front");
+
+    // A carpet id is only a carpet in the facing pokered lists it under: `$12` is a down carpet.
+    let mut up = MapGrid::new(0x03, 1, 2);
+    up.set(0, 0, 0x12, Walkable::No);
+    up.set(0, 1, 0x2c, Walkable::Yes);
+    add_warp_carpets(&mut up, tileset::OVERWORLD, 0x03);
+    assert_eq!(up.carpet_press(0, 1), None);
+
+    // A cave asks `IsPlayerFacingEdgeOfMap` instead, and so does the S.S. Anne's 3F on SHIP.
+    let mut cave = MapGrid::new(0x3b, 1, 3);
+    for y in 0..3 {
+        cave.set(0, y, grid.tile_id(0, y).unwrap_or(0), grid.walkable(0, y));
+    }
+    add_warp_carpets(&mut cave, tileset::CAVERN, 0x3b);
+    assert_eq!(cave.carpet_press(0, 1), None, "no carpets in a cave");
+    let mut rock_tunnel = cave.clone();
+    add_warp_carpets(&mut rock_tunnel, tileset::CAVERN, super::super::maps::ROCK_TUNNEL_1F);
+    assert_eq!(rock_tunnel.carpet_press(0, 1), Some(Facing::Down), "Rock Tunnel 1F is named");
+    let mut ship = MapGrid::new(0x61, 1, 3);
+    for y in 0..3 {
+        ship.set(0, y, grid.tile_id(0, y).unwrap_or(0), grid.walkable(0, y));
+    }
+    add_warp_carpets(&mut ship, tileset::SHIP, 0x61);
+    assert_eq!(ship.carpet_press(0, 1), None, "the S.S. Anne's 3F asks the edge");
+}

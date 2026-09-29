@@ -431,9 +431,20 @@ pub fn exits(state: &mut dyn MacroState) -> Vec<Exit> {
     let grid = state.map_grid();
     let grid = grid.as_deref();
     let here_outdoors = outdoors(player.map);
+    // **On a map in pieces, a way out on another piece is not a way out of here** (row 65,
+    // section 12.24's pieces). From the Cerulean yard every one of the town's doors and edges was
+    // a candidate the route search refused, and each refusal rested that exit for the whole map --
+    // so a fly that got out of the yard found the town's ways out resting (a survey: an empty pad
+    // outside the badge house's front door for the rest of the window). A warp no piece lists is
+    // not claimed either way ([`geography::warp_on`]).
+    let piece = geography::is_split(player.map)
+        .then(|| geography::region_on(player.map, player.x, player.y, grid));
     let mut out = Vec::new();
     for (index, warp) in state.warps().iter().enumerate() {
         let Ok(id) = u8::try_from(index) else { continue };
+        if piece.is_some_and(|piece| !geography::warp_on(piece, id)) {
+            continue;
+        }
         let tile = Tile::new(warp.x, warp.y);
         // Section 9.1's classification, from the destination map id and nothing else. Outdoors
         // every warp is a door into somewhere new, which is a route; indoors the destination
@@ -470,6 +481,11 @@ pub fn exits(state: &mut dyn MacroState) -> Vec<Exit> {
         // the cartridge does not normally do -- it is still a way out of the building.
         let way = if here_outdoors { Way::Route } else { Way::Exit };
         let into = geography::connected(player.map, edge);
+        if let (Some(piece), Some(to)) = (piece, into)
+            && !geography::edge_on(piece, to)
+        {
+            continue;
+        }
         for tile in edge_tiles(facing, size.width, size.height) {
             // Not `== Yes`: without a grid the walkable predicate's window is the screen, so the
             // far edge of an outdoor map reads `Unknown` from anywhere but next to it, and

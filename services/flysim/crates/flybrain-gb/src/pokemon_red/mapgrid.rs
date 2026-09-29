@@ -80,7 +80,35 @@ const ANCHOR_ROW: usize = 1;
 pub mod tileset {
     pub const OVERWORLD: u8 = 0;
     pub const FOREST: u8 = 3;
+    pub const SHIP: u8 = 13;
+    pub const SHIP_PORT: u8 = 14;
     pub const CAVERN: u8 = 17;
+    pub const PLATEAU: u8 = 23;
+}
+
+/// `WarpTileListPointers` at the pinned pokered commit (`data/tilesets/warp_carpet_tile_ids.asm`):
+/// per facing, the tile ids in front of the player that `IsWarpTileInFrontOfPlayer` answers yes
+/// to.
+pub const WARP_CARPET_TILES: [(Facing, &[u8]); 4] = [
+    (Facing::Down, &[0x01, 0x12, 0x17, 0x3d, 0x04, 0x18, 0x33]),
+    (Facing::Up, &[0x01, 0x5c]),
+    (Facing::Left, &[0x1a, 0x4b]),
+    (Facing::Right, &[0x0f, 0x4e]),
+];
+
+/// Whether `ExtraWarpCheck` asks `IsWarpTileInFrontOfPlayer` on this map (`home/overworld.asm`):
+/// the OVERWORLD, SHIP, SHIP_PORT and PLATEAU tilesets and four maps by id, except the S.S. Anne's
+/// 3F, which asks `IsPlayerFacingEdgeOfMap` like every other map.
+fn carpets_apply(tileset: u8, map: u8) -> bool {
+    const SS_ANNE_3F: u8 = 0x61;
+    const ROCKET_HIDEOUT_B1F: u8 = 0xc7;
+    const ROCKET_HIDEOUT_B2F: u8 = 0xc8;
+    const ROCKET_HIDEOUT_B4F: u8 = 0xca;
+    if map == SS_ANNE_3F {
+        return false;
+    }
+    matches!(map, ROCKET_HIDEOUT_B1F | ROCKET_HIDEOUT_B2F | ROCKET_HIDEOUT_B4F | super::maps::ROCK_TUNNEL_1F)
+        || matches!(tileset, tileset::OVERWORLD | tileset::SHIP | tileset::SHIP_PORT | tileset::PLATEAU)
 }
 
 /// `TilePairCollisionsLand` at the pinned pokered commit, as `(tileset, one tile, the other)`.
@@ -207,7 +235,28 @@ pub fn decode(map: u8, width_blocks: u8, height_blocks: u8, blocks: &[u8], tiles
     }
     add_pair_walls(&mut grid, tiles.id);
     add_ledge_hops(&mut grid, tiles.id);
+    add_warp_carpets(&mut grid, tiles.id, map);
     grid
+}
+
+/// Mark, for every tile, the directions whose tile in front is a warp carpet ([`WARP_CARPET_TILES`]),
+/// on a map whose `ExtraWarpCheck` reads them ([`carpets_apply`]). Only a warp's own tile ever
+/// asks ([`MapGrid::carpet_press`], row 65).
+fn add_warp_carpets(grid: &mut MapGrid, tileset: u8, map: u8) {
+    if !carpets_apply(tileset, map) {
+        return;
+    }
+    for y in 0..grid.height() {
+        for x in 0..grid.width() {
+            for (facing, carpets) in WARP_CARPET_TILES {
+                let (dx, dy) = facing.delta();
+                let (Some(nx), Some(ny)) = (checked_step(x, dx), checked_step(y, dy)) else { continue };
+                if grid.tile_id(nx, ny).is_some_and(|tile| carpets.contains(&tile)) {
+                    grid.carpet(x, y, facing);
+                }
+            }
+        }
+    }
 }
 
 /// Mark every ledge the loaded tileset has as a hop out of the tile in front of it ([`LEDGE_TILES`]).

@@ -167,6 +167,12 @@ const LINKS: &[(u8, u8)] = &[
     (maps::CERULEAN_GYM, maps::CERULEAN_CITY),
     (maps::CERULEAN_MART, maps::CERULEAN_CITY),
     (maps::CERULEAN_POKECENTER, maps::CERULEAN_CITY),
+    // The badge house (row 65): no rung place needs a route through it, but its back door at
+    // (9, 9) is the only way into or out of a closed yard, so without it on the graph Cerulean is
+    // one piece and the house's two doors are the same door to every `GO OUT` -- the nearest one,
+    // which from the back door's arrival is the back door. Which piece each door opens onto is
+    // [`SPLIT`]'s business.
+    (maps::CERULEAN_BADGE_HOUSE, maps::CERULEAN_CITY),
     (maps::ROCK_TUNNEL_1F, maps::ROUTE_10),
     (maps::INDIGO_PLATEAU_LOBBY, maps::INDIGO_PLATEAU),
 ];
@@ -242,6 +248,11 @@ const B2F_MAIN: u8 = 0;
 const B2F_NORTH: u8 = 1;
 const B2F_SOUTH: u8 = 2;
 
+/// Cerulean City's town, and the closed yard behind the badge house.
+const CERULEAN_TOWN: u8 = 0;
+#[cfg(test)]
+const CERULEAN_YARD: u8 = 1;
+
 /// Every map whose ground is in pieces, with each piece's doors and neighbours.
 ///
 /// Every row is measured from the disassembly at the pinned commit: the map's blocks, its
@@ -262,6 +273,12 @@ const B2F_SOUTH: u8 = 2;
 ///   to dead ends on B2F.
 /// - **`MT_MOON_B2F`** (row 59): the fossil floor, one large piece with the two ladders the road
 ///   uses, and two small pieces under the dead-end ladders.
+/// - **`CERULEAN_CITY`** (row 65): the town, and a closed yard of 33 tiles behind the badge house
+///   whose one way out is the house's back door at (9, 9). Row 59's flood found it and left it
+///   off because the house was not on the graph; the fly found it in a survey and stood in it with
+///   an empty pad for 32,000 frames. The flood's third piece -- a strip of the west edge beside
+///   Cerulean Cave's mouth, reached over water -- has no door on the graph and stays unlisted, so
+///   the Route 4 edge and the cave are the town's as before.
 const SPLIT: &[Split] = &[
     Split {
         map: maps::ROUTE_2,
@@ -297,7 +314,7 @@ const SPLIT: &[Split] = &[
                 doors: &[(2, 24, 5)],
                 next: &[
                     Region::piece(maps::MT_MOON_B1F, B1F_EXIT),
-                    Region::whole(maps::CERULEAN_CITY),
+                    Region::piece(maps::CERULEAN_CITY, CERULEAN_TOWN),
                 ],
             },
         ],
@@ -355,10 +372,63 @@ const SPLIT: &[Split] = &[
             },
         ],
     },
+    Split {
+        map: maps::CERULEAN_CITY,
+        pieces: &[
+            Piece {
+                doors: &[
+                    (0, 27, 11),
+                    (1, 13, 15),
+                    (2, 19, 17),
+                    (3, 30, 19),
+                    (4, 13, 25),
+                    (5, 25, 25),
+                    (7, 27, 9),
+                    (8, 9, 11),
+                ],
+                next: &[
+                    Region::whole(maps::ROUTE_24),
+                    Region::whole(maps::ROUTE_5),
+                    Region::piece(maps::ROUTE_4, EAST_SIDE),
+                    Region::whole(maps::ROUTE_9),
+                    Region::whole(maps::CERULEAN_POKECENTER),
+                    Region::whole(maps::CERULEAN_GYM),
+                    Region::whole(maps::CERULEAN_MART),
+                    Region::whole(maps::CERULEAN_BADGE_HOUSE),
+                ],
+            },
+            Piece { doors: &[(9, 9, 9)], next: &[Region::whole(maps::CERULEAN_BADGE_HOUSE)] },
+        ],
+    },
 ];
 
 fn split_of(map: u8) -> Option<&'static Split> {
     SPLIT.iter().find(|split| split.map == map)
+}
+
+/// Whether `map`'s ground is in pieces ([`SPLIT`] has a row for it).
+pub fn is_split(map: u8) -> bool {
+    split_of(map).is_some()
+}
+
+/// Whether warp `index` of `from`'s map stands on the piece `from` (row 65).
+///
+/// A warp another piece lists is on ground no walk from here reaches, so it is not a way out of
+/// here: from the Cerulean yard the town's eight doors, and from the town the yard's. A warp no
+/// piece lists -- a door off the graph -- is not claimed either way and stays a way out.
+pub fn warp_on(from: Region, index: u8) -> bool {
+    let Some(split) = split_of(from.map) else { return true };
+    pieces(split)
+        .find(|(_, piece)| piece.doors.iter().any(|(door, _, _)| *door == index))
+        .is_none_or(|(part, _)| part == from.part)
+}
+
+/// Whether the edge of `from`'s map onto `to` is stepped off the piece `from` (row 65): the piece
+/// lists `to` among what is one step from it, or no piece does.
+pub fn edge_on(from: Region, to: u8) -> bool {
+    let Some(split) = split_of(from.map) else { return true };
+    let mut owners = pieces(split).filter(|(_, piece)| piece.next.iter().any(|next| next.map == to)).peekable();
+    owners.peek().is_none() || owners.any(|(part, _)| part == from.part)
 }
 
 /// The pieces of a split map with their numbers, which are their [`Region::part`]s.
@@ -872,6 +942,33 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn cerulean_is_a_town_and_a_yard_and_the_badge_houses_back_door_is_the_yards() {
+        // Row 65. The yard behind the badge house is 33 tiles with one way out, the house's back
+        // door at (9, 9) (Cerulean's warp 9). From the house the road to anywhere is the front
+        // door, which opens on the town; from the yard it is the house.
+        let yard = Region::piece(maps::CERULEAN_CITY, CERULEAN_YARD);
+        let town = Region::piece(maps::CERULEAN_CITY, CERULEAN_TOWN);
+        assert_eq!(town, Region::whole(maps::CERULEAN_CITY), "the town is the piece every old row names");
+        assert_eq!(region_at(maps::CERULEAN_CITY, 9, 9), yard);
+        assert_eq!(region_at(maps::CERULEAN_CITY, 9, 12), town);
+        assert_eq!(arrival_by_warp(maps::CERULEAN_CITY, 9), Some(yard), "the back door lands in the yard");
+        assert_eq!(arrival_by_warp(maps::CERULEAN_CITY, 8), Some(town), "the front door in the town");
+        let house = Region::whole(maps::CERULEAN_BADGE_HOUSE);
+        assert_eq!(next_step(house, maps::CERULEAN_GYM), Some(town));
+        assert_eq!(next_step(yard, maps::CERULEAN_GYM), Some(house));
+        assert_eq!(hops(yard, maps::CERULEAN_GYM), Some(3));
+        assert_eq!(arrival_by_edge(maps::CERULEAN_CITY, maps::ROUTE_4), Some(town));
+        // What is on which piece, for the exit list (`path::exits`).
+        assert!(warp_on(yard, 9) && !warp_on(yard, 8) && !warp_on(town, 9) && warp_on(town, 8));
+        assert!(warp_on(yard, 6) && warp_on(town, 6), "the cave's mouth is no piece's door");
+        assert!(!edge_on(yard, maps::ROUTE_24) && edge_on(town, maps::ROUTE_24));
+        assert!(warp_on(Region::whole(maps::PEWTER_CITY), 3), "an unsplit map claims nothing");
+        // Route 4's sides, which row 59 split, answer the same question.
+        let west = Region::piece(maps::ROUTE_4, WEST_SIDE);
+        assert!(warp_on(west, 1) && !warp_on(west, 2) && !edge_on(west, maps::CERULEAN_CITY));
     }
 
     #[test]

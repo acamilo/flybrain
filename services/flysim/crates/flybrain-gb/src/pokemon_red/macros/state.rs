@@ -446,6 +446,9 @@ pub struct MapGrid {
     /// Row-major bitmask of the directions a press out of this tile hops a ledge in
     /// ([`MapGrid::ledge`]), landing two tiles that way.
     hops: Vec<u8>,
+    /// Row-major bitmask of the directions whose tile in front is a warp carpet
+    /// ([`MapGrid::carpet`]): from a warp on this tile, a bump that way warps (row 65).
+    carpets: Vec<u8>,
 }
 
 impl MapGrid {
@@ -460,6 +463,7 @@ impl MapGrid {
             ids: vec![None; cells],
             walls: vec![0; cells],
             hops: vec![0; cells],
+            carpets: vec![0; cells],
         }
     }
 
@@ -506,6 +510,28 @@ impl MapGrid {
     /// Whether a press out of `(x, y)` in `facing` is a ledge hop ([`MapGrid::ledge`]).
     pub fn hops(&self, x: u8, y: u8, facing: Facing) -> bool {
         self.index(x, y).is_some_and(|index| self.hops[index] & wall_bit(facing) != 0)
+    }
+
+    /// Record that the tile in front of `(x, y)` in `facing` is a warp carpet
+    /// (`data/tilesets/warp_carpet_tile_ids.asm`), on a map whose `ExtraWarpCheck` reads it.
+    pub fn carpet(&mut self, x: u8, y: u8, facing: Facing) {
+        if let Some(index) = self.index(x, y) {
+            self.carpets[index] |= wall_bit(facing);
+        }
+    }
+
+    /// The direction a fly standing on a warp at `(x, y)` presses to take it by bumping, when the
+    /// cartridge would: the tile in front that way is a warp carpet ([`MapGrid::carpet`]).
+    ///
+    /// Row 65. A warp whose own tile is not a door fires only through `ExtraWarpCheck`: at the end
+    /// of a step onto it with the direction still held, or on a bump while standing on it
+    /// (`CheckWarpsCollision`), and on the OVERWORLD tileset both ask `IsWarpTileInFrontOfPlayer`.
+    /// Down first, the order pokered lists the carpets in.
+    pub fn carpet_press(&self, x: u8, y: u8) -> Option<Facing> {
+        let bits = self.index(x, y).map_or(0, |index| self.carpets[index]);
+        [Facing::Down, Facing::Up, Facing::Left, Facing::Right]
+            .into_iter()
+            .find(|facing| bits & wall_bit(*facing) != 0)
     }
 
     /// Whether the player could stand on this tile. Off the map is [`Walkable::No`], which is the

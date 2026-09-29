@@ -1371,6 +1371,16 @@ pub fn ways(state: &mut dyn MacroState, way: Way) -> Vec<Exit> {
         Way::Exit => {
             if all.is_empty() {
                 last_resort(state, way)
+            } else if on_the_road(state) {
+                // **A floor whose way on is a passage is not a room to be stuck in** (row 65). The
+                // fallback is for a room with no other way anywhere; on Mt. Moon's first floor the
+                // road to Cerulean is a ladder, and the cave's mouth -- ground the run has walked,
+                // away from the rung -- was `GO OUT`'s nearest, one step from the tile the fly
+                // arrives on. `GO ROUTE` / `GO OBJECTIVE` on Route 4's side walk it straight back
+                // in: with row 62's `GO HEAL` bringing a hurt fly back to that tile, the review's
+                // three-way merge crossed Route 4's west doors 34 times in twenty minutes. This is
+                // `GO WARP`'s rule below, the other way round.
+                Vec::new()
             } else {
                 all
             }
@@ -1403,6 +1413,14 @@ pub fn ways(state: &mut dyn MacroState, way: Way) -> Vec<Exit> {
         // resting is still the only place to go.
         Way::Route => last_resort(state, way),
     }
+}
+
+/// Whether a passage no ledger is resting leads toward the objective: the fly is on a floor of the
+/// road, and the way on is inside (row 65, [`ways`]). The blocked window is the escape hatch, as it
+/// is for every suppression: a passage no walk reaches rests, and the way out is a candidate again.
+fn on_the_road(state: &mut dyn MacroState) -> bool {
+    let passages = unexcluded_exits(state, Way::Passage);
+    !passages.is_empty() && !toward_objective(state, &passages).is_empty()
 }
 
 /// Every way out of this kind, ignoring the ledgers, when the map offers nothing else at all.

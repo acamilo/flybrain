@@ -215,6 +215,16 @@ struct World {
     /// [`path::exits`]'s `outward`, for the executor's rule about a way out that did not take the
     /// fly anywhere.
     duds: BTreeSet<Tile>,
+    /// Warp carpets, as the tile a bump is made from and its direction (row 65): standing on a
+    /// warp there, a press that way into ground the fly cannot enter fires it
+    /// (`CheckWarpsCollision`). With it non-empty the world has a decoded grid.
+    carpets: Vec<(Tile, Facing)>,
+    /// Same-map teleports, as the pad and where it puts the player (row 65): the Saffron Gym's
+    /// pads and Silph Co.'s move the fly on its own map a few frames after it stands on one, with
+    /// no scene change.
+    teleports: Vec<(Tile, Tile)>,
+    /// Frames the player has stood on a teleport pad.
+    on_pad: u32,
     /// A frame at which the cartridge takes the joypad, which is what the Viridian gate does.
     scripted_at: Option<u32>,
     /// Every completed pulse, in order.
@@ -301,6 +311,9 @@ impl World {
             ledges: Vec::new(),
             hop: None,
             duds: BTreeSet::new(),
+            carpets: Vec::new(),
+            teleports: Vec::new(),
+            on_pad: 0,
             scripted_at: None,
             pulses: Vec::new(),
             held: 0,
@@ -485,6 +498,16 @@ impl World {
             self.pulses.push(self.previous);
             self.on_pulse(self.previous);
         }
+        match self.teleports.iter().find(|(pad, _)| *pad == self.player).copied() {
+            Some((_, to)) => {
+                self.on_pad += 1;
+                if self.on_pad >= 8 {
+                    self.player = to;
+                    self.on_pad = 0;
+                }
+            }
+            None => self.on_pad = 0,
+        }
         if self.scene == Scene::Overworld {
             match direction_of(mask) {
                 Some(facing) => {
@@ -629,6 +652,13 @@ impl World {
             return;
         }
         if self.walkable(next.x, next.y) != Walkable::Yes {
+            // A bump while standing on a warp, toward a carpet: `CheckWarpsCollision` (row 65).
+            if self.carpets.contains(&(self.player, facing))
+                && let Some(warp) =
+                    self.warps.iter().find(|warp| warp.x == self.player.x && warp.y == self.player.y)
+            {
+                self.map = warp.destination_map;
+            }
             return;
         }
         self.player = next;
@@ -856,7 +886,7 @@ impl MacroState for World {
     /// The decoded grid, only for a world with ledges in it (row 64): the same walls the window
     /// reads, plus the hops. Every other fixture keeps answering from the window, as before.
     fn map_grid(&mut self) -> Option<std::sync::Arc<super::state::MapGrid>> {
-        if self.ledges.is_empty() {
+        if self.ledges.is_empty() && self.carpets.is_empty() {
             return None;
         }
         let mut grid = super::state::MapGrid::new(self.map, self.size.width, self.size.height);
@@ -868,6 +898,9 @@ impl MacroState for World {
         }
         for (tile, facing) in &self.ledges {
             grid.ledge(tile.x, tile.y, *facing);
+        }
+        for (tile, facing) in &self.carpets {
+            grid.carpet(tile.x, tile.y, *facing);
         }
         Some(std::sync::Arc::new(grid))
     }
@@ -6105,4 +6138,139 @@ fn a_way_out_pressed_from_where_it_does_not_fire_is_not_dealt_again_from_there()
 fn pick_opt(world: &mut World, kind: MacroKind) -> bool {
     let scene = world.scene();
     Palette::for_scene(scene, world).slots.iter().any(|slot| slot.is_some_and(|spec| spec.kind == kind))
+}
+
+#[test]
+fn a_door_underfoot_is_taken_when_no_other_way_out_can_be_walked_to() {
+    // Row 65, the Cerulean badge house's back yard: the fly stands on the one door out of ground
+    // walled off from every other exit. The exit walks set a step-fired door underfoot aside while
+    // any other exit is listed, reachable or not, so `GO OUT` refused `no route` at the far door
+    // for as long as it was dealt and never took the one underfoot. It now falls back on it, the
+    // way row 64 taught the walk to take a ladder: a step off and the step back on.
+    let mut world = World::room().at(3, 3).wall(&[(5, 0), (5, 1), (5, 2), (5, 3), (5, 4), (5, 5), (5, 6), (5, 7)]);
+    world.warps = vec![
+        Warp { x: 3, y: 3, destination_warp: 0, destination_map: 0x00 },
+        Warp { x: 7, y: 3, destination_warp: 1, destination_map: 0x00 },
+    ];
+    assert_eq!(run(&mut world, MacroKind::GoOut), Ok(MacroAbort::Done));
+    assert_eq!(world.map, 0x00, "the door underfoot was taken");
+    assert!(!world.pulses.is_empty(), "by a step off it and back on");
+
+    // With the other door reachable, it is still the one walked to: the fallback is a fallback.
+    let mut open = World::room().at(3, 3);
+    open.warps = world.warps.clone();
+    open.warps[1].destination_map = 0x01;
+    assert_eq!(run(&mut open, MacroKind::GoOut), Ok(MacroAbort::Done));
+    assert_eq!(open.map, 0x01, "the reachable door, not the one underfoot");
+}
+
+#[test]
+fn a_door_underfoot_that_fires_on_a_bump_is_bumped_and_not_stepped_off() {
+    // The same yard, measured on the cartridge: the back door's tile is no door tile, so a step
+    // back onto it sideways fires nothing (`duds`), and the cartridge takes it on a bump toward
+    // the house -- a warp carpet in front, `CheckWarpsCollision` for a player standing on a warp.
+    let wall: Vec<(u8, u8)> = (0..8).map(|y| (5, y)).chain([(3, 4)]).collect();
+    let mut world = World::room().at(3, 3).wall(&wall);
+    world.warps = vec![
+        Warp { x: 3, y: 3, destination_warp: 0, destination_map: 0x00 },
+        Warp { x: 7, y: 3, destination_warp: 1, destination_map: 0x00 },
+    ];
+    world.duds = BTreeSet::from([Tile::new(3, 3)]);
+    world.carpets = vec![(Tile::new(3, 3), Facing::Down)];
+    assert_eq!(run(&mut world, MacroKind::GoOut), Ok(MacroAbort::Done));
+    assert_eq!(world.map, 0x00, "the bump took the door");
+    assert!(world.pulses.iter().all(|mask| *mask == buttons::DOWN), "a press down and nothing else");
+
+    // The row-64 step off alone is what this tile does not answer: with no carpet it ends
+    // `blocked`, the executor's rule for a way out that went nowhere.
+    let mut stepped = World::room().at(3, 3).wall(&wall);
+    stepped.warps = world.warps.clone();
+    stepped.duds = world.duds.clone();
+    assert_eq!(run(&mut stepped, MacroKind::GoOut), Ok(MacroAbort::Blocked));
+    assert_eq!(stepped.map, 0x25);
+}
+
+#[test]
+fn a_floor_whose_way_on_is_a_passage_deals_no_go_out_back_the_way_it_came() {
+    // Row 65, Mt. Moon 1F: the objective is Cerulean, the road is the ladder at (5, 5) into B1F's
+    // west chamber, and the cave mouth leads back onto Route 4, where the run has been. `GO OUT`'s
+    // "a room has to be leavable" fallback dealt the mouth anyway, one step from the tile the fly
+    // arrives on, and Route 4's `GO ROUTE` walked straight back in.
+    let mut world = World::room().at(3, 6);
+    world.map = maps::MT_MOON_1F;
+    world.size = MapSize { width: 8, height: 8 };
+    world.warps = vec![
+        Warp { x: 3, y: 7, destination_warp: 1, destination_map: maps::ROUTE_4 },
+        Warp { x: 5, y: 2, destination_warp: 0, destination_map: maps::MT_MOON_B1F },
+    ];
+    // The centre beside the mouth has been visited, so it is no errand: the objective is the rung.
+    world.seen_maps = BTreeSet::from([maps::ROUTE_4, maps::MT_MOON_B1F, maps::MT_MOON_POKECENTER]);
+    world.objective = Some(Objective { map: maps::CERULEAN_CITY, tile: None, warp: None, edge: None, target: None });
+    assert!(ways(&mut world, Way::Exit).is_empty(), "no way out: the road is the ladder");
+    assert!(!on_the_pad(&mut world, MacroKind::GoOut));
+    assert!(on_the_pad(&mut world, MacroKind::GoWarp), "the ladder is the way on");
+
+    // The escape hatch every suppression has: a ladder no walk reaches rests in the window, and
+    // the mouth is a way out again.
+    world.targets.record_blocked(maps::MT_MOON_1F, TargetKey::Exit(ExitId::Warp(1)));
+    assert_eq!(ways(&mut world, Way::Exit).len(), 1);
+    assert!(on_the_pad(&mut world, MacroKind::GoOut));
+
+    // And a party that needs the nurse still has its way out, under the button that says why.
+    let mut hurt = World::room().at(3, 6);
+    hurt.map = maps::MT_MOON_1F;
+    hurt.warps = world.warps.clone();
+    hurt.seen_maps = world.seen_maps.clone();
+    hurt.objective = world.objective;
+    hurt.mons = vec![mon(0, 5, 20, &[(33, 30)])];
+    assert!(!on_the_pad(&mut hurt, MacroKind::GoOut));
+    assert!(on_the_pad(&mut hurt, MacroKind::GoHeal), "GO HEAL walks out to the centre");
+}
+
+#[test]
+fn a_way_out_on_another_piece_of_a_split_map_is_not_a_way_out_of_this_one() {
+    // Row 65, Cerulean City's yard behind the badge house. Every door and edge of the town was a
+    // way out of the yard for the route search to refuse, and each refusal rested that exit for
+    // the whole map: out of the yard at last, the fly found the town's exits, the gym's door
+    // among them, resting. On a split map the exits are the fly's own piece's.
+    let mut world = World::room().at(9, 9);
+    world.map = maps::CERULEAN_CITY;
+    world.size = MapSize { width: 40, height: 36 };
+    world.connections = Connections { north: true, south: true, east: true, west: true };
+    world.warps = [(27, 11), (13, 15), (19, 17), (30, 19), (13, 25), (25, 25), (4, 11), (27, 9), (9, 11), (9, 9)]
+        .iter()
+        .map(|(x, y)| Warp { x: *x, y: *y, destination_warp: 0, destination_map: 0x40 })
+        .collect();
+    let exits = path::exits(&mut world);
+    let ids: Vec<ExitId> = exits.iter().map(|exit| exit.id).collect();
+    assert!(ids.contains(&ExitId::Warp(9)), "the back door is the yard's");
+    assert!(ids.contains(&ExitId::Warp(6)), "the cave's mouth is no piece's, and not claimed");
+    assert!(!ids.contains(&ExitId::Warp(8)), "the front door is the town's: {ids:?}");
+    assert!(!ids.iter().any(|id| matches!(id, ExitId::Edge(_))), "the town's edges: {ids:?}");
+
+    // From the town it is the other way round.
+    world.player = Tile::new(9, 12);
+    let ids: Vec<ExitId> = path::exits(&mut world).iter().map(|exit| exit.id).collect();
+    assert!(ids.contains(&ExitId::Warp(8)) && !ids.contains(&ExitId::Warp(9)), "{ids:?}");
+    assert!(ids.iter().any(|id| matches!(id, ExitId::Edge(_))), "{ids:?}");
+}
+
+#[test]
+fn a_same_map_teleport_is_somewhere_the_way_out_took_the_fly() {
+    // Row 65, the row-64 review's note: the executor's guarantee (a way out that leaves the fly on
+    // its map is not done) read the tile the walk settled on, so a warp that moves the fly on its
+    // own map -- the Saffron Gym's pads, Silph Co.'s -- would read as one that did not fire. The
+    // fly has gone somewhere when it no longer stands where it settled.
+    let mut world = World::room().at(3, 3);
+    world.warps = vec![Warp { x: 3, y: 5, destination_warp: 0, destination_map: 0x25 }];
+    world.duds = BTreeSet::from([Tile::new(3, 5)]);
+    world.teleports = vec![(Tile::new(3, 5), Tile::new(6, 1))];
+    assert_eq!(run(&mut world, MacroKind::GoWarp), Ok(MacroAbort::Done));
+    assert_eq!((world.map, world.player), (0x25, Tile::new(6, 1)), "moved by the pad");
+
+    // A pad that does nothing is still the guarantee's case.
+    let mut dead = World::room().at(3, 3);
+    dead.warps = world.warps.clone();
+    dead.duds = world.duds.clone();
+    assert_eq!(run(&mut dead, MacroKind::GoWarp), Ok(MacroAbort::Blocked));
 }

@@ -4452,3 +4452,105 @@ fn the_fly_takes_the_ladder_it_stands_on_and_hops_down_to_cerulean_from_mt_moons
     assert!(!walled, "a tile was walled on the way down to Cerulean City: {route_4_pushed}");
     assert!(cerulean.is_some(), "the fly never reached Cerulean City: {arrivals:?}");
 }
+
+const CERULEAN_CITY: u32 = 0x03;
+const CERULEAN_BADGE_HOUSE: u32 = 0xe6;
+
+/// A checkpoint in the closed yard behind Cerulean's badge house, standing on its back door, or
+/// `None` to skip.
+///
+/// Row 65's is the route survey's own (`examples/scene_probe.rs`, `FLY_PROBE_CATCH=route
+/// FLY_PROBE_RNG=99` from `FLY_ROW64_CHECKPOINT`, written with `FLY_PROBE_CATCH_FRAME=31170
+/// FLY_PROBE_SAVE`): the first free frame after `GO OUT` in the badge house took its back door.
+fn row65_yard_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_ROW65_YARD_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// Row 65: out of the Cerulean badge house's back yard, whose one way out is the door underfoot.
+///
+/// **What the row-64 review found** (its own survey, seed 7, and the same from seed 99 on the
+/// release tree): `GO OUT` in the badge house (`$e6`) took the back door at (2, 0), which leaves
+/// the fly on Cerulean (9, 9), the door tile of a yard of 33 tiles whose only exit is that door.
+/// From then on the pad was empty for as long as the survey ran (about 32,000 frames), with
+/// `GO ROUTE` and `GO ITEM` refused `no route` whenever they came back. Three things stacked:
+///
+/// - the exit walks set a step-fired door underfoot aside whenever any other exit was listed,
+///   reachable or not, so the one door that could be taken never was;
+/// - the door is no door tile: it fires on a bump toward the house (a warp carpet in front), and
+///   row 64's step off and back on does nothing on it;
+/// - Cerulean was one piece on the map graph, so every door and edge of the town was a way out of
+///   the yard for the route search to refuse, and the house's two doors were one door to `GO OUT`.
+///
+/// The claims, none of them about which button the fly presses, over the stub rotation: the fly
+/// **leaves the yard** for the town, and **no run of overworld frames in the yard deals an empty
+/// pad** for as long as ten seconds.
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_ROW65_YARD_CHECKPOINT=.local/checkpoints/survey-rank15-row65-yard.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture row65
+/// ```
+#[test]
+fn row65_the_fly_leaves_the_cerulean_badge_houses_back_yard() {
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = row65_yard_checkpoint() else {
+        eprintln!("skipped: no FLY_ROW65_YARD_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert_eq!(run.map(), CERULEAN_CITY, "the checkpoint is in Cerulean City");
+    assert_eq!(run.tile(), (9, 9), "on the badge house's back door");
+    // The yard, as the cartridge's own ground says: every tile a walk from the door reaches. Read
+    // here rather than from the map graph, so the base (which has no piece for it) is measured by
+    // the same ruler.
+    let grid = flybrain_gb::pokemon_red::state::map_grid(&mut run.gb).expect("Cerulean's grid decodes");
+    let yard = grid.reachable(9, 9);
+    assert!(!yard.contains(9, 12), "the town outside the front door is not the yard's");
+    let in_yard = |run: &mut Run| run.map() == CERULEAN_CITY && {
+        let (x, y) = run.tile();
+        yard.contains(x, y)
+    };
+
+    let mut left: Option<(u32, u32)> = None;
+    let mut empty = 0u32;
+    let mut worst_empty = 0u32;
+    let mut into_the_house = 0u32;
+    let mut previous = run.map();
+    for frame in 0..24_000u32 {
+        run.frame();
+        let map = run.map();
+        if map == CERULEAN_BADGE_HOUSE && previous == CERULEAN_CITY {
+            into_the_house += 1;
+        }
+        previous = map;
+        let yard_now = in_yard(&mut run);
+        // On a frame the pad is dealt for: a warp's tear holds the new map with the old tile.
+        if left.is_none()
+            && !yard_now
+            && map != CERULEAN_BADGE_HOUSE
+            && map != u32::MAX
+            && run.layer.scene_name() == "overworld"
+        {
+            left = Some((frame, map));
+        }
+        if yard_now && run.layer.scene_name() == "overworld" && run.layer.bound_channels().is_empty() {
+            empty += 1;
+            worst_empty = worst_empty.max(empty);
+        } else {
+            empty = 0;
+        }
+    }
+    eprintln!(
+        "{:.1} brain minutes: out of the yard at {left:?}, into the badge house {into_the_house} \
+         times, longest empty pad in the yard {worst_empty} frames, rank {}, route {:?}, macros {:?}",
+        run.ms / 60_000.0,
+        run.adapter.progress().rank,
+        run.route,
+        run.started
+    );
+    assert!(worst_empty < 600, "an empty pad in the yard for {worst_empty} frames: {:?}", run.started);
+    assert!(left.is_some(), "the fly never left the yard: {:?} {:?}", run.route, run.started);
+}

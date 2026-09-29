@@ -1638,9 +1638,11 @@ fn walk_frame(walk: &mut Walk, state: &mut dyn MacroState) -> Progress {
                 walk.held += 1;
                 if walk.held <= SETTLE_FRAMES {
                     Progress::Hold(buttons::NONE)
-                } else if settled_on_a_way_out(walk) {
-                    // Still on this map (the top of this function ends the walk on any other):
-                    // the way out did not take the fly anywhere ([`Walk::unfired`]).
+                } else if settled_on_a_way_out(walk) && walk.arrived == Some(here) {
+                    // Still on this map (the top of this function ends the walk on any other),
+                    // and still on the tile it settled on: the way out did not take the fly
+                    // anywhere ([`Walk::unfired`]). A warp that moves the fly on its own map --
+                    // the Saffron Gym's pads, Silph Co.'s -- has taken it somewhere (row 65).
                     walk.unfired = true;
                     Progress::Blocked
                 } else {
@@ -1982,18 +1984,31 @@ fn script(
                 MacroKind::GoWarp => Way::Passage,
                 _ => Way::Route,
             };
-            let goals = exit_goals(state, way);
+            let (goals, mut underfoot) = exit_goals(state, way);
             unreachable.extend(goal_keys(&goals));
             // A last resort that preferred the way toward the objective, and the route search
             // cannot reach it: the rest of the last resort, nearest reachable first (row 57).
-            let walked = match walk_to(state, goals) {
-                Some(walked) => Some(walked),
-                None => {
-                    let rest = super::palette::last_resort_wide(state, way);
-                    let wide = goals_of(state, rest);
-                    if wide.is_empty() { None } else { walk_to(state, wide) }
+            let mut walked = walk_to(state, goals);
+            if walked.is_none() {
+                let rest = super::palette::last_resort_wide(state, way);
+                underfoot.extend(underfoot_warps(state, &rest));
+                let wide = goals_of(state, rest);
+                if !wide.is_empty() {
+                    walked = walk_to(state, wide);
                 }
-            };
+            }
+            // **The door underfoot, when no other way of this kind can be walked to** (row 65).
+            // [`goals_of`] sets a step-fired warp underfoot aside while any other exit is listed,
+            // reachable or not, so a fly standing on the one door out of a closed yard -- the
+            // Cerulean badge house's back door, whose yard has no other exit -- refused
+            // `no route` at every other exit and never took the one it stood on: the pad emptied
+            // for as long as the survey ran. Only here, after every listed goal has failed the
+            // route search: it is the step off and back on that row 64 taught the walk
+            // ([`Walk::step_off`]), and the executor's own rule still ends it `blocked` if the
+            // map does not change.
+            if walked.is_none() && !underfoot.is_empty() {
+                walked = walk_to(state, underfoot);
+            }
             let (walk, target) = walked?;
             aimed = target;
             vec![Step::Walk(walk)]
@@ -2332,7 +2347,7 @@ fn walk_then(
     let budget = walk_budget(route.steps.len());
     // Standing on the goal already, and the goal is a warp that fires by itself: the arrival
     // would settle where the warp has plainly not fired ([`Walk::step_off`]).
-    let step_off = route
+    let mut step_off = route
         .goal
         .and_then(|index| goals.get(index))
         .filter(|goal| {
@@ -2342,6 +2357,23 @@ fn walk_then(
                 && matches!(goal.key, Some(TargetKey::Exit(ExitId::Warp(_))))
         })
         .map(|goal| goal.tile);
+    // ...unless the cartridge takes it by a bump from where the fly stands (row 65): a warp whose
+    // own tile is no door, with a warp carpet in front one way, fires on a press that way
+    // (`CheckWarpsCollision`, [`super::state::MapGrid::carpet_press`]) and on no step back onto it
+    // made any other way. The Cerulean badge house's back door is one: stepped off sideways and
+    // back on, it did nothing.
+    let mut goals = goals;
+    if step_off.is_some()
+        && let Some(bump) = state
+            .map_grid()
+            .filter(|grid| grid.map() == map)
+            .and_then(|grid| grid.carpet_press(here.x, here.y))
+    {
+        step_off = None;
+        for goal in goals.iter_mut().filter(|goal| goal.tile == here && goal.arrival == Arrival::Settle) {
+            goal.arrival = Arrival::Leave(bump);
+        }
+    }
     Some((
         Walk {
             goals,
@@ -2397,9 +2429,30 @@ fn one_target(goals: &[Goal]) -> Option<TargetKey> {
 /// by itself has plainly not fired, so it is not an exit to walk to — which is the state the fly
 /// is in the moment it comes down a staircase and lands on the warp tile. A doormat underfoot is
 /// different: its press is the point, so it stays.
-fn exit_goals(state: &mut dyn MacroState, way: Way) -> Vec<Goal> {
+///
+/// The second list is the step-fired warps underfoot that [`goals_of`] set aside, for the exit
+/// script to fall back on when nothing in the first can be walked to (row 65).
+fn exit_goals(state: &mut dyn MacroState, way: Way) -> (Vec<Goal>, Vec<Goal>) {
     let exits = ways(state, way);
-    goals_of(state, exits)
+    let underfoot = underfoot_warps(state, &exits);
+    (goals_of(state, exits), underfoot)
+}
+
+/// The step-fired warps of `exits` the fly is standing on, as goals: what [`goals_of`] sets aside
+/// while another exit is listed, for the exit script to fall back on when none of those can be
+/// walked to (row 65).
+///
+/// [`walk_then`] takes it the way the cartridge does from where the fly stands: a bump toward a
+/// warp carpet where there is one, row 64's step off and back on otherwise.
+fn underfoot_warps(state: &mut dyn MacroState, exits: &[Exit]) -> Vec<Goal> {
+    let Some(here) = state.player().map(|player| Tile::new(player.x, player.y)) else {
+        return Vec::new();
+    };
+    exits
+        .iter()
+        .filter(|exit| exit.tile == here && exit.press.is_none() && matches!(exit.id, ExitId::Warp(_)))
+        .map(|exit| Goal { tile: exit.tile, arrival: Arrival::Settle, key: Some(TargetKey::Exit(exit.id)) })
+        .collect()
 }
 
 /// [`exit_goals`] over a list of exits the caller already has.
