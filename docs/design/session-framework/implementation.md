@@ -440,6 +440,118 @@ B1, N1 and N3.
     plus the world's and the agent's artifact seals and reads.
   - Against it, the legacy loop spends about 0.7 ms per frame outside the ticks.
   - The report `claude-task-01` has the per-phase table and what would close the rest.
+### SHADOW-01 — The session runtime beside the live fly (port slice)
+
+**2026-09-29: built** on `port/shadow-01` off `port/task-01`, and awaiting review. It changes no
+live behaviour. flysim gains trace switches that are off unless set, and the compatibility string
+is unchanged. The contract is [legacy-gameboy-v1](legacy-gameboy-v1.md) section 18: the inputs,
+the architecture, what is compared, the declared differences, the window and the verdict CUT-01
+reads.
+
+- **flysim** (`trace.rs`, `frame.rs`). These additions are recording only:
+  - `FLY_TRACE_DIR` writes one trace file per process. A restart truncated the one `FLY_TRACE`
+    path.
+  - `FLY_TRACE_MAX_BYTES` caps a file; the default in directory mode is 4 GiB.
+  - `FLY_TRACE_LEDGERS=<n>` adds `ledgersDigest` every *n* transitions.
+  - `frame::ledgers_string` is now the one definition of the ledger string. The session task's
+    `ledgers_of` calls it.
+- **`fly-legacy-session::shadow`** and the binary `fly-shadow`:
+  - `follow` reads the per-process files. It hands out complete lines only, and a file ends when
+    a newer one exists.
+  - `spool` copies every new store generation as it appears. It keeps a floor and a byte bound,
+    and never writes to a live store.
+  - `checkpoint` exports the shadow's capture of a live save's boundary and compares it with the
+    live file byte for byte, after `host-fields` and `archive-order`.
+  - `verdict` is `fly-shadow-verdict-v1` and the cutover rule (`allows_cutover`,
+    `fly-shadow check`).
+  - The runner boots each segment from the live process's startup save (TASK-01's import). It
+    replays the admissions, runs the transition, and takes the live captures in the live order
+    around a deferred rollback. It compares with `trace::compare_line`, which is now shared with
+    `trace::compare`. It stops on the first divergence and writes `divergence.json` with 30
+    transitions of context.
+- **infra.** `units/flyshadow.service` is report-only and has no `[Install]`. It is not bound to
+  flysim, runs `SCHED_IDLE` and stays stopped on exit status 3. `bin/fly-shadow-run` has the
+  commands `start`, `stop`, `status` and `check`. `05-deploy.sh` converges both and pins the
+  unit to the page and encoder CPUs. `build-flysim.sh` and `package-release.sh` ship
+  `fly-shadow` and `fly-session`. `lint.sh` holds the unit to all of this. The runbook has a
+  "Shadow run (SHADOW-01)" section.
+- **Rehearsal** (`tools/shadow-rehearsal.sh`). It runs the real `flysim` service and the real
+  `fly-shadow` side by side from one checkpoint, with sugar posted to the control API and service
+  restarts. It runs on a build box, never on a host.
+
+**Offline rehearsal** (a build box, `tools/shadow-rehearsal.sh`, FAFB in macros mode). The real
+service ran at real time or unthrottled, with sugar posted every 10 to 20 s and a restart in every
+run. It totalled **3,489 brain seconds (58 brain minutes), 208,410 transitions, 11 processes and
+zero divergence**:
+
+| Run | Start | Brain s | Transitions | What it covered |
+| --- | --- | --- | --- | --- |
+| main | the row 67 Pewter Gym stream checkpoint (rung 10), real time, restarts at 12 and 24 min | 2,161 | 129,086 | 126 sugar, 7 rewards, 4,134 macro events, 484 saves byte-identical, a ledger digest every boundary |
+| reward | row 58 door, adapter ledger thinned (the TASK-01 brain arm, `examples/reward_bearing.rs`) | 601 | 35,894 | the real brain earns `map`, `exploration`, `boundary`, `talk` and `battle` (11 rewards); 138 saves |
+| rollback | FND-01's `rollback` checkpoint | 302 | 18,056 | a ratchet rollback and the durable save after it; a `talk` reward |
+| climb | FND-01's `climb` checkpoint | 303 | 18,069 | a ratchet slot save, and the milestone archive before it compared under `archive-order` |
+| smoke | row 67, unthrottled | 122 | 7,305 | the first run |
+
+The reward run's box was loaded: the shadow ran at 25 frames a second against the live 52 and
+finished 12 minutes behind. Every save was still compared, from the spool.
+
+`tests/shadow.rs` (ROM, the toy connectome in raw mode) runs the real service through a restart
+under a shadow, then plants four differences on copies of that run's trace and spool. Each one
+stops a fresh shadow with the right kind, field and step:
+
+- a work-RAM digest;
+- a ledger digest;
+- a sugar removed, which diverges on the brain at that transition;
+- a live save's `rankSinceMs`.
+
+**Cost.** These figures come from a shared 8-core build box, so they are indicative only. Other
+agents' runs made paired measurements vary by up to 2x.
+
+- *The shadow.* Over the whole main run it used 1.47 cores to follow 52.3 frames a second. The
+  live service used 1.43 cores for 53.5 frames a second. That is about 28 ms and 27 ms of CPU a
+  frame, so the session runtime costs about what the legacy loop does (x1.05).
+- *Wall time a frame.* With 2 sweep threads the mean was 14.7 ms on the quieter box. Replaying the
+  main trace unthrottled gave these means:
+  - in-process with 1, 2 and 3 threads: 23.7, 19.7 and 17.0 ms;
+  - thread mode with 2 threads: 18.5 ms;
+  - process mode with 2 threads: 18.5 ms.
+  Every replay was identical again.
+- *Memory.* The shadow's resident size was about 130 MB, against the live service's 54 MB.
+- *The live trace* with a ledger digest every frame costs about 1 ms of CPU a frame in the best
+  paired sample, which is within this box's noise; FND-01 measured about 2 ms. The live loop has
+  1.7-1.8x real-time capacity on 3 threads. The trace is about 750 bytes a transition, which is
+  160 MB per live hour.
+
+The resource plan for the release container is in the SHADOW-01 run report and in
+`units/flyshadow.service`:
+
+- `SCHED_IDLE` on the page and encoder CPUs, never flysim's;
+- 2 sweep threads;
+- a back-off whenever the live `fly_lag_seconds` grows;
+- a 3 GB memory ceiling;
+- a ledger digest every 60 transitions.
+
+To keep up, the shadow needs about 1.7 idle cores. With less it runs behind real time: the trace
+is on disk, the spool covers about 15 minutes of hot saves, and the verdict comes later.
+
+**Found on the way.** binjgb's exported state does not carry the audio resampler's phase. An
+emulator imported from a state therefore drifts from a powered-on one in its channel accumulators.
+The drift shows in the exported bytes only (frame and WRAM are identical). Every restart restores
+through an import in both runtimes, so the two agree. A fresh start does not import, and the
+shadow follows one by powering on as well.
+
+**Gates** (a build box with rom-env): `cargo test --workspace --release` with `--no-fail-fast`
+had three failures, each accounted for:
+
+- `flysim` `integration` is the known load-sensitive test. It failed at box load 25 and passes
+  alone.
+- `rom_macros_mode`'s no-PP turn is red on this base. Row 67 fixes it on main.
+- A shadow-test threshold depended on the box's speed. It was fixed, and the test passes at load
+  22.
+
+`clippy --workspace --all-targets -D warnings` is clean. `npm test` passed 688 with 0 failures,
+typecheck is clean, and `infra/tests/lint.sh` passed every check. The compatibility string is
+648 B `8ce67b97...` in raw and macros mode, unchanged.
 
 ### STATE-01 — Coherent all-participant checkpoint/recovery
 
