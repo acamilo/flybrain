@@ -1,38 +1,119 @@
 #!/usr/bin/env bash
-# infra/bin/fly-shadow-run — start, stop and read SHADOW-01's shadow run on the release container.
-# Pushed to /opt/fly/bin/fly-shadow-run by 05-deploy.sh. Run as root inside the container, by the
-# coordinator, with the container claimed in the host's agent claim log (one agent at a time).
+# infra/bin/fly-shadow-run — start, stop, guard and read SHADOW-01's shadow run on the release
+# container. Pushed to /opt/fly/bin/fly-shadow-run by 05-deploy.sh. Run as root inside the
+# container, by the coordinator, with the container claimed in the host's agent claim log (one
+# agent at a time).
 #
-#   fly-shadow-run start     turn flysim's trace on, start flyshadow.service, restart flysim once
-#   fly-shadow-run stop      stop flyshadow.service, turn the trace off (at flysim's next restart;
-#                            --restart-flysim restarts it now), remove the trace and the spool
+#   fly-shadow-run start     baseline the live fly, turn flysim's trace on, start flyshadow.service
+#                            and the live-impact guard, restart flysim once
+#   fly-shadow-run stop      stop the shadow and the guard, turn the trace off (at flysim's next
+#                            restart; --restart-flysim restarts it now), remove trace and spool
 #   fly-shadow-run status    the verdict in one screen
 #   fly-shadow-run check     CUT-01's hook: exit 0 only if the verdict allows the automatic cutover
+#                            into the release /opt/fly/current points to, onto flysim-session
+#   fly-shadow-run guard     (flyshadow-guard.timer, every 60 s) stop everything and restart flysim
+#                            without the trace if the live fly pays for the shadow
+#   fly-shadow-run decide BASELINE SAMPLE   the guard's rule on two JSON files (lint tests it)
 #
 # The shadow is report-only (infra/units/flyshadow.service). `start` restarts flysim.service once,
 # the same operator action as the unstick rule's restart: a restore keeps the rung and clears the
 # ledgers. It is needed because flysim reads FLY_TRACE_DIR at start, and because the shadow can
 # only follow a process from that process's own startup save.
 #
+# The trace cannot outlive the shadow: flysim starts no trace, and stops a running one within a
+# minute, when the shadow's heartbeat (<trace dir>/consumer, every 30 s) is missing or older than
+# 10 minutes; flysim also keeps the trace directory under 8 GiB, and the shadow deletes every file
+# it has compared.
+#
+# The guard (N2 of the SHADOW-01 review). `start` records the live fly's baseline first: the mean
+# fly_realtime_factor over 10 s, fly_lag_seconds and fly_uptime_seconds. Every minute the guard
+# samples again and TRIPS when, while flysim is running (not paused, booting or recovering):
+#   - fly_lag_seconds grew by at least GUARD_LAG_SECONDS (1 s) in the same flysim process -- the
+#     loop fell more than a second behind real time; a new process restarts the count from 0; or
+#   - the 10-s mean fly_realtime_factor is below min(0.97, baseline - 0.03).
+# Tripping stops flyshadow.service and the guard timer, removes the trace drop-in, restarts
+# flysim.service without the trace, and writes /srv/fly/shadow/guard-tripped.json.
+#
 # Files (all owned by fly):
-#   /srv/fly/shadow/trace/trace-<ms>-<pid>.jsonl   flysim's per-process trace (capped at 4 GiB each)
+#   /srv/fly/shadow/trace/trace-<ms>-<pid>.jsonl   flysim's per-process trace (4 GiB each, 8 in all)
+#   /srv/fly/shadow/trace/consumer                  the shadow's heartbeat
 #   /srv/fly/shadow/spool/                          copies of the live saves, bounded (512 MiB)
 #   /srv/fly/shadow/verdict.json                    fly-shadow-verdict-v1 (the CUT-01 contract)
 #   /srv/fly/shadow/divergence.json                 the first divergence with its context
+#   /srv/fly/shadow/baseline.json                   the guard's baseline
 set -euo pipefail
 
-SHADOW_DIR=/srv/fly/shadow
+SHADOW_DIR="${FLY_SHADOW_DIR:-/srv/fly/shadow}"
 DROPIN_DIR=/etc/systemd/system/flysim.service.d
 DROPIN="$DROPIN_DIR/shadow-trace.conf"
 BIN=/opt/fly/current/fly-shadow
+METRICS_URL="${FLY_METRICS_URL:-http://127.0.0.1:9101}"
+CONTROL_URL="${FLY_CONTROL_URL:-http://127.0.0.1:7401}"
 # The ledger digest period in transitions: about one a second. Every boundary is proved in the
 # offline rehearsal (the SHADOW-01 report); on the stream a digest a second bounds the extra work.
 LEDGERS_EVERY="${FLY_SHADOW_LEDGERS_EVERY:-60}"
+GUARD_LAG_SECONDS="${FLY_SHADOW_GUARD_LAG_SECONDS:-1}"
 
 die() { echo "fly-shadow-run: $*" >&2; exit 2; }
 log() { echo "fly-shadow-run: $*"; }
 
 need_root() { [ "$(id -u)" = 0 ] || die "run as root (it installs a drop-in and restarts flysim)"; }
+
+# One JSON sample of the live fly: {status, rtMean, lag, uptime}, the realtime factor averaged
+# over 10 one-second reads.
+sample() {
+    python3 - "$METRICS_URL" "$CONTROL_URL" <<'PY'
+import json, sys, time, urllib.request
+metrics_url, control_url = sys.argv[1], sys.argv[2]
+def metrics():
+    text = urllib.request.urlopen(metrics_url + "/metrics", timeout=3).read().decode()
+    out = {}
+    for line in text.splitlines():
+        if line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) == 2:
+            try:
+                out[parts[0]] = float(parts[1])
+            except ValueError:
+                pass
+    return out
+factors = []
+for _ in range(10):
+    factors.append(metrics().get("fly_realtime_factor", 0.0))
+    time.sleep(1)
+m = metrics()
+try:
+    status = json.load(urllib.request.urlopen(control_url + "/status", timeout=3)).get("status")
+except Exception:
+    status = None
+print(json.dumps({"status": status, "rtMean": sum(factors) / len(factors),
+                  "lag": m.get("fly_lag_seconds"), "uptime": m.get("fly_uptime_seconds")}))
+PY
+}
+
+# The guard's rule: BASELINE and SAMPLE are JSON files. Prints "ok", "rebaseline <json>" (a new
+# flysim process: the lag count restarts) or "trip <reason>"; exit 0, 0 or 1.
+decide() {
+    python3 - "$1" "$2" "$GUARD_LAG_SECONDS" <<'PY'
+import json, sys
+base = json.load(open(sys.argv[1])); now = json.load(open(sys.argv[2])); lag_bound = float(sys.argv[3])
+if now.get("status") != "running" or now.get("lag") is None or now.get("uptime") is None:
+    print("ok (flysim is %s: not judged)" % now.get("status")); sys.exit(0)
+if now["uptime"] < base["uptime"]:
+    # A new process (a restart the shadow follows): its lag starts at zero.
+    base = dict(base, lag=0.0, uptime=now["uptime"])
+    rebased = True
+else:
+    rebased = False
+if now["lag"] - base["lag"] >= lag_bound:
+    print("trip fly_lag_seconds grew %.1f s since the baseline" % (now["lag"] - base["lag"])); sys.exit(1)
+floor = min(0.97, base["rtMean"] - 0.03)
+if now["rtMean"] < floor:
+    print("trip fly_realtime_factor %.3f below %.3f (baseline %.3f)" % (now["rtMean"], floor, base["rtMean"])); sys.exit(1)
+print(("rebaseline " + json.dumps(base)) if rebased else "ok"); sys.exit(0)
+PY
+}
 
 start() {
     need_root
@@ -43,19 +124,43 @@ start() {
     if [ -f "$SHADOW_DIR/verdict.json" ]; then
         mv "$SHADOW_DIR/verdict.json" "$SHADOW_DIR/verdict.$(date -u +%Y%m%dT%H%M%SZ).json"
     fi
-    rm -f "$SHADOW_DIR/divergence.json"
+    rm -f "$SHADOW_DIR/divergence.json" "$SHADOW_DIR/guard-tripped.json"
+    log "recording the live fly's baseline (10 s)"
+    local base
+    base="$(sample)" || die "could not read flysim's metrics for the baseline"
+    python3 -c 'import json,sys; b=json.loads(sys.argv[1]); assert b["status"]=="running" and b["lag"] is not None, b' "$base" \
+        || die "flysim is not running normally; not starting the shadow ($base)"
+    printf '%s\n' "$base" > "$SHADOW_DIR/baseline.json"
+    chown fly:fly "$SHADOW_DIR/baseline.json"
+    log "baseline: $base"
     mkdir -p "$DROPIN_DIR"
     cat > "$DROPIN" <<EOF
-# written by fly-shadow-run start (SHADOW-01); removed by fly-shadow-run stop.
+# written by fly-shadow-run start (SHADOW-01); removed by fly-shadow-run stop and by its guard.
 [Service]
 Environment=FLY_TRACE_DIR=$SHADOW_DIR/trace
 Environment=FLY_TRACE_LEDGERS=$LEDGERS_EVERY
 EOF
     systemctl daemon-reload
     systemctl start flyshadow.service
+    # flysim starts no trace without a live consumer: wait for the shadow's heartbeat.
+    for _ in $(seq 1 60); do
+        [ -f "$SHADOW_DIR/trace/consumer" ] && break
+        sleep 1
+    done
+    [ -f "$SHADOW_DIR/trace/consumer" ] || { stop_all "the shadow wrote no heartbeat"; die "flyshadow.service did not come up"; }
     log "flyshadow.service started; restarting flysim.service so the shadow follows it from its start"
     systemctl restart flysim.service
-    log "started. Read progress with: fly-shadow-run status"
+    systemctl start flyshadow-guard.timer
+    log "started, guarded every 60 s. Read progress with: fly-shadow-run status"
+}
+
+# Stops the shadow and the guard and turns the trace off. $1: why (logged).
+stop_all() {
+    systemctl stop flyshadow-guard.timer 2>/dev/null || true
+    systemctl stop flyshadow.service 2>/dev/null || true
+    rm -f "$DROPIN"
+    systemctl daemon-reload
+    log "stopped the shadow: $1"
 }
 
 stop() {
@@ -68,26 +173,50 @@ stop() {
             *) die "stop: unknown option $arg" ;;
         esac
     done
-    systemctl stop flyshadow.service || true
-    rm -f "$DROPIN"
-    systemctl daemon-reload
+    stop_all "fly-shadow-run stop"
     if [ "$restart_flysim" = 1 ]; then
         systemctl restart flysim.service
         log "flysim.service restarted without the trace"
     else
-        log "flysim keeps writing its current trace file until its next restart (capped at 4 GiB)"
+        log "flysim stops its current trace within a minute (no consumer) and starts none at its next restart"
     fi
+    rm -f "$SHADOW_DIR/baseline.json"
     if [ "$keep" = 0 ]; then
         rm -rf "$SHADOW_DIR/spool" "$SHADOW_DIR/work"
-        # The running flysim still holds its file open; removing the name frees the space when it
-        # exits, and a restarted flysim writes no new one.
         find "$SHADOW_DIR/trace" -name 'trace-*.jsonl' -delete 2>/dev/null || true
     fi
-    log "stopped; the verdict stays in $SHADOW_DIR/verdict.json"
+    log "the verdict stays in $SHADOW_DIR/verdict.json"
+}
+
+guard() {
+    need_root
+    [ -f "$SHADOW_DIR/baseline.json" ] || { log "no baseline: nothing to guard"; exit 0; }
+    local now tmp verdict
+    now="$(sample)" || { log "could not read flysim's metrics; not judged this minute"; exit 0; }
+    tmp="$(mktemp)"
+    printf '%s\n' "$now" > "$tmp"
+    if verdict="$(decide "$SHADOW_DIR/baseline.json" "$tmp")"; then
+        case "$verdict" in
+            rebaseline*) printf '%s\n' "${verdict#rebaseline }" > "$SHADOW_DIR/baseline.json" ;;
+        esac
+        rm -f "$tmp"
+        log "guard: $verdict ($now)"
+        exit 0
+    fi
+    rm -f "$tmp"
+    log "guard TRIPPED: $verdict ($now)"
+    stop_all "guard: $verdict"
+    rm -f "$SHADOW_DIR/baseline.json"
+    python3 -c 'import json,sys,datetime; json.dump({"at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "reason": sys.argv[1], "sample": json.loads(sys.argv[2])}, open(sys.argv[3], "w"))' \
+        "$verdict" "$now" "$SHADOW_DIR/guard-tripped.json"
+    systemctl restart flysim.service
+    log "flysim.service restarted without the trace; see $SHADOW_DIR/guard-tripped.json"
 }
 
 status() {
     systemctl is-active flyshadow.service || true
+    systemctl is-active flyshadow-guard.timer || true
+    [ -f "$SHADOW_DIR/guard-tripped.json" ] && echo "GUARD TRIPPED: $(cat "$SHADOW_DIR/guard-tripped.json")"
     [ -f "$SHADOW_DIR/verdict.json" ] || { echo "no verdict yet"; return 0; }
     python3 - "$SHADOW_DIR/verdict.json" <<'PY'
 import json, sys
@@ -98,7 +227,7 @@ print(f"  compared {c['brainSeconds']:.0f} of {v['required']['brainSeconds']:.0f
       f"({c['transitions']} transitions, {c['segments']} segments); updated {v['updatedAt']}")
 print(f"  sugar {c['sugar']}, rewards {c['rewards']} {c['rewardKinds']}, macro events {c['macroEvents']}, "
       f"slot saves {c['slotSaves']}, rollbacks {c['rollbacks']}, ledger checks {c['ledgerChecks']}")
-print(f"  checkpoints {c['checkpoints']}; skipped {len(v['skipped'])}; spool evicted {v['spoolEvicted']}")
+print(f"  checkpoints {c['checkpoints']}; skipped {v['skipped']}; spool evicted {v['spoolEvicted']}")
 print(f"  behind the live trace ~{v['lagTransitions']} transitions; live lag {v['liveLagSeconds']} s; cost {v['cost']}")
 if v["firstDivergence"]:
     print(f"  FIRST DIVERGENCE: {json.dumps(v['firstDivergence'])}")
@@ -112,8 +241,9 @@ check() {
     # shellcheck disable=SC1091
     . /etc/fly/fly.env
     set +a
-    # The binary CUT-01 switches to: SERVE-01's session runtime, from the release the shadow ran in.
-    "$BIN" check --verdict "$SHADOW_DIR/verdict.json" "$@"
+    # The release CUT-01 switches into and the binary it switches to: SERVE-01's service there.
+    "$BIN" check --verdict "$SHADOW_DIR/verdict.json" --current /opt/fly/current \
+        --binary flysim-session "$@"
 }
 
 cmd="${1:-}"
@@ -123,5 +253,7 @@ case "$cmd" in
     stop) stop "$@" ;;
     status) status ;;
     check) check "$@" ;;
-    *) echo "usage: fly-shadow-run start|stop [--restart-flysim] [--keep]|status|check [--max-age-seconds N]" >&2; exit 2 ;;
+    guard) guard ;;
+    decide) [ $# = 2 ] || die "decide BASELINE SAMPLE"; decide "$1" "$2" ;;
+    *) echo "usage: fly-shadow-run start|stop [--restart-flysim] [--keep]|status|check [--max-age-seconds N]|guard|decide BASELINE SAMPLE" >&2; exit 2 ;;
 esac

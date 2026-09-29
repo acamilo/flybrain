@@ -451,40 +451,63 @@ report-only: it presses no button, serves no port, and only reads flysim's store
 the release container in the host log first, as for any host work.
 
 ```
-pct exec <ctid> -- /opt/fly/bin/fly-shadow-run start     # trace on, flyshadow.service, one flysim restart
-pct exec <ctid> -- /opt/fly/bin/fly-shadow-run status    # the verdict in one screen
+pct exec <ctid> -- /opt/fly/bin/fly-shadow-run start     # baseline, trace on, shadow + guard, one flysim restart
+pct exec <ctid> -- /opt/fly/bin/fly-shadow-run status    # the verdict (and a guard trip) in one screen
 pct exec <ctid> -- /opt/fly/bin/fly-shadow-run check     # CUT-01's hook: exit 0 = cutover allowed
-pct exec <ctid> -- /opt/fly/bin/fly-shadow-run stop --restart-flysim   # shadow off, trace off
+pct exec <ctid> -- /opt/fly/bin/fly-shadow-run stop --restart-flysim   # shadow, guard and trace off
 ```
 
-- **Start** installs `flysim.service.d/shadow-trace.conf` (`FLY_TRACE_DIR=/srv/fly/shadow/trace`,
-  `FLY_TRACE_LEDGERS=60`), starts `flyshadow.service`, and restarts `flysim.service` once. The
-  restart is the same one the unstick rule uses: the rung is kept and the ledgers are cleared. It
-  is needed because flysim reads the trace switches only at start, and because the shadow can only
-  follow a process from that process's own startup save. A previous `verdict.json` is kept beside
-  the new one, renamed with its time.
+- **Start** first records the live fly's baseline over 10 s: `fly_realtime_factor`,
+  `fly_lag_seconds` and `fly_uptime_seconds`. It refuses unless flysim is running normally. Then it:
+  1. installs `flysim.service.d/shadow-trace.conf` (`FLY_TRACE_DIR=/srv/fly/shadow/trace`,
+     `FLY_TRACE_LEDGERS=60`);
+  2. starts `flyshadow.service` and waits for its heartbeat;
+  3. restarts `flysim.service` once;
+  4. starts `flyshadow-guard.timer`.
+
+  The restart is the same one the unstick rule uses: the rung is kept and the ledgers are
+  cleared. A previous `verdict.json` is kept beside the new one, renamed with its time.
+- **The guard** (every 60 s, automatic) stops the shadow and the guard, removes the drop-in and
+  restarts flysim without the trace. It does this as soon as either of these happens while flysim
+  runs (a paused fly is not judged):
+  - `fly_lag_seconds` grows by 1 s in the same flysim process;
+  - the 10-s mean `fly_realtime_factor` falls below min(0.97, baseline - 0.03).
+
+  It records why in `/srv/fly/shadow/guard-tripped.json`, and `status` shows it. The live stream
+  never pays for the shadow. A trip is not a divergence: fix the resources, then `start` again.
 - **While it runs**, every later flysim restart (the unstick rule, the watchdog,
   `fly-loop-recover`, `fly-reset-to-milestone`) starts a new trace file. The shadow follows it on
   its own; nothing needs doing. The 3 h window is live *brain* time summed over those processes.
   Stopping or restarting `flyshadow.service` itself starts the window again.
-- **Pass**: `status` shows `verdict pass` once 10,800 brain seconds are compared with zero
-  divergence. The shadow keeps following, and the verdict stays `pass` only while nothing
-  diverges. CUT-01 reads it with `check` at the moment it cuts over.
-- **Divergence**: the shadow stops itself (exit status 3; the unit does not restart it). It leaves
-  `verdict.json` at `diverged` and `/srv/fly/shadow/divergence.json` with the field, both values
-  and the 30 transitions before it. The live fly is untouched. Keep the trace and spool for the
-  review (`stop --keep`), pull `divergence.json`, and do not cut over.
+- **Pass**: `status` shows `verdict pass` once both of these hold with zero divergence:
+  - 10,800 brain seconds are compared;
+  - at least one live save per 10 brain minutes has been compared byte for byte.
+
+  The shadow keeps following, and the verdict stays `pass` only while nothing diverges. CUT-01
+  runs `check` at the moment it cuts over. `check` also requires all of these:
+  - the verdict is for the release `/opt/fly/current` points to, with `flysim-session` and every
+    other shadowed binary unchanged;
+  - the shadow is caught up (at most about a minute behind);
+  - no segment was skipped for a reason other than the live side's own.
+- **Divergence**: the shadow stops itself (exit status 3; the unit does not restart it). A failure
+  of the session runtime itself counts: it did not start, the restore gate refused the live save,
+  or a step failed. The shadow leaves `verdict.json` at `diverged` and
+  `/srv/fly/shadow/divergence.json` with the field, both values and the 30 transitions before it.
+  On a checkpoint difference it also leaves both checkpoint files. It removes its heartbeat, so
+  flysim stops tracing within a minute. The live fly is untouched. Run `stop --keep`, pull the
+  files for the review, and do not cut over.
+- **The trace cannot outlive the shadow.** flysim starts no trace without the shadow's fresh
+  heartbeat (`/srv/fly/shadow/trace/consumer`), and stops a running trace within a minute once the
+  heartbeat is more than 10 minutes old. That happens when the shadow crashed, diverged, was
+  stopped, or the guard tripped. flysim keeps the trace directory under 8 GiB, and the shadow
+  deletes every file it has compared.
 - **Resources**: the shadow is a second whole brain, at about the live fly's CPU per frame. It
   runs `SCHED_IDLE` on the page and encoder CPUs, never on flysim's (05-deploy.sh writes its
-  `cpuset.conf`). It also pauses for a minute whenever flysim's `fly_lag_seconds` grows, which
-  happens when the live loop has fallen more than a second behind. If the stream
-  stutters while it runs, stop it: `stop --restart-flysim`. Disk: about 170 MB of trace per live
-  hour (about 850 bytes a frame). A process's file is deleted once the shadow has compared it,
-  when the next process starts. The spool holds at most 512 MiB. Each trace file is capped at
-  4 GiB, so a forgotten trace cannot fill the disk.
-- **Stop** stops the unit, removes the drop-in, and deletes the trace and the spool (`--keep`
-  keeps them). Without `--restart-flysim`, the running flysim keeps writing its current file until
-  its next restart.
+  `cpuset.conf`), and pauses for a minute whenever flysim's `fly_lag_seconds` grows. Disk: about
+  160 MB of trace per live hour, and a spool of at most 512 MiB.
+- **Stop** stops the unit and the guard, removes the drop-in, and deletes the trace and the spool
+  (`--keep` keeps them). Without `--restart-flysim`, the running flysim stops its current trace
+  within a minute, because its consumer is gone.
 
 ## CPU partition (cpuset)
 

@@ -552,6 +552,39 @@ if grep -E '^(ALWAYS_ON_UNITS|APP_UNITS)=' "$INFRA_DIR/07-enable.sh" "$INFRA_DIR
 else
     pass "07-enable.sh and verify.sh leave flyshadow.service alone"
 fi
+for u in flyshadow-guard.timer flyshadow-guard.service; do
+    if [ ! -f "$INFRA_DIR/units/$u" ]; then
+        fail "units/$u is missing"
+    elif grep -qE '^\[Install\]' "$INFRA_DIR/units/$u"; then
+        fail "$u has an [Install] section; fly-shadow-run starts and stops it"
+    else
+        pass "$u is never enabled (started by fly-shadow-run only)"
+    fi
+done
+# The guard's rule, driven for real (python3 is on every container this repo provisions).
+if command -v python3 >/dev/null 2>&1; then
+    g_tmp="$(mktemp -d "${TMPDIR:-/tmp}/fly-lint-guard.XXXXXX")"
+    printf '%s\n' '{"status":"running","rtMean":1.0,"lag":3.0,"uptime":1000}' > "$g_tmp/base"
+    guard_case() { # name, sample json, expected exit, expected output prefix
+        printf '%s\n' "$2" > "$g_tmp/now"
+        local out rc=0
+        out="$("$INFRA_DIR/bin/fly-shadow-run" decide "$g_tmp/base" "$g_tmp/now")" || rc=$?
+        if [ "$rc" = "$3" ] && [ "${out#"$4"}" != "$out" ]; then
+            pass "fly-shadow-run guard: $1"
+        else
+            fail "fly-shadow-run guard: $1 (exit $rc, '$out')"
+        fi
+    }
+    guard_case "steady live fly is ok" '{"status":"running","rtMean":0.995,"lag":3.0,"uptime":1060}' 0 ok
+    guard_case "lag growth trips" '{"status":"running","rtMean":1.0,"lag":4.2,"uptime":1060}' 1 trip
+    guard_case "a realtime-factor drop trips" '{"status":"running","rtMean":0.9,"lag":3.0,"uptime":1060}' 1 trip
+    guard_case "a paused fly is not judged" '{"status":"paused","rtMean":0.0,"lag":9.0,"uptime":1060}' 0 ok
+    guard_case "a restarted flysim rebaselines its lag" '{"status":"running","rtMean":1.0,"lag":0.0,"uptime":30}' 0 rebaseline
+    guard_case "a restarted flysim that already lags trips" '{"status":"running","rtMean":1.0,"lag":1.5,"uptime":30}' 1 trip
+    rm -rf "$g_tmp"
+else
+    fail "python3 is needed to test fly-shadow-run's guard rule"
+fi
 if grep -qF 'flyshadow) cpus="${page_cpus},${encoder_cpus}" ;;' "$INFRA_DIR/05-deploy.sh"; then
     pass "05-deploy.sh keeps flyshadow.service off flysim's CPUs"
 else
