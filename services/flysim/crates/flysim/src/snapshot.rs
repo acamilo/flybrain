@@ -242,7 +242,7 @@ pub struct FeedMacroOutcome {
 
 /// Reward categories the feed reports counts for. The adapter's own interned kinds
 /// (`milestone`, `exploration`, `map`, `species`, `trainer`, `battle`, `badge`, `boundary`,
-/// `catch`, `talk`, `item`) map onto these.
+/// `catch`, `talk`, `item`) map onto these; `damage` has no counter (`from_adapter`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RewardKind {
@@ -300,6 +300,15 @@ impl RewardKind {
             // "new place" for all four, the operator's call (`apps/stage/src/games/pokemon-red.ts`).
             "talk" => Self::Explore,
             "item" => Self::Explore,
+            // `damage` (the operator, 2026-09-29) has no counter, deliberately. It pays for a hit,
+            // several times a battle, in trainer battles as well as wild ones: on `wildwin` the
+            // stage would fold every hit into "N wild wins", which is false of a trainer battle
+            // and of a battle the fly goes on to lose, and on any other counter it would be as
+            // wrong. Unmapped, a hit still reaches the page as a reward event with its own label
+            // (`HIT #<species> FOR <n> HP`), the event log, `/status` and the checkpoint; it is
+            // only left out of `game.rewardCounts` and the ticker's per-kind copy, the way the
+            // platformer's `started` and `clear` are. The feed's closed kind set does not move.
+            "damage" => return None,
             // The platformer.
             "band" => Self::Explore,
             "coin" => Self::Wildwin,
@@ -753,13 +762,16 @@ mod tests {
             GameMode::Unknown
         );
         for rule in flybrain_gb::pokemon_red::catalog::REWARDS {
-            assert!(RewardKind::from_adapter(rule.kind).is_some(), "{}", rule.kind);
+            // Every Pokémon kind shares a counter but `damage`, which has none on purpose.
+            let mapped = RewardKind::from_adapter(rule.kind).is_some();
+            assert_eq!(mapped, rule.kind != "damage", "{}", rule.kind);
         }
         assert_eq!(RewardKind::from_adapter("nonsense"), None);
         assert_eq!(RewardKind::from_adapter("boundary"), Some(RewardKind::Explore));
         assert_eq!(RewardKind::from_adapter("catch"), Some(RewardKind::Wildwin));
         assert_eq!(RewardKind::from_adapter("talk"), Some(RewardKind::Explore));
         assert_eq!(RewardKind::from_adapter("item"), Some(RewardKind::Explore));
+        assert_eq!(RewardKind::from_adapter("damage"), None, "a hit is not a wild win");
     }
 
     #[test]

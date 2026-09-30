@@ -1011,8 +1011,11 @@ impl Run {
             }
         }
         // Section 12.13's claim, per frame: an `Unknown` with nothing drawn deals nothing.
+        // The keyboard (row 69) is drawn -- its own box, not the text font -- and its bound's
+        // `CONFIRM` is a pad on something drawn, so it is not counted.
         if self.layer.scene_name() == "unknown"
             && !flybrain_gb::pokemon_red::state::text_box(&mut self.gb).open
+            && flybrain_gb::pokemon_red::state::naming_screen(&mut self.gb).is_none()
             && !self.layer.bound_channels().is_empty()
         {
             self.unknown_pads_with_no_box += 1;
@@ -1976,10 +1979,19 @@ fn gate_checkpoint() -> Option<flysim::store::Checkpoint> {
 /// is `BACK`. 600,000 frames of it.
 ///
 /// What is asserted: `ATTACK` is on the pad of the fly's own turn, the macro behind it **starts
-/// and runs on the cartridge** from this state, that turn never deals one button, and the battle
+/// and runs on the cartridge** from this state, that turn never deals an empty pad, and the battle
 /// ends — which is the whole claim, because a turn that can be ended is a battle that finishes one
 /// way or the other. Which way is not asserted: with 6 of 34 HP against a trainer the measured run
 /// faints and blacks out, and that is the game rather than the macro layer.
+///
+/// **The checkpoint is a trainer battle** (a Bug Catcher, `wIsInBattle` 2) with one Poké Ball and
+/// no Potion in the bag, not the wild battle of the live stall. Its own turn is `MOVE 1` alone,
+/// and that is the pad the rules deal (row 67, 2026-09-29, measured): `RUN` is a wild battle's,
+/// `THROW BALL` too, `ITEM` needs a Potion, `SWITCH` a reserve, and a spent move beside `MOVE 1`
+/// is off the pad since 12.23 and 12.27. `MOVE 1` is FIGHT's backstop (12.8): FIGHT opens,
+/// "has no moves left!", Struggle, and the battle ends in 1,487 frames. The assertion used to be
+/// "more than one button", which only a button that does nothing could satisfy here; it had been
+/// red on main since before row 63 and skipped wherever `FLY_NOPP_CHECKPOINT` was unset.
 ///
 /// Gated on `FLY_ROM` and on a checkpoint in that state, which
 /// `examples/scene_probe.rs` writes with `FLY_PROBE_CATCH=noattack FLY_PROBE_SAVE=…` — 99 brain
@@ -2026,7 +2038,7 @@ fn macros_mode_ends_a_turn_with_no_move_left_on_the_cartridge() {
         run.started
     );
     assert!(
-        run.battle_pad.is_some_and(|dealt| dealt > 1),
+        run.battle_pad.is_some_and(|dealt| dealt >= 1),
         "the fly's own turn dealt a pad of {:?} buttons: by name {:?}",
         run.battle_pad,
         run.started
@@ -4553,4 +4565,371 @@ fn row65_the_fly_leaves_the_cerulean_badge_houses_back_yard() {
     );
     assert!(worst_empty < 600, "an empty pad in the yard for {worst_empty} frames: {:?}", run.started);
     assert!(left.is_some(), "the fly never left the yard: {:?} {:?}", run.route, run.started);
+}
+
+fn row66_mart_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_ROW66_MART_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// Row 66: a fly that walks up to the Viridian clerk and away again without a `TALK` is not
+/// walked straight back in by `GO SHOP`.
+///
+/// **What was live** (v0.6.5, restored from the rung-8 archive): `GO SHOP` done 33 times in 35
+/// minutes, `TALK` 5, `BUY BALL` never dealt -- in from the street to the counter, `GO OUT` or
+/// `GO OBJECTIVE` back out of the door, and `GO SHOP` on the street's pad again because the bag
+/// still held no ball (row 62's "dealt again while the service is needed", with no window).
+/// Reproduced with the connectome from this checkpoint: three laps in eighteen brain seconds.
+///
+/// The drive declines the counter on purpose: `GO SHOP` whenever it is dealt, then the ways out,
+/// never `TALK`. It says nothing about which button the fly would press; the claim is that the pad
+/// does not deal the walk back to a counter the fly has just walked away from (section 12.1's
+/// reached window, applied to the service walk).
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_ROW66_MART_CHECKPOINT=.local/checkpoints/survey-rank8-row66-viridian-mart.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture row66
+/// ```
+#[test]
+fn row66_a_counter_walked_away_from_is_not_walked_back_to_by_go_shop() {
+    use flybrain_gb::pokemon_red::macros::PokemonPalette;
+    use flybrain_gb::{MacroPalette, Outcome, Started};
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = row66_mart_checkpoint() else {
+        eprintln!("skipped: no FLY_ROW66_MART_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert_eq!(run.bag_count(POKE_BALL), 0, "no ball at the checkpoint");
+    assert!(run.money() >= 200, "and the money for one: {}", run.money());
+
+    let order = ["GO SHOP", "GO OUT", "GO OBJECTIVE"];
+    let hold_frames = 48u32;
+    let mut palette = PokemonPalette::new(SEED);
+    let mut running: Option<&'static str> = None;
+    let mut since_decision = hold_frames;
+    let mut ms = run.ms;
+    // `GO SHOP` walks that finished facing the counter, `TALK` dealt there, and `GO SHOP` walks
+    // started from the street outside after the first of those.
+    let mut at_the_counter = 0u32;
+    let mut talk_dealt_at_the_counter = false;
+    let mut from_the_street_after = 0u32;
+    let mut laps = 0u32;
+    let mut last_map = run.map();
+    for _ in 0..10_000u32 {
+        palette.clock(ms);
+        let observed = {
+            let ledger = AdapterLedger(&run.adapter);
+            palette.observe(&mut run.gb, &ledger)
+        };
+        let mut mask = 0u8;
+        {
+            let ledger = AdapterLedger(&run.adapter);
+            if running.is_some() {
+                match palette.step(&mut run.gb, &ledger) {
+                    Some(held) => mask = held,
+                    None => running = None,
+                }
+            } else if since_decision >= hold_frames && !observed.bindings.is_empty() {
+                since_decision = 0;
+                if at_the_counter > 0
+                    && run.map() == VIRIDIAN_MART
+                    && observed.bindings.iter().any(|binding| binding.name == "TALK")
+                {
+                    talk_dealt_at_the_counter = true;
+                }
+                let binding = order
+                    .iter()
+                    .find_map(|want| observed.bindings.iter().find(|binding| binding.name == *want))
+                    .or_else(|| observed.bindings.iter().find(|binding| binding.name != "TALK"))
+                    .unwrap_or(&observed.bindings[0]);
+                if binding.name == "GO SHOP" && run.map() != VIRIDIAN_MART && at_the_counter > 0 {
+                    from_the_street_after += 1;
+                }
+                if let Started::Running(name) = palette.start(binding.slot, &mut run.gb, &ledger) {
+                    running = Some(name);
+                    match palette.step(&mut run.gb, &ledger) {
+                        Some(held) => mask = held,
+                        None => running = None,
+                    }
+                }
+            }
+        }
+        if let Some((name, outcome)) = palette.take_finished()
+            && name == "GO SHOP"
+            && outcome == Outcome::Done
+            && run.map() == VIRIDIAN_MART
+        {
+            at_the_counter += 1;
+        }
+        since_decision += 1;
+        run.gb.set_buttons(mask);
+        run.gb.run_frame().expect("a frame should complete");
+        ms += MS_PER_FRAME;
+        run.adapter.sample(&mut run.gb, ms);
+        let map = run.map();
+        if map == VIRIDIAN_MART && last_map == VIRIDIAN_CITY {
+            laps += 1;
+        }
+        last_map = map;
+    }
+    eprintln!(
+        "GO SHOP done in the mart {at_the_counter}, TALK dealt at the counter \
+         {talk_dealt_at_the_counter}, GO SHOP from the street after that {from_the_street_after}, \
+         walks back into the mart {laps}, balls {}",
+        run.bag_count(POKE_BALL)
+    );
+    assert!(at_the_counter >= 1, "the first GO SHOP walks the fly to the clerk");
+    assert!(talk_dealt_at_the_counter, "and the press that opens the counter is on the pad there");
+    assert_eq!(
+        from_the_street_after, 0,
+        "GO SHOP dealt on the street again after the fly walked away from the counter"
+    );
+}
+
+/// Row 66, the operator's decision: `BUY BALL` is one button from a mart's floor, modelled on
+/// `HEAL`, and pressed it rings up a ball.
+///
+/// From the post-parcel Viridian mart (793 in the wallet, no ball): `BUY BALL` whenever it is
+/// dealt, otherwise a uniform pick among the buttons on the pad. The claim is about the pad and the
+/// script, not the fly's choice: on the floor of the mart the button is dealt, and one press of it
+/// walks to the clerk, opens the counter and rings up one ball. On v0.6.5 it was dealt only at an
+/// open counter, which took `TALK`, the greeting and `CONFIRM` first, and the connectome never
+/// chose `TALK` there (three laps of `GO SHOP` and out in eighteen brain seconds).
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_ROW66_MART_CHECKPOINT=.local/checkpoints/survey-rank8-row66-viridian-mart.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture row66
+/// ```
+#[test]
+fn row66_buy_ball_from_the_marts_floor_rings_up_a_ball() {
+    use flybrain_gb::pokemon_red::macros::PokemonPalette;
+    use flybrain_gb::{MacroPalette, Outcome, Started};
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = row66_mart_checkpoint() else {
+        eprintln!("skipped: no FLY_ROW66_MART_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert_eq!(run.bag_count(POKE_BALL), 0, "no ball at the checkpoint");
+    let money = run.money();
+
+    let hold_frames = 48u32;
+    let mut palette = PokemonPalette::new(SEED);
+    let mut running: Option<&'static str> = None;
+    let mut since_decision = hold_frames;
+    let mut ms = run.ms;
+    let mut rng = 0x2026_0929u32;
+    let mut dealt_on_the_floor = 0u32;
+    let mut started = 0u32;
+    let mut done = 0u32;
+    let mut bought_at = None;
+    for frame in 0..20_000u32 {
+        palette.clock(ms);
+        let observed = {
+            let ledger = AdapterLedger(&run.adapter);
+            palette.observe(&mut run.gb, &ledger)
+        };
+        let mut mask = 0u8;
+        {
+            let ledger = AdapterLedger(&run.adapter);
+            if running.is_some() {
+                match palette.step(&mut run.gb, &ledger) {
+                    Some(held) => mask = held,
+                    None => running = None,
+                }
+            } else if since_decision >= hold_frames && !observed.bindings.is_empty() {
+                since_decision = 0;
+                if run.map() == VIRIDIAN_MART
+                    && observed.bindings.iter().any(|binding| binding.name == "BUY BALL")
+                    && !observed.bindings.iter().any(|binding| binding.name == "LEAVE")
+                {
+                    dealt_on_the_floor += 1;
+                }
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                let binding = observed
+                    .bindings
+                    .iter()
+                    .find(|binding| binding.name == "BUY BALL")
+                    .unwrap_or(&observed.bindings[rng as usize % observed.bindings.len()]);
+                if binding.name == "BUY BALL"
+                    && flybrain_gb::pokemon_red::scene::detect(&mut run.gb)
+                        == flybrain_gb::pokemon_red::macros::state::Scene::Overworld
+                {
+                    started += 1;
+                }
+                if let Started::Running(name) = palette.start(binding.slot, &mut run.gb, &ledger) {
+                    running = Some(name);
+                    match palette.step(&mut run.gb, &ledger) {
+                        Some(held) => mask = held,
+                        None => running = None,
+                    }
+                }
+            }
+        }
+        if let Some((name, outcome)) = palette.take_finished()
+            && name == "BUY BALL"
+            && outcome == Outcome::Done
+        {
+            done += 1;
+        }
+        since_decision += 1;
+        run.gb.set_buttons(mask);
+        run.gb.run_frame().expect("a frame should complete");
+        ms += MS_PER_FRAME;
+        run.adapter.sample(&mut run.gb, ms);
+        if run.bag_count(POKE_BALL) > 0 && bought_at.is_none() {
+            bought_at = Some(frame);
+        }
+        if bought_at.is_some() && running.is_none() {
+            break;
+        }
+    }
+    eprintln!(
+        "BUY BALL dealt on the floor on {dealt_on_the_floor} holds, started {started}, done {done}; \
+         a ball at {bought_at:?}; balls {}, money {money} -> {}",
+        run.bag_count(POKE_BALL),
+        run.money()
+    );
+    assert!(dealt_on_the_floor > 0, "BUY BALL is on the mart floor's pad");
+    assert!(started > 0, "and started from the floor");
+    assert_eq!(run.bag_count(POKE_BALL), 1, "one ball rung up");
+    assert_eq!(run.money(), money - 200, "and paid for");
+    assert!(done >= 1, "the macro reports done when paid");
+}
+
+/// The live row-67 checkpoint, or `None` to skip.
+///
+/// v0.6.5, rung 10, hot generation 230739, pulled while the fly walked back to the Pewter Gym
+/// from its last whiteout: Pewter City (18, 13), Squirtle L11 (TACKLE, TAIL WHIP, BUBBLE, all
+/// full), money 0, the gym's Jr. Trainer (Diglett L11, Sandshrew L11) not yet beaten.
+fn row67_checkpoint() -> Option<flysim::store::Checkpoint> {
+    std::env::var_os("FLY_ROW67_CHECKPOINT").map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// Row 67: the Pewter Gym trainer lost thirty times in a row is the readout's, not the pad's.
+///
+/// **What was live** (2026-09-29, v0.6.5): an hour and a half in the gym, `NEXT` 1,332, `MOVE 2`
+/// 83, `MOVE 3` 13, `MOVE 1` 0 in 3,000 events, no battle won. Per battle the readout chose TAIL
+/// WHIP six turns in seven, Squirtle fainted, the fly whited out to Pewter and walked straight
+/// back in (`infra/docs/macros-traps.md` row 67, `docs/design/macros.md` 12.31).
+///
+/// The claims, from the live checkpoint with the real palette and a uniform choice per hold (a
+/// harness choice, not the fly's):
+///
+/// - **on every frame of the fly's own turn the pad deals a `MOVE n` for every move that has PP
+///   and that the cartridge would not answer with nothing** -- BUBBLE is always there to be
+///   pressed, so the pad is not the trap;
+/// - **the trainer is beaten** inside the budget: a readout with no favourite wins this battle
+///   with what the pad offers. The live readout's measured favourite (TAIL WHIP 87%) lost 17 of
+///   17 over the same budget, two seeds (`infra/docs/macros-traps.md` row 67).
+#[test]
+fn row67_the_gym_trainer_is_beaten_from_what_the_pad_deals() {
+    use flybrain_gb::pokemon_red::macros::PokemonPalette;
+    use flybrain_gb::pokemon_red::state;
+    use flybrain_gb::pokemon_red::symbols::{events, ram};
+    use flybrain_gb::{MacroPalette, MemoryReader, Started};
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = row67_checkpoint() else {
+        eprintln!("skipped: no FLY_ROW67_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert_eq!(run.map(), PEWTER_CITY, "the checkpoint is in Pewter City, on the way back");
+    assert!(!run.event(events::EVENT_BEAT_PEWTER_GYM_TRAINER_0), "the trainer is not yet beaten");
+
+    let budget = 60_000u32;
+    let hold_frames = 48u32;
+    let mut palette = PokemonPalette::new(SEED);
+    let mut rng = 1u32;
+    let mut running = false;
+    let mut since_decision = hold_frames;
+    let mut ms = run.ms;
+    let mut own_turn_frames = 0u32;
+    let mut useful_move_missing = 0u32;
+    let mut starts = std::collections::BTreeMap::<&'static str, u32>::new();
+    let mut battles: Vec<(u32, bool)> = Vec::new();
+    let mut fighting = run.gb.read8(ram::wIsInBattle);
+    let mut beaten_at = None;
+    for frame in 0..budget {
+        palette.clock(ms);
+        let observed = {
+            let ledger = AdapterLedger(&run.adapter);
+            palette.observe(&mut run.gb, &ledger)
+        };
+        let names: Vec<&str> = observed.bindings.iter().map(|binding| binding.name).collect();
+        if let Some(battle) = state::battle(&mut run.gb)
+            && battle.own_turn
+            && matches!(battle.menu, flybrain_gb::pokemon_red::macros::state::BattleMenu::Main { .. })
+            && !state::a_latched(&mut run.gb)
+            && let Some(own) = battle.own
+        {
+            own_turn_frames += 1;
+            for (slot, name) in ["MOVE 1", "MOVE 2", "MOVE 3", "MOVE 4"].iter().enumerate() {
+                if let Some(entry) = own.moves[slot].filter(|entry| entry.id != 0 && entry.pp > 0)
+                    && state::move_without_effect(&mut run.gb, entry.id) != Some(true)
+                    && !names.contains(name)
+                {
+                    useful_move_missing += 1;
+                }
+            }
+        }
+        let mut mask = 0u8;
+        {
+            let ledger = AdapterLedger(&run.adapter);
+            if running {
+                match palette.step(&mut run.gb, &ledger) {
+                    Some(held) => mask = held,
+                    None => running = false,
+                }
+            } else if since_decision >= hold_frames && !observed.bindings.is_empty() {
+                since_decision = 0;
+                rng ^= rng << 13;
+                rng ^= rng >> 17;
+                rng ^= rng << 5;
+                let binding = &observed.bindings[(rng >> 8) as usize % observed.bindings.len()];
+                if let Started::Running(_) = palette.start(binding.slot, &mut run.gb, &ledger) {
+                    *starts.entry(binding.name).or_default() += 1;
+                    running = true;
+                    match palette.step(&mut run.gb, &ledger) {
+                        Some(held) => mask = held,
+                        None => running = false,
+                    }
+                }
+            }
+        }
+        since_decision += 1;
+        run.gb.set_buttons(mask);
+        run.gb.run_frame().expect("a frame should complete");
+        ms += MS_PER_FRAME;
+        run.adapter.sample(&mut run.gb, ms);
+        let now = run.gb.read8(ram::wIsInBattle);
+        if fighting == 2 && now != 2 {
+            // `$ff` is the frame a battle is lost; anything else after a trainer battle is a win.
+            battles.push((frame, now != 0xff));
+        }
+        fighting = now;
+        if run.event(events::EVENT_BEAT_PEWTER_GYM_TRAINER_0) {
+            beaten_at = Some(frame);
+            break;
+        }
+    }
+    eprintln!(
+        "{:.1} brain minutes: trainer beaten at {beaten_at:?}; trainer battles (frame, won) \
+         {battles:?}; own-turn frames {own_turn_frames}, a useful move missing from the pad on \
+         {useful_move_missing}; starts {starts:?}",
+        (ms - run.ms) / 60_000.0,
+    );
+    assert!(own_turn_frames > 0, "the run never reached the trainer's battle");
+    assert_eq!(useful_move_missing, 0, "a move with PP and an effect was not on the pad");
+    assert!(beaten_at.is_some(), "the trainer was not beaten in {budget} frames: {battles:?}");
 }

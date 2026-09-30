@@ -238,6 +238,23 @@ impl Wram {
         self.set(ram::wFontLoaded, poke::BIT_FONT_LOADED).draw_box(0, 12, 19, 17)
     }
 
+    /// The naming screen as `DisplayNamingScreen` leaves it (row 69): the keyboard's box at
+    /// (0, 4)-(19, 14), `capacity` underscores from (10, 3) with the raised one under the next
+    /// letter, the keyboard's menu bytes, and `length` letters typed.
+    pub fn naming_screen(&mut self, length: u8, capacity: u8) -> &mut Self {
+        let (left, top, right, bottom) = poke::NAMING_BOX;
+        self.draw_box(left, top, right, bottom);
+        let (x, y) = poke::NAMING_UNDERSCORES;
+        for place in 0..u16::from(capacity) {
+            let raised = place == u16::from(length.min(capacity - 1));
+            let tile =
+                if raised { poke::NAMING_UNDERSCORE_RAISED } else { poke::NAMING_UNDERSCORE };
+            self.screen_tile(x + place, y, tile);
+        }
+        self.cursor(poke::NAMING_TOP_Y, 1, 1, poke::NAMING_MAX_ITEM, 0xff)
+            .set(poke::NAMING_LENGTH, length)
+    }
+
     /// The two-option YES/NO box where a Pokémon Center's script draws it (row 41): the box at
     /// (11, 6)-(19, 11) over the dialogue box, with the cursor parked in its first interior column.
     pub fn yes_no_prompt(&mut self) -> &mut Self {

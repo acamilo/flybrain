@@ -187,7 +187,8 @@ before. The Rust producer always sends all five, in both modes.
 
 - **`game.padEmptyMs`** is how long the pad has had nothing on it **in a playable scene**, in
   brain milliseconds, and 0 otherwise — in raw mode, on the title screen, when something is bound,
-  and while a macro is running, because a running macro owns the pad. It is **report only**: no
+  on the naming screen, whose pad is the fly's own buttons (`docs/design/macros.md` 12.32), and
+  while a macro is running, because a running macro owns the pad. It is **report only**: no
   producer acts on it and no consumer should, and nothing in the loop reads it back. It exists
   because an empty pad is the doctrine working — nothing presses for the fly, so a scene with no
   button waits — and on screen that is indistinguishable from a hang

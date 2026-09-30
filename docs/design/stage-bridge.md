@@ -177,7 +177,7 @@ Node 22, TypeScript, `tsx` for dev, `node --test` for tests. Deps: `@twurple/aut
 
 One-time interactive authorization in `tools/authorize.mts`, run by hand on the WSL box, producing a refresh token. Primary path: authorization-code flow with a temporary `http://localhost:3000/callback` listener (Twitch permits `http://localhost` redirects) and `exchangeCode` from `@twurple/auth`. Device-code grant against `https://id.twitch.tv/oauth2/device` is the fallback for headless authorization; twurple's first-class support for it is **unverified**, so if used it is 30 lines of hand-rolled polling rather than a library claim.
 
-Runtime uses `RefreshingAuthProvider` with `onRefresh` persisting to `/var/lib/flybridge/tokens.json`, written `0600` by an atomic temp-file rename, owned by the service user, never in git (`.gitignore` plus a repo-level check). `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` arrive via systemd `LoadCredentialEncrypted=`, sourced from `pass` on the WSL box under `twitch/fly-pokemon-client-{id,secret}`, matching the stream-key posture already documented.
+Runtime uses `RefreshingAuthProvider` with `onRefresh` persisting to `/var/lib/flybridge/tokens.json`, written `0600` by an atomic temp-file rename, owned by the service user, never in git (`.gitignore` plus a repo-level check). `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` arrive via systemd `LoadCredentialEncrypted=`, sourced from `pass` on the WSL box under `twitch/<app>-client-{id,secret}`, matching the stream-key posture already documented.
 
 Two identities, both registered on the provider: the **bot account** (chat send) and the **broadcaster account** (redemptions, predictions, markers). Scopes to request, with the intent recorded per scope:
 

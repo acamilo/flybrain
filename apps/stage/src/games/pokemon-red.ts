@@ -89,6 +89,11 @@ export const pokemonRed: GameConfig = {
     badge: { label: 'gym badge', tier: 'moment', dedupeMs: 0 },
   },
 
+  // The fly's own hits (adapter `damage`): several a battle, no protocol kind, so one row per
+  // battle that counts up. 45 s covers the slowest turn seen (about 7 s from press to payout)
+  // several times over and is far shorter than the gap between two battles.
+  hitCopy: { label: 'damage dealt', gapMs: 45_000, tier: 'quiet', koTier: 'notable' },
+
   counters: [
     { field: 'badges', label: 'badges', outOf: 8 },
     { field: 'uniqueLocations', label: 'places' },

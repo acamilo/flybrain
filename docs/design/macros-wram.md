@@ -155,6 +155,21 @@ which neither `gen_symbols.py` nor `resolve_wram.py` resolves, and a hand-writte
 thing those tools exist to refuse. "The fly had the joypad and was standing still on the frame
 before the box opened, and the box is about the thing it faces" is the same fact read out of WRAM.
 
+### The damage reward's reads (2026-09-29)
+
+**New 2026-09-29** (`damage`, `docs/rewards-learning.md`, "Damage rewards"). The two WRAM names were
+resolved by `services/flysim/tools/resolve_wram.py` from `ram/wram.asm` at the pinned commit and
+are bracketed by addresses `symbols.rs` already carried. The HRAM byte is the second hand-counted
+HRAM address in the crate, after row 63's `hJoyLast`, and is held to the same standard: counted
+from that pinned anchor and checked against the section's end, then pinned on the cartridge.
+
+| what | symbol | address | notes | verified |
+| --- | --- | --- | --- | --- |
+| whose side is acting | `hWhoseTurn` | `$FFF3` | "0 on player's turn, 1 on enemy's turn" (`ram/hram.asm`). Counted from `hJoyLast` (`$FFB1`) with each `UNION` at its largest member; the nine bytes after it end at `$FFFE`, the end of HRAM. `ExecutePlayerMove` writes 0 before the fly's move and `MainInBattleLoop` 1 before the enemy's; `HandlePoisonBurnLeechSeed` picks whose HP to cut by it. MEM-01's memory image captures HRAM, so the session runtime reads the same byte. | survey (`tests/rom_damage.rs`, the row 67 state: every enemy HP drop with 0, every own HP drop with 1) |
+| the move executing | `wPlayerMoveNum` | `$cfd2` | the first of the six move bytes `ExecutePlayerMove` loads; `STRUGGLE` (`$a5`) for a Pokémon with no PP. Bracketed by `wWalkCounter` and `wEnemyMonSpecies`. | survey (BUBBLE `$91` and TACKLE `$21` read on the frames their hits landed) |
+| which enemy slot is out | `wEnemyMonPartyPos` | `$cfe8` | `battle_struct`'s third field (`macros/ram.asm`: Species, HP, PartyPos, aliasing BoxLevel); `$ff` until a trainer's first send-out, then the 0-based party slot. Bracketed by `wEnemyMonHP` and `wEnemyMonStatus`. | trace (`pokemon_red/tests.rs`), survey |
+| (stale) the enemy | `wEnemyMonSpecies` ... `wEnemyMonMaxHP` | as above | **not cleared between battles**: `InitBattleVariables` leaves `wEnemyMon` alone, and a trainer battle sets `wIsInBattle` a whole transition before `LoadEnemyMonData`. The first samples of a battle can hold the last battle's Pokémon at the HP it finished on; the damage rule marks a target only once it reads full. | disassembly, trace |
+
 ### Battle menu and cursor, own turn against forced switch
 
 `HandleMenuInput` is shared by every menu in the game, so which menu is up is read from where it
@@ -1024,3 +1039,22 @@ the latch keeps that A until the next list first asks. Measured on the Potion's 
 list reads open on the frame after the pulse, an A in the next 22 frames is lost, and across 120
 rollback delays `hJoyLast`, `hJoyPressed`, `hJoyHeld` and `hJoy5` are the only bytes of WRAM and
 HRAM whose values never overlap between lost and answered frames.
+
+## 15. The naming screen (2026-09-29, `docs/design/macros.md` 12.32)
+
+Row 69. Two bytes of a `UNION` in `ram/wram.asm` that the reviewed list does not carry, pinned the
+way `hJoyLast` is and read back from the code that stores them by
+`row69_the_naming_bytes_are_where_the_cartridge_stores_them` (FLY_ROM).
+
+| name | where | what reads it |
+| --- | --- | --- |
+| `wNamingScreenNameLength` | `$CEE9` | the letters typed; the operand of `PrintNicknameAndUnderscores`'s `ld [wNamingScreenNameLength], a` before `hlcoord 10, 2` |
+| `wNamingScreenSubmitName` | `$CEEA` | non-zero once START or ED is taken; the operand of `.pressedStart`'s `ld [wNamingScreenSubmitName], a` |
+
+**`state::naming_screen`** is the keyboard only when the menu bytes `DisplayNamingScreen` writes
+(`wTopMenuItemY` 3, `wMaxMenuItem` 7, `wMenuWatchedKeys` `$ff`) **and** its figure are on screen:
+the whole `TextBoxBorder` at (0, 4)-(19, 14) and a run of seven or ten underscores (`$76`, the raised
+one `$77`) from (10, 3). The run's length is the capacity (`PLAYER_NAME_LENGTH - 1` or
+`NAME_LENGTH - 1`). The menu bytes outlive the screen, so both halves are needed, as for
+`yes_no_prompt`. The player's and rival's names at the start of a game are this screen before
+`wStatusFlags6`'s game-timer bit is set, and `scene::detect` answers `Title` for them first.

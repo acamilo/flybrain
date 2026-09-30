@@ -19,7 +19,8 @@ use crate::macros::{
 use super::super::mapgrid::MapGrids;
 use super::super::state::PokeState;
 use super::cartridge::{
-    Areas, Frontiers, LAST_MAP, MacroState, Pushed, Stood, Talked, Targets, Tile, outdoors,
+    Areas, Frontiers, LAST_MAP, MacroState, Pushed, Stood, Talked, TargetKey, Targets, Tile,
+    outdoors,
 };
 use super::geography;
 use super::executor::{MacroAbort, MacroMachine, Refusal};
@@ -119,6 +120,9 @@ pub struct PokemonPalette {
     /// ledgers wrote what it had been aiming at against the new map's id.
     settled: Option<u8>,
     tear_frames: u16,
+    /// The brain millisecond the naming screen was first read on, while it is up (row 69,
+    /// `palette::NAMING_BOUND_MS`). Session state, never checkpointed.
+    naming_since: Option<f64>,
     /// The brain clock of the frame being decided, from [`MacroPalette::clock`].
     ///
     /// The blocked ledger is a *window*, so it needs the same clock the loop publishes rather
@@ -148,6 +152,7 @@ impl PokemonPalette {
             nearer: false,
             settled: None,
             tear_frames: 0,
+            naming_since: None,
             now_ms: 0.0,
         }
     }
@@ -271,6 +276,9 @@ impl PokemonPalette {
         if let Some((map, target)) = self.machine.take_reached() {
             self.targets.record_reached(map, target);
         }
+        if let Some(map) = self.machine.take_counter() {
+            self.targets.record_reached(map, TargetKey::Counter);
+        }
         // A tile the cartridge drove the fly off: no window, because the map is like that until
         // the event that unlocks it, and nothing here knows which event that is (row 37).
         while let Some((map, tile)) = self.machine.take_pushed() {
@@ -299,11 +307,16 @@ impl MacroPalette for PokemonPalette {
     }
 
     fn observe(&mut self, memory: &mut dyn MemoryReader, ledger: &dyn RunLedger) -> Observed {
-        let torn = {
+        let (torn, naming) = {
             let mut state = PokeState::new(memory);
-            self.tear(&mut state)
+            (self.tear(&mut state), state.naming())
         };
-        let (scene, bindings, standing, stepping, approach) = {
+        // Row 69: the naming screen's clock. Session state like the ledgers: it starts on the
+        // first frame the keyboard is read and is dropped on the first frame it is not, so each
+        // name gets the whole bound and a restore starts it again.
+        self.naming_since = naming.map(|_| self.naming_since.unwrap_or(self.now_ms));
+        let naming_elapsed = self.naming_since.map_or(0.0, |since| (self.now_ms - since).max(0.0));
+        let (scene, bindings, raw, standing, stepping, approach) = {
             let Self {
                 machine,
                 mode,
@@ -333,10 +346,15 @@ impl MacroPalette for PokemonPalette {
             // the `TALK` gave the buttons back, so the machine is given every frame rather than
             // only the ones it owns (`docs/design/macros.md` section 12.4).
             machine.observe_frame(&mut state);
-            let palette = match mode {
-                PaletteMode::Palette => Palette::for_scene(scene, &mut state),
-                PaletteMode::Plan => plan::plan_for(scene, &mut state),
+            let naming = naming.filter(|_| scene == Scene::Unknown);
+            let palette = match (naming, mode) {
+                // Row 69: the keyboard's pad is the fly's own buttons until the name is full or
+                // the bound has run, then `CONFIRM` alone (`palette::naming_set`).
+                (Some(naming), _) => Palette::for_naming(scene, naming, naming_elapsed),
+                (None, PaletteMode::Palette) => Palette::for_scene(scene, &mut state),
+                (None, PaletteMode::Plan) => plan::plan_for(scene, &mut state),
             };
+            let raw = if naming.is_some() { palette::naming_raw(&palette) } else { 0 };
             let bindings = bindings(&palette);
             // Where the fly is standing, for the ledger below. Only on a frame the fly is its own
             // master: while the cartridge is walking it -- a warp in flight, a ledge hop, a script
@@ -355,7 +373,7 @@ impl MacroPalette for PokemonPalette {
                 Some((objective.map, hops))
             });
             *cached = Some(palette);
-            (scene, bindings, standing, stepping, approach)
+            (scene, bindings, raw, standing, stepping, approach)
         };
         // Section 12.7: the macro layer's own answer to "has the run stood here", because the
         // adapter's reward ledger cannot record a doormat.
@@ -407,7 +425,7 @@ impl MacroPalette for PokemonPalette {
         // The talked entry `observe_frame` may just have earned, into the ledger the next frame
         // reads.
         self.record_talk();
-        Observed { scene: scene_id(scene), bindings }
+        Observed { scene: scene_id(scene), bindings, raw }
     }
 
     fn start(

@@ -53,6 +53,8 @@ requires `CTID`, `HOSTNAME`, `IP`, `GAME` and `PUSH_TARGET`; `ROLE` defaults to 
 
 Secrets. `PASS_KEY` holds the **name** of a `pass` entry, never a key. The Twitch app
 id/secret arrive as the systemd credential `twitch-app`, installed by
-`infra/06-secrets.sh` from `pass` on the operator box; the OAuth tokens live in the
+`infra/06-secrets.sh` from `pass` on the operator box, reading the two entry **names** from
+`BRIDGE_ID_KEY` and `BRIDGE_SECRET_KEY` in the real env file (it skips `twitch-app` with a
+warning when they are unset); the OAuth tokens live in the
 container as `/var/lib/flybridge/tokens.json`, mode 0600. `ROM_SHA256` is a digest, and
 the ROM it describes is never committed, copied into the repo, or shown on stream.

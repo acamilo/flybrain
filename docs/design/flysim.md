@@ -398,6 +398,19 @@ on-screen ticker cannot disagree with what the sim did.
   slot from before a `v6`-era pickup cannot pay for it (`docs/rewards-learning.md`, "The seed").
   `STATE_VERSION` stays 4.
 
+  **`v7` -> `v8`** (2026-09-29, the damage reward). `pokered-unique8-v8`'s `migrates_from()` is
+  `["pokered-unique8-v7", "pokered-unique8-v6"]`: the live run is `v7`, and `v6` still composes,
+  because `v7`'s own step (the item seed on the first sample without `items:seeded`) is still in
+  this build and the damage state starts empty either way. The deploy that ships it sets
+  `FLY_ACCEPT_ADAPTERS=pokered-unique8-v7`; naming `v7` does not admit a `v6` checkpoint, which
+  needs its own id. One optional field is added, `damageCounts` (the wild keys that have paid
+  damage), and one optional object inside a battle in flight, `battle.damage` (the per-battle
+  marks and what the battle has paid). A `v7` state has neither and restores with no wild key paid
+  and, if the checkpoint was taken mid-battle, every enemy Pokémon marked at the HP it has when
+  first read, so nothing it lost before the restore is paid. `STATE_VERSION` stays 4. The
+  compatibility string moves in segment 1 only: `.../pokered-unique8-v7/...` becomes
+  `.../pokered-unique8-v8/...`, every other segment byte-identical.
+
 - **Restarting a run from an earlier rung** (2026-09-22). `FLY_RESET_STATE=1` throws the run away;
   `infra/bin/fly-reset-to-milestone <N>` keeps it and rewinds it. It archives both stores to a
   dated directory, rewrites `milestone-<N>.checkpoint` with the ratchet's `attempts` and
