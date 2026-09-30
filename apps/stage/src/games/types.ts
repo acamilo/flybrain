@@ -29,6 +29,21 @@ export interface RewardCopy {
   collapsedNoun?: string;
 }
 
+/**
+ * Copy and window for the adapter's per-hit reward, which the protocol has no `rewardKind` for
+ * (Pokémon Red's `damage`, `HIT #<species> FOR <n> HP[ KO]`). Hits are folded stage-side into one
+ * row per battle instead of one row per hit.
+ */
+export interface HitCopy {
+  /** Row text. Constant; the feed's label is only read for the KO suffix. */
+  label: string;
+  /** A row is joined by a hit up to this long after the previous hit folded into it. */
+  gapMs: number;
+  /** Tier of the row; a KO raises it to `koTier`. */
+  tier: RewardTier;
+  koTier: RewardTier;
+}
+
 /** A counter shown in the progress row beside the milestone ladder. */
 export interface GameCounter {
   /** Which `FeedGame` field to read. */
@@ -64,6 +79,8 @@ export interface GameConfig {
   modeLabels: Record<GameMode, string>;
   /** Human copy and presentation tier for each reward kind. */
   rewardCopy: Record<RewardKind, RewardCopy>;
+  /** How a reward event with no `rewardKind` that reads as a hit is rolled up. Absent: never. */
+  hitCopy?: HitCopy;
   /**
    * Counters shown on the progress cluster's footer line (`ProgressCluster`), e.g.
    * "3/8 badges · 214 places". Per-game *data*, not copy: the values come

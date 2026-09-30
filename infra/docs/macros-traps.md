@@ -3552,3 +3552,43 @@ starting state, as row 66's did: four rung-9 checkpoints with one ball each.
   after the keyboard because its frames after the catch differ from a69a258's (the keyboard took
   28 brain seconds instead of `NEXT`'s few), not because anything waited: 635 macros started, 633
   done, one refusal and one timeout, against 803, 802, one and one.
+
+## 2026-09-29, row 68: the damage reward, the catalog's answer to row 67
+
+Row 67 (the Pewter Gym's Jr. Trainer lost on repeat, TAIL WHIP 155 / BUBBLE 23 / TACKLE 0) is a
+readout choice, not a pad fault. The operator chose a catalog change over a pad rule: `damage`,
+adapter `pokered-unique8-v8` (`docs/rewards-learning.md`, "Damage rewards"). It pays for the HP the
+fly's own attack removes; it does not touch the pad.
+
+### The survey
+
+The real brain, macros mode, from the row 67 checkpoint, 120 brain minutes per arm, `v7` (main)
+against `v8` (the rule), on the stream's own frame (`LegacyFrame`). The palette seed turned out not
+to diversify a run (seeds 1, 2 and 3 were identical per arm), so the three pairs are three starts:
+the checkpoint as it is, and the checkpoint with the game run 7 and 19 frames ahead of the brain.
+Each pair is identical until the first damage payout.
+
+| start | arm | trainer battles | won | BUBBLE share, first 40 / last 40 min | damage paid | rung |
+| --- | --- | ---: | ---: | --- | ---: | --- |
+| +0 | v7 | 68 | 0 | 14% / 17% | -- | 10 |
+| +0 | v8 | 58 | 3 (Jr. Trainer at 101 min, Brock at 107, a Route 3 trainer at 112) | 15% / 20% | 6.01 | **11, BOULDER BADGE** |
+| +7 | v7 | 65 | 0 | 16% / 21% | -- | 10 |
+| +7 | v8 | 67 | 0 | 14% / 14% | 3.41 | 10 |
+| +19 | v7 | 60 | 0 | 15% / 24% | -- | 10 |
+| +19 | v8 | 59 | 1 (Jr. Trainer at 119.6 min) | 16% / 22% | 6.74 | 10 |
+
+TACKLE stayed at 0 to 2 choices a run in every arm.
+
+**What it shows.** The rule fires where it should: every `v8` arm was paid for BUBBLE's hits and
+nothing for TAIL WHIP's, 3.4 to 6.7 over two hours, capped per battle. `v8` beat the trainer in 2
+of 3 starts and `v7` in 0 of 3 (and the live run 0 of 29). **What it does not show** is the
+mechanism the rule is for: the move choice did not move more under `v8` than under `v7`. BUBBLE
+drifted from about 15% to about 20% in both arms, and TAIL WHIP stayed near 80% everywhere. So
+inside two brain hours the wins are not explained by a learned preference; a paid hit also changes
+the brain's activity (the PAM stimulation) and the trajectory, and three starts cannot tell a small
+real effect from luck. Learning is too slow to show in this window, or not happening, and the
+survey cannot say which.
+
+**Status: shipped as the operator decided, not a fix.** The trap is still possible under it: one of
+three `v8` starts never won. Row 67's watchdog check 10 (`unwon-battles`, on its branch) is the
+detector, and the pad rule the operator declined is the lever that still exists.

@@ -50,6 +50,17 @@ pub mod poke {
     /// reads it back from there (row 63, `docs/design/macros.md` 12.27).
     pub const H_JOY_LAST: u16 = 0xffb1;
 
+    /// `ram/hram.asm`: `hWhoseTurn`, "0 on player's turn, 1 on enemy's turn". Counted from the
+    /// `hJoyLast` anchor above through the declarations that follow it (each `UNION` at its
+    /// largest member) to `$FFF3`; the section's remaining nine bytes then end at `$FFFE`, the
+    /// last byte of HRAM, which is the check that the count is right. It is the classic
+    /// `H_WHOSETURN`. The battle engine writes it before each side acts (`MainInBattleLoop`,
+    /// `ExecutePlayerMove`), and `HandlePoisonBurnLeechSeed` reads it to pick whose HP to cut, so
+    /// the enemy's poison, burn and Leech Seed ticks all land while it reads 1. Read by the damage
+    /// reward (`docs/rewards-learning.md`) and pinned on the cartridge by
+    /// `tests/rom_damage.rs`, which reads 0 on the frame BUBBLE lands.
+    pub const H_WHOSE_TURN: u16 = 0xfff3;
+
     pub mod pad {
         pub const A: u8 = 1 << 0;
         pub const B: u8 = 1 << 1;
@@ -285,6 +296,10 @@ pub mod poke {
         pub const ROW_BYTES: u16 = 6;
         /// `constants/move_constants.asm`: `NUM_ATTACKS`, `STRUGGLE` (`$a5`) the last.
         pub const LAST_MOVE: u8 = 0xa5;
+        /// The same constant under its own name: the move the cartridge executes for a
+        /// Pokémon whose moves have no PP left (`ExecutePlayerMove`'s caller, `MoveSelectionMenu`'s
+        /// "has no moves left!"). The damage reward does not pay for it: the fly did not choose it.
+        pub const STRUGGLE: u8 = 0xa5;
 
         /// `constants/move_effect_constants.asm`: the stat-stage effects, each run in stage
         /// order ATTACK, DEFENSE, SPEED, SPECIAL, ACCURACY, EVASION.

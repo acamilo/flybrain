@@ -865,8 +865,8 @@ fn the_recent_ticker_keeps_the_newest_eight_events_newest_first() {
 #[test]
 fn the_adapter_reports_its_identity_and_pinned_rom() {
     let reward = PokemonRedReward::new();
-    assert_eq!(reward.id(), "pokered-unique8-v7");
-    assert_eq!(reward.migrates_from(), ["pokered-unique8-v6"]);
+    assert_eq!(reward.id(), "pokered-unique8-v8");
+    assert_eq!(reward.migrates_from(), ["pokered-unique8-v7", "pokered-unique8-v6"]);
     assert!(reward.rom_allowed(SUPPORTED_ROM));
     assert!(!reward.rom_allowed(
         "5ca7ba01642a3b27b0cc0b5349b52792795b62d3ed977e98a09390659af96b7b"
@@ -1893,4 +1893,273 @@ fn a_warp_is_classified_by_the_header_still_loaded_while_the_map_id_has_moved_on
     f.visit(10, 6);
     f.memory.set(ram::wCurMap, maps::PEWTER_CITY);
     assert!(boundary_values(&f.visit(10, 7)).is_empty());
+}
+
+// -- the damage rule (`pokered-unique8-v8`, the operator 2026-09-29) --------------------------
+
+/// Move ids from `constants/move_constants.asm`, the three row 67's Squirtle knows.
+const TACKLE: u8 = 0x21;
+const TAIL_WHIP: u8 = 0x27;
+const BUBBLE: u8 = 0x91;
+/// `wTrainerClass`-independent: `wIsInBattle` is 2 in a trainer battle, 1 in a wild one.
+const TRAINER_BATTLE: u8 = 2;
+const WILD_BATTLE: u8 = 1;
+
+impl Fixture {
+    /// The enemy battle struct as `LoadEnemyMonData` leaves it: party slot, species, level, HP
+    /// and max HP (both big-endian words).
+    fn enemy(&mut self, slot: u8, species: u8, level: u8, hp: u16, max_hp: u16) {
+        self.memory.set(ram::wEnemyMonPartyPos, slot);
+        self.memory.set(ram::wEnemyMonSpecies, species);
+        self.memory.set(ram::wEnemyMonLevel, level);
+        self.enemy_hp(hp, max_hp);
+    }
+
+    fn enemy_hp(&mut self, hp: u16, max_hp: u16) {
+        self.memory.set(ram::wEnemyMonHP, (hp >> 8) as u8);
+        self.memory.set(ram::wEnemyMonHP + 1, hp as u8);
+        self.memory.set(ram::wEnemyMonMaxHP, (max_hp >> 8) as u8);
+        self.memory.set(ram::wEnemyMonMaxHP + 1, max_hp as u8);
+    }
+
+    /// `hWhoseTurn` and `wPlayerMoveNum` for the side acting, as `ExecutePlayerMove` and
+    /// `MainInBattleLoop` write them.
+    fn turn(&mut self, fly: bool, move_id: u8) {
+        self.memory.set(state::poke::H_WHOSE_TURN, u8::from(!fly));
+        self.memory.set(ram::wPlayerMoveNum, move_id);
+    }
+
+    fn damage_events(&mut self) -> Vec<RewardEvent> {
+        self.sample().into_iter().filter(|event| event.kind == kind::DAMAGE).collect()
+    }
+}
+
+fn values(events: &[RewardEvent]) -> Vec<f64> {
+    events.iter().map(|event| event.value).collect()
+}
+
+fn close(a: f64, b: f64) -> bool {
+    (a - b).abs() < 1e-12
+}
+
+/// Row 67's battle: the Jr. Trainer's Diglett (slot 0, $3b, L11, 31 HP) and Sandshrew (slot 1,
+/// $60, L11, 33 HP), entered with the *last* battle's Diglett still in `wEnemyMon` at 7 HP.
+fn row67_battle() -> Fixture {
+    let mut f = Fixture::booted();
+    f.enemy(0, 0x3b, 11, 7, 31);
+    f.turn(true, BUBBLE);
+    f.memory.set(ram::wIsInBattle, TRAINER_BATTLE);
+    assert!(f.damage_events().is_empty(), "the stale Diglett is not the battle's");
+    f.enemy_hp(3, 31);
+    assert!(f.damage_events().is_empty(), "and nothing it does pays");
+    f.enemy(0, 0x3b, 11, 31, 31);
+    assert!(f.damage_events().is_empty(), "the real Diglett loads full");
+    f
+}
+
+#[test]
+fn the_flys_own_attack_pays_in_proportion_and_tail_whip_pays_nothing() {
+    let mut f = row67_battle();
+    // TAIL WHIP: no HP moves, whatever the turn.
+    f.turn(true, TAIL_WHIP);
+    assert!(f.damage_events().is_empty());
+    // BUBBLE lands for 12 of 31.
+    f.turn(true, BUBBLE);
+    f.enemy_hp(19, 31);
+    let hit = f.damage_events();
+    assert_eq!(labels(&hit), ["HIT #59 FOR 12 HP"]);
+    assert!(close(hit[0].value, 0.20 * 12.0 / 31.0));
+    assert_eq!(hit[0].stimulation_ms, 80);
+    // The HP bar animates for a while; the same HP is not paid again.
+    assert!(f.damage_events().is_empty());
+    // TACKLE for 5.
+    f.turn(true, TACKLE);
+    f.enemy_hp(14, 31);
+    assert_eq!(values(&f.damage_events()).len(), 1);
+    assert_eq!(f.reward.statistics().counts[kind::DAMAGE], 2);
+}
+
+#[test]
+fn hp_the_enemy_loses_on_its_own_turn_and_struggle_pay_nothing() {
+    let mut f = row67_battle();
+    // Poison, burn, Leech Seed, recoil, a confusion self-hit, its own Explosion: all with
+    // `hWhoseTurn` 1.
+    f.turn(false, BUBBLE);
+    f.enemy_hp(27, 31);
+    assert!(f.damage_events().is_empty());
+    // Struggle is the cartridge's move, not the fly's.
+    f.turn(true, state::poke::moves::STRUGGLE);
+    f.enemy_hp(24, 31);
+    assert!(f.damage_events().is_empty());
+    // The fly's next hit is paid from 24, not from 31.
+    f.turn(true, BUBBLE);
+    f.enemy_hp(20, 31);
+    let hit = f.damage_events();
+    assert_eq!(labels(&hit), ["HIT #59 FOR 4 HP"]);
+}
+
+#[test]
+fn a_healed_enemy_is_not_paid_for_twice_and_a_switch_keeps_the_marks() {
+    let mut f = row67_battle();
+    f.turn(true, BUBBLE);
+    f.enemy_hp(11, 31);
+    assert_eq!(f.damage_events().len(), 1);
+    // A Potion on the trainer's turn.
+    f.turn(false, BUBBLE);
+    f.enemy_hp(31, 31);
+    assert!(f.damage_events().is_empty());
+    f.turn(true, BUBBLE);
+    f.enemy_hp(19, 31);
+    assert!(f.damage_events().is_empty(), "31 to 19 was paid before the Potion");
+    // The trainer switches to Sandshrew, which is hit, and back.
+    f.turn(false, BUBBLE);
+    f.enemy(1, 0x60, 11, 33, 33);
+    assert!(f.damage_events().is_empty());
+    f.turn(true, TACKLE);
+    f.enemy_hp(28, 33);
+    assert_eq!(labels(&f.damage_events()), ["HIT #96 FOR 5 HP"]);
+    f.turn(false, BUBBLE);
+    f.enemy(0, 0x3b, 11, 19, 31);
+    assert!(f.damage_events().is_empty());
+    f.turn(true, BUBBLE);
+    f.enemy_hp(8, 31);
+    assert_eq!(labels(&f.damage_events()), ["HIT #59 FOR 3 HP"], "only below its low of 11");
+}
+
+#[test]
+fn a_trainer_battle_pays_the_knockouts_and_stops_at_the_cap() {
+    let mut f = row67_battle();
+    f.turn(true, BUBBLE);
+    f.enemy_hp(0, 31);
+    let ko = f.damage_events();
+    assert_eq!(labels(&ko), ["HIT #59 FOR 31 HP KO"]);
+    assert!(close(ko[0].value, 0.25));
+    f.enemy(1, 0x60, 11, 33, 33);
+    f.sample();
+    f.enemy_hp(0, 33);
+    assert!(close(values(&f.damage_events())[0], 0.25));
+    // A third Pokémon: the cap is spent.
+    f.enemy(2, 0x60, 11, 33, 33);
+    f.sample();
+    f.enemy_hp(0, 33);
+    assert!(f.damage_events().is_empty());
+    f.memory.set(ram::wIsInBattle, 0);
+    f.sample();
+    assert!(close(f.reward.statistics().total, 0.50), "the battle's damage is the trainer's 0.50");
+}
+
+#[test]
+fn a_new_trainer_battle_starts_a_new_budget() {
+    // Row 67's ring: lose, black out, walk back, fight again. Each battle pays its own damage.
+    let mut f = row67_battle();
+    f.turn(true, BUBBLE);
+    f.enemy_hp(19, 31);
+    assert_eq!(f.damage_events().len(), 1);
+    f.memory.set(ram::wIsInBattle, 0xff);
+    f.sample();
+    f.memory.set(ram::wIsInBattle, 0);
+    f.sample();
+    f.memory.set(ram::wIsInBattle, TRAINER_BATTLE);
+    f.sample();
+    f.enemy(0, 0x3b, 11, 31, 31);
+    f.sample();
+    f.enemy_hp(19, 31);
+    assert_eq!(f.damage_events().len(), 1, "the second battle's first hit pays");
+}
+
+#[test]
+fn a_wild_battle_pays_damage_on_the_wild_ko_scale_and_a_rollback_blocks_the_key() {
+    let mut f = Fixture::booted();
+    let mut paid = Vec::new();
+    for _ in 0..4 {
+        f.enemy(0, 0xa5, 3, 12, 12);
+        f.turn(true, TACKLE);
+        f.memory.set(ram::wIsInBattle, WILD_BATTLE);
+        f.sample();
+        f.enemy_hp(6, 12);
+        paid.extend(values(&f.damage_events()));
+        f.memory.set(ram::wIsInBattle, 0);
+        f.memory.set(ram::wBattleResult, 1);
+        f.sample();
+    }
+    assert_eq!(paid.len(), 3, "three wild battles per map/species/level: {paid:?}");
+    assert!(close(paid[0], 0.10) && close(paid[1], 0.05) && close(paid[2], 0.10 / 3.0));
+    assert_eq!(f.reward.export_state()["damageCounts"], json!({ "38:165:3": 3 }));
+
+    // Another species on the same map is another key, and a rollback blocks it once paid.
+    f.enemy(0, 0x24, 3, 12, 12);
+    f.memory.set(ram::wIsInBattle, WILD_BATTLE);
+    f.sample();
+    f.enemy_hp(0, 12);
+    let events = f.damage_events();
+    assert_eq!(labels(&events), ["HIT #36 FOR 12 HP KO"]);
+    assert!(close(events[0].value, 0.20), "no knockout bonus in the wild");
+    f.memory.set(ram::wIsInBattle, 0);
+    f.memory.set(ram::wBattleResult, 0);
+    assert_eq!(kinds(&f.sample()), ["battle"], "the wild KO still pays as it did");
+    f.reward.clear_transient();
+    f.enemy(0, 0x24, 3, 12, 12);
+    f.memory.set(ram::wIsInBattle, WILD_BATTLE);
+    f.sample();
+    f.enemy_hp(0, 12);
+    assert!(f.damage_events().is_empty(), "a rollback cannot replay the damage");
+}
+
+#[test]
+fn a_battle_sample_still_reads_each_address_once() {
+    let mut f = row67_battle();
+    f.turn(true, BUBBLE);
+    f.enemy_hp(19, 31);
+    f.damage_events();
+    assert!(
+        f.memory.reads.values().all(|count| *count == 1),
+        "{:?}",
+        f.memory.reads.iter().filter(|(_, count)| **count != 1).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_battle_in_flight_round_trips_through_a_checkpoint() {
+    let mut f = row67_battle();
+    f.turn(true, BUBBLE);
+    f.enemy_hp(19, 31);
+    f.damage_events();
+    let state = f.reward.export_state();
+    let mut restored = PokemonRedReward::new();
+    restored.import_state(&state).unwrap();
+    assert_eq!(restored.export_state(), state);
+    f.reward = restored;
+    f.enemy_hp(15, 31);
+    assert_eq!(labels(&f.damage_events()), ["HIT #59 FOR 4 HP"], "the mark came back with it");
+}
+
+#[test]
+fn a_v7_state_restores_under_v8_with_no_damage_ledger_and_its_battle_marked_where_it_stands() {
+    // A v7 export mid-battle: v8's export without `damageCounts`, `counts.damage` or
+    // `battle.damage`.
+    let mut f = row67_battle();
+    f.turn(true, BUBBLE);
+    f.enemy_hp(19, 31);
+    f.damage_events();
+    let mut v7 = f.reward.export_state();
+    v7.as_object_mut().unwrap().remove("damageCounts");
+    v7["counts"].as_object_mut().unwrap().remove("damage");
+    v7["battle"].as_object_mut().unwrap().remove("damage");
+    assert_eq!(v7["version"], json!(STATE_VERSION), "v7 and v8 share a schema version");
+
+    let mut restored = PokemonRedReward::new();
+    restored.import_state(&v7).unwrap();
+    assert_eq!(restored.statistics().counts[kind::DAMAGE], 0);
+    assert_eq!(restored.export_state()["damageCounts"], json!({}));
+    f.reward = restored;
+    // Diglett stands at 19 of 31: that is its mark, and the 12 lost before the restore is not
+    // paid. The next hit is.
+    assert!(f.damage_events().is_empty());
+    f.enemy_hp(10, 31);
+    assert_eq!(labels(&f.damage_events()), ["HIT #59 FOR 9 HP"]);
+    // Sandshrew, which the restore never saw, is marked where it first reads too.
+    f.enemy(1, 0x60, 11, 33, 33);
+    f.sample();
+    f.enemy_hp(30, 33);
+    assert_eq!(labels(&f.damage_events()), ["HIT #96 FOR 3 HP"]);
 }

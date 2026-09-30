@@ -202,6 +202,11 @@ fn every_status_mode_reward_kind_and_attachment_the_service_can_emit_is_in_the_s
         assert_valid(&validator, &serde_json::to_value(&snapshot.header).unwrap());
     }
     for rule in flybrain_gb::pokemon_red::catalog::REWARDS {
+        // `damage` publishes no counter (`RewardKind::from_adapter`): its events carry their own
+        // label and no `rewardKind`, which the schema already allows.
+        if rule.kind == flybrain_gb::pokemon_red::catalog::kind::DAMAGE {
+            continue;
+        }
         let kind = flysim::snapshot::RewardKind::from_adapter(rule.kind).expect(rule.kind);
         snapshot.header.events[0].reward_kind = Some(kind);
         assert_valid(&validator, &serde_json::to_value(&snapshot.header).unwrap());

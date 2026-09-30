@@ -155,6 +155,21 @@ which neither `gen_symbols.py` nor `resolve_wram.py` resolves, and a hand-writte
 thing those tools exist to refuse. "The fly had the joypad and was standing still on the frame
 before the box opened, and the box is about the thing it faces" is the same fact read out of WRAM.
 
+### The damage reward's reads (2026-09-29)
+
+**New 2026-09-29** (`damage`, `docs/rewards-learning.md`, "Damage rewards"). The two WRAM names were
+resolved by `services/flysim/tools/resolve_wram.py` from `ram/wram.asm` at the pinned commit and
+are bracketed by addresses `symbols.rs` already carried. The HRAM byte is the second hand-counted
+HRAM address in the crate, after row 63's `hJoyLast`, and is held to the same standard: counted
+from that pinned anchor and checked against the section's end, then pinned on the cartridge.
+
+| what | symbol | address | notes | verified |
+| --- | --- | --- | --- | --- |
+| whose side is acting | `hWhoseTurn` | `$FFF3` | "0 on player's turn, 1 on enemy's turn" (`ram/hram.asm`). Counted from `hJoyLast` (`$FFB1`) with each `UNION` at its largest member; the nine bytes after it end at `$FFFE`, the end of HRAM. `ExecutePlayerMove` writes 0 before the fly's move and `MainInBattleLoop` 1 before the enemy's; `HandlePoisonBurnLeechSeed` picks whose HP to cut by it. MEM-01's memory image captures HRAM, so the session runtime reads the same byte. | survey (`tests/rom_damage.rs`, the row 67 state: every enemy HP drop with 0, every own HP drop with 1) |
+| the move executing | `wPlayerMoveNum` | `$cfd2` | the first of the six move bytes `ExecutePlayerMove` loads; `STRUGGLE` (`$a5`) for a Pokémon with no PP. Bracketed by `wWalkCounter` and `wEnemyMonSpecies`. | survey (BUBBLE `$91` and TACKLE `$21` read on the frames their hits landed) |
+| which enemy slot is out | `wEnemyMonPartyPos` | `$cfe8` | `battle_struct`'s third field (`macros/ram.asm`: Species, HP, PartyPos, aliasing BoxLevel); `$ff` until a trainer's first send-out, then the 0-based party slot. Bracketed by `wEnemyMonHP` and `wEnemyMonStatus`. | trace (`pokemon_red/tests.rs`), survey |
+| (stale) the enemy | `wEnemyMonSpecies` ... `wEnemyMonMaxHP` | as above | **not cleared between battles**: `InitBattleVariables` leaves `wEnemyMon` alone, and a trainer battle sets `wIsInBattle` a whole transition before `LoadEnemyMonData`. The first samples of a battle can hold the last battle's Pokémon at the HP it finished on; the damage rule marks a target only once it reads full. | disassembly, trace |
+
 ### Battle menu and cursor, own turn against forced switch
 
 `HandleMenuInput` is shared by every menu in the game, so which menu is up is read from where it
