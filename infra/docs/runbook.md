@@ -477,8 +477,9 @@ pct exec <ctid> -- /opt/fly/bin/fly-shadow-run stop --restart-flysim   # shadow,
   real degradation begins. A tripped guard stops the shadow and the guard, removes the drop-in and
   restarts flysim without the trace. It records why in `/srv/fly/shadow/guard-tripped.json`, and
   `status` shows it. A paused fly is not judged, and a restarted one starts its window again.
-  Once the shadow is no longer running (diverged, stopped or crashed), the guard stops itself and
-  changes nothing. A trip is not a divergence: fix the resources, then `start` again.
+  Once the shadow is down for good (`ActiveState` inactive or failed: diverged, stopped, given up),
+  the guard stops itself and changes nothing. While the shadow waits out its 10-s crash-restart delay
+  (`activating`) the guard keeps running. A trip is not a divergence: fix the resources, then `start` again.
 - **While it runs**, every later flysim restart (the unstick rule, the watchdog,
   `fly-loop-recover`, `fly-reset-to-milestone`) starts a new trace file. The shadow follows it on
   its own; nothing needs doing. The 3 h window is live *brain* time summed over those processes.
@@ -490,10 +491,13 @@ pct exec <ctid> -- /opt/fly/bin/fly-shadow-run stop --restart-flysim   # shadow,
   The shadow keeps following, and the verdict stays `pass` only while nothing diverges. CUT-01
   runs `check` at the moment it cuts over. `check` also requires all of these:
   - at least 10,800 brain seconds, whatever window the shadow was started with;
-  - the guard has not tripped and `flyshadow.service` is running;
+  - the guard has not tripped, `flyshadow.service` is running, `flyshadow-guard.timer` is active and
+    `baseline.json` exists (a run no guard watched is never cut over);
   - the verdict is for the release `/opt/fly/current` points to, with `flysim-session` and every
     other shadowed binary unchanged;
   - the shadow is caught up (at most about a minute behind);
+  - the verdict's `updatedAt` is neither older than the max age nor more than 60 s in the future
+    (a clock stepped back must not keep an old pass fresh);
   - no segment was skipped for a reason other than the live side's own.
 - **Divergence**: the shadow stops itself (exit status 3; the unit does not restart it). A failure
   of the session runtime itself counts: it did not start, the restore gate refused the live save,

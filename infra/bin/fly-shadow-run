@@ -47,7 +47,9 @@
 # Tripping stops flyshadow.service and the guard timer, removes the trace drop-in, restarts
 # flysim.service without the trace, and writes /srv/fly/shadow/guard-tripped.json. When the shadow
 # is no longer running (it diverged, passed and stopped, or crashed), the guard stops its own
-# timer and changes nothing: it only ever acts against a running shadow.
+# timer and changes nothing: it only ever acts against a running shadow. "No longer running" means
+# ActiveState inactive or failed (systemctl show), never activating: the shadow's 10-s crash-restart
+# delay must not switch the guard off. `check` also requires the guard timer active and baseline.json.
 #
 # Files (all owned by fly):
 #   /srv/fly/shadow/trace/trace-<ms>-<pid>.jsonl   flysim's per-process trace (4 GiB each, 8 in all)
@@ -62,7 +64,7 @@ set -euo pipefail
 SHADOW_DIR="${FLY_SHADOW_DIR:-/srv/fly/shadow}"
 DROPIN_DIR=/etc/systemd/system/flysim.service.d
 DROPIN="$DROPIN_DIR/shadow-trace.conf"
-BIN=/opt/fly/current/fly-shadow
+BIN="${FLY_SHADOW_BIN:-/opt/fly/current/fly-shadow}"
 METRICS_URL="${FLY_METRICS_URL:-http://127.0.0.1:9101}"
 CONTROL_URL="${FLY_CONTROL_URL:-http://127.0.0.1:7401}"
 # The ledger digest period in transitions: about one a second. Every boundary is proved in the
@@ -278,6 +280,19 @@ stop() {
     log "the verdict stays in $SHADOW_DIR/verdict.json"
 }
 
+# "ActiveState/SubState" of a unit, from `systemctl show` (`is-active` cannot tell a crashed unit
+# waiting out its restart delay, activating/auto-restart, from a stopped one).
+unit_state() {
+    local out active
+    out="$(systemctl show -p ActiveState,SubState "$1" 2>/dev/null)" || true
+    active="$(printf '%s\n' "$out" | sed -n 's/^ActiveState=//p')"
+    # An unreadable state is not "stopped": the guard keeps running and judges the fly.
+    case "$active" in
+        active|inactive|failed|activating|deactivating|reloading) printf '%s\n' "$active" ;;
+        *) printf 'unknown\n' ;;
+    esac
+}
+
 guard() {
     need_root
     if [ ! -f "$SHADOW_DIR/baseline.json" ]; then
@@ -285,13 +300,21 @@ guard() {
         systemctl stop flyshadow-guard.timer 2>/dev/null || true
         exit 0
     fi
-    # The guard acts only against a running shadow: one that diverged, stopped or crashed costs
-    # the live fly nothing more, and flysim stops its trace without the shadow's heartbeat.
-    if ! systemctl is-active --quiet flyshadow.service; then
-        log "flyshadow.service is not running: the guard stops itself and changes nothing"
-        systemctl stop flyshadow-guard.timer 2>/dev/null || true
-        exit 0
-    fi
+    # The guard acts only against a shadow that is up or on its way up. One that diverged, passed
+    # and stopped, or was stopped costs the live fly nothing more (ActiveState inactive/failed), and
+    # flysim stops its trace without the shadow's heartbeat. During the shadow's crash-restart delay
+    # (Restart=on-failure, RestartSec=10) the unit is `activating` (auto-restart): the guard must
+    # keep running, or the restarted shadow runs unguarded while `check` still allows a cutover
+    # (SHADOW-01 review round 3, G1-a).
+    local active_state
+    active_state="$(unit_state flyshadow.service)"
+    case "$active_state" in
+        inactive|failed)
+            log "flyshadow.service is $active_state: the guard stops itself and changes nothing"
+            systemctl stop flyshadow-guard.timer 2>/dev/null || true
+            exit 0
+            ;;
+    esac
     [ -f "$SHADOW_DIR/guard-state.json" ] || printf '{}\n' > "$SHADOW_DIR/guard-state.json"
     local now tmp verdict
     now="$(sample)" || { log "could not read flysim's metrics; not judged this minute"; exit 0; }
@@ -334,9 +357,9 @@ PY
 }
 
 check() {
-    [ -x "$BIN" ] || die "$BIN is missing"
-    # A tripped guard, or a shadow that is not running, never allows a cutover, whatever the
-    # verdict file says.
+    # A tripped guard, a shadow that is not running, or a run that no guard watched never allows a
+    # cutover, whatever the verdict file says: the guard timer must be active and its baseline
+    # present (G1-a).
     if [ -f "$SHADOW_DIR/guard-tripped.json" ]; then
         echo "cutover refused: the guard tripped ($(cat "$SHADOW_DIR/guard-tripped.json"))"
         exit 1
@@ -345,6 +368,15 @@ check() {
         echo "cutover refused: flyshadow.service is not running"
         exit 1
     fi
+    if ! systemctl is-active --quiet flyshadow-guard.timer; then
+        echo "cutover refused: flyshadow-guard.timer is not active (this run is not guarded)"
+        exit 1
+    fi
+    if [ ! -f "$SHADOW_DIR/baseline.json" ]; then
+        echo "cutover refused: no baseline.json (this run was not baselined by fly-shadow-run start)"
+        exit 1
+    fi
+    [ -x "$BIN" ] || die "$BIN is missing"
     # The live service's configuration, for its compatibility string.
     set -a
     # shellcheck disable=SC1091

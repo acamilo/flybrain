@@ -363,6 +363,9 @@ pub struct Release<'a> {
     pub binaries: &'a std::collections::BTreeMap<String, String>,
 }
 
+/// How far ahead of the clock a verdict's `updatedAt` may be before it is refused.
+const MAX_CLOCK_SKEW_S: i64 = 60;
+
 /// Reads a verdict file and says whether it allows the cutover, by the rule in the module notes.
 /// `binary` is the file name of the session-runtime binary CUT-01 switches to, inside `release`
 /// (what `/opt/fly/current` resolves to now), and `compatibility` the live service's;
@@ -443,6 +446,14 @@ pub fn allows_cutover(
         .as_str()
         .and_then(parse_iso)
         .ok_or("no updatedAt")?;
+    // A verdict from the future (beyond a small skew) is refused: after a backward clock step an
+    // old pass would otherwise stay "fresh" for the size of the step plus `max_age_s`.
+    if updated - now_ms > MAX_CLOCK_SKEW_S * 1000 {
+        return Err(format!(
+            "the verdict is dated {} s in the future",
+            (updated - now_ms) / 1000
+        ));
+    }
     if now_ms - updated > max_age_s * 1000 {
         return Err(format!(
             "the verdict is {} s old",
@@ -547,6 +558,11 @@ mod tests {
         assert!(
             allows_cutover(&pass, "flysim-session", &release, "c", now + 301_000, 300).is_err()
         );
+        // A clock stepped back: a verdict dated well ahead of now is refused, a small skew is not.
+        assert!(
+            allows_cutover(&pass, "flysim-session", &release, "c", now - 120_000, 300).is_err()
+        );
+        assert!(allows_cutover(&pass, "flysim-session", &release, "c", now - 30_000, 300).is_ok());
         assert!(ok(&verdict(Status::Pass, 10_799_000.0)).is_err());
         // A verdict that asked for less than the operator's 3 h never passes the check.
         let mut short_window = verdict(Status::Pass, 67_000.0);

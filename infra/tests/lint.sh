@@ -586,6 +586,72 @@ if command -v python3 >/dev/null 2>&1; then
         [ -f "$d/expect" ] || continue
         guard_trace "recorded $(basename "$d")" "$d" "$(cat "$d/expect")"
     done
+    # The guard's lifecycle and `check`'s preconditions (review round 3, G1-a), with a fake systemctl
+    # (`show` answers FAKE_SHADOW_STATE; the timer is active when FAKE_TIMER_ACTIVE=yes), a fake `id`
+    # (root) and a metrics URL nobody listens on (a live guard then reports "not judged" and stays).
+    gl_bin="$g_tmp/lifecycle-bin"; gl_dir="$g_tmp/lifecycle-shadow"
+    mkdir -p "$gl_bin" "$gl_dir"
+    cat > "$gl_bin/systemctl" <<'GLSYSTEMCTL'
+#!/bin/sh
+echo "$*" >> "$FAKE_SYSTEMCTL_LOG"
+case "$1" in
+    show) printf 'ActiveState=%s\nSubState=x\n' "$FAKE_SHADOW_STATE" ;;
+    is-active)
+        case "$3" in
+            flyshadow.service) [ "$FAKE_SHADOW_STATE" = active ]; exit $? ;;
+            flyshadow-guard.timer) [ "$FAKE_TIMER_ACTIVE" = yes ]; exit $? ;;
+            *) exit 3 ;;
+        esac ;;
+esac
+exit 0
+GLSYSTEMCTL
+    cat > "$gl_bin/id" <<'GLID'
+#!/bin/sh
+[ "$1" = -u ] && { echo 0; exit 0; }
+exec /usr/bin/id "$@"
+GLID
+    chmod +x "$gl_bin/systemctl" "$gl_bin/id"
+    gl_run() { # args to fly-shadow-run; env FAKE_SHADOW_STATE, FAKE_TIMER_ACTIVE from the caller
+        : > "$g_tmp/systemctl.log"
+        PATH="$gl_bin:$PATH" FAKE_SYSTEMCTL_LOG="$g_tmp/systemctl.log" FLY_SHADOW_DIR="$gl_dir" \
+            FLY_METRICS_URL=http://127.0.0.1:1 FLY_SHADOW_BIN="$g_tmp/none" \
+            "$INFRA_DIR/bin/fly-shadow-run" "$@" 2>&1
+    }
+    printf '{"rtfMean":0.66,"rtfSd":0.01,"lagRate":0.3,"samples":60,"margin":0.05}\n' > "$gl_dir/baseline.json"
+    printf '{}\n' > "$gl_dir/guard-state.json"
+    for st in activating deactivating; do
+        FAKE_SHADOW_STATE=$st FAKE_TIMER_ACTIVE=yes gl_run guard > "$g_tmp/out" || true
+        if grep -q 'stop flyshadow-guard.timer' "$g_tmp/systemctl.log"; then
+            fail "fly-shadow-run guard stopped its timer while flyshadow was $st (auto-restart): $(cat "$g_tmp/out")"
+        else
+            pass "fly-shadow-run guard keeps running while flyshadow is $st (crash-restart delay)"
+        fi
+    done
+    for st in inactive failed; do
+        FAKE_SHADOW_STATE=$st FAKE_TIMER_ACTIVE=yes gl_run guard > "$g_tmp/out" || true
+        if grep -q 'stop flyshadow-guard.timer' "$g_tmp/systemctl.log"; then
+            pass "fly-shadow-run guard stops its timer when flyshadow is $st"
+        else
+            fail "fly-shadow-run guard kept running with flyshadow $st: $(cat "$g_tmp/out")"
+        fi
+    done
+    gl_check() { # name, expected (refused|passes-gates), then the env
+        local out rc=0
+        out="$(gl_run check)" || rc=$?
+        case "$2:$rc" in
+            refused:1) pass "fly-shadow-run check, $1: ${out%%(*}" ;;
+            passes-gates:2) pass "fly-shadow-run check, $1: past the guard preconditions" ;;
+            *) fail "fly-shadow-run check, $1: expected $2, got exit $rc: $out" ;;
+        esac
+    }
+    FAKE_SHADOW_STATE=active FAKE_TIMER_ACTIVE=yes gl_check "guarded run" passes-gates
+    FAKE_SHADOW_STATE=active FAKE_TIMER_ACTIVE=no gl_check "guard timer not active" refused
+    FAKE_SHADOW_STATE=activating FAKE_TIMER_ACTIVE=yes gl_check "shadow restarting" refused
+    mv "$gl_dir/baseline.json" "$gl_dir/baseline.json.off"
+    FAKE_SHADOW_STATE=active FAKE_TIMER_ACTIVE=yes gl_check "no baseline.json" refused
+    mv "$gl_dir/baseline.json.off" "$gl_dir/baseline.json"
+    echo '{}' > "$gl_dir/guard-tripped.json"
+    FAKE_SHADOW_STATE=active FAKE_TIMER_ACTIVE=yes gl_check "guard tripped" refused
     rm -rf "$g_tmp"
 else
     fail "python3 is needed to test fly-shadow-run's guard rule"
