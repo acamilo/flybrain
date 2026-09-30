@@ -288,6 +288,37 @@ signal. The object serves exactly one agent on one port.
 - **Cancel.** `cancel(ms)` abandons a running macro. It is followed by `observe` on the world
   the fly now stands in.
 
+**Amendment, 2026-09-29 (TASK-01).** Choices the section above leaves open, fixed as built by
+`fly-legacy-session::task`:
+
+- *The ratchet's slot.* The ratchet ledger stays in the task. Its snapshot lives in the environment
+  as the slot `best`. The ratchet only asks whether one exists: its budget test is "no snapshot".
+  So the task holds a marker snapshot in its place, and a task ledger records `slotFilled`. A slot
+  save is asked for exactly when the legacy capture closure runs: safe, and rank above best.
+- *The task ledger is artifact-backed* (amended 2026-09-29, TASK-01 review B1). The adapter's
+  lifetime ledger grows with play: it is 42-46 KB on the live fly at rungs 12-15, which is past
+  the 32 KiB `TypedValue` bound. So the typed ledger is `{reward: {digest, byteLength}, ratchet,
+  slotFilled}`, and the adapter state's JSON travels as the ledger attachment `reward`. A
+  checkpoint files it as the payload `task-ledger-reward` ([workers-v1](workers-v1.md) section 1's
+  explicit artifact-backed schema; `Task::capture_attachments`). A missing, altered or unreadable
+  attachment is `INCOMPATIBLE_STATE`, never a panic, so a boot falls to the next candidate.
+- *The palette seed* (amended 2026-09-29, TASK-01 review N3). The legacy loop seeds the palette
+  from the brain's RNG state after boot. A restore does the same: it seeds with the restored
+  agent state's RNG, which it holds. A fresh start cannot see the agent's RNG after the warm-up,
+  so it uses a constant. That is exact because `MacroMachine` never reads its generator: no macro
+  has a random step. `fly-legacy-session` `tests/palette_seed.rs` holds this on the cartridge:
+  two seeds, driven by the same decisions, press the same buttons for 3000 frames. A future
+  macro that draws from the generator fails there.
+- *The clock of the first observation.* A fresh start's layer observes O[0] at the end of the
+  warm-up, `warmupMs` = 2500 ms, which the profile pins. That is the same time the legacy loop's
+  `Sim::boot` observes at, although the agent is initialized after the task bootstraps. After a
+  restore the layer observes at the restored brain time.
+- *A reward event with `stimulation_ms` = 0* is one `Reward` and no `Stimulus`, because
+  `Stimulus.durationMs` is positive. The legacy `stimulate(0)` changes nothing.
+- *Executor events.* Macro starts and finishes are not `executionEvents`. They are reported as
+  `FLY_TRACE` `macroEvents` (phases `execute`, `evaluate`, `rollback`). Reward events are the
+  task's `TaskEvent`s.
+
 ## 11. Episode policy `legacy-ratchet-rollback-v1`
 
 The ratchet's game-only rollback is a declared episode policy. When the ratchet fires during
@@ -330,6 +361,14 @@ reward history, the ratchet ledger (its attempt and lifetime budgets were spent 
 the adapter's persistent state. The first audio chunk after the rollback marks a
 discontinuity. This is the legacy `recover_game` sequence with the neural half moved into the agent.
 Each half touches only its own state, so the order between the halves does not matter.
+
+**Amendment, 2026-09-29 (TASK-01).** The coordinator applies the policy itself, as the section
+describes. The phase is `RollingBack(k)`. The new epoch is the session's epoch root plus `.rb<n>`,
+which is deterministic, so two runs of one session name the same epochs. A composition that
+declares the policy refuses to start unless every agent advertises `legacy-ratchet-rollback-v1`.
+The task's rollback request carries `{slotId: best, trigger}`. The world must advertise
+`gameboy-slots-v1` before anything is saved or restored. Service traces with a ratchet slot save
+and a ratchet rollback reproduce as described in the implementation guide's TASK-01 entry.
 
 ## 12. Composition declaration and digest
 
@@ -500,6 +539,27 @@ Resume tests compare against the legacy restore outcome, not against an uninterr
 unstick procedure depends on: restarting the service clears the ledger-shaped traps and keeps
 the rung.
 
+**Amendment, 2026-09-29 (TASK-01): a FLYSIM01 checkpoint as the start.** A new-runtime session
+starts from the live fly's own save through the ordinary group restore
+(`Coordinator::import`, `fly-legacy-session::import`):
+
+- The world is ENV-01's `WorldState::from_flysim01` at `k = emulatorFrame - 1`, staged on a
+  replacement world.
+- The agent is the checkpoint's agent state in the worker's own capture format: STATE-02's
+  `legacy_checkpoint::agent_payload`. It carries the file's reinforcement count and the file's
+  framebuffer as the next input, and its ids come from the file.
+- The task is STATE-02's ledger `{reward, ratchet, slotFilled}`.
+
+A session boots from the live stores the way `Sim::boot` does: the legacy candidate order, the
+legacy gate, the next candidate on any refusal, then a startup durable save. See the
+implementation guide's TASK-01 entry.
+
+This section's resets then apply, and nothing else. The executor is fresh and observes the restored
+image once, at the restored brain time. The agent's readout transient is a fresh process's. The
+decision context is computed from the checkpoint's memory image before the install, and the
+coordinator refuses the install if the task, re-observing the restored world, derives another
+context.
+
 ## 15. Sugar admission
 
 The coordinator owns admission, with the legacy rules: the per-minute limiter, and "no overlap
@@ -522,6 +582,29 @@ between the two, so each admission record carries its interaction id. If the Pre
 applies it never commits, the admission is reported aborted and the edge refunds it. The
 bridge's fulfil path and refund path both get tests in the slice that wires them
 ([workers-v1](workers-v1.md) section 5 amendment).
+
+**Amendment, 2026-09-29 (TASK-01).** As built:
+
+- *Admission.* The coordinator's `AdmissionQueue` is cut at the top of each Prepare. It reports
+  every admission `applied` at the boundary its Prepare committed at, or `aborted` when the epoch
+  fails first. The legacy rules run on the edge side, unchanged: flysim's `RateLimiter` and the
+  clamp. They read `stimulusRemainingMs` from the last `Agent.Commit` or `Agent.Rollback` reply.
+  After a restore the pulse is unknown and a request is refused with a retry of one frame.
+  *Amended 2026-09-29 (TASK-01 review N1):* a sugar admitted but not yet reported on by a commit
+  counts as an active pulse, at its full duration (`AdmissionQueue::pending_stimulus_ms`). The
+  legacy `stimulate` activates the pulse the moment it admits, so this matches:
+  - two sugars between two commits get one admission and one `PulseActive`, as the legacy drain
+    gives them;
+  - the rate-limit slot is not spent on the refused one.
+
+  The retry advice may differ by less than a frame. Legacy reports the pulse decayed by the
+  ticks between drains; here it is undecayed until the commit reports it.
+- *The operator's `POST /reward` pulse is refused (declared).* In the legacy loop it is off unless
+  an operator sets `control.allow_reward`. Every shipped configuration leaves it off, and the API
+  answers 403. The session runtime has no counterpart to turn on, because a reinforcement outside
+  `Agent.Commit` is not a session-framework operation. `LegacyAdmission::reward` therefore always
+  refuses. A legacy trace that carries a reward pulse cannot be reproduced; FND-01's checker
+  refuses one as well.
 
 ## 16. Checkpoint format of record
 

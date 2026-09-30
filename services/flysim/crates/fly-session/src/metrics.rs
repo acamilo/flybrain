@@ -79,6 +79,16 @@ impl Metrics {
     pub fn clear(&mut self) {
         self.samples.clear();
     }
+
+    /// Bounds every path to between `keep` and `2 * keep` of its newest samples (trimmed in
+    /// batches, so a long run does not shift the vector every step).
+    pub fn truncate(&mut self, keep: usize) {
+        for values in self.samples.values_mut() {
+            if values.len() > 2 * keep {
+                values.drain(..values.len() - keep);
+            }
+        }
+    }
 }
 
 /// This process's peak resident set, in KiB, from its own status file.

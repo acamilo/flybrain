@@ -20,7 +20,7 @@ use crate::publish::PublicationOutcome;
 use crate::metrics::Metrics;
 use crate::phase::{Phase, PhaseMachine};
 use crate::rpc::{self, DomainReply, Serials, WorkerRef};
-use crate::task::{ActionExecutor, Task};
+use crate::task::{ActionExecutor, Inspection, Task};
 // `crate::types` is this crate's facade over the shared `fly-session-types` crate; the
 // glob keeps the contract's own names in sight instead of restating them.
 use crate::types::*;
@@ -237,6 +237,11 @@ pub struct AgentSlot {
     pub worker_threads: u64,
     pub tick_duration: RationalNs,
     pub warmup_ticks: u64,
+    /// The numerical model and plasticity versions the profile runs, which are part of the
+    /// agent's compatibility identity. The synthetic fake model's by default; the legacy profile
+    /// runs `lif-1ms-f64-v2` and `fly-kc-mbon-rstdp-v2`.
+    pub model_version: String,
+    pub plasticity_version: String,
     pub committed_step: u64,
     /// The graph this fly attested to at `Agent.Initialize`, which is what the published
     /// descriptor says about it. `None` before initialization.
@@ -271,6 +276,8 @@ impl AgentSlot {
             worker_threads: 1,
             tick_duration: RationalNs::ZERO,
             warmup_ticks: 0,
+            model_version: crate::agent::MODEL_VERSION.to_owned(),
+            plasticity_version: crate::agent::PLASTICITY_VERSION.to_owned(),
             committed_step: 0,
             graph: None,
             telemetry: None,
@@ -339,6 +346,43 @@ pub struct Coordinator {
     /// The rollback policy the composition declares, if any (`legacy-ratchet-rollback-v1` is
     /// the only one defined). Without one, a task's rollback request is a task failure.
     rollback_policy: Option<Id>,
+    /// The documents `Environment.Initialize` names. The synthetic arena's by default; a
+    /// composition with its own backend (the legacy Game Boy) sets them.
+    backend_config: AssetRef,
+    task_config: AssetRef,
+    /// The decision schema every agent's profile registers.
+    decision_schema: SchemaRef,
+    /// The inspection attachments the task reads (`Task::inspection_attachments`), and the
+    /// holds on them: O[k]'s until transition k -> k+1 has been evaluated, O[k+1]'s from the
+    /// world's result until it becomes the committed boundary's.
+    inspection_names: Vec<String>,
+    inspection_held: BTreeMap<String, flybus::Artifact>,
+    pending_inspection: BTreeMap<String, flybus::Artifact>,
+    /// O[k]'s inspection with its bytes, as the executor and the task read it.
+    current_inspection: Option<Inspection>,
+    /// The environment's advertised capabilities, from `Worker.Hello`.
+    environment_capabilities: Vec<Id>,
+    /// Agent reply attachments `Agent.Commit` is asked for (`telemetry.spikes`), kept in the
+    /// step details. None by default.
+    commit_attachments: Vec<String>,
+    /// Record [`StepDetails`] for every transition (a parity run).
+    record_details: bool,
+    last_details: Option<StepDetails>,
+    /// Audience admissions: queued by the edge, cut into the next Prepare.
+    admissions: AdmissionQueue,
+    /// The admissions the transition in flight carries, until it commits or fails.
+    in_flight_admissions: Vec<Admission>,
+    /// How many rollbacks this session has applied, which names the next rollback epoch.
+    rollbacks: u64,
+    /// The world's state format, when it is not the synthetic arena's.
+    state_format_id: Option<Id>,
+    /// Leave a requested rollback for the host to apply (`apply_pending_rollback`).
+    defer_rollbacks: bool,
+    pending_rollback: Option<(u64, EpisodeRequest)>,
+    /// [`Coordinator::bound_history`].
+    history_limit: Option<usize>,
+    /// [`Coordinator::snapshot_every`].
+    snapshot_every: u64,
     lifecycle_acks: Vec<(WorkerRef, DomainRequestId)>,
     stats: Stats,
     /// The ordered actions this session took, for the ordering assertions.
@@ -435,6 +479,31 @@ impl Coordinator {
             pause: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             episode: None,
             rollback_policy: None,
+            backend_config: crate::environment::synthetic_asset(
+                "counter-arena-backend",
+                "counter-arena-backend-v1",
+            ),
+            task_config: crate::environment::synthetic_asset(
+                "counter-arena-setup",
+                "counter-arena-setup-v1",
+            ),
+            decision_schema: crate::task::decision_schema(),
+            inspection_names: Vec::new(),
+            inspection_held: BTreeMap::new(),
+            pending_inspection: BTreeMap::new(),
+            current_inspection: None,
+            environment_capabilities: Vec::new(),
+            commit_attachments: Vec::new(),
+            record_details: false,
+            last_details: None,
+            admissions: AdmissionQueue::default(),
+            in_flight_admissions: Vec::new(),
+            rollbacks: 0,
+            state_format_id: None,
+            defer_rollbacks: false,
+            pending_rollback: None,
+            history_limit: None,
+            snapshot_every: 1,
             lifecycle_acks: Vec::new(),
             stats: Stats::default(),
             audit: Vec::new(),
@@ -531,15 +600,256 @@ impl Coordinator {
     }
 
     /// Declares the composition's rollback policy (`workers-v1` section 4 and `step-v1` section 6,
-    /// both amended 2026-09-23). Only `legacy-ratchet-rollback-v1` is defined. Until the rollback
-    /// sequence is wired (TASK-01), a declared rollback request pauses the session at its boundary
-    /// like a terminal one, which is safe; an undeclared one fails the epoch.
+    /// both amended 2026-09-23). Only `legacy-ratchet-rollback-v1` is defined. With it declared, a
+    /// rollback request is applied at the boundary it was asked for (`apply_rollback`, TASK-01),
+    /// and every agent must advertise the policy at `Worker.Hello`; without it the request fails
+    /// the epoch.
     pub fn declare_rollback_policy(&mut self, policy: &str) -> Result<(), DomainError> {
         if policy != fly_session_types::extensions::ROLLBACK_POLICY {
             return Err(DomainError::invalid(format!("{policy} is not a defined rollback policy")));
         }
         self.rollback_policy = Some(id(policy));
         Ok(())
+    }
+
+    /// The documents `Environment.Initialize` names: the backend configuration and the task
+    /// setup. A composition with its own backend sets them before [`Coordinator::bootstrap`].
+    pub fn set_environment_config(&mut self, backend_config: AssetRef, task_config: AssetRef) {
+        self.backend_config = backend_config;
+        self.task_config = task_config;
+    }
+
+    /// The view and audio stream ids this composition's world produces, which name the
+    /// attachments `Environment.Initialize` is asked for (afterwards they come from its
+    /// descriptor). The synthetic arena's by default.
+    pub fn set_media(&mut self, views: &[&str], audio_streams: &[&str]) {
+        self.media_names = views
+            .iter()
+            .map(|v| media::view_attachment(v))
+            .chain(audio_streams.iter().map(|a| media::audio_attachment(a)))
+            .collect();
+    }
+
+    /// The state format the world's captures declare (`Compatibility.stateFormatId`): the
+    /// synthetic arena's by default, `fly-gb-env-v1` for the legacy Game Boy world (ENV-01).
+    pub fn set_state_format(&mut self, state_format_id: &str) {
+        self.state_format_id = Some(id(state_format_id));
+    }
+
+    /// Bounds the session's in-memory history -- the behaviour trace, the phase log, the audit
+    /// log and the latency samples -- to the newest `keep` entries each, for a session that runs
+    /// indefinitely (the live fly). Unbounded by default: a test reads all of it.
+    pub fn bound_history(&mut self, keep: usize) {
+        self.history_limit = Some(keep);
+    }
+
+    /// Publishes the committed snapshot of every `n`-th boundary, and of every boundary with task
+    /// events or boundary actions. Presentation reads snapshots as latest values
+    /// (`publishing-v1`), and the legacy feed publishes at `snapshot_hz` (30 Hz) from its 60 Hz
+    /// loop, so a live composition need not pay a publication on every frame. 1 (every boundary)
+    /// by default.
+    pub fn snapshot_every(&mut self, n: u64) {
+        self.snapshot_every = n.max(1);
+    }
+
+    fn trim_history(&mut self) {
+        let Some(keep) = self.history_limit else { return };
+        fn trim<T>(items: &mut Vec<T>, keep: usize) {
+            if items.len() > 2 * keep {
+                items.drain(..items.len() - keep);
+            }
+        }
+        trim(&mut self.trace.transitions, keep);
+        trim(&mut self.trace.phases, keep);
+        trim(&mut self.audit, keep);
+        trim(&mut self.injection_log, keep);
+        self.metrics.truncate(keep);
+    }
+
+    /// Leave a rollback the task asks for pending at its boundary, for the host to apply with
+    /// [`Coordinator::apply_pending_rollback`] after its own captures there. No transition starts
+    /// while one is pending.
+    pub fn defer_rollbacks(&mut self, on: bool) {
+        self.defer_rollbacks = on;
+    }
+
+    /// The boundary a deferred rollback waits at, if one does.
+    pub fn pending_rollback(&self) -> Option<u64> {
+        self.pending_rollback.as_ref().map(|(k, _)| *k)
+    }
+
+    /// Applies a deferred rollback (the declared policy, `apply_rollback`), and adds it to the
+    /// last transition's trace and step details, where an immediate rollback would have been.
+    /// Returns whether one was pending.
+    pub async fn apply_pending_rollback(&mut self) -> Outcome<bool> {
+        let Some((boundary, request)) = self.pending_rollback.take() else {
+            return Ok(false);
+        };
+        let (action, details) = self.apply_rollback(boundary, &request).await?;
+        if let Some(trace) = self.trace.transitions.last_mut()
+            && trace.behaviour.acknowledged_boundary == boundary
+        {
+            trace.behaviour.boundary_actions.push(action.clone());
+        }
+        if let Some(step) = self.last_details.as_mut()
+            && step.step + 1 == boundary
+        {
+            step.boundary_actions.push(action);
+            step.rollback = Some(details);
+        }
+        Ok(true)
+    }
+
+    /// One participant-coherent capture of the committed boundary for the legacy store
+    /// (STATE-02's `LegacyCheckpointer`): every participant's `State.Capture` payload under
+    /// `Capturing(k)`, released once read. The task's half is the host's to take from the task.
+    /// Taken after the boundary's slot save and before a pending rollback, as
+    /// `legacy-gameboy-v1` section 16 orders a milestone capture.
+    pub async fn capture_payloads(
+        &mut self,
+        checkpoint_id: &Id,
+    ) -> Outcome<(u64, Vec<u8>, Vec<(Id, Vec<u8>)>)> {
+        let pending = self.begin_capture(checkpoint_id).await?;
+        self.finish_capture(pending).await
+    }
+
+    /// Sends every participant's `State.Capture` for the committed boundary and returns without
+    /// waiting for the replies: the capture off the loop (TASK-01 review N5).
+    ///
+    /// Each participant takes its state at the boundary when it handles the request, which it
+    /// does before any request sent after it (a worker takes its lock in arrival order), and a
+    /// participant that encodes off its lock (the legacy agent) answers the next Prepare while it
+    /// seals the payload. The session may step on; [`Coordinator::finish_capture`] collects the
+    /// payloads, in the order sent, whenever the host is ready for them.
+    pub async fn begin_capture(&mut self, checkpoint_id: &Id) -> Outcome<PendingCapture> {
+        let origin = self.phases.phase();
+        let Some(boundary) = origin.committed_boundary().filter(|_| origin.is_committed_boundary())
+        else {
+            return Err(SessionFailure {
+                error: DomainError::before(
+                    ErrorCode::InvalidPhase,
+                    "a coherent capture is taken at a committed boundary only",
+                ),
+                phase: origin.label(),
+                detail: "capture".to_owned(),
+                participant: None,
+            });
+        };
+        self.transition(Phase::Capturing(boundary))?;
+        let mut participants = vec![self.environment.clone()];
+        participants.extend(self.agents.iter().map(|slot| slot.worker.clone()));
+        let params = object(CaptureParams { checkpoint_id: checkpoint_id.clone() }.to_json());
+        let want = vec![crate::state::PAYLOAD_ATTACHMENT.to_owned()];
+        let scope = self.scope(boundary);
+        let mut calls = Vec::new();
+        for worker in participants {
+            let request_id = self.serials.next(&worker.service);
+            let sent = crate::rpc::send(
+                &self.bus,
+                &worker,
+                "State.Capture",
+                Some(scope.clone()),
+                params.clone(),
+                &[],
+                request_id,
+                &want,
+            )
+            .await;
+            match sent {
+                Ok(sent) => calls.push((worker, sent)),
+                Err(e) => {
+                    self.blame(Some(worker.worker_id.clone()));
+                    return Err(self.fail_now(e, "capture"));
+                }
+            }
+        }
+        self.transition(origin)?;
+        Ok(PendingCapture { checkpoint_id: checkpoint_id.clone(), boundary, scope, calls })
+    }
+
+    /// Collects a capture begun with [`Coordinator::begin_capture`]: the world's payload and
+    /// every agent's, read and released.
+    pub async fn finish_capture(
+        &mut self,
+        pending: PendingCapture,
+    ) -> Outcome<(u64, Vec<u8>, Vec<(Id, Vec<u8>)>)> {
+        let PendingCapture { checkpoint_id, boundary, scope, calls } = pending;
+        let mut payloads = Vec::new();
+        for (worker, sent) in calls {
+            let reply = match sent.finish().await {
+                Ok(reply) => reply,
+                Err(e) => {
+                    self.blame(Some(worker.worker_id.clone()));
+                    return Err(self.fail_now(e, "capture"));
+                }
+            };
+            self.check_reply(&worker, &reply, &Some(scope.clone()), "State.Capture")?;
+            if let Err(e) = reply.result() {
+                return Err(self.fail_now(e, "capture"));
+            }
+            let Some(artifact) = reply.artifacts.get(crate::state::PAYLOAD_ATTACHMENT).cloned() else {
+                return Err(self.fail_now(
+                    DomainError::before(ErrorCode::BufferInvalid, "State.Capture carried no payload"),
+                    "capture",
+                ));
+            };
+            let span = crate::profile::span("coord.capture.read");
+            let bytes = artifact.read_all().await.map_err(|e| {
+                self.fail_now(DomainError::before(ErrorCode::BufferInvalid, e.message.clone()), "capture")
+            })?;
+            drop(span);
+            self.acknowledge_replies(&worker, std::slice::from_ref(&reply.request_id)).await?;
+            payloads.push((worker.worker_id.clone(), bytes));
+        }
+        let world = payloads.remove(0).1;
+        self.audit.push(format!("captured-payloads:{checkpoint_id}@{boundary}"));
+        Ok((boundary, world, payloads))
+    }
+
+    /// The world's compatibility as this composition declares it.
+    fn world_compatibility(&self, descriptor: &EnvironmentDescriptor) -> crate::state::Compatibility {
+        let mut compatibility = crate::state::Compatibility::of(descriptor);
+        if let Some(format) = &self.state_format_id {
+            compatibility.state_format_id = format.clone();
+        }
+        compatibility
+    }
+
+    /// The decision schema the agents' profile registers (`gameboy-channels-v1` for the legacy
+    /// composition). A PreparedDecision carrying another is refused.
+    pub fn set_decision_schema(&mut self, schema: SchemaRef) {
+        self.decision_schema = schema;
+    }
+
+    /// Ask every `Agent.Commit` for these reply attachments and keep their bytes in the step
+    /// details (the legacy agent's `telemetry.spikes`). Implies [`Coordinator::record_details`].
+    pub fn request_commit_attachments(&mut self, names: &[&str]) {
+        self.commit_attachments = names.iter().map(|n| (*n).to_owned()).collect();
+        self.record_details = true;
+    }
+
+    /// Record [`StepDetails`] for every transition, for a parity run to read.
+    pub fn record_details(&mut self, on: bool) {
+        self.record_details = on;
+    }
+
+    /// The details of the last completed transition, when they are recorded.
+    pub fn take_details(&mut self) -> Option<StepDetails> {
+        self.last_details.take()
+    }
+
+    /// The admission queue: the edge's handle for audience and operator inputs.
+    pub fn admissions(&self) -> AdmissionQueue {
+        self.admissions.clone()
+    }
+
+    /// O[k]'s inspection with its bytes, as the task last read it.
+    pub fn current_inspection(&self) -> Option<&Inspection> {
+        self.current_inspection.as_ref()
+    }
+
+    pub fn episode_id(&self) -> &Id {
+        &self.episode_id
     }
 
     pub fn rollback_policy(&self) -> Option<&Id> {
@@ -639,6 +949,13 @@ impl Coordinator {
         self.pending_views.clear();
         self.audio.clear();
         self.pending_audio.clear();
+        self.inspection_held.clear();
+        self.pending_inspection.clear();
+        // An admission whose Prepare never committed is aborted, and the edge refunds it
+        // (`legacy-gameboy-v1` section 15). Queued ones stay queued for the restored epoch.
+        let aborted = std::mem::take(&mut self.in_flight_admissions);
+        self.admissions.end(aborted, AdmissionEnd::Aborted);
+        self.admissions.forget_remaining();
         match &participant {
             Some(who) => self.audit.push(format!("fail:{detail}:{who}")),
             None => self.audit.push(format!("fail:{detail}")),
@@ -717,7 +1034,12 @@ impl Coordinator {
         Ok(())
     }
 
-    async fn hello(&mut self, worker: WorkerRef, role: Role, required: &str) -> Outcome<Id> {
+    async fn hello(
+        &mut self,
+        worker: WorkerRef,
+        role: Role,
+        required: &str,
+    ) -> Outcome<(Id, Vec<Id>)> {
         let params = HelloParams {
             session_id: self.session_id.clone(),
             expected_worker_id: worker.worker_id.clone(),
@@ -757,19 +1079,33 @@ impl Coordinator {
             ));
         }
         self.audit.push(format!("hello:{}", worker.worker_id));
-        Ok(result.incarnation_id)
+        Ok((result.incarnation_id, result.capabilities))
     }
 
     async fn hello_environment(&mut self) -> Outcome<()> {
         let worker = self.environment.clone();
-        let incarnation = self.hello(worker, Role::Environment, "world-step-v1").await?;
+        let (incarnation, capabilities) =
+            self.hello(worker, Role::Environment, "world-step-v1").await?;
         self.environment.domain_incarnation = Some(incarnation);
+        self.environment_capabilities = capabilities;
         Ok(())
     }
 
     async fn hello_agent(&mut self, index: usize) -> Outcome<()> {
         let worker = self.agents[index].worker.clone();
-        let incarnation = self.hello(worker, Role::Agent, "agent-step-v1").await?;
+        let (incarnation, capabilities) = self.hello(worker, Role::Agent, "agent-step-v1").await?;
+        if self.rollback_policy.is_some()
+            && !capabilities.iter().any(|c| c == fly_session_types::extensions::ROLLBACK_CAPABILITY)
+        {
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::Unsupported,
+                    "the composition declares a rollback policy and the agent does not answer \
+                     Agent.Rollback",
+                ),
+                "hello",
+            ));
+        }
         self.agents[index].worker.domain_incarnation = Some(incarnation);
         Ok(())
     }
@@ -791,20 +1127,15 @@ impl Coordinator {
             .map(|a| PortBinding { port_id: a.port_id.clone(), agent_id: a.agent_id.clone() })
             .collect();
         let params = EnvironmentInitializeParams {
-            backend_config: crate::environment::synthetic_asset(
-                "counter-arena-backend",
-                "counter-arena-backend-v1",
-            ),
-            task_config: crate::environment::synthetic_asset(
-                "counter-arena-setup",
-                "counter-arena-setup-v1",
-            ),
+            backend_config: self.backend_config.clone(),
+            task_config: self.task_config.clone(),
             episode_id: self.episode_id.clone(),
             port_bindings: bindings.iter().map(PortBinding::pair).collect(),
         };
         let worker = self.environment.clone();
         let scope = self.scope(0);
-        let want = self.media_names.clone();
+        self.inspection_names = self.task.inspection_attachments();
+        let want = self.wanted_media();
         let reply = self
             .call(
                 &worker,
@@ -845,10 +1176,18 @@ impl Coordinator {
                 "port-assignment",
             ));
         }
-        let (views, audio) = media::split_attachments(reply.artifacts);
+        let mut artifacts = reply.artifacts;
+        let held = self.take_inspection(&mut artifacts);
+        let (views, audio) = media::split_attachments(artifacts);
         self.views = views;
         self.audio = audio;
         self.media_names = media::attachment_names(&result.descriptor);
+        let inspection = self
+            .read_inspection(0, &result.observation.inspection, &held)
+            .await
+            .map_err(|e| self.fail_now(e, "observation-0"))?;
+        self.inspection_held = held;
+        self.current_inspection = Some(inspection);
         self.timelines = AudioTimelines::fresh(&result.descriptor);
         if let Err(e) = self.timelines.accept(&result.descriptor, &result.observation) {
             return Err(self.fail_now(e, "observation-0"));
@@ -872,8 +1211,85 @@ impl Coordinator {
         Ok(())
     }
 
+    /// SHA-256 of each sensory view's bytes as this session holds them, for the step details.
+    async fn view_digests(
+        &mut self,
+        observation: &WorldObservation,
+    ) -> Outcome<Vec<(String, Digest)>> {
+        let mut out = Vec::new();
+        for view in &observation.sensory_views {
+            let name = media::view_attachment(&view.view_id);
+            let Some(artifact) = self.views.get(&name).cloned() else { continue };
+            let bytes = artifact.read_all().await.map_err(|e| {
+                self.fail_now(
+                    DomainError::new(
+                        ErrorCode::BufferInvalid,
+                        format!("reading {name}: {}", e.message),
+                        MutationCertainty::Applied,
+                    ),
+                    "details",
+                )
+            })?;
+            out.push((view.view_id.clone(), digest_of_bytes(&bytes)));
+        }
+        Ok(out)
+    }
+
+    /// The attachments a world reply is asked for: the declared media, then the inspection
+    /// attachments the task reads.
+    fn wanted_media(&self) -> Vec<String> {
+        let mut want = self.media_names.clone();
+        for name in &self.inspection_names {
+            if !want.contains(name) {
+                want.push(name.clone());
+            }
+        }
+        want
+    }
+
+    /// Takes the inspection attachments out of a world reply's artifacts, leaving the media.
+    fn take_inspection(
+        &self,
+        artifacts: &mut BTreeMap<String, flybus::Artifact>,
+    ) -> BTreeMap<String, flybus::Artifact> {
+        self.inspection_names
+            .iter()
+            .filter_map(|name| artifacts.remove(name).map(|a| (name.clone(), a)))
+            .collect()
+    }
+
+    /// Reads one boundary's inspection attachments into the [`Inspection`] the task and the
+    /// executor read. Every declared attachment must be there: a boundary whose inspection
+    /// bytes are missing is refused, never replaced by an older one.
+    async fn read_inspection(
+        &self,
+        boundary: u64,
+        value: &TypedValue,
+        held: &BTreeMap<String, flybus::Artifact>,
+    ) -> DomainResult<Inspection> {
+        let mut attachments = BTreeMap::new();
+        for name in &self.inspection_names {
+            let artifact = held.get(name).ok_or_else(|| {
+                DomainError::new(
+                    ErrorCode::BufferInvalid,
+                    format!("boundary {boundary}'s inspection arrived without {name}"),
+                    MutationCertainty::Unknown,
+                )
+            })?;
+            let bytes = artifact.read_all().await.map_err(|e| {
+                DomainError::new(
+                    ErrorCode::BufferInvalid,
+                    format!("reading {name}: {}", e.message),
+                    MutationCertainty::Unknown,
+                )
+            })?;
+            attachments.insert(name.clone(), std::sync::Arc::new(bytes));
+        }
+        Ok(Inspection { boundary, value: value.clone(), attachments })
+    }
+
     fn bootstrap_task(&mut self) -> Outcome<()> {
-        let observation = self.observation.clone().expect("initialized");
+        let inspection = self.current_inspection.clone().expect("initialized");
         let bindings: Vec<PortBinding> = self
             .agents
             .iter()
@@ -881,7 +1297,7 @@ impl Coordinator {
             .collect();
         let bootstrap = self
             .task
-            .bootstrap(&observation.inspection, &bindings)
+            .bootstrap(&inspection, &bindings)
             .map_err(|e| self.fail_now(e, "task-bootstrap"))?;
         for event in &bootstrap.events {
             if event.source_step != 0 {
@@ -1101,6 +1517,253 @@ pub struct StepReport {
     pub terminal: bool,
 }
 
+/// One audience input the coordinator admits into a Prepare (`workers-v1` section 5 and its
+/// amendment; `legacy-gameboy-v1` section 15).
+///
+/// The rules that decide *whether* an input is admitted (a rate limiter, "no overlap with an
+/// active pulse") are the composition's and run on the edge side of [`AdmissionQueue`], reading
+/// [`AdmissionQueue::stimulus_remaining_ms`]: the last completed commit's value, one commit
+/// stale at most. The coordinator only places what was admitted at the next admission cut, in
+/// admission order, and reports each one applied or aborted.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Admission {
+    /// A profile-supported stimulus in `Prepare.preStepStimulations` (sugar: `reward-pulse`).
+    Stimulus { agent_id: Id, interaction_id: Id, kind_id: Id, duration_ms: f64 },
+}
+
+impl Admission {
+    pub fn agent_id(&self) -> &Id {
+        match self {
+            Admission::Stimulus { agent_id, .. } => agent_id,
+        }
+    }
+
+    pub fn interaction_id(&self) -> &Id {
+        match self {
+            Admission::Stimulus { interaction_id, .. } => interaction_id,
+        }
+    }
+}
+
+/// How an admission ended: applied by a Prepare whose transition committed at `boundary`, or
+/// aborted because the epoch failed first (the edge refunds it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AdmissionEnd {
+    Applied { boundary: u64 },
+    Aborted,
+}
+
+#[derive(Debug, Default)]
+struct AdmissionState {
+    queued: Vec<Admission>,
+    /// Cut into a Prepare whose transition has not committed yet.
+    in_flight: Vec<Admission>,
+    remaining: BTreeMap<Id, f64>,
+    ended: Vec<(Admission, AdmissionEnd)>,
+}
+
+impl AdmissionState {
+    fn set_remaining(&mut self, agent_id: &Id, remaining: Option<f64>) {
+        match remaining {
+            Some(ms) => {
+                self.remaining.insert(agent_id.clone(), ms);
+            }
+            None => {
+                self.remaining.remove(agent_id);
+            }
+        }
+    }
+}
+
+/// The edge's handle on admission: queue what the composition's rules admitted, read the last
+/// commit's stimulus pulse, collect the outcomes. Clone it freely; every clone is the same queue.
+#[derive(Clone, Debug, Default)]
+pub struct AdmissionQueue(std::sync::Arc<std::sync::Mutex<AdmissionState>>);
+
+impl AdmissionQueue {
+    fn lock(&self) -> std::sync::MutexGuard<'_, AdmissionState> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Queue an admitted input for the next admission cut.
+    pub fn admit(&self, admission: Admission) {
+        self.lock().queued.push(admission);
+    }
+
+    /// `stimulusRemainingMs` of the agent's last completed commit (an `Agent.Rollback` reply
+    /// counts as one). `None` before the first commit of an epoch -- after a restore the pulse
+    /// is unknown and the legacy rule refuses with a retry (`legacy-gameboy-v1` section 15).
+    pub fn stimulus_remaining_ms(&self, agent_id: &Id) -> Option<f64> {
+        self.lock().remaining.get(agent_id).copied()
+    }
+
+    /// Inputs admitted and not yet cut into a Prepare.
+    pub fn queued(&self) -> usize {
+        self.lock().queued.len()
+    }
+
+    /// The longest stimulus admitted for the agent that no commit has reported on yet: queued
+    /// for the next cut, or cut into a Prepare still in flight. The legacy loop applies a sugar
+    /// the moment it admits it, so its pulse is active for the next request at once; here it
+    /// is active from admission too, which is what this reads. `None` when there is none.
+    pub fn pending_stimulus_ms(&self, agent_id: &Id) -> Option<f64> {
+        let state = self.lock();
+        state
+            .queued
+            .iter()
+            .chain(state.in_flight.iter())
+            .filter(|a| a.agent_id() == agent_id)
+            .map(|a| match a {
+                Admission::Stimulus { duration_ms, .. } => *duration_ms,
+            })
+            .reduce(f64::max)
+    }
+
+    /// Every admission that has ended since the last call, in the order they ended.
+    pub fn take_ended(&self) -> Vec<(Admission, AdmissionEnd)> {
+        std::mem::take(&mut self.lock().ended)
+    }
+
+    fn cut(&self) -> Vec<Admission> {
+        let mut state = self.lock();
+        let cut = std::mem::take(&mut state.queued);
+        state.in_flight.extend(cut.iter().cloned());
+        cut
+    }
+
+    fn end(&self, admissions: Vec<Admission>, end: AdmissionEnd) {
+        self.commit(admissions, end, &[]);
+    }
+
+    /// Ends the admissions and records the commit's pulses under one lock.
+    fn commit(&self, admissions: Vec<Admission>, end: AdmissionEnd, pulses: &[(Id, Option<f64>)]) {
+        let mut state = self.lock();
+        for admission in admissions {
+            state
+                .in_flight
+                .retain(|a| a.interaction_id() != admission.interaction_id());
+            state.ended.push((admission, end.clone()));
+        }
+        for (agent_id, remaining) in pulses {
+            state.set_remaining(agent_id, *remaining);
+        }
+    }
+
+    /// Decides and queues one admission under the lock every commit takes: `decide` gets the
+    /// agent's last reported pulse and the longest pending one, and returns the admission to
+    /// queue (or a refusal). No commit can interleave between the reads and the push, which is
+    /// the single-threaded legacy loop's answer (TASK-01 review R2-3).
+    pub fn admit_with<E>(
+        &self,
+        agent_id: &Id,
+        decide: impl FnOnce(Option<f64>, Option<f64>) -> Result<Admission, E>,
+    ) -> Result<Admission, E> {
+        let mut state = self.lock();
+        let remaining = state.remaining.get(agent_id).copied();
+        let pending = state
+            .queued
+            .iter()
+            .chain(state.in_flight.iter())
+            .filter(|a| a.agent_id() == agent_id)
+            .map(|a| match a {
+                Admission::Stimulus { duration_ms, .. } => *duration_ms,
+            })
+            .reduce(f64::max);
+        let admission = decide(remaining, pending)?;
+        state.queued.push(admission.clone());
+        Ok(admission)
+    }
+
+    fn set_remaining(&self, agent_id: &Id, remaining: Option<f64>) {
+        self.lock().set_remaining(agent_id, remaining);
+    }
+
+    fn forget_remaining(&self) {
+        self.lock().remaining.clear();
+    }
+}
+
+/// Everything one transition exchanged, for a parity run (`Coordinator::record_details`): the
+/// fields a legacy `FLY_TRACE` line is assembled from.
+#[derive(Clone, Debug)]
+pub struct StepDetails {
+    /// The boundary the transition started from.
+    pub step: u64,
+    /// O[k]'s `engineFrame`.
+    pub engine_frame: Option<String>,
+    /// The admissions this transition's Prepare applied, in admission order.
+    pub admissions: Vec<Admission>,
+    pub prepared: Vec<(Id, PreparedDecision)>,
+    pub controls: Vec<PortControl>,
+    pub commits: Vec<(Id, AgentCommitResult)>,
+    /// `(agent, attachment, bytes)` for each requested commit reply attachment.
+    pub commit_attachments: Vec<(Id, String, Vec<u8>)>,
+    /// SHA-256 of each O[k+1] view's bytes, by view id.
+    pub view_digests: Vec<(String, Digest)>,
+    pub evaluation: crate::task::Evaluation,
+    /// The boundary actions applied at `Ready(k+1)`, in order.
+    pub boundary_actions: Vec<fly_session_types::trace::BoundaryAction>,
+    /// After a rollback: the new epoch, the restored observation and each agent's reply.
+    pub rollback: Option<RollbackDetails>,
+}
+
+/// What a rollback at a boundary produced.
+#[derive(Clone, Debug)]
+pub struct RollbackDetails {
+    pub epoch: Id,
+    pub observation: WorldObservation,
+    pub view_digests: Vec<(String, Digest)>,
+    pub agents: Vec<(Id, fly_session_types::extensions::AgentRollbackResult)>,
+}
+
+/// A capture sent to every participant and not yet collected ([`Coordinator::begin_capture`]).
+pub struct PendingCapture {
+    checkpoint_id: Id,
+    boundary: u64,
+    scope: Scope,
+    calls: Vec<(WorkerRef, crate::rpc::SentCall)>,
+}
+
+impl PendingCapture {
+    /// The committed boundary the capture is of.
+    pub fn boundary(&self) -> u64 {
+        self.boundary
+    }
+}
+
+/// A checkpoint of another format, assembled by an importer in each participant's own capture
+/// format, to install as a session's start ([`Coordinator::import`]).
+#[derive(Clone, Debug)]
+pub struct ImportSpec {
+    pub checkpoint_id: Id,
+    /// The scope the payloads record as their source (for a FLYSIM01 file,
+    /// `legacy_checkpoint::legacy_source_scope`: the session, epoch `legacy`, the boundary).
+    pub source_scope: Scope,
+    /// The boundary the checkpoint is at.
+    pub boundary: u64,
+    /// The environment's `State.Capture` payload.
+    pub world_payload: Vec<u8>,
+    /// Every agent, in sorted agent-id order.
+    pub agents: Vec<ImportedAgent>,
+    pub task_ledger: TypedValue,
+    /// The ledger's attachments (`Task::capture_attachments`), by name.
+    pub task_attachments: BTreeMap<String, Vec<u8>>,
+    /// Each declared audio stream's next sample.
+    pub audio_positions: BTreeMap<String, u64>,
+}
+
+/// One agent of an [`ImportSpec`].
+#[derive(Clone, Debug)]
+pub struct ImportedAgent {
+    pub agent_id: Id,
+    /// The agent's `State.Capture` payload.
+    pub payload: Vec<u8>,
+    pub brain_ticks: u64,
+    pub remainder: RationalNs,
+    /// The decision context the payload retains.
+    pub context: TypedValue,
+}
+
 /// One per-agent bus call, ready to dispatch.
 struct Job {
     agent_id: Id,
@@ -1110,6 +1773,8 @@ struct Job {
     params: Map<String, Value>,
     attachments: Vec<(String, flybus::Artifact)>,
     request_id: DomainRequestId,
+    /// Reply attachments to extract.
+    want: Vec<String>,
 }
 
 /// Issues one domain call with owned arguments, so it can run in its own task.
@@ -1546,7 +2211,7 @@ impl Coordinator {
                         job.params.clone(),
                         job.attachments.clone(),
                         job.request_id.clone(),
-                        Vec::new(),
+                        job.want.clone(),
                         deadline,
                     )
                     .await;
@@ -1581,7 +2246,7 @@ impl Coordinator {
                             job.params.clone(),
                             job.attachments.clone(),
                             job.request_id.clone(),
-                            Vec::new(),
+                            job.want.clone(),
                             deadline,
                         )
                         .await;
@@ -1642,6 +2307,16 @@ impl Coordinator {
                 "step",
             ));
         };
+        if let Some((boundary, _)) = &self.pending_rollback {
+            let boundary = *boundary;
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::InvalidPhase,
+                    format!("the rollback asked for at boundary {boundary} has not been applied"),
+                ),
+                "step",
+            ));
+        }
         if self.episode.is_some() {
             return Err(self.fail_now(
                 DomainError::before(
@@ -1670,26 +2345,39 @@ impl Coordinator {
 
         // ---- Phase A: prepare all agents concurrently
         self.transition(Phase::Preparing(k))?;
+        let span = crate::profile::span("coord.prepare");
         let prepared = self.prepare_all(k, descriptor.step_duration).await?;
+        drop(span);
 
         // ---- Phase B: build and apply one complete batch
         self.transition(Phase::Applying(k))?;
+        let span = crate::profile::span("coord.executor");
         let controls = self.build_batch(k, &descriptor, &old_observation)?;
+        drop(span);
         let batch_id = self.batch_id(k);
+        let span = crate::profile::span("coord.advance");
         let step_result = self.advance(k, &batch_id, &controls).await?;
+        drop(span);
+        let span = crate::profile::span("coord.observe");
 
         // ---- Phase C: observe and evaluate the task once
         self.transition(Phase::Observing(k + 1))?;
         self.verify_step_result(k, &descriptor, &batch_id, &controls, &old_observation, &step_result)?;
         let scope = self.scope(k);
+        let pending_inspection = std::mem::take(&mut self.pending_inspection);
+        let new_inspection = self
+            .read_inspection(k + 1, &step_result.observation.inspection, &pending_inspection)
+            .await
+            .map_err(|e| self.fail_now(e, "step-result"))?;
+        let old_inspection = self
+            .current_inspection
+            .clone()
+            .expect("a bootstrapped session holds O[k]'s inspection");
+        drop(span);
+        let span = crate::profile::span("coord.evaluate");
         let evaluation = self
             .task
-            .evaluate_transition(
-                &scope,
-                &old_observation.inspection,
-                &step_result.observation.inspection,
-                &controls,
-            )
+            .evaluate_transition(&scope, &old_inspection, &new_inspection, &controls)
             .map_err(|e| {
                 // Task interpretation failed after prepared brains and the world already
                 // changed, so the epoch is failed rather than re-evaluated.
@@ -1726,8 +2414,10 @@ impl Coordinator {
             }
         }
 
+        drop(span);
         // ---- Phase D: commit all agent outcomes concurrently
         self.transition(Phase::Committing(k))?;
+        let commit_span = crate::profile::span("coord.commit");
         let new_views: BTreeMap<String, flybus::Artifact> = step_result
             .observation
             .sensory_views
@@ -1746,10 +2436,12 @@ impl Coordinator {
                 self.pending_audio.get(&name).map(|a| (name, a.clone()))
             })
             .collect();
-        let commits = self
+        let (commits, commit_attachments) = self
             .commit_all(k, &step_result.observation, &mut outcomes, &mut next_contexts, &new_views)
             .await?;
 
+        drop(commit_span);
+        let span = crate::profile::span("coord.boundary");
         // Only once every commit succeeded does the committed boundary move.
         self.transition(Phase::Ready(k + 1))?;
         for index in 0..self.agents.len() {
@@ -1786,9 +2478,54 @@ impl Coordinator {
         self.audio = new_audio;
         self.pending_views.clear();
         self.pending_audio.clear();
+        // O[k] has been evaluated, so its inspection is released; O[k+1]'s is the boundary's.
+        self.inspection_held = pending_inspection;
+        self.current_inspection = Some(new_inspection);
         self.observation = Some(step_result.observation.clone());
         self.stats.advances += 1;
+        // The admissions this transition carried are applied: its Prepare committed.
+        let applied = std::mem::take(&mut self.in_flight_admissions);
+        // One lock for the end of the in-flight admissions and the new pulse: an edge thread
+        // never sees the admission gone and the old pulse still standing (TASK-01 review R2-3).
+        let pulses: Vec<(Id, Option<f64>)> = commits
+            .iter()
+            .map(|(agent_id, result)| (agent_id.clone(), result.telemetry.stimulus_remaining_ms))
+            .collect();
+        self.admissions
+            .commit(applied.clone(), AdmissionEnd::Applied { boundary: k + 1 }, &pulses);
 
+        let view_digests = if self.record_details {
+            self.view_digests(&step_result.observation).await?
+        } else {
+            Vec::new()
+        };
+
+        // ---- Ready(k+1): the boundary actions the transition asked for, saves first
+        // (`step-v1` section 6 amendment).
+        let mut boundary_actions = Vec::new();
+        for slot_id in &evaluation.slot_saves {
+            let action = self.save_slot(k + 1, slot_id).await?;
+            boundary_actions.push(action);
+        }
+        let mut rollback_details = None;
+        if let Some(request) = &evaluation.episode
+            && request.kind == EpisodeRequestKind::Rollback
+        {
+            let request = request.clone();
+            if self.defer_rollbacks {
+                // The host takes its captures at this boundary first (a milestone archive is
+                // captured after the slot save and before the rollback, legacy-gameboy-v1
+                // section 16), then applies it: `apply_pending_rollback`.
+                self.pending_rollback = Some((k + 1, request));
+            } else {
+                let (action, details) = self.apply_rollback(k + 1, &request).await?;
+                boundary_actions.push(action);
+                rollback_details = Some(details);
+            }
+        }
+
+        drop(span);
+        let span = crate::profile::span("coord.trace_publish");
         let event_ids: Vec<Id> = evaluation.events.iter().map(|e| e.id.clone()).collect();
         let decisions: BTreeMap<Id, TypedValue> = prepared
             .iter()
@@ -1803,7 +2540,23 @@ impl Coordinator {
             &step_result,
             &outcomes,
             &event_ids,
+            &boundary_actions,
         );
+        if self.record_details {
+            self.last_details = Some(StepDetails {
+                step: k,
+                engine_frame: old_observation.engine_frame.clone(),
+                admissions: applied,
+                prepared: prepared.clone(),
+                controls: controls.clone(),
+                commits: commits.clone(),
+                commit_attachments,
+                view_digests,
+                evaluation: evaluation.clone(),
+                boundary_actions: boundary_actions.clone(),
+                rollback: rollback_details,
+            });
+        }
         // The prepared decisions and their request ids are needed by the trace, so they are
         // released only after it has been recorded.
         for slot in &mut self.agents {
@@ -1811,9 +2564,23 @@ impl Coordinator {
             slot.prepare_request = None;
         }
         self.publish_events(k + 1, &evaluation.events).await?;
-        self.publish_snapshot(k + 1, &decisions, &controls, &event_ids).await?;
+        // Every boundary with events or boundary actions is published; otherwise every
+        // `snapshot_every`-th (1 unless the composition thins it, as the legacy feed publishes at
+        // `snapshot_hz`, 30 Hz, from a 60 Hz loop).
+        if self.snapshot_every <= 1
+            || (k + 1).is_multiple_of(self.snapshot_every)
+            || !evaluation.events.is_empty()
+            || !boundary_actions.is_empty()
+        {
+            self.publish_snapshot(k + 1, &decisions, &controls, &event_ids).await?;
+        }
 
-        let terminal = evaluation.episode.is_some();
+        // A rollback request was applied above and is not an episode end; only a terminal one
+        // pauses the session for the episode policy.
+        let terminal = evaluation
+            .episode
+            .as_ref()
+            .is_some_and(|request| request.kind == EpisodeRequestKind::Terminal);
         if terminal {
             // A terminal event's final rewards are committed; then the session pauses at this
             // boundary and the declared episode policy runs. No worker resets itself.
@@ -1825,8 +2592,10 @@ impl Coordinator {
             self.pause.store(false, std::sync::atomic::Ordering::SeqCst);
             self.audit.push(format!("pause:{}", k + 1));
         }
+        drop(span);
         // The critical path: one whole transition, pacing sleep included.
         self.metrics.record("step", step_started.elapsed());
+        self.trim_history();
         Ok(StepReport { boundary: k + 1, paused, terminal })
     }
 
@@ -1857,17 +2626,44 @@ impl Coordinator {
         let scope = self.scope(k);
         // The task's per-agent decision contexts and the admitted pre-step stimulation list
         // are frozen here; anything accepted later waits for the next boundary.
+        let cut = self.admissions.cut();
+        let mut admitted = Vec::new();
+        for admission in cut {
+            if self.agent(admission.agent_id()).is_some() {
+                admitted.push(admission);
+            } else {
+                // An input for no configured agent is never applied; the edge refunds it.
+                self.admissions.end(vec![admission], AdmissionEnd::Aborted);
+            }
+        }
+        self.in_flight_admissions = admitted.clone();
         let mut jobs = Vec::new();
         let mut bodies = Vec::new();
         for index in 0..self.agents.len() {
             let slot = &self.agents[index];
+            let pre_step_stimulations: Vec<Stimulus> = admitted
+                .iter()
+                .filter_map(|a| match a {
+                    Admission::Stimulus { agent_id, interaction_id, kind_id, duration_ms }
+                        if *agent_id == slot.agent_id =>
+                    {
+                        Some(Stimulus {
+                            id: interaction_id.clone(),
+                            kind_id: kind_id.clone(),
+                            duration_ms: *duration_ms,
+                        })
+                    }
+                    Admission::Stimulus { .. } => None,
+                })
+                .collect();
             let params = PrepareParams {
                 agent_id: slot.agent_id.clone(),
                 profile_digest: slot.profile.digest.clone(),
                 interval,
                 decision_context_digest: slot.context_digest.clone(),
-                // No audience input exists in the first synthetic composition.
-                pre_step_stimulations: Vec::<Stimulus>::new(),
+                // What the admission cut admitted for this agent, in admission order. The
+                // synthetic composition has no audience input, so its list is empty.
+                pre_step_stimulations,
             };
             let params = match params.to_json() {
                 Value::Object(m) => m,
@@ -1890,6 +2686,7 @@ impl Coordinator {
                 params,
                 attachments: Vec::new(),
                 request_id,
+                want: Vec::new(),
             });
         }
         let results = self.run_jobs(jobs, self.dispatch).await;
@@ -1934,7 +2731,7 @@ impl Coordinator {
                     method,
                 ));
             }
-            if decision.decision.schema != crate::task::decision_schema() {
+            if decision.decision.schema != self.decision_schema {
                 return Err(self.fail_now(
                     DomainError::before(
                         ErrorCode::IdentityMismatch,
@@ -2009,7 +2806,11 @@ impl Coordinator {
     ) -> Outcome<Vec<PortControl>> {
         let scope = self.scope(k);
         let progress = self.task.progress();
-        let clock = observation.world_time;
+        let _ = observation;
+        let inspection = self
+            .current_inspection
+            .clone()
+            .expect("a bootstrapped session holds O[k]'s inspection");
         let mut intents: BTreeMap<Id, PortControl> = BTreeMap::new();
         // Sorted agent-id order, never completion order.
         for index in 0..self.agents.len() {
@@ -2019,6 +2820,18 @@ impl Coordinator {
                 .prepared
                 .clone()
                 .expect("every agent is Prepared before the batch is built");
+            // `step-v1` section 3, Phase B amendment: the clock is the agent's brain time after
+            // its Prepare -- its executed ticks at its tick duration, exactly.
+            let tick = self.agents[index].tick_duration;
+            let clock = RationalNs::reduced(
+                u128::from(tick.numerator) * u128::from(decision.brain_ticks),
+                u128::from(tick.denominator),
+            )
+            .map_err(|e| DomainError::invalid(e.0));
+            let clock = match clock {
+                Ok(clock) => clock,
+                Err(e) => return Err(self.fail_now(e, "executor")),
+            };
             let executor = self.executors.get_mut(&agent_id).ok_or_else(|| {
                 DomainError::before(
                     ErrorCode::IdentityMismatch,
@@ -2032,7 +2845,7 @@ impl Coordinator {
             let applied = executor.apply(
                 &scope,
                 &decision.decision,
-                &observation.inspection,
+                &inspection,
                 &progress,
                 &clock,
             );
@@ -2101,7 +2914,7 @@ impl Coordinator {
         let worker = self.environment.clone();
         let request_id = self.serials.next(&worker.service);
         self.last_advance_request = Some(request_id.clone());
-        let want = self.media_names.clone();
+        let want = self.wanted_media();
         self.audit.push(format!("advance:{k}"));
         self.blame(Some(worker.worker_id.clone()));
         let advance_deadline = self.deadlines.probe;
@@ -2223,7 +3036,9 @@ impl Coordinator {
             Err(e) => return Err(self.fail_now(e, "advance")),
         };
         self.blame(None);
-        let (pending_views, pending_audio) = media::split_attachments(reply.artifacts);
+        let mut artifacts = reply.artifacts;
+        self.pending_inspection = self.take_inspection(&mut artifacts);
+        let (pending_views, pending_audio) = media::split_attachments(artifacts);
         self.pending_views = pending_views;
         self.pending_audio = pending_audio;
 
@@ -2286,6 +3101,326 @@ impl Coordinator {
             self.pending_audio = pending_audio;
         }
         Ok(result)
+    }
+}
+
+// -------------------------------------------------------------------------------------------
+// Boundary actions: slot saves and the declared rollback (`step-v1` section 6 amendment)
+
+/// The epoch a rollback moves to: the session's epoch root, then `.rb<n>`, or a digest-named
+/// id when that would pass the `Id` length bound. Deterministic, so two runs of the same
+/// session name the same epochs.
+fn rollback_epoch(current: &Id, n: u64) -> Id {
+    let root = match current.rfind(".rb") {
+        Some(at) if current[at + 3..].chars().all(|c| c.is_ascii_digit()) && at > 0 => {
+            &current[..at]
+        }
+        _ => current.as_str(),
+    };
+    let named = format!("{root}.rb{n}");
+    match parse_id(&named) {
+        Ok(epoch) => epoch,
+        Err(_) => {
+            let digest = digest_of_bytes(named.as_bytes());
+            id(&format!("rb{n}-{}", &digest[..16]))
+        }
+    }
+}
+
+impl Coordinator {
+    fn require_slots(&mut self, what: &str) -> Outcome<()> {
+        if self
+            .environment_capabilities
+            .iter()
+            .any(|c| c == fly_session_types::extensions::SLOTS_CAPABILITY)
+        {
+            return Ok(());
+        }
+        Err(self.fail_now(
+            DomainError::new(
+                ErrorCode::Unsupported,
+                format!("the task asked for {what} and the world does not advertise gameboy-slots-v1"),
+                MutationCertainty::Applied,
+            ),
+            "boundary",
+        ))
+    }
+
+    /// `Environment.SaveSlot` at the committed boundary `k`, under the current epoch.
+    async fn save_slot(
+        &mut self,
+        k: u64,
+        slot_id: &Id,
+    ) -> Outcome<fly_session_types::trace::BoundaryAction> {
+        self.require_slots("a slot save")?;
+        let scope = self.scope(k);
+        let params = fly_session_types::extensions::SaveSlotParams { slot_id: slot_id.clone() };
+        let worker = self.environment.clone();
+        let reply = self
+            .call(
+                &worker,
+                fly_session_types::extensions::METHOD_SAVE_SLOT,
+                Some(scope.clone()),
+                object(params.to_json()),
+                &[],
+                &[],
+            )
+            .await?;
+        let result: fly_session_types::extensions::SaveSlotResult =
+            reply.parse().map_err(|e| self.fail_now(e, "save-slot"))?;
+        if let Err(e) = result.validate_against_scope(&scope) {
+            return Err(self.fail_now(DomainError::invalid(e.0), "save-slot"));
+        }
+        if result.slot_id != *slot_id {
+            return Err(self.fail_now(
+                DomainError::before(ErrorCode::IdentityMismatch, "the world saved another slot"),
+                "save-slot",
+            ));
+        }
+        self.audit.push(format!("save-slot:{slot_id}@{k}"));
+        Ok(fly_session_types::trace::BoundaryAction {
+            kind: fly_session_types::trace::BoundaryActionKind::SaveSlot,
+            slot_id: slot_id.clone(),
+            state_digest: Some(result.state_digest),
+        })
+    }
+
+    /// The declared rollback policy at `Ready(e, k)` (`step-v1` section 6 amendment, steps 2 to
+    /// 5; `legacy-gameboy-v1` section 11): a new epoch, `Environment.RestoreSlot`, the task's
+    /// coordinator-local part, `Agent.Rollback` on every agent, then `Ready(e', k)`. Any failure
+    /// fails the epoch; nothing continues in `e` once one participant is in `e'`.
+    async fn apply_rollback(
+        &mut self,
+        k: u64,
+        request: &EpisodeRequest,
+    ) -> Outcome<(fly_session_types::trace::BoundaryAction, RollbackDetails)> {
+        let Some(policy) = self.rollback_policy.clone() else {
+            return Err(self.fail_now(
+                DomainError::new(
+                    ErrorCode::Unsupported,
+                    "the task asked for a rollback and this composition declares no rollback policy",
+                    MutationCertainty::Applied,
+                ),
+                "rollback",
+            ));
+        };
+        self.require_slots("a rollback")?;
+        let slot_id = match fly_session_types::gameboy::RollbackRequest::from_typed(&request.outcome)
+        {
+            Ok(outcome) => outcome.slot_id,
+            Err(e) => return Err(self.fail_now(DomainError::invalid(e.0), "rollback")),
+        };
+        let slot_id = match parse_id(&slot_id) {
+            Ok(slot_id) => slot_id,
+            Err(e) => return Err(self.fail_now(DomainError::invalid(e), "rollback")),
+        };
+        self.transition(Phase::RollingBack(k))?;
+        let prior = self.epoch.clone();
+        self.rollbacks += 1;
+        let epoch = rollback_epoch(&prior, self.rollbacks);
+        let scope = scope_at(&self.session_id, &epoch, k);
+
+        // Step 2: the world restores the slot at the same boundary under the new epoch.
+        let params = fly_session_types::extensions::RestoreSlotParams {
+            slot_id: slot_id.clone(),
+            prior_epoch: prior.clone(),
+            policy: policy.clone(),
+        };
+        let worker = self.environment.clone();
+        let want = self.wanted_media();
+        let reply = self
+            .call(
+                &worker,
+                fly_session_types::extensions::METHOD_RESTORE_SLOT,
+                Some(scope.clone()),
+                object(params.to_json()),
+                &[],
+                &want,
+            )
+            .await?;
+        let result: fly_session_types::extensions::RestoreSlotResult =
+            reply.parse().map_err(|e| self.fail_now(e, "restore-slot"))?;
+        if let Err(e) = result.validate_against_scope(&scope) {
+            return Err(self.fail_now(DomainError::invalid(e.0), "restore-slot"));
+        }
+        let descriptor = self.descriptor.clone().expect("bootstrapped");
+        let restored = result.observation;
+        let world_time = self.observation.as_ref().map(|o| o.world_time);
+        if restored.boundary != k || Some(restored.world_time) != world_time {
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::IdentityMismatch,
+                    "a restored slot is not at the boundary and world time it was restored at",
+                ),
+                "restore-slot",
+            ));
+        }
+        if let Err(e) = restored.validate_against(&descriptor) {
+            return Err(self.fail_now(
+                DomainError::new(ErrorCode::BufferInvalid, e, MutationCertainty::Applied),
+                "restore-slot",
+            ));
+        }
+        if let Err(e) = media::check_required_views(&descriptor, &restored).and_then(|()| {
+            media::check_required_audio(&descriptor, &restored, media::ObservationOrigin::Installed)
+        }) {
+            return Err(self.fail_now(e, "restore-slot"));
+        }
+        let mut artifacts = reply.artifacts;
+        let held = self.take_inspection(&mut artifacts);
+        let (views, audio) = media::split_attachments(artifacts);
+        if !audio.is_empty() {
+            return Err(self.fail_now(
+                DomainError::new(
+                    ErrorCode::BufferInvalid,
+                    "a restored slot carried an audio chunk; no interval was played",
+                    MutationCertainty::Applied,
+                ),
+                "restore-slot",
+            ));
+        }
+        for view in &restored.sensory_views {
+            let name = media::view_attachment(&view.view_id);
+            match views.get(&name) {
+                Some(artifact) if artifact.reference() == &view.pixels => {}
+                _ => {
+                    return Err(self.fail_now(
+                        DomainError::new(
+                            ErrorCode::BufferInvalid,
+                            format!("the restored view {} arrived without a live owned handle", view.view_id),
+                            MutationCertainty::Applied,
+                        ),
+                        "restore-slot",
+                    ));
+                }
+            }
+        }
+        let inspection = self
+            .read_inspection(k, &restored.inspection, &held)
+            .await
+            .map_err(|e| self.fail_now(e, "restore-slot"))?;
+        self.audit.push(format!("restore-slot:{slot_id}@{k}:{epoch}"));
+
+        // Step 3, coordinator-local: the task clears its transient observations, the executor
+        // cancels and observes the restored boundary, which gives the next contexts.
+        let evaluation = self
+            .task
+            .rollback(&scope, &inspection)
+            .map_err(|e| self.fail_now(e, "task-rollback"))?;
+        for agent_id in self.agent_ids() {
+            if !evaluation.next_contexts.contains_key(&agent_id) {
+                return Err(self.fail_now(
+                    DomainError::before(
+                        ErrorCode::IdentityMismatch,
+                        format!("the task's rollback produced no context for {agent_id}"),
+                    ),
+                    "task-rollback",
+                ));
+            }
+        }
+
+        // Step 4: every agent, with the restored view and its context. No tick.
+        let attachments: Vec<(String, flybus::Artifact)> =
+            views.iter().map(|(n, a)| (n.clone(), a.clone())).collect();
+        let mut replies = Vec::new();
+        for index in 0..self.agents.len() {
+            let agent_id = self.agents[index].agent_id.clone();
+            let context = evaluation.next_contexts[&agent_id].clone();
+            let params = fly_session_types::extensions::AgentRollbackParams {
+                agent_id: agent_id.clone(),
+                prior_epoch: prior.clone(),
+                policy: policy.clone(),
+                input: self.sensory_input(&restored, k),
+                decision_context: context.clone(),
+            };
+            let worker = self.agents[index].worker.clone();
+            let refs: Vec<(&str, &flybus::Artifact)> =
+                attachments.iter().map(|(n, a)| (n.as_str(), a)).collect();
+            let reply = self
+                .call(
+                    &worker,
+                    fly_session_types::extensions::METHOD_AGENT_ROLLBACK,
+                    Some(scope.clone()),
+                    object(params.to_json()),
+                    &refs,
+                    &[],
+                )
+                .await?;
+            let result: fly_session_types::extensions::AgentRollbackResult =
+                reply.parse().map_err(|e| self.fail_now(e, "agent-rollback"))?;
+            if let Err(e) = result.validate_against_scope(&scope) {
+                return Err(self.fail_now(DomainError::invalid(e.0), "agent-rollback"));
+            }
+            if result.agent_id != agent_id || result.decision_context_digest != context.digest() {
+                return Err(self.fail_now(
+                    DomainError::before(
+                        ErrorCode::IdentityMismatch,
+                        "an agent rolled back with another identity or context",
+                    ),
+                    "agent-rollback",
+                ));
+            }
+            self.audit.push(format!("agent-rollback:{agent_id}@{k}:{epoch}"));
+            replies.push((agent_id, context, result));
+        }
+
+        // Step 5: every reply in hand. The session is at Ready(e', k).
+        let view_digests = if self.record_details {
+            let mut out = Vec::new();
+            for view in &restored.sensory_views {
+                let name = media::view_attachment(&view.view_id);
+                if let Some(artifact) = views.get(&name) {
+                    let bytes = artifact.read_all().await.map_err(|e| {
+                        self.fail_now(
+                            DomainError::new(
+                                ErrorCode::BufferInvalid,
+                                format!("reading {name}: {}", e.message),
+                                MutationCertainty::Applied,
+                            ),
+                            "details",
+                        )
+                    })?;
+                    out.push((view.view_id.clone(), digest_of_bytes(&bytes)));
+                }
+            }
+            out
+        } else {
+            Vec::new()
+        };
+        self.epoch = epoch.clone();
+        let positions = self.timelines.positions();
+        self.timelines = match AudioTimelines::restored(&descriptor, &positions) {
+            Ok(timelines) => timelines,
+            Err(e) => return Err(self.fail_now(e, "rollback")),
+        };
+        self.views = views;
+        self.audio.clear();
+        self.inspection_held = held;
+        self.current_inspection = Some(inspection);
+        self.observation = Some(restored.clone());
+        let mut agents = Vec::new();
+        for (agent_id, context, result) in replies {
+            let slot = self
+                .agents
+                .iter_mut()
+                .find(|slot| slot.agent_id == agent_id)
+                .expect("configured");
+            slot.context_digest = context.digest();
+            slot.context = context;
+            slot.telemetry = Some(result.telemetry.clone());
+            self.admissions.set_remaining(&agent_id, result.telemetry.stimulus_remaining_ms);
+            agents.push((agent_id, result));
+        }
+        self.transition(Phase::Ready(k))?;
+        self.audit.push(format!("rolled-back:{slot_id}@{k}:{epoch}"));
+        Ok((
+            fly_session_types::trace::BoundaryAction {
+                kind: fly_session_types::trace::BoundaryActionKind::Rollback,
+                slot_id: slot_id.clone(),
+                state_digest: None,
+            },
+            RollbackDetails { epoch, observation: restored, view_digests, agents },
+        ))
     }
 }
 
@@ -2429,7 +3564,8 @@ impl Coordinator {
         outcomes: &mut BTreeMap<Id, AgentOutcome>,
         next_contexts: &mut BTreeMap<Id, TypedValue>,
         views: &BTreeMap<String, flybus::Artifact>,
-    ) -> Outcome<Vec<(Id, AgentCommitResult)>> {
+    ) -> Outcome<(Vec<(Id, AgentCommitResult)>, Vec<(Id, String, Vec<u8>)>)> {
+        let mut extracted: Vec<(Id, String, Vec<u8>)> = Vec::new();
         let scope = self.scope(k);
         let attachments: Vec<(String, flybus::Artifact)> =
             views.iter().map(|(n, a)| (n.clone(), a.clone())).collect();
@@ -2481,6 +3617,7 @@ impl Coordinator {
                 params,
                 attachments: attachments.clone(),
                 request_id,
+                want: self.commit_attachments.clone(),
             });
         }
         self.last_commit_requests = bodies
@@ -2519,7 +3656,7 @@ impl Coordinator {
                             params,
                             job_attachments,
                             request_id,
-                            &[],
+                            &self.commit_attachments.clone(),
                         )
                         .await
                     {
@@ -2568,6 +3705,29 @@ impl Coordinator {
                     }
                     if let Err(e) = result.telemetry.validate() {
                         return Err(self.fail_now(DomainError::invalid(e), method));
+                    }
+                    for name in self.commit_attachments.clone() {
+                        let Some(artifact) = reply.artifacts.get(&name) else {
+                            return Err(self.fail_now(
+                                DomainError::new(
+                                    ErrorCode::BufferInvalid,
+                                    format!("Agent.Commit carried no {name}"),
+                                    MutationCertainty::Applied,
+                                ),
+                                method,
+                            ));
+                        };
+                        let bytes = artifact.read_all().await.map_err(|e| {
+                            self.fail_now(
+                                DomainError::new(
+                                    ErrorCode::BufferInvalid,
+                                    format!("reading {name}: {}", e.message),
+                                    MutationCertainty::Applied,
+                                ),
+                                method,
+                            )
+                        })?;
+                        extracted.push((agent_id.clone(), name, bytes));
                     }
                     self.audit.push(format!("committed:{agent_id}@{k}"));
                     self.stats.commits += 1;
@@ -2625,7 +3785,7 @@ impl Coordinator {
             }
         }
         commits.sort_by(|a, b| a.0.cmp(&b.0));
-        Ok(commits)
+        Ok((commits, extracted))
     }
 
     /// Records the `step-v1` section 8 trace for this transition.
@@ -2645,6 +3805,7 @@ impl Coordinator {
         result: &StepResult,
         outcomes: &BTreeMap<Id, AgentOutcome>,
         event_ids: &[Id],
+        boundary_actions: &[fly_session_types::trace::BoundaryAction],
     ) {
         let mut agents = Vec::new();
         let mut outcome_ids = Vec::new();
@@ -2695,8 +3856,9 @@ impl Coordinator {
             outcome_ids,
             event_ids: event_ids.to_vec(),
             published_boundary: k + 1,
-            // The synthetic composition takes no boundary actions (step-v1 section 8 amendment).
-            boundary_actions: Vec::new(),
+            // Saves first, each slot once, at most one rollback, last (step-v1 section 8
+            // amendment). The synthetic composition takes none.
+            boundary_actions: boundary_actions.to_vec(),
         };
         let operational = TraceOperational {
             // Wall time is for pacing, health and presentation only.
@@ -3125,7 +4287,7 @@ impl Coordinator {
     /// The live composition's compatibility identities.
     pub fn compatibility(&self) -> Outcome<crate::state::Compatibility> {
         match &self.descriptor {
-            Some(descriptor) => Ok(crate::state::Compatibility::of(descriptor)),
+            Some(descriptor) => Ok(self.world_compatibility(descriptor)),
             None => Err(SessionFailure {
                 error: DomainError::before(
                     ErrorCode::InvalidPhase,
@@ -3160,8 +4322,8 @@ impl Coordinator {
             &slot.agent_id,
             &slot.profile.digest,
             &graph.dataset_digest,
-            crate::agent::MODEL_VERSION,
-            crate::agent::PLASTICITY_VERSION,
+            &slot.model_version,
+            &slot.plasticity_version,
             slot.seed,
             &graph.index_digest,
         ))
@@ -3393,8 +4555,8 @@ impl Coordinator {
                 profile_digest: slot.profile.digest.clone(),
                 dataset_digest: graph.dataset_digest,
                 index_digest: graph.index_digest,
-                model_version: crate::agent::MODEL_VERSION.to_owned(),
-                plasticity_version: crate::agent::PLASTICITY_VERSION.to_owned(),
+                model_version: slot.model_version.clone(),
+                plasticity_version: slot.plasticity_version.clone(),
                 seed: slot.seed,
                 brain_ticks: slot.brain_ticks,
                 remainder: slot.remainder,
@@ -3409,6 +4571,22 @@ impl Coordinator {
             self.seal_own(crate::state::TASK_LEDGER_PAYLOAD, &ledger.to_json())
                 .await?,
         );
+        let attachments =
+            self.task.capture_attachments().map_err(|e| self.fail_now(e, "capture"))?;
+        for (name, bytes) in attachments {
+            let name = crate::state::task_attachment_payload(&name);
+            let digest = digest_of_bytes(&bytes);
+            let artifact = match crate::state::seal_payload(&self.bus, &bytes, &digest).await {
+                Ok(artifact) => artifact,
+                Err(e) => return Err(self.fail_now(e, "capture")),
+            };
+            payloads.push(crate::state::CapturedPayload {
+                name,
+                byte_length: bytes.len() as u64,
+                digest,
+                artifact,
+            });
+        }
         let inspection = self
             .observation
             .as_ref()
@@ -3693,8 +4871,13 @@ impl Coordinator {
     /// A replacement is the only way a fenced participant comes back: `step-v1` section 7's
     /// incarnation row says every live participant of a failed epoch belongs to an invalid
     /// one, so the reference is exchanged deliberately here and never repaired in place.
+    ///
+    /// A session that bootstrapped and has taken no transition may also replace a participant:
+    /// that is how a checkpoint of another format is installed as its start
+    /// ([`Coordinator::import`]) into a world that stages only on a fresh replacement.
     pub fn replace_participant(&mut self, worker_id: &Id, worker: WorkerRef) -> Outcome<()> {
-        if !self.fenced {
+        let unstarted = self.phases.phase() == Phase::Ready(0) && self.stats.advances == 0;
+        if !self.fenced && !unstarted {
             return Err(self.fail_now(
                 DomainError::before(
                     ErrorCode::InvalidPhase,
@@ -3813,11 +4996,212 @@ impl Coordinator {
         }
         let boundary = manifest.source_scope.step;
         self.transition(Phase::Restoring(boundary))?;
-        let outcome = self.restore_group(&envelope, &manifest, new_epoch, boundary).await;
+        let outcome = self.restore_group(&envelope.payloads, &manifest, new_epoch, boundary).await;
         match outcome {
             Ok(report) => Ok(report),
             Err(e) => Err(e),
         }
+    }
+
+    pub fn session_id(&self) -> &Id {
+        &self.session_id
+    }
+
+    /// Installs a checkpoint of another format as this session's start (TASK-01: the legacy
+    /// composition's FLYSIM01 import).
+    ///
+    /// Only a session that bootstrapped and has taken no transition may import, and the install
+    /// is the ordinary group restore of `state-media-v1` section 6 -- stage every participant,
+    /// validate the coordinator's own state, activate, install, `Paused(k)` -- over payloads the
+    /// importer assembled in each participant's own capture format. The coordinator's own
+    /// payloads (executor state, prior inspection, the admission record) are written here, from
+    /// the live composition, exactly as a capture writes them. Nothing a participant stages is
+    /// trusted: each validates its payload as it would one of its own captures.
+    pub async fn import(&mut self, spec: ImportSpec, new_epoch: &Id) -> Outcome<RestoreReport> {
+        if self.fenced || self.phases.phase() != Phase::Ready(0) || self.stats.advances != 0 {
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::InvalidPhase,
+                    "a checkpoint is imported as the start of a session that has taken no transition",
+                ),
+                "import",
+            ));
+        }
+        if *new_epoch == self.epoch {
+            return Err(self.fail_now(
+                DomainError::before(ErrorCode::StaleEpoch, "an import installs a fresh epoch"),
+                "import",
+            ));
+        }
+        let descriptor = self.descriptor.clone().expect("bootstrapped");
+        let boundary = spec.boundary;
+        if spec.source_scope.step != boundary || spec.source_scope.session_id != self.session_id {
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::IdentityMismatch,
+                    "an import's source scope is this session at the imported boundary",
+                ),
+                "import",
+            ));
+        }
+        let world_time = RationalNs::reduced(
+            u128::from(descriptor.step_duration.numerator) * u128::from(boundary),
+            u128::from(descriptor.step_duration.denominator),
+        )
+        .map_err(|e| DomainError::invalid(e.0));
+        let world_time = match world_time {
+            Ok(time) => time,
+            Err(e) => return Err(self.fail_now(e, "import")),
+        };
+        let recorded: Vec<Id> = spec.agents.iter().map(|a| a.agent_id.clone()).collect();
+        if recorded != self.agent_ids() {
+            return Err(self.fail_now(
+                DomainError::before(
+                    ErrorCode::IdentityMismatch,
+                    "the import's agents are not this composition's",
+                ),
+                "import",
+            ));
+        }
+        let compatibility = self.compatibility()?;
+        let canonical = |value: &Value| -> DomainResult<Vec<u8>> {
+            canonicalize(value)
+                .map(String::into_bytes)
+                .map_err(|e| DomainError::invalid(e.0))
+        };
+        let mut payloads: Vec<(String, Vec<u8>)> = Vec::new();
+        payloads.push((crate::state::WORLD_PAYLOAD.to_owned(), spec.world_payload));
+        let mut agent_rows = Vec::new();
+        for imported in &spec.agents {
+            let slot = self.agent(&imported.agent_id).expect("checked");
+            let Some(graph) = slot.graph.clone() else {
+                return Err(self.fail_now(
+                    DomainError::before(ErrorCode::InvalidPhase, "an agent attested no graph"),
+                    "import",
+                ));
+            };
+            let name = crate::state::agent_payload(&imported.agent_id);
+            agent_rows.push(crate::state::AgentEntry {
+                agent_id: imported.agent_id.clone(),
+                profile_digest: slot.profile.digest.clone(),
+                dataset_digest: graph.dataset_digest,
+                index_digest: graph.index_digest,
+                model_version: slot.model_version.clone(),
+                plasticity_version: slot.plasticity_version.clone(),
+                seed: slot.seed,
+                brain_ticks: imported.brain_ticks,
+                remainder: imported.remainder,
+                payload: name.clone(),
+            });
+            payloads.push((name, imported.payload.clone()));
+        }
+        let mut own = |name: &str, value: &Value| -> DomainResult<()> {
+            payloads.push((name.to_owned(), canonical(value)?));
+            Ok(())
+        };
+        let mut executor_rows = Vec::new();
+        let mut failure = None;
+        if let Err(e) = own(crate::state::TASK_LEDGER_PAYLOAD, &spec.task_ledger.to_json()) {
+            failure = Some(e);
+        }
+        let prior = self.observation.as_ref().map(|o| o.inspection.to_json()).expect("bootstrapped");
+        if let Err(e) = own(crate::state::PRIOR_INSPECTION_PAYLOAD, &prior) {
+            failure = failure.or(Some(e));
+        }
+        for agent_id in self.agent_ids() {
+            let name = crate::state::executor_payload(&agent_id);
+            match self.executors.get(&agent_id).map(|e| e.capture()) {
+                Some(Ok(state)) => {
+                    if let Err(e) = own(&name, &state.to_json()) {
+                        failure = failure.or(Some(e));
+                    }
+                }
+                Some(Err(e)) => failure = failure.or(Some(e)),
+                None => {
+                    failure = failure.or(Some(DomainError::before(
+                        ErrorCode::IdentityMismatch,
+                        format!("{agent_id} has no configured action executor"),
+                    )))
+                }
+            }
+            executor_rows.push((agent_id, name));
+        }
+        let record = json!({
+            "payloadVersion": 1,
+            "kind": "coordinator",
+            "committedStep": boundary.to_string(),
+            "admission": {"audienceInput": "none-configured", "admitted": Value::Array(Vec::new())},
+            "eventWatermarks": {"lastSourceStep": "0", "issued": "0"},
+            "audioPositions": Value::Object(
+                spec.audio_positions
+                    .iter()
+                    .map(|(stream, sample)| (stream.clone(), Value::String(sample.to_string())))
+                    .collect(),
+            ),
+            "agents": Value::Array(
+                spec.agents
+                    .iter()
+                    .map(|imported| {
+                        let slot = self.agent(&imported.agent_id).expect("checked");
+                        json!({
+                            "agentId": imported.agent_id.as_str(),
+                            "portId": slot.port_id.as_str(),
+                            "profile": slot.profile.to_json(),
+                            "seed": slot.seed,
+                            "workerThreads": slot.worker_threads.to_string(),
+                            "committedStep": boundary.to_string(),
+                            "brainTicks": imported.brain_ticks.to_string(),
+                            "remainder": imported.remainder.to_json(),
+                            "context": imported.context.to_json(),
+                        })
+                    })
+                    .collect(),
+            ),
+        });
+        if let Err(e) = own(crate::state::ADMISSION_PAYLOAD, &record) {
+            failure = failure.or(Some(e));
+        }
+        for (name, bytes) in &spec.task_attachments {
+            payloads.push((crate::state::task_attachment_payload(name), bytes.clone()));
+        }
+        if let Some(e) = failure {
+            return Err(self.fail_now(e, "import"));
+        }
+        let manifest = crate::state::CheckpointManifest {
+            checkpoint_id: spec.checkpoint_id.clone(),
+            source_scope: spec.source_scope.clone(),
+            episode_id: self.episode_id.clone(),
+            world_time,
+            scheduler_id: "lockstep-v1".to_owned(),
+            composition_digest: self.composition_digest(),
+            port_map: self
+                .agents
+                .iter()
+                .map(|slot| (slot.port_id.clone(), slot.agent_id.clone()))
+                .collect(),
+            compatibility,
+            agents: agent_rows,
+            coordinator: crate::state::CoordinatorEntry {
+                task_ledger: crate::state::TASK_LEDGER_PAYLOAD.to_owned(),
+                prior_inspection: crate::state::PRIOR_INSPECTION_PAYLOAD.to_owned(),
+                executor_state: executor_rows,
+                admission_state: crate::state::ADMISSION_PAYLOAD.to_owned(),
+                event_watermarks: crate::state::EventWatermarks { last_source_step: 0, issued: 0 },
+            },
+            environment: crate::state::EnvironmentEntry {
+                worker_id: self.environment.worker_id.clone(),
+                payload: crate::state::WORLD_PAYLOAD.to_owned(),
+            },
+            helper_state: Vec::new(),
+            payloads: payloads
+                .iter()
+                .map(|(name, bytes)| (name.clone(), bytes.len() as u64, digest_of_bytes(bytes)))
+                .collect(),
+        };
+        self.transition(Phase::Restoring(boundary))?;
+        let report = self.restore_group(&payloads, &manifest, new_epoch, boundary).await?;
+        self.audit.push(format!("imported:{}@{boundary}", spec.checkpoint_id));
+        Ok(report)
     }
 
     /// Marks every participant of an abandoned group install as one that must be replaced.
@@ -3866,7 +5250,7 @@ impl Coordinator {
             ));
         }
         let live = match &self.descriptor {
-            Some(descriptor) => crate::state::Compatibility::of(descriptor),
+            Some(descriptor) => self.world_compatibility(descriptor),
             None => {
                 return Err(DomainError::before(
                     ErrorCode::InvalidPhase,
@@ -3921,7 +5305,7 @@ impl Coordinator {
     #[allow(clippy::too_many_lines)]
     async fn restore_group(
         &mut self,
-        envelope: &fly_session_types::checkpoint::Envelope,
+        envelope_payloads: &[(String, Vec<u8>)],
         manifest: &crate::state::CheckpointManifest,
         new_epoch: &Id,
         boundary: u64,
@@ -3930,7 +5314,7 @@ impl Coordinator {
         // Step 3: import the payloads as *new* artifacts. Nothing the fence dropped is asked
         // to come back, and a router that restarted has none of the old roots anyway.
         let mut imported: BTreeMap<String, (flybus::Artifact, Digest, u64)> = BTreeMap::new();
-        for (name, bytes) in &envelope.payloads {
+        for (name, bytes) in envelope_payloads {
             let digest = digest_of_bytes(bytes);
             let artifact = match crate::state::seal_payload(&self.bus, bytes, &digest).await {
                 Ok(artifact) => artifact,
@@ -4043,8 +5427,7 @@ impl Coordinator {
         // coordinator** state validates". The coordinator's own staged ledgers are checked
         // here, before a single token is activated, so a checkpoint whose task ledger or
         // executor state is unreadable installs nothing anywhere.
-        let payloads: BTreeMap<String, Vec<u8>> = envelope
-            .payloads
+        let payloads: BTreeMap<String, Vec<u8>> = envelope_payloads
             .iter()
             .map(|(name, bytes)| (name.clone(), bytes.clone()))
             .collect();
@@ -4078,10 +5461,11 @@ impl Coordinator {
         let mut activated: Vec<Id> = Vec::new();
         let mut restored_observation: Option<(WorldObservation, BTreeMap<String, flybus::Artifact>)> =
             None;
+        let mut restored_inspection: BTreeMap<String, flybus::Artifact> = BTreeMap::new();
         for (who, worker, token) in &staged {
             let params = ActivateRestoreParams { restore_token: token.clone() };
             let want = if *who == self.environment.worker_id {
-                self.media_names.clone()
+                self.wanted_media()
             } else {
                 Vec::new()
             };
@@ -4129,7 +5513,9 @@ impl Coordinator {
                 ));
             }
             if let Some(observation) = result.observation {
-                let (views, audio) = media::split_attachments(reply.artifacts);
+                let mut artifacts = reply.artifacts;
+                restored_inspection = self.take_inspection(&mut artifacts);
+                let (views, audio) = media::split_attachments(artifacts);
                 if !audio.is_empty() {
                     self.taint_group(&staged);
                     return Err(self.fail_now(
@@ -4172,6 +5558,69 @@ impl Coordinator {
             self.taint_group(&staged);
             return Err(self.fail_now(e, "restore"));
         }
+        // The restored boundary's inspection, and the task's own look at it: a task whose
+        // executor state is transient (`legacy-transient-reset`) re-observes the restored world
+        // here, and the contexts it derives must be the ones the checkpoint recorded -- the
+        // agents hold those, and a Prepare under another would be refused.
+        let restored_value = self
+            .observation
+            .as_ref()
+            .map(|o| o.inspection.clone())
+            .expect("installed above");
+        let inspection = match self.read_inspection(boundary, &restored_value, &restored_inspection).await
+        {
+            Ok(inspection) => inspection,
+            Err(e) => {
+                self.taint_group(&staged);
+                return Err(self.fail_now(e, "restore"));
+            }
+        };
+        let clock = match self.agents.first() {
+            Some(slot) => RationalNs::reduced(
+                u128::from(slot.tick_duration.numerator) * u128::from(slot.brain_ticks),
+                u128::from(slot.tick_duration.denominator),
+            )
+            .unwrap_or(RationalNs::ZERO),
+            None => RationalNs::ZERO,
+        };
+        let restored_scope = scope_at(&self.session_id, new_epoch, boundary);
+        match self.task.restored(&restored_scope, &inspection, &clock) {
+            Ok(Some(contexts)) => {
+                let differing = self
+                    .agents
+                    .iter()
+                    .find(|slot| {
+                        contexts.get(&slot.agent_id).map(TypedValue::digest)
+                            != Some(slot.context_digest.clone())
+                    })
+                    .map(|slot| slot.agent_id.clone());
+                if let Some(agent_id) = differing {
+                    {
+                        self.taint_group(&staged);
+                        return Err(self.fail_now(
+                            DomainError::before(
+                                ErrorCode::IncompatibleState,
+                                format!(
+                                    "the restored world gives {} another decision context than the \
+                                     checkpoint recorded",
+                                    agent_id
+                                ),
+                            ),
+                            "restore",
+                        ));
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                self.taint_group(&staged);
+                return Err(self.fail_now(e, "restore"));
+            }
+        }
+        self.inspection_held = restored_inspection;
+        self.current_inspection = Some(inspection);
+        // The pulse is unknown until the new epoch's first commit (`legacy-gameboy-v1` 15).
+        self.admissions.forget_remaining();
 
         // Step 5: Paused(k), and only now is the fence lifted.
         self.epoch = new_epoch.clone();
@@ -4231,7 +5680,7 @@ impl Coordinator {
             &manifest.coordinator.task_ledger,
         )?)
         .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;
-        task.validate_restore(&ledger)?;
+        task.validate_restore_with(&ledger, &crate::state::task_attachments(payloads))?;
         for (agent_id, name) in &manifest.coordinator.executor_state {
             let state = TypedValue::from_json(&Coordinator::read_payload(payloads, name)?)
                 .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;
@@ -4332,7 +5781,8 @@ impl Coordinator {
 
         let ledger = TypedValue::from_json(&read(&manifest.coordinator.task_ledger)?)
             .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;
-        self.task.validate_restore(&ledger)?;
+        let task_attachments = crate::state::task_attachments(payloads);
+        self.task.validate_restore_with(&ledger, &task_attachments)?;
         for (agent_id, name) in &manifest.coordinator.executor_state {
             let state = TypedValue::from_json(&read(name)?)
                 .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;
@@ -4398,7 +5848,7 @@ impl Coordinator {
             audio_positions.insert(stream.clone(), sample);
         }
         // Everything above validated. From here the coordinator installs, in one pass.
-        self.task.install_restore(new_epoch, &ledger)?;
+        self.task.install_restore_with(new_epoch, &ledger, &task_attachments)?;
         for (agent_id, name) in &manifest.coordinator.executor_state {
             let state = TypedValue::from_json(&read(name)?)
                 .map_err(|e| DomainError::before(ErrorCode::IncompatibleState, e.0))?;
@@ -4520,5 +5970,73 @@ impl Coordinator {
             to: to_epoch.clone(),
             events,
         })
+    }
+}
+
+#[cfg(test)]
+mod admission_race_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// TASK-01 review R2-3: a sugar arriving while a commit ends the in-flight admission and
+    /// reports the pulse must never see "no pending admission" beside the old, over pulse. The
+    /// only state the hammer accepts in is exactly that torn one; the commit under test is
+    /// atomic, so it is never seen.
+    #[test]
+    fn no_sugar_is_admitted_between_a_commit_ending_and_its_pulse() {
+        let queue = AdmissionQueue::default();
+        let agent = id("fly");
+        let in_flight = Admission::Stimulus {
+            agent_id: agent.clone(),
+            interaction_id: id("sugar-1"),
+            kind_id: id("reward-pulse"),
+            duration_ms: 400.0,
+        };
+        let stop = AtomicBool::new(false);
+        let torn = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !stop.load(Ordering::Relaxed) {
+                    let admitted = queue.admit_with(&agent, |remaining, pending| {
+                        if remaining.unwrap_or(0.0).max(pending.unwrap_or(0.0)) > 0.0 {
+                            Err(())
+                        } else {
+                            Ok(Admission::Stimulus {
+                                agent_id: agent.clone(),
+                                interaction_id: id("sugar-x"),
+                                kind_id: id("reward-pulse"),
+                                duration_ms: 1.0,
+                            })
+                        }
+                    });
+                    if admitted.is_ok() {
+                        torn.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                }
+            });
+            for _ in 0..200_000 {
+                if torn.load(Ordering::Relaxed) {
+                    break;
+                }
+                // The state after a cut: the sugar is in flight and the last pulse is over.
+                {
+                    let mut state = queue.lock();
+                    state.queued.clear();
+                    state.in_flight = vec![in_flight.clone()];
+                    state.set_remaining(&agent, Some(0.0));
+                }
+                queue.commit(
+                    vec![in_flight.clone()],
+                    AdmissionEnd::Applied { boundary: 1 },
+                    &[(agent.clone(), Some(400.0))],
+                );
+            }
+            stop.store(true, Ordering::Relaxed);
+        });
+        assert!(
+            !torn.load(Ordering::Relaxed),
+            "a sugar was admitted into a live pulse in the commit's window"
+        );
     }
 }

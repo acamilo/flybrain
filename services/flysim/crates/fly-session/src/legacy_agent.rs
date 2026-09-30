@@ -312,6 +312,43 @@ pub fn encode_payload(
     encode_envelope(PAYLOAD_MAGIC, &manifest, &chunks.chunks).map_err(|e| e.to_string())
 }
 
+/// A capture's inputs, copied at the boundary so the encoding can run off the endpoint's lock.
+struct CaptureSnapshot {
+    state: AgentState,
+    agent_id: Id,
+    checkpoint_id: Id,
+    scope: Scope,
+    committed_step: u64,
+    profile: AssetRef,
+    seed: i32,
+    reinforcements: u64,
+    macro_channels: Vec<String>,
+    accumulator: TickAccumulator,
+    context: TypedValue,
+}
+
+impl CaptureSnapshot {
+    fn encode(&self) -> DomainResult<Vec<u8>> {
+        encode_payload(
+            &self.state,
+            &PayloadIdentity {
+                agent_id: &self.agent_id,
+                checkpoint_id: &self.checkpoint_id,
+                source_scope: &self.scope,
+                committed_step: self.committed_step,
+                profile: &self.profile,
+                seed: self.seed,
+                reinforcements: self.reinforcements,
+                macro_channels: &self.macro_channels,
+            },
+            &self.accumulator,
+            &self.context,
+            None,
+        )
+        .map_err(|e| DomainError::new(ErrorCode::Internal, e, MutationCertainty::None))
+    }
+}
+
 /// The reinforcement calls a `FLYAGT01` capture payload records (`learning.updates`).
 pub fn decode_payload_reinforcements(bytes: &[u8]) -> Result<u64, String> {
     let parts = decode_envelope(bytes, PAYLOAD_MAGIC)
@@ -1005,7 +1042,9 @@ impl LegacyAgentWorker {
         let brain_ticks = accumulator.brain_ticks();
         let remainder = accumulator.remainder();
         self.transition_start_ms = agent.network.ms;
+        let ticks_span = crate::profile::span("agent.ticks");
         agent.network.step(ticks);
+        drop(ticks_span);
         if agent.network.ms != brain_ticks as f64 {
             return Err(applied(
                 ErrorCode::Internal,
@@ -1110,7 +1149,9 @@ impl LegacyAgentWorker {
         }
         let context = self.read_context(&params.next_decision_context)?;
         // The complete request and its owned artifact are validated before anything applies.
+        let read_span = crate::profile::span("agent.read_lcd");
         let frame = self.read_lcd(ctx, &params.next_input).await?;
+        drop(read_span);
 
         self.status.set_state(WorkerState::Committing);
         let agent = self.agent.as_mut().expect("initialized");
@@ -1139,7 +1180,9 @@ impl LegacyAgentWorker {
             self.transient.location = Some(location);
             self.transient.blocked_since_ms = ms;
         }
+        let spikes_span = crate::profile::span("agent.spikes");
         let spikes = spike_bitset(&agent.network.last_spike_ms, self.transition_start_ms, ms);
+        drop(spikes_span);
         // 4. Retain the next context and acknowledge k+1.
         let digest = context.digest.clone();
         self.context = Some(context);
@@ -1152,6 +1195,7 @@ impl LegacyAgentWorker {
             decision_context_digest: digest,
             telemetry: self.telemetry(),
         };
+        let _seal_span = crate::profile::span("agent.seal_spikes");
         let artifact = crate::media::seal_copy(ctx.client, SPIKES_CONTENT_TYPE.to_owned(), &spikes)
             .await
             .map_err(|e| applied(e.code, e.message))?;
@@ -1273,7 +1317,8 @@ impl LegacyAgentWorker {
     /// The capture payload: `agent_to_chunks` in a checkpoint envelope, plus a `session`
     /// manifest member with the accumulator, the context and the identities. The readout
     /// transient is not in it (`legacy-transient-reset`).
-    fn payload(&self, checkpoint_id: &Id, scope: &Scope, k: u64) -> DomainResult<Vec<u8>> {
+    /// Everything a capture payload is encoded from, copied out of the live agent.
+    fn snapshot(&self, checkpoint_id: &Id, scope: &Scope, k: u64) -> DomainResult<CaptureSnapshot> {
         let agent = self.agent.as_ref().expect("initialized");
         let accumulator = self.accumulator.as_ref().expect("initialized");
         let context = self.context.as_ref().expect("initialized");
@@ -1281,23 +1326,19 @@ impl LegacyAgentWorker {
         // The session owns the frame remainder, as the legacy loop does (`Sim::checkpoint`).
         state.remainder = rational_remainder_to_legacy(&accumulator.remainder())
             .map_err(|e| DomainError::new(ErrorCode::Internal, e, MutationCertainty::None))?;
-        encode_payload(
-            &state,
-            &PayloadIdentity {
-                agent_id: &self.config.agent_id,
-                checkpoint_id,
-                source_scope: scope,
-                committed_step: k,
-                profile: &self.profile.asset,
-                seed: self.seed,
-                reinforcements: self.reinforcements,
-                macro_channels: &self.config.macro_channels,
-            },
-            accumulator,
-            &context.typed,
-            None,
-        )
-        .map_err(|e| DomainError::new(ErrorCode::Internal, e, MutationCertainty::None))
+        Ok(CaptureSnapshot {
+            state,
+            agent_id: self.config.agent_id.clone(),
+            checkpoint_id: checkpoint_id.clone(),
+            scope: scope.clone(),
+            committed_step: k,
+            profile: self.profile.asset.clone(),
+            seed: self.seed,
+            reinforcements: self.reinforcements,
+            macro_channels: self.config.macro_channels.clone(),
+            accumulator: accumulator.clone(),
+            context: context.typed.clone(),
+        })
     }
 
     async fn state_capture(&mut self, ctx: &HandlerCtx<'_>) -> DomainResult<HandlerReply> {
@@ -1323,36 +1364,50 @@ impl LegacyAgentWorker {
             ));
         }
         let params: CaptureParams = ctx.params()?;
-        let previous = self.status.state();
-        self.status.set_state(WorkerState::Capturing);
-        let bytes = self.payload(&params.checkpoint_id, &scope, k);
-        let bytes = match bytes {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                self.status.set_state(previous);
-                return Err(e);
-            }
+        // The boundary's state, taken under the endpoint's lock: a copy, as the legacy loop's
+        // `export_state` is. Encoding, digesting and sealing it -- milliseconds on the full
+        // connectome -- run after the lock is released (`HandlerReply::deferred`), so the next
+        // Prepare does not wait for them (TASK-01 review N5).
+        let snapshot = {
+            let _span = crate::profile::span("agent.capture.snapshot");
+            self.snapshot(&params.checkpoint_id, &scope, k)?
         };
-        let digest = digest_of_bytes(&bytes);
-        let artifact = crate::state::seal_payload(ctx.client, &bytes, &digest).await;
-        self.status.set_state(previous);
-        let artifact = artifact?;
         let graph = self.graph.as_ref().expect("initialized");
-        let result = CaptureResult {
-            checkpoint_id: params.checkpoint_id,
-            boundary: k,
-            compatibility_digest: compatibility_digest(
-                &self.config.agent_id,
-                &self.profile.asset,
-                graph,
-                self.seed,
-            ),
-            payload: artifact.reference().clone(),
-        };
-        Ok(HandlerReply::with_artifacts(
-            object(result.to_json()),
-            vec![(crate::state::PAYLOAD_ATTACHMENT.to_owned(), artifact)],
-        ))
+        let compatibility = compatibility_digest(
+            &self.config.agent_id,
+            &self.profile.asset,
+            graph,
+            self.seed,
+        );
+        let client = ctx.client.clone();
+        Ok(HandlerReply::deferred(Box::pin(async move {
+            let bytes = tokio::task::spawn_blocking(move || {
+                let _span = crate::profile::span("agent.capture.encode");
+                let bytes = snapshot.encode()?;
+                let digest = {
+                    let _span = crate::profile::span("agent.capture.digest");
+                    digest_of_bytes(&bytes)
+                };
+                Ok::<_, DomainError>((bytes, digest))
+            })
+            .await
+            .map_err(|e| DomainError::new(ErrorCode::Internal, e.to_string(), MutationCertainty::None))?;
+            let (bytes, digest) = bytes?;
+            let artifact = {
+                let _span = crate::profile::span("agent.capture.seal");
+                crate::state::seal_payload(&client, &bytes, &digest).await?
+            };
+            let result = CaptureResult {
+                checkpoint_id: params.checkpoint_id,
+                boundary: k,
+                compatibility_digest: compatibility,
+                payload: artifact.reference().clone(),
+            };
+            Ok(HandlerReply::with_artifacts(
+                object(result.to_json()),
+                vec![(crate::state::PAYLOAD_ATTACHMENT.to_owned(), artifact)],
+            ))
+        })))
     }
 
     async fn state_stage_restore(&mut self, ctx: &HandlerCtx<'_>) -> DomainResult<HandlerReply> {

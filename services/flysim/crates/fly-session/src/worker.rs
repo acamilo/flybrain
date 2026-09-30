@@ -113,24 +113,39 @@ impl StatusCell {
     }
 }
 
+/// The rest of a reply a handler finishes outside the endpoint's lock.
+pub type DeferredReply =
+    std::pin::Pin<Box<dyn std::future::Future<Output = DomainResult<HandlerReply>> + Send>>;
+
 /// What a handler produced: a domain `result` object and the artifacts it attaches.
 pub struct HandlerReply {
     pub result: Map<String, Value>,
     pub artifacts: Vec<(String, flybus::Artifact)>,
     /// True when a failure left the endpoint mutated; the shell reports it as such.
     pub mutated: bool,
+    /// When set, the reply is this future's: the handler took what it needs from the endpoint
+    /// (a state snapshot at the committed boundary) and the rest -- encoding, digesting and
+    /// sealing a capture payload -- runs after the endpoint's lock is released, so the next
+    /// mutation (the next `Agent.Prepare`) does not wait for it. The bus call is answered
+    /// when it completes, and cached like any other reply.
+    pub deferred: Option<DeferredReply>,
 }
 
 impl HandlerReply {
     pub fn new(result: Map<String, Value>) -> HandlerReply {
-        HandlerReply { result, artifacts: Vec::new(), mutated: true }
+        HandlerReply { result, artifacts: Vec::new(), mutated: true, deferred: None }
     }
 
     pub fn with_artifacts(
         result: Map<String, Value>,
         artifacts: Vec<(String, flybus::Artifact)>,
     ) -> HandlerReply {
-        HandlerReply { result, artifacts, mutated: true }
+        HandlerReply { result, artifacts, mutated: true, deferred: None }
+    }
+
+    /// A reply finished by `rest` outside the endpoint's lock ([`HandlerReply::deferred`]).
+    pub fn deferred(rest: DeferredReply) -> HandlerReply {
+        HandlerReply { result: Map::new(), artifacts: Vec::new(), mutated: true, deferred: Some(rest) }
     }
 
     /// The canonical JSON of one method result.
@@ -304,6 +319,7 @@ async fn run<E: WorkerEndpoint>(
         )
     };
     let mut running: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let order = Arc::new(LockOrder::default());
     while let Some(incoming) = service.next().await {
         let method = incoming.method().to_owned();
         let responder = incoming.responder();
@@ -491,9 +507,12 @@ async fn run<E: WorkerEndpoint>(
         // original bus call still completes normally. The endpoint mutex, not this loop,
         // enforces one mutation at a time.
         running.retain(|task| !task.is_finished());
+        let ticket = order.issue();
         running.push(tokio::spawn(execute(
             client.clone(),
             endpoint.clone(),
+            order.clone(),
+            ticket,
             cache.clone(),
             status.clone(),
             worker_id.clone(),
@@ -512,11 +531,73 @@ async fn run<E: WorkerEndpoint>(
     }
 }
 
+/// Admitted mutations take the endpoint's lock in the order they arrived.
+///
+/// Each runs in a task of its own, so the shell keeps reading, and tasks are not scheduled in
+/// spawn order: without this, a `State.Capture` followed on the wire by the next
+/// `Agent.Prepare` could find the agent already prepared. A ticket per admitted mutation, taken
+/// in arrival order, and the lock taken only on the ticket's turn keep the wire's order.
+#[derive(Default)]
+struct LockOrder {
+    issued: std::sync::atomic::AtomicU64,
+    turn: std::sync::atomic::AtomicU64,
+    changed: tokio::sync::Notify,
+}
+
+impl LockOrder {
+    fn issue(&self) -> u64 {
+        self.issued.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    async fn lock_in_turn<'a, E>(
+        &self,
+        ticket: u64,
+        endpoint: &'a tokio::sync::Mutex<E>,
+    ) -> tokio::sync::MutexGuard<'a, E> {
+        loop {
+            let changed = self.changed.notified();
+            if self.turn.load(std::sync::atomic::Ordering::SeqCst) == ticket {
+                break;
+            }
+            changed.await;
+        }
+        // Queue on the lock first, then hand the turn on: the next ticket queues behind this
+        // one on the (fair) mutex.
+        let lock = endpoint.lock();
+        tokio::pin!(lock);
+        let guard = match futures_poll_once(lock.as_mut()).await {
+            Some(guard) => guard,
+            None => {
+                self.advance();
+                return lock.await;
+            }
+        };
+        self.advance();
+        guard
+    }
+
+    fn advance(&self) {
+        self.turn.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.changed.notify_waiters();
+    }
+}
+
+/// Polls a future once: its output if it is ready, else `None` with the future registered.
+async fn futures_poll_once<F: std::future::Future + Unpin>(mut f: F) -> Option<F::Output> {
+    std::future::poll_fn(|cx| match std::pin::Pin::new(&mut f).poll(cx) {
+        std::task::Poll::Ready(v) => std::task::Poll::Ready(Some(v)),
+        std::task::Poll::Pending => std::task::Poll::Ready(None),
+    })
+    .await
+}
+
 /// Runs one admitted mutation, records its reply and answers the bus call.
 #[allow(clippy::too_many_arguments)]
 async fn execute<E: WorkerEndpoint>(
     client: flybus::Client,
     endpoint: Arc<tokio::sync::Mutex<E>>,
+    order: Arc<LockOrder>,
+    ticket: u64,
     cache: Arc<tokio::sync::Mutex<ResultCache>>,
     status: StatusCell,
     worker_id: Id,
@@ -533,7 +614,7 @@ async fn execute<E: WorkerEndpoint>(
     let outcome = {
         // One mutation at a time: the endpoint mutex is the worker's simulation lock, and it is
         // never held across a bus round trip taken by anything else.
-        let mut e = endpoint.lock().await;
+        let mut e = order.lock_in_turn(ticket, &endpoint).await;
         let ctx = HandlerCtx {
             method: &method,
             request: &request,
@@ -542,16 +623,34 @@ async fn execute<E: WorkerEndpoint>(
         };
         e.handle(ctx).await
     };
+    // A deferred reply finishes here, with the endpoint's lock released.
+    let outcome = match outcome {
+        Ok(HandlerReply { deferred: Some(rest), .. }) => rest.await,
+        other => other,
+    };
     match outcome {
         Ok(reply) => {
             let outcome = success(&request, &worker_id, &incarnation_id, reply.result.clone());
-            let mut holds = Vec::with_capacity(reply.artifacts.len());
-            for (name, artifact) in &reply.artifacts {
-                // The cache owns its own hold, so a replay survives the first caller
-                // consuming its delivery.
-                match artifact.retain().await {
-                    Ok(hold) => holds.push((name.clone(), hold)),
-                    Err(_) => holds.push((name.clone(), artifact.clone())),
+            // The cache owns its own hold on every artifact, so a replay survives the first
+            // caller consuming its delivery. The holds are independent router round trips, so
+            // they are taken concurrently.
+            let retains: Vec<_> = reply
+                .artifacts
+                .iter()
+                .map(|(name, artifact)| {
+                    let (name, artifact) = (name.clone(), artifact.clone());
+                    tokio::spawn(async move {
+                        match artifact.retain().await {
+                            Ok(hold) => (name, hold),
+                            Err(_) => (name, artifact),
+                        }
+                    })
+                })
+                .collect();
+            let mut holds = Vec::with_capacity(retains.len());
+            for retain in retains {
+                if let Ok(pair) = retain.await {
+                    holds.push(pair);
                 }
             }
             let cached = CachedReply::with_artifacts(outcome.clone(), holds);

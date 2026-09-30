@@ -69,8 +69,35 @@ pub async fn call(
     request_id: DomainRequestId,
     want_artifacts: &[String],
 ) -> Result<DomainReply, DomainError> {
+    send(bus, target, method, scope, params, attachments, request_id, want_artifacts)
+        .await?
+        .finish()
+        .await
+}
+
+/// A domain call that has been sent and not yet answered: the bus has it in order, so a call
+/// sent after it to the same worker is dispatched after it.
+pub struct SentCall {
+    method: String,
+    pending: flybus::PendingCall,
+    request_id: DomainRequestId,
+    want_artifacts: Vec<String>,
+}
+
+/// Sends one domain call without waiting for its reply ([`SentCall::finish`] waits).
+#[allow(clippy::too_many_arguments)]
+pub async fn send(
+    bus: &flybus::Client,
+    target: &WorkerRef,
+    method: &str,
+    scope: Option<Scope>,
+    params: Map<String, Value>,
+    attachments: &[(&str, &flybus::Artifact)],
+    request_id: DomainRequestId,
+    want_artifacts: &[String],
+) -> Result<SentCall, DomainError> {
     let request = SessionRpcRequest { request_id: request_id.clone(), scope, params: Value::Object(params) };
-    let mut pending = bus
+    let pending = bus
         .call(
             &target.service,
             Some(&target.bus_incarnation),
@@ -80,26 +107,49 @@ pub async fn call(
         )
         .await
         .map_err(|e| bus_error(method, &e))?;
-    let result = pending.result().await.map_err(|e| bus_error(method, &e))?;
-    let outcome = SessionRpcOutcome::from_json(&Value::Object(result.outcome().clone()))
-        .map_err(|e| DomainError::invalid(format!("{method}: {e}")))?;
-    let mut artifacts = BTreeMap::new();
-    for name in want_artifacts {
-        if let Ok(artifact) = result.artifact(name) {
-            // An independent explicit hold, so the handle outlives this delivery and can be
-            // forwarded to several Commit calls and to publication.
-            match artifact.retain().await {
-                Ok(hold) => {
-                    artifacts.insert(name.clone(), hold);
-                }
-                Err(_) => {
-                    artifacts.insert(name.clone(), artifact);
-                }
+    Ok(SentCall {
+        method: method.to_owned(),
+        pending,
+        request_id,
+        want_artifacts: want_artifacts.to_vec(),
+    })
+}
+
+impl SentCall {
+    /// Waits for the terminal reply.
+    pub async fn finish(mut self) -> Result<DomainReply, DomainError> {
+        let method = self.method.as_str();
+        let result = self.pending.result().await.map_err(|e| bus_error(method, &e))?;
+        let outcome = SessionRpcOutcome::from_json(&Value::Object(result.outcome().clone()))
+            .map_err(|e| DomainError::invalid(format!("{method}: {e}")))?;
+        // An independent explicit hold on each wanted attachment, so the handle outlives this
+        // delivery and can be forwarded to several Commit calls and to publication. The holds
+        // are independent router round trips, so they are taken concurrently.
+        let wanted: Vec<(String, flybus::Artifact)> = self
+            .want_artifacts
+            .iter()
+            .filter_map(|name| result.artifact(name).ok().map(|a| (name.clone(), a)))
+            .collect();
+        let retains: Vec<_> = wanted
+            .into_iter()
+            .map(|(name, artifact)| {
+                tokio::spawn(async move {
+                    match artifact.retain().await {
+                        Ok(hold) => (name, hold),
+                        Err(_) => (name, artifact),
+                    }
+                })
+            })
+            .collect();
+        let mut artifacts = BTreeMap::new();
+        for retain in retains {
+            if let Ok((name, artifact)) = retain.await {
+                artifacts.insert(name, artifact);
             }
         }
+        drop(result);
+        Ok(DomainReply { outcome, request_id: self.request_id, artifacts })
     }
-    drop(result);
-    Ok(DomainReply { outcome, request_id, artifacts })
 }
 
 /// Maps a bus failure onto a domain error, preserving how certain the mutation is.
