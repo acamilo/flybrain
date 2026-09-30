@@ -338,6 +338,33 @@ fn a_forced_switch_is_the_party_list_that_cannot_be_cancelled() {
     assert!(cursor(&mut wram).cancellable());
 }
 
+/// Row 70: `EnemySendOut`'s SHIFT-style offer ("Will ZUBAT change POKéMON?", YES) opens the party
+/// list with BATTLE_PARTY_MENU, the value `ChooseNextMon` uses. Read as a forced switch, its pad was
+/// `SWITCH, NEXT`; with the only other Pokémon fainted `SWITCH` had no one to switch to, and
+/// `NEXT`'s A on the cursor (parked on the Pokémon already out) printed "ZUBAT is already out!" and
+/// reopened the list: 58 brain minutes live in Mt. Moon. The offer is told apart by the one thing a
+/// faint changes, the active battler's HP, and its pad is the party list's own answers.
+#[test]
+fn the_shift_offers_party_list_is_the_flys_turn_and_its_way_out_is_back() {
+    use crate::pokemon_red::macros::palette::{MacroKind, scene_set};
+    let mut wram = Wram::overworld();
+    wram.party_mon(0, 179, 19, 0, 58, 0, &[(33, 35), (39, 14), (145, 26), (55, 25)]);
+    wram.party_mon(1, 107, 8, 24, 26, 0, &[(141, 13)]);
+    wram.battle_mon(1, 107, 8, 24, 26, 0, &[(141, 13)])
+        .enemy_mon(188, 11, 33, 33)
+        .battle(2)
+        .shift_offer_list(1);
+
+    let fight = battle(&mut wram).unwrap();
+    assert_eq!(fight.menu, BattleMenu::Party { cursor: 1 });
+    assert!(!fight.forced_switch, "the offer is not a faint");
+    assert!(fight.own_turn);
+    let scene = crate::pokemon_red::scene::detect(&mut wram);
+    let dealt = scene_set(scene, &mut PokeState::new(&mut wram));
+    assert!(dealt.contains(&MacroKind::Back), "B declines the offer: {dealt:?}");
+    assert!(!dealt.contains(&MacroKind::Next), "NEXT's A on the Pokémon already out is the ring: {dealt:?}");
+}
+
 /// Section 12.10: **a battle frame with a cursor accepting input is the fly's turn.**
 ///
 /// The four menus a battle waits on are the top-level one, the move list, the party list and the

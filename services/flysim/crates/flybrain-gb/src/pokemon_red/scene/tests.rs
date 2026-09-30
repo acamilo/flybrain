@@ -185,6 +185,14 @@ fn the_party_list_a_fainted_mon_forces_is_a_forced_switch() {
     wram.party_list(0, true);
     assert_eq!(detect(&mut wram), Scene::Battle { own_turn: false, forced_switch: true });
 
+    // Row 70: the same BATTLE_PARTY_MENU list with the active Pokémon standing is the SHIFT
+    // style's offer before a trainer's next Pokémon ("Will <mon> change POKéMON?", YES). B
+    // declines it, so it is the fly's turn, not a forced switch.
+    let mut wram = battle_frame(2);
+    wram.party_mon(1, 16, 8, 24, 24, 0, &[(33, 35)]);
+    wram.shift_offer_list(0);
+    assert_eq!(detect(&mut wram), Scene::Battle { own_turn: true, forced_switch: false });
+
     // The same list opened from the menu's PKMN entry is not forced: it sets NORMAL_PARTY_MENU
     // and it watches B, so the player can back out — and it is an ordinary part of the fly's turn,
     // because the game is waiting for it to choose.

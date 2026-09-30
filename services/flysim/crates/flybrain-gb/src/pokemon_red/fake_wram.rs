@@ -337,16 +337,29 @@ impl Wram {
             .screen_tile(poke::MOVE_LIST_JOIN, top, poke::frame::BOTTOM_RIGHT)
     }
 
-    /// The party list. `forced` is the state `ChooseNextMon` leaves: A only, no way out.
+    /// The party list. `forced` is the state `ChooseNextMon` leaves: A only, no way out, and the
+    /// battler that fainted at 0 HP (the only way the game reaches that list).
     pub fn party_list(&mut self, current: u8, forced: bool) -> &mut Self {
         let count = self.peek(ram::wPartyCount).max(1);
         let keys = if forced { poke::pad::A } else { poke::pad::A | poke::pad::B };
+        if forced {
+            self.set(ram::wBattleMonHP, 0).set(ram::wBattleMonHP + 1, 0);
+        }
         self.set(
             ram::wPartyMenuTypeOrMessageID,
             if forced { poke::BATTLE_PARTY_MENU } else { 0 },
         )
         .set(ram::wFontLoaded, poke::BIT_FONT_LOADED)
         .cursor(1, 0, current, count - 1, keys)
+    }
+
+    /// The party list the SHIFT style's "Will <mon> change POKéMON?" opens on YES (row 70):
+    /// BATTLE_PARTY_MENU like `ChooseNextMon`'s, but with the battler standing, and B declines it.
+    pub fn shift_offer_list(&mut self, current: u8) -> &mut Self {
+        let count = self.peek(ram::wPartyCount).max(1);
+        self.set(ram::wPartyMenuTypeOrMessageID, poke::BATTLE_PARTY_MENU)
+            .set(ram::wFontLoaded, poke::BIT_FONT_LOADED)
+            .cursor(1, 0, current, count - 1, poke::pad::A | poke::pad::B)
     }
 
     /// Money, as three bytes of big-endian BCD.

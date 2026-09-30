@@ -3592,3 +3592,40 @@ survey cannot say which.
 **Status: shipped as the operator decided, not a fix.** The trap is still possible under it: one of
 three `v8` starts never won. Row 67's watchdog check 10 (`unwon-battles`, on its branch) is the
 detector, and the pad rule the operator declined is the lever that still exists.
+
+## 2026-09-30, row 70: Mt. Moon, the SHIFT offer's party list, and the ladder that took the catch
+
+### What was live
+
+On v0.7.0 with adapter v8, the ladder reset the run to rung 11 at 16:54Z. The rung-11 archive
+replayed deterministically: Route 3's trainers, Mt. Moon (rung 12) at 17:40, a Poké Ball bought,
+thrown, and a Zubat caught at 17:47 (`OWNED #41`, `CAUGHT #107`). At 17:52 a Lass's battle on 1F
+started. From then on the log was `NEXT start/done` every 0.8 brain seconds and nothing else: no
+reward and no other macro for 58 brain minutes. Check 10 flagged `dominant`/`sequence` (`NEXT`
+100%). At 18:50 the ladder, at level 2 since the 16:54 reset, reset the run to rung 11 again and
+erased the catch. The replay after that reset matched the one before it event for event (the same
+`brainMs`), so it was heading into the same trap at about 19:48.
+
+### Reproduction (durable generation 250877, pulled from the reset's archive)
+
+`wIsInBattle` 2 and the Lass (`wTrainerClass` 3), with Oddish beaten and Bellsprout L11 next.
+Wartortle L19 was at 0/58, Zubat L8 at 24/26 and out. The party list was open with
+`wPartyMenuTypeOrMessageID` = BATTLE_PARTY_MENU and the cursor on the Zubat. The screen read
+"ZUBAT is already out!". The seam read `forced_switch`, so the pad was `SWITCH, NEXT`, and `SWITCH`
+had no healthy Pokémon to go to. Driven from the checkpoint on v0.7.0, the pad was `NEXT` on
+6,000 of 6,000 frames: 125 `NEXT` starts, every one "already out" and the list again.
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 70 | the SHIFT style's "Will <mon> change POKéMON?" offer opens the party list with BATTLE_PARTY_MENU, which the seam read as `ChooseNextMon`'s forced switch. Its pad `SWITCH, NEXT` had no B; `NEXT` on the Pokémon already out rings forever | any trainer battle with two or more Pokémon in the party, the fly answering YES (the first catch made it possible) | `the_shift_offers_party_list_is_the_flys_turn_and_its_way_out_is_back`, `row70_the_shift_offers_party_list_is_declined_and_the_battle_goes_on` (`FLY_ROW70_CHECKPOINT`), `row70_the_list_after_a_faint_is_still_a_forced_switch_and_is_answered` (`FLY_ROW70_FORCED_CHECKPOINT`) | **fixed**: forced switch = BATTLE_PARTY_MENU **and** the active battler at 0 HP (`docs/design/macros.md` 12.33). The offer is the fly's turn, and its pad is `SWITCH` (when someone can go out) and `BACK` |
+
+ROM tests on the build box (rom-env sourced):
+
+| test | v0.7.0 | branch |
+| --- | --- | --- |
+| `row70_the_shift_offers_party_list_is_declined_and_the_battle_goes_on` | 6,000 frames in the list, `NEXT` on all of them, `BACK` on none, never left. **Fails** | `BACK` from f3. "LASS sent out BELLSPROUT!", then the fly's turn at f194. Passes |
+| `row70_the_list_after_a_faint_is_still_a_forced_switch_and_is_answered` | passes | 881 forced frames, all read as forced, `SWITCH` on all of them, `BACK` on none. The Zubat goes out, and the fly's turn comes at f1,102. Passes |
+
+The stub reaches row 70 by itself. From the live rung-12 archive (Mt. Moon's mouth, one ball),
+three uniform-stub seeds each catch a Zubat within 4,000 frames and meet the same Lass. There
+Wartortle faints at f27,361, f34,656 and f35,284.
