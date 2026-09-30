@@ -29,10 +29,12 @@
 # The guard (SHADOW-01 review N2, recalibrated by round 2, G1). The live fly does not always run
 # at real time (the release CT has run at a realtime factor of 0.66, and 0.77-0.99 after its cpuset
 # rebalance), so the guard judges the live fly against ITSELF, before the shadow existed:
-#   - `start` first measures a BASELINE over FLY_SHADOW_BASELINE_SECONDS (600): sixty 10-s means
-#     of fly_realtime_factor (their mean and spread) and the lag growth rate of fly_lag_seconds
-#     (seconds of lag per wall second: about 1 - RTF when the loop is behind real time). It
-#     refuses to start on fewer than half the samples running.
+#   - `start` first samples the live fly over FLY_SHADOW_BASELINE_SECONDS (600): sixty 10-s means
+#     of fly_realtime_factor and fly_lag_seconds. The BASELINE is robust: the median RTF, its
+#     spread (1.4826 x the median absolute deviation) and the lag growth rate over the most recent
+#     half (seconds of lag per wall second: about 1 - RTF when the loop is behind real time), so a
+#     step within the window neither sets the baseline nor widens the margin. It refuses to start
+#     on fewer than half the samples running.
 #   - Every 60 s the guard takes one 10-s sample. Over the last 5 samples of the same flysim
 #     process (a restart starts the window again) it compares the mean RTF and the lag growth
 #     rate with the baseline. The margin is max(0.05, 4 x the baseline spread / sqrt(5)), so it
@@ -128,14 +130,22 @@ def rate(samples):
     return max(0.0, (best[-1]["lag"] - best[0]["lag"]) / (best[-1]["t"] - best[0]["t"]))
 
 def baseline(samples):
+    """Robust statistics of the running samples: a step in the live fly within the window (its own
+    warm-up, a load coming or going) must neither set the baseline nor widen the margin, as long
+    as most of the window is on one side of it. The RTF is the median; its spread is 1.4826 x the
+    median absolute deviation, which estimates the standard deviation without the step; the lag
+    growth rate is taken over the most recent half, after any early step."""
     ok = [s for s in samples if running(s)]
     if len(ok) < max(3, len(samples) // 2):
         raise SystemExit("baseline: only %d of %d samples running" % (len(ok), len(samples)))
-    rtf = [s["rtMean"] for s in ok]
-    mean = sum(rtf) / len(rtf)
-    sd = math.sqrt(sum((x - mean) ** 2 for x in rtf) / max(1, len(rtf) - 1))
-    lag_rate = rate(ok)
-    return {"rtfMean": mean, "rtfSd": sd, "lagRate": lag_rate if lag_rate is not None else 0.0,
+    recent = ok[len(ok) // 2:]
+    rtf = sorted(s["rtMean"] for s in ok)
+    median = rtf[len(rtf) // 2] if len(rtf) % 2 else (rtf[len(rtf) // 2 - 1] + rtf[len(rtf) // 2]) / 2
+    dev = sorted(abs(x - median) for x in rtf)
+    mad = dev[len(dev) // 2] if len(dev) % 2 else (dev[len(dev) // 2 - 1] + dev[len(dev) // 2]) / 2
+    sd = 1.4826 * mad
+    lag_rate = rate(recent)
+    return {"rtfMean": median, "rtfSd": sd, "lagRate": lag_rate if lag_rate is not None else 0.0,
             "samples": len(ok), "margin": max(MIN_MARGIN, 4 * sd / math.sqrt(WINDOW))}
 
 def decide(base, state, s):
