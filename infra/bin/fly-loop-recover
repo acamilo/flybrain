@@ -32,6 +32,7 @@ QUIET = 6 * 3600     # this long without a suspected report starts the ladder ov
 HOLD = 3 * 3600      # restart-only spacing while the reset budget is spent
 DAY = 24 * 3600
 MAX_RESETS = 2       # milestone resets per DAY
+AGAIN = 12 * 3600    # after this long the last reset's archive may be restored again (row 70)
 PROTECT = 6 * 3600   # a species owned this recently is not reset away (row 70)
 VETO_LIMIT = 3       # model vetoes of one step before it goes ahead anyway
 MODEL_BUDGET = 90    # seconds across all models in one decision
@@ -235,6 +236,8 @@ def run(now=None, sleep=time.sleep, clock=None):
         state.update(bestRank=rank, level=0)
         state.pop("lastReset", None)
         level = 0
+    if "lastReset" in state and now - state.get("lastResetAt", 0) >= AGAIN:
+        state.pop("lastReset", None)
     last = state.get("lastSuspectedAt")
     if level and last and now - last > QUIET:
         log({"at": now, "event": "ladder-reset", "why": "quiet", "rank": rank})
@@ -288,6 +291,11 @@ def run(now=None, sleep=time.sleep, clock=None):
     resets_left = MAX_RESETS - len(state["resets"])
     action, target = plan(level, rank, state.get("bestRank", 0), resets_left, state.get("lastReset"))
     protected = action == "reset" and now - state.get("speciesAt", -PROTECT) < PROTECT
+    # A reset turned into a restart (protected catch, or the archive just restored) does not climb:
+    # the level keeps its slot for when the window ends, so it never drops a rung deeper (row 70).
+    held_reset = protected or (level and resets_left and action == "restart" and rank is not None
+                               and (rank if level == 1 else max(state.get("bestRank", 0), rank) - 1)
+                               == state.get("lastReset"))
     if protected:
         action, target = "restart", None
     if action == "restart" and level and now - acted < HOLD:
@@ -318,12 +326,12 @@ def run(now=None, sleep=time.sleep, clock=None):
     notice(base, "countdown", now)
     sleep(COUNTDOWN)
     started = int(clock())
-    # Recorded before acting, so a helper killed mid-step has still climbed and spent the reset.
-    state.update(level=level + 1, actedAt=started, lastAction=action, vetoes=0)
+    # Recorded before acting, so a helper killed mid-step has still climbed (unless held) and spent the reset.
+    state.update(level=level if held_reset else level + 1, actedAt=started, lastAction=action, vetoes=0)
     state.pop("observedAt", None)
     if action == "reset":
         state["resets"].append(started)
-        state["lastReset"] = target
+        state.update(lastReset=target, lastResetAt=started)
     write_json(STATE, state)
     notice(base, "acting", started)
     ok = act(action, target)

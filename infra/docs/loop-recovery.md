@@ -25,9 +25,12 @@ a ladder one step per trap that outlives the previous step:
   follows real progress is a new trap, and it starts again from a restart.
 - **Protected catches:** a milestone reset never erases a species owned in the last six hours
   (`PROTECT`, from `window.progress.species`). Within that window the step is a restart, spaced by
-  the hold like a spent budget, and `history.jsonl` records a `protect` event.
+  the hold like a spent budget, and `history.jsonl` records a `protect` event. A reset turned into a
+  restart this way does not climb the ladder: the level keeps its slot and the reset comes, at the
+  same rung, once the window ends. Evolution also counts as a species owned.
 - **No archive twice in a row:** a reset never restores the same archive as the last reset,
-  until a new best rung is reached. A restore is deterministic, so the same archive replays the
+  until a new best rung is reached or twelve hours have passed (`AGAIN`; a trap no restart clears
+  is reset again in bounded time, no later than before this rule). Such a step does not climb. A restore is deterministic, so the same archive replays the
   same run into the same trap. Row 70's second reset to rung 11 matched the first one event for
   event: the same Zubat caught, the same trap an hour later, and the catch erased. That step is
   a restart instead.

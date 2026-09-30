@@ -155,9 +155,29 @@ class RecoveryTests(unittest.TestCase):
     def test_the_last_resets_archive_is_not_restored_again(self):
         acted = T0 - recover.HOLD - 100
         recover.write_json(recover.STATE, {"level": 3, "bestRank": 12, "resets": [acted],
-                                           "actedAt": acted, "lastReset": 11})
+                                           "actedAt": acted, "lastReset": 11, "lastResetAt": acted})
         self.confirm(T0)
         self.assertEqual(self.acts, [("restart", None)])
+
+    def test_a_held_reset_does_not_climb_and_the_marker_expires(self):
+        # protected: the restart keeps the level's slot, so the reset comes at the same rung later
+        owned = T0 - 600
+        recover.write_json(recover.STATE, {"level": 1, "bestRank": 12, "resets": [], "actedAt": 0,
+                                           "speciesAt": owned})
+        self.confirm(T0)
+        self.assertEqual(self.acts, [("restart", None)])
+        self.assertEqual(recover.load(recover.STATE, {}).get("level"), 1)
+        # the archive just restored: same, and the marker is forgotten after AGAIN
+        self.acts.clear()
+        reset_at = T0 - recover.HOLD - 100
+        recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "resets": [reset_at], "actedAt": reset_at,
+                                           "lastReset": 11, "lastResetAt": reset_at})
+        self.confirm(T0 + 1000)
+        self.assertEqual(self.acts, [("restart", None)])
+        self.assertEqual(recover.load(recover.STATE, {}).get("level"), 2)
+        self.acts.clear()
+        self.tick(reset_at + recover.AGAIN + 60)
+        self.assertNotIn("lastReset", recover.load(recover.STATE, {}))
 
     def test_a_reset_records_its_archive_and_a_new_best_rung_forgets_it(self):
         recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "resets": [], "actedAt": 0})
@@ -317,6 +337,99 @@ BUILD = "lif-1ms-f64-v2/pokered-unique8-v7/abc/fly-kc-mbon-rstdp-v2"
 
 
 @unittest.skipIf(recover.os.geteuid() == 0, "the wrapper ignores test overrides as root")
+class ClosedLoopTests(unittest.TestCase):
+    """Row 70 review L1: a trap no restart clears, every reset replaying it exactly (closed loop)."""
+    M = 60
+    R11 = dict(events=[(20, "pokedex"), (21, "trainer"), (35, "trainer"), (44, "area"), (46, "milestone"),
+                       (52, "pokedex")], trap=58, rank_after=[(46, 12)], start_rank=11)
+    R12 = dict(events=[(7, "pokedex")], trap=12, rank_after=[], start_rank=12)
+    R10 = dict(events=[(30, "area"), (60, "milestone"), (90, "milestone"), (100, "pokedex")], trap=110,
+               rank_after=[(60, 11), (90, 12)], start_rank=10)
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        for name, value in (("REPORT", "loop.json"), ("STATE", "s.json"), ("HISTORY", "h.jsonl"),
+                            ("NOTICE", "n.json")):
+            patcher = patch.object(recover, name, root / value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for name, value in (("restorable_rungs", lambda: {9, 10, 11, 12}), ("verdict", lambda report: (None, None))):
+            patcher = patch.object(recover, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.env = patch.dict("os.environ", {}, clear=False)
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        for key in ("FLY_LOOP_ROUTER_URL", "FLY_LOOP_MODELS", "FLY_LOOP_MODEL", "FLY_LOOP_ROUTER_KEY"):
+            recover.os.environ.pop(key, None)
+
+    def simulate(self, archives, hours, species_before=None):
+        """The fly is trapped from T0; returns [(hours, action, target)]. A reset replays its archive."""
+        M = self.M
+        sim = dict(events=[(T0 - species_before * M, "pokedex")] if species_before else [],
+                   rank=12, rank_changes=[], trap_from=T0, now=T0, acts=[])
+
+        def act(action, target):
+            sim["acts"].append((sim["now"], action, target))
+            if action == "reset":
+                a = archives[target]
+                sim["rank"] = a["start_rank"]
+                sim["events"] = [(sim["now"] + o * M, k) for o, k in a["events"]]
+                sim["rank_changes"] = [(sim["now"] + o * M, r) for o, r in a["rank_after"]]
+                sim["trap_from"] = None if a["trap"] is None else sim["now"] + a["trap"] * M
+            return True
+
+        recover.write_json(recover.STATE, {"bestRank": 12, "rank": 12, "level": 0})
+        with patch.object(recover, "act", side_effect=act):
+            t = T0
+            while t < T0 + hours * 3600:
+                for change in list(sim["rank_changes"]):
+                    if change[0] <= t:
+                        sim["rank"] = change[1]
+                        sim["rank_changes"].remove(change)
+                win = [k for at, k in sim["events"] if t - 600 <= at <= t]
+                trapped = sim["trap_from"] is not None and t - sim["trap_from"] >= 600
+                recover.REPORT.write_text(json.dumps({
+                    "at": t, "suspected": 1 if trapped else 0, "action": "none", "reason": "dominant",
+                    "sequence": ["NEXT"], "milestone": {"rank": sim["rank"], "label": "X"}, "map": 59,
+                    "window": {"progress": {
+                        "lasting": sum(k in ("pokedex", "area", "trainer", "badge", "milestone") for k in win),
+                        "species": sum(k == "pokedex" for k in win)}}}))
+                sim["now"] = t + 5
+                recover.run(now=t + 5, sleep=lambda s: None)
+                t += 300
+        return [((at - T0) / 3600, action, target) for at, action, target in sim["acts"]]
+
+    def test_a_restart_proof_trap_is_reset_in_bounded_time_and_again(self):
+        acts = self.simulate({11: self.R11, 12: self.R12, 10: self.R10, 9: self.R10}, 72, species_before=6)
+        resets = [a for a in acts if a[1] == "reset"]
+        # v0.7.0 resets again at 24.75 h; the ladder is no worse, and keeps resetting
+        self.assertTrue(resets and resets[0][0] <= 25, acts)
+        self.assertTrue(len([a for a in resets if a[0] <= 25]) >= 1, acts)
+        self.assertTrue(len(resets) >= 3, acts)
+        gaps = [b[0] - a[0] for a, b in zip(resets, resets[1:])]
+        self.assertTrue(all(g <= 25 for g in gaps), acts)
+        # the first step is a restart; the catch stays protected for 6 h
+        self.assertEqual(acts[0][1], "restart")
+        self.assertTrue(all(a[0] >= 6 - 0.2 for a in resets[:1]), acts)
+
+    def test_the_held_reset_is_the_rung_12_one_not_a_deeper_rung(self):
+        acts = self.simulate({11: self.R11, 12: self.R12, 10: self.R10, 9: self.R10}, 24, species_before=6)
+        self.assertEqual([a[2] for a in acts if a[1] == "reset"][:1], [12], acts)
+
+    def test_a_trap_the_rung_12_archive_escapes_ends_there(self):
+        clean = dict(self.R12, trap=None)
+        acts = self.simulate({11: self.R11, 12: clean, 10: self.R10, 9: self.R10}, 24, species_before=6)
+        self.assertEqual([a[1:] for a in acts if a[1] == "reset"], [("reset", 12)], acts)
+        self.assertEqual(len(acts), 3, acts)
+
+    def test_without_a_catch_the_ladder_resets_early(self):
+        acts = self.simulate({11: self.R11, 12: self.R12, 10: self.R10, 9: self.R10}, 24)
+        self.assertLessEqual(next(a[0] for a in acts if a[1] == "reset"), 1, acts)
+
+
 class WrapperTests(unittest.TestCase):
     """infra/bin/fly-loop-reset against a fake flysim, systemctl, reset tool and archives."""
 
