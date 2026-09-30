@@ -18,7 +18,7 @@
 //! | `--mode in-process\|thread\|process` | `in-process` |
 //! | `--threads N` | `$FLY_SHADOW_THREADS`, else 2: the shadow agent's sweep threads |
 //! | `--required-brain-seconds S` | 10800 |
-//! | `--max-live-lag-seconds S` | 0.5; the shadow pauses 60 s whenever the live `fly_lag_seconds` grew by more than S within 30 s (0 disables) |
+//! | `--lag-guard-margin S` | 0.05 s/s; the shadow pauses 60 s while the live `fly_lag_seconds` grows faster than `fly-shadow-run`'s baseline rate (`<out>/baseline.json`) plus this margin (the baseline's own margin wins), and stops pausing for 10 minutes when a pause did not help (0 disables) |
 //! | `--metrics HOST:PORT` | the live metrics listener |
 //! | `--spool-max-mib N` | 512 |
 //! | `--context N` | 30 transition pairs before a divergence |
@@ -227,7 +227,7 @@ fn run(mut args: Args) {
     let required: f64 = args
         .parsed("--required-brain-seconds")
         .unwrap_or(shadow::REQUIRED_BRAIN_SECONDS);
-    let max_lag: f64 = args.parsed("--max-live-lag-seconds").unwrap_or(0.5);
+    let lag_margin: f64 = args.parsed("--lag-guard-margin").unwrap_or(0.05);
     let metrics = args.value("--metrics").or_else(|| {
         config.control.metrics_bind.map(|addr| {
             if addr.ip().is_unspecified() {
@@ -266,14 +266,17 @@ fn run(mut args: Args) {
             fly_session::legacy_env::DEFAULT_AUDIO_RATE
         ));
     }
-    let lag_guard = (max_lag > 0.0)
+    let baseline_file = out_dir.join("baseline.json");
+    let lag_guard = (lag_margin > 0.0)
         .then_some(())
         .and(metrics)
         .map(|metrics_addr| LagGuard {
             metrics_addr,
-            growth_seconds: max_lag,
-            window: Duration::from_secs(30),
+            baseline_file: Some(baseline_file),
+            margin: lag_margin,
+            window: Duration::from_secs(60),
             back_off: Duration::from_secs(60),
+            suppress: Duration::from_secs(600),
         });
     let shadow_config = ShadowConfig {
         trace_dir,

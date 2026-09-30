@@ -18,7 +18,7 @@
 #   --bin DIR               flysim, fly-shadow (and fly-session for --mode process); default
 #                           $CARGO_TARGET_DIR/release or services/flysim/target/release
 #   --port N                first of three local ports (default 17400)
-#   --guard S               the shadow's --max-live-lag-seconds against the live metrics (0.5, as
+#   --guard S               the shadow's --lag-guard-margin against the live metrics (0.05, as
 #                           on the container; 0 disables)
 #
 # Environment: FLY_ROM (required); FLYSIM_PATHS_DATASET (default data/fafb-v783);
@@ -31,7 +31,7 @@ set -euo pipefail
 die() { echo "shadow-rehearsal: $*" >&2; exit 2; }
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 checkpoint=""; brain_minutes=30; restart_at=""; sugar_every=20; speed=0; live_threads=3
-mode=in-process; threads=2; ledgers=1; out=""; bin=""; port=17400; guard=0.5
+mode=in-process; threads=2; ledgers=1; out=""; bin=""; port=17400; guard=0.05
 while [ $# -gt 0 ]; do
     case "$1" in
         --checkpoint) checkpoint="$2"; shift 2 ;;
@@ -99,7 +99,7 @@ stop_live() {
 
 wall0=$(date +%s.%N)
 "$bin/fly-shadow" run --out "$shadow_dir" --trace-dir "$live/trace" --all-files --keep-traces --keep-spool \
-    --mode "$mode" --threads "$threads" --max-live-lag-seconds "$guard" \
+    --mode "$mode" --threads "$threads" --lag-guard-margin "$guard" \
     --required-brain-seconds "$((brain_minutes * 60))" > "$out/shadow.log" 2>&1 &
 shadow_pid=$!
 # flysim starts no trace without the shadow's heartbeat.

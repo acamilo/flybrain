@@ -107,38 +107,162 @@ pub struct ShadowConfig {
     pub release: String,
 }
 
-/// The back-off that keeps the shadow from costing the live fly real time.
+/// The back-off that keeps the shadow from costing the live fly real time, judged against the
+/// live fly's own pace before the shadow existed (SHADOW-01 review round 2, G1).
 ///
-/// flysim's `fly_lag_seconds` is the *accumulated* pacing shortfall of the process: it never
-/// recovers, and it grows only when the loop fell more than a second behind its schedule
-/// (`pacing::MAX_CATCHUP`). So the signal is its growth, not its value: when it has grown by more
-/// than `growth_seconds` within the last `window`, the shadow pauses between frames for
-/// `back_off`, and again for as long as the growth continues. A metrics listener that cannot be
-/// read never pauses the shadow (the guard is a backstop; the unit's `SCHED_IDLE` is the plan).
+/// flysim's `fly_lag_seconds` is the accumulated pacing shortfall of the process: it grows, in
+/// chunks of more than a second, whenever the loop runs behind real time, and a fly that runs at a
+/// realtime factor of 0.7 grows it by about 0.3 s every second whatever the shadow does. So the
+/// signal is the lag *growth rate* against the baseline rate `fly-shadow-run start` measured
+/// before the shadow started (`baseline.json`: `lagRate`, `margin`; 0 and `margin` when there is
+/// none). See [`LagJudge`] for the rule, which lifts the back-off when pausing the shadow does not
+/// help: then the shadow is not the cause, and the host guard (`fly-shadow-run guard`) is what
+/// acts on a lasting degradation. A metrics listener that cannot be read never pauses the shadow.
 #[derive(Clone, Debug)]
 pub struct LagGuard {
     /// `host:port` of the live metrics listener.
     pub metrics_addr: String,
-    pub growth_seconds: f64,
+    /// `fly-shadow-run`'s baseline, re-read every poll when it exists.
+    pub baseline_file: Option<PathBuf>,
+    /// The allowed rise of the lag growth rate (s/s) when no baseline gives one.
+    pub margin: f64,
+    /// The span the growth rate is measured over.
     pub window: Duration,
     pub back_off: Duration,
+    /// How long back-offs stay off after one that did not help.
+    pub suppress: Duration,
 }
 
-/// Whether the live lag grew by more than `growth` seconds within `window` of the newest sample.
-/// Samples are `(when, fly_lag_seconds)`, oldest first; a restart (the value falling) is growth
-/// from zero.
-pub fn lag_grew(samples: &VecDeque<(Instant, f64)>, window: Duration, growth: f64) -> bool {
-    let Some(&(newest_at, newest)) = samples.back() else {
-        return false;
-    };
-    let mut floor = newest;
-    for &(at, value) in samples.iter().rev() {
-        if newest_at.duration_since(at) > window {
-            break;
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum JudgeMode {
+    Normal,
+    /// Paused until `until`; the lag and time when the pause began.
+    BackingOff {
+        until: Instant,
+        from: (Instant, f64),
+    },
+    Suppressed {
+        until: Instant,
+    },
+}
+
+/// The in-shadow back-off rule, fed `(now, fly_lag_seconds)` every poll:
+///
+/// - *Normal*: when the lag has grown faster than `base_rate + margin` over the last `window`,
+///   pause the shadow for `back_off`.
+/// - *At the end of a pause*: if the live lag kept growing faster than that while the shadow was
+///   paused, the shadow is not the cause: no back-off for `suppress`. Otherwise back to normal,
+///   with a fresh window.
+/// - A new flysim process (the lag falls) starts the window again.
+#[derive(Clone, Debug)]
+pub struct LagJudge {
+    pub base_rate: f64,
+    pub margin: f64,
+    window: Duration,
+    back_off: Duration,
+    suppress: Duration,
+    samples: VecDeque<(Instant, f64)>,
+    mode: JudgeMode,
+}
+
+impl LagJudge {
+    pub fn new(
+        base_rate: f64,
+        margin: f64,
+        window: Duration,
+        back_off: Duration,
+        suppress: Duration,
+    ) -> LagJudge {
+        LagJudge {
+            base_rate,
+            margin,
+            window,
+            back_off,
+            suppress,
+            samples: VecDeque::new(),
+            mode: JudgeMode::Normal,
         }
-        floor = floor.min(value);
     }
-    newest - floor > growth
+
+    fn limit(&self) -> f64 {
+        self.base_rate + self.margin
+    }
+
+    /// The growth rate over the last `window`, once the samples span it.
+    fn rate(&self) -> Option<f64> {
+        let &(newest_at, newest) = self.samples.back()?;
+        let &(oldest_at, oldest) = self
+            .samples
+            .iter()
+            .rev()
+            .find(|(at, _)| newest_at.duration_since(*at) >= self.window)?;
+        let dt = newest_at.duration_since(oldest_at).as_secs_f64();
+        (dt > 0.0).then(|| (newest - oldest) / dt)
+    }
+
+    /// Whether the shadow should be paused now.
+    pub fn observe(&mut self, now: Instant, lag: f64) -> bool {
+        if self.samples.back().is_some_and(|&(_, last)| lag < last) {
+            self.samples.clear();
+            if let JudgeMode::BackingOff { until, .. } = self.mode {
+                self.mode = JudgeMode::BackingOff {
+                    until,
+                    from: (now, lag),
+                };
+            }
+        }
+        self.samples.push_back((now, lag));
+        while self
+            .samples
+            .front()
+            .is_some_and(|&(at, _)| now.duration_since(at) > self.window * 3)
+        {
+            self.samples.pop_front();
+        }
+        match self.mode {
+            JudgeMode::Normal => {
+                if self.rate().is_some_and(|rate| rate > self.limit()) {
+                    self.mode = JudgeMode::BackingOff {
+                        until: now + self.back_off,
+                        from: (now, lag),
+                    };
+                    return true;
+                }
+                false
+            }
+            JudgeMode::BackingOff { until, from } => {
+                if now < until {
+                    return true;
+                }
+                let dt = now.duration_since(from.0).as_secs_f64();
+                let during = if dt > 0.0 { (lag - from.1) / dt } else { 0.0 };
+                self.mode = if during > self.limit() {
+                    JudgeMode::Suppressed {
+                        until: now + self.suppress,
+                    }
+                } else {
+                    JudgeMode::Normal
+                };
+                self.samples.clear();
+                self.samples.push_back((now, lag));
+                false
+            }
+            JudgeMode::Suppressed { until } => {
+                if now >= until {
+                    self.mode = JudgeMode::Normal;
+                    self.samples.clear();
+                    self.samples.push_back((now, lag));
+                }
+                false
+            }
+        }
+    }
+}
+
+/// `fly-shadow-run`'s baseline: `(lagRate, margin)`.
+pub fn read_baseline(path: &Path) -> Option<(f64, f64)> {
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    Some((v["lagRate"].as_f64()?, v["margin"].as_f64()?))
 }
 
 /// What the poller shares: the last lag read (ms, `u64::MAX` unknown) and whether to back off.
@@ -181,7 +305,7 @@ impl StopFlag {
     }
 }
 
-/// Polls the live `fly_lag_seconds` every two seconds and applies [`LagGuard`].
+/// Polls the live `fly_lag_seconds` every two seconds and applies [`LagJudge`].
 fn spawn_lag_poller(guard: &LagGuard, stop: StopFlag) -> Arc<LagState> {
     let state = Arc::new(LagState {
         lag_ms: AtomicU64::new(u64::MAX),
@@ -192,32 +316,30 @@ fn spawn_lag_poller(guard: &LagGuard, stop: StopFlag) -> Arc<LagState> {
     std::thread::Builder::new()
         .name("fly-shadow-lag".to_owned())
         .spawn(move || {
-            let mut samples: VecDeque<(Instant, f64)> = VecDeque::new();
-            let mut until: Option<Instant> = None;
+            let mut judge = LagJudge::new(
+                0.0,
+                guard.margin,
+                guard.window,
+                guard.back_off,
+                guard.suppress,
+            );
             while !stop.requested() {
-                let now = Instant::now();
-                match read_lag_seconds(&guard.metrics_addr) {
+                if let Some((rate, margin)) = guard.baseline_file.as_deref().and_then(read_baseline)
+                {
+                    judge.base_rate = rate;
+                    judge.margin = margin;
+                }
+                let back_off = match read_lag_seconds(&guard.metrics_addr) {
                     Some(lag) => {
                         out.lag_ms.store((lag * 1000.0) as u64, Ordering::Relaxed);
-                        // A new process starts from zero: forget the old one's samples.
-                        if samples.back().is_some_and(|&(_, last)| lag < last) {
-                            samples.clear();
-                        }
-                        samples.push_back((now, lag));
-                        while samples
-                            .front()
-                            .is_some_and(|&(at, _)| now.duration_since(at) > guard.window * 2)
-                        {
-                            samples.pop_front();
-                        }
-                        if lag_grew(&samples, guard.window, guard.growth_seconds) {
-                            until = Some(now + guard.back_off);
-                        }
+                        judge.observe(Instant::now(), lag)
                     }
-                    None => out.lag_ms.store(u64::MAX, Ordering::Relaxed),
-                }
-                out.back_off
-                    .store(until.is_some_and(|u| now < u), Ordering::Relaxed);
+                    None => {
+                        out.lag_ms.store(u64::MAX, Ordering::Relaxed);
+                        false
+                    }
+                };
+                out.back_off.store(back_off, Ordering::Relaxed);
                 std::thread::sleep(Duration::from_secs(2));
             }
         })
@@ -350,6 +472,7 @@ pub async fn run(config: ShadowConfig, stop: StopFlag) -> Result<(Ended, Verdict
         lag,
         stop,
         last_write: Instant::now() - Duration::from_secs(60),
+        following: None,
     };
     shadow.write();
     let ended = shadow.follow().await;
@@ -388,11 +511,17 @@ struct Shadow {
     stop: StopFlag,
     verdict: Verdict,
     last_write: Instant,
+    /// The file being compared, the bytes and lines of it compared so far.
+    following: Option<(PathBuf, u64, u64)>,
 }
 
 impl Shadow {
     fn write(&mut self) {
         self.verdict.spool_evicted = self.spool.evicted();
+        // Refreshed on every write, backed off or not, so the verdict's catch-up bound is current.
+        if let Some((path, consumed, lines)) = &self.following {
+            self.verdict.lag_transitions = follow::backlog(path, *consumed, *lines);
+        }
         self.verdict.live_lag_seconds = self.lag.as_ref().and_then(|lag| {
             let ms = lag.lag_ms.load(Ordering::Relaxed);
             (ms != u64::MAX).then(|| ms as f64 / 1000.0)
@@ -530,7 +659,6 @@ impl Shadow {
                     )),
                 };
             }
-            self.verdict.lag_transitions = 0;
             self.write_if_due();
             tokio::time::sleep(self.config.poll).await;
         }
@@ -1020,9 +1148,11 @@ impl Shadow {
                 self.spool.set_floor(*generation + 1);
             }
             self.verdict.agreement.count(&behaviour);
-            if self.verdict.agreement.transitions.is_multiple_of(600) {
-                self.verdict.lag_transitions = follower.backlog_lines();
-            }
+            self.following = Some((
+                follower.path().to_owned(),
+                follower.consumed,
+                follower.lines,
+            ));
             self.verdict.brain_ms += behaviour["ticksAdvanced"]
                 .as_str()
                 .and_then(|s| s.parse::<f64>().ok())
@@ -1071,25 +1201,60 @@ mod tests {
         assert_eq!(parse_lag_seconds("fly_lag_seconds_total 3\n"), None);
     }
 
-    #[test]
-    fn the_guard_backs_off_on_growth_not_on_an_old_lag() {
+    /// Feeds a judge 2-s polls for `seconds`, the lag growing at `rate(paused)` s/s; returns the
+    /// fraction of the time the shadow was paused.
+    fn paused_fraction(judge: &mut LagJudge, seconds: u64, rate: impl Fn(bool) -> f64) -> f64 {
         let t0 = Instant::now();
-        let at = |s: u64| t0 + Duration::from_secs(s);
-        let window = Duration::from_secs(30);
-        // An old lag of 40 s that no longer grows: no back-off.
-        let steady: VecDeque<_> = (0..20).map(|i| (at(i * 2), 40.0)).collect();
-        assert!(!lag_grew(&steady, window, 0.5));
-        // It grew by 1.2 s within the window: back off.
-        let mut grew = steady.clone();
-        grew.push_back((at(40), 41.2));
-        assert!(lag_grew(&grew, window, 0.5));
-        // The same growth, but longer ago than the window: no longer.
-        let mut old = grew.clone();
-        for i in 21..45 {
-            old.push_back((at(i * 2), 41.2));
+        let (mut lag, mut paused, mut paused_polls) = (5.0, false, 0u64);
+        for i in 0..seconds / 2 {
+            lag += 2.0 * rate(paused);
+            paused = judge.observe(t0 + Duration::from_secs(i * 2), lag);
+            paused_polls += u64::from(paused);
         }
-        assert!(!lag_grew(&old, window, 0.5));
-        assert!(!lag_grew(&VecDeque::new(), window, 0.5));
+        paused_polls as f64 / (seconds / 2) as f64
+    }
+
+    fn judge(base_rate: f64) -> LagJudge {
+        LagJudge::new(
+            base_rate,
+            0.05,
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+            Duration::from_secs(600),
+        )
+    }
+
+    #[test]
+    fn a_fly_below_real_time_is_judged_against_its_own_pace() {
+        // The release CT at RTF 0.66: 0.34 s of lag every second, before and during the shadow.
+        let mut j = judge(0.34);
+        assert_eq!(paused_fraction(&mut j, 3 * 3600, |_| 0.34), 0.0);
+        // Without a baseline the same fly is paused once, the pause does not help, and the
+        // back-off lifts: at most one minute in eleven.
+        let mut j = judge(0.0);
+        let f = paused_fraction(&mut j, 3 * 3600, |_| 0.34);
+        assert!(f > 0.0 && f < 0.1, "{f}");
+    }
+
+    #[test]
+    fn a_shadow_that_costs_the_fly_time_stays_paused_while_it_would() {
+        // The fly keeps real time while the shadow is paused and loses 0.3 s/s while it runs:
+        // pausing helps, so the judge keeps pausing it, most of the time.
+        let mut j = judge(0.0);
+        let f = paused_fraction(&mut j, 3 * 3600, |paused| if paused { 0.0 } else { 0.3 });
+        assert!(f > 0.4, "{f}");
+    }
+
+    #[test]
+    fn a_restart_starts_the_window_again() {
+        let t0 = Instant::now();
+        let mut j = judge(0.0);
+        for i in 0..40u64 {
+            assert!(!j.observe(t0 + Duration::from_secs(i * 2), 50.0));
+        }
+        // The lag falls to zero (a new process): no rate across the restart.
+        assert!(!j.observe(t0 + Duration::from_secs(82), 0.0));
+        assert!(!j.observe(t0 + Duration::from_secs(84), 0.0));
     }
 
     #[test]

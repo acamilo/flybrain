@@ -43,6 +43,28 @@ pub fn superseded(path: &Path) -> bool {
     matches!(next_file(dir, Some(path)), Ok(Some(_)))
 }
 
+/// About how many live transitions are written but not yet compared: the bytes beyond `consumed`
+/// in `path` and every byte of the newer files, over the mean line length read so far.
+pub fn backlog(path: &Path, consumed: u64, lines: u64) -> u64 {
+    if lines == 0 {
+        return 0;
+    }
+    let mean = (consumed / lines).max(1);
+    let here = std::fs::metadata(path)
+        .map(|m| m.len())
+        .unwrap_or(consumed)
+        .saturating_sub(consumed);
+    let newer: u64 = path
+        .parent()
+        .and_then(|dir| trace_files(dir).ok())
+        .into_iter()
+        .flatten()
+        .filter(|p| p.file_name() > path.file_name())
+        .filter_map(|p| std::fs::metadata(p).ok().map(|m| m.len()))
+        .sum();
+    (here + newer) / mean
+}
+
 /// A reader of one growing file that returns complete lines only.
 pub struct Follower {
     path: PathBuf,
@@ -81,19 +103,6 @@ impl Follower {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         self.lines += 1;
         Ok(Some(line))
-    }
-
-    /// About how many complete lines are written but not yet read: the bytes beyond the reader
-    /// over the mean line length so far.
-    pub fn backlog_lines(&self) -> u64 {
-        let Ok(len) = std::fs::metadata(&self.path).map(|m| m.len()) else {
-            return 0;
-        };
-        if self.lines == 0 {
-            return 0;
-        }
-        let mean = (self.consumed / self.lines).max(1);
-        len.saturating_sub(self.consumed) / mean
     }
 
     /// Bytes of an incomplete last line held back.
@@ -138,5 +147,8 @@ mod tests {
         assert_eq!(next_file(dir.path(), None).unwrap(), Some(a.clone()));
         assert_eq!(next_file(dir.path(), Some(&a)).unwrap(), Some(b.clone()));
         assert_eq!(next_file(dir.path(), Some(&b)).unwrap(), None);
+        // The backlog counts what is left here and everything in newer files.
+        std::fs::write(&b, b"01234567890\n01234567890\n").unwrap();
+        assert_eq!(backlog(&a, follower.consumed, follower.lines), 2);
     }
 }

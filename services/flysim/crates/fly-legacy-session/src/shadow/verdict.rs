@@ -23,7 +23,8 @@
 //! cutting over, every one of these holds; anything else keeps the legacy fly:
 //!
 //! - `format` is `fly-shadow-verdict-v1`, `status` is `pass`, `firstDivergence` is `null`, and
-//!   `compared.brainSeconds` reaches `required.brainSeconds`;
+//!   `compared.brainSeconds` reaches `required.brainSeconds` and never less than the operator's
+//!   10,800 s (`REQUIRED_BRAIN_SECONDS`), whatever window the shadow was run with;
 //! - *the release*: `candidate.release` is the directory `/opt/fly/current` resolves to now,
 //!   every binary in `candidate.binaries` still has its recorded SHA-256 there, and the binary
 //!   being switched to (`flysim-session`, SERVE-01's service) is one of them -- the shadow
@@ -408,9 +409,12 @@ pub fn allows_cutover(
         return Err("the verdict is for another compatibility string".to_owned());
     }
     let compared = verdict["compared"]["brainSeconds"].as_f64().unwrap_or(0.0);
+    // The operator's window is a floor the verdict cannot lower: a shadow run with a shorter
+    // `--required-brain-seconds` (a rehearsal, a test) never arms the cutover.
     let required = verdict["required"]["brainSeconds"]
         .as_f64()
-        .unwrap_or(f64::INFINITY);
+        .unwrap_or(f64::INFINITY)
+        .max(crate::shadow::REQUIRED_BRAIN_SECONDS);
     if compared < required {
         return Err(format!("{compared} of {required} brain seconds compared"));
     }
@@ -544,6 +548,10 @@ mod tests {
             allows_cutover(&pass, "flysim-session", &release, "c", now + 301_000, 300).is_err()
         );
         assert!(ok(&verdict(Status::Pass, 10_799_000.0)).is_err());
+        // A verdict that asked for less than the operator's 3 h never passes the check.
+        let mut short_window = verdict(Status::Pass, 67_000.0);
+        short_window["required"]["brainSeconds"] = json!(60.0);
+        assert!(ok(&short_window).is_err());
         for status in [
             Status::Running,
             Status::Diverged,
