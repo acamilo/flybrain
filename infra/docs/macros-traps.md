@@ -3664,9 +3664,10 @@ trap is in the game state, not the ledgers, so neither a restart nor a replay cl
 
 | # | trap | trigger | test | fix, or why it is left |
 | --- | --- | --- | --- | --- |
-| 70b | the ladder never started over after real progress. A trap after a reset and a rewarded climb back was treated as the old trap outliving its step | a reset, then progress, then any trap | `test_progress_after_the_last_step_starts_the_ladder_over`, `test_progress_while_a_step_settles_does_not_start_the_ladder_over` | **fixed**: `window.progress` in loop.json (report only; `lint.sh` check 10 case 9). Lasting progress more than `SETTLE` after the step returns the ladder to level 0 |
+| 70b | the ladder never started over after real progress. A trap after a reset and a rewarded climb back was treated as the old trap outliving its step | a reset, then progress, then any trap | `test_progress_after_the_last_step_starts_the_ladder_over`, `test_progress_while_a_step_settles_does_not_start_the_ladder_over` | **fixed**: `window.progress` in loop.json (report only; `lint.sh` check 10 case 9). New lasting progress more than `SETTLE` after the step, once a clear probe shows the trap let go, returns the ladder to level 0 (see 70f) |
 | 70c | a reset restored the same archive as the last reset, which replays deterministically into the same trap | level 2 and above, where every step targets the rung below the best | `test_the_last_resets_archive_is_not_restored_again`, `test_a_reset_records_its_archive_and_a_new_best_rung_forgets_it` | **fixed**: that step is a restart |
-| 70d | a reset erased a catch made an hour earlier | any reset after a catch | `test_a_species_owned_recently_is_never_reset_away`, `test_a_probe_that_owns_a_species_starts_the_protection` | **fixed**: within six hours of a species owned, a reset is a restart (held three hours apart) |
+| 70d | a reset erased a catch made an hour earlier | any reset after a catch | `test_a_species_owned_recently_is_never_reset_away`, `test_a_probe_that_owns_a_species_starts_the_protection` | **fixed**: within two hours of a species first owned, a reset is a restart (held three hours apart) |
+| 70f | (review r3) a reset's replay counted as progress. The restored reward ledger pays the archive's areas, trainers, species and rung again, so 70b started the ladder over after every reset, and a replayed catch opened a second protection window. A trap only the rung below escapes took 5.6 h (6.8 h after a catch) to reach it, against 2.1 h in v0.7.0 | a reset whose replay re-earns rewards, then traps | `test_a_replay_that_re_earns_seen_rewards_does_not_start_the_ladder_over`, `test_a_reward_not_seen_before_starts_the_ladder_over_and_a_new_species_is_protected`, `test_a_catch_while_the_fly_stays_flagged_does_not_start_the_ladder_over`, `test_a_trap_only_the_rung_below_escapes_is_reached_promptly`, `test_restarts_are_a_hold_apart_in_every_closed_loop` | **fixed**: `window.progress.keys` names each lasting reward (`lint.sh` check 10 case 9); progress and protection count only names the ladder has not seen (`progressSeen`). 2.1 h (3.3 h after a catch). Restarts stay three hours apart, and a failed reset does not mark its archive |
 | 70e | the B2F wander: `RUN` from every encounter, walks on covered ground, nothing new for 1 h 50 min | Mt. Moon B2F after the Super Nerd | -- | **left, named**: no checkpoint survived. The next occurrence should be pulled before any reset |
 
 Ladder replay of the day (the same logs and the same start state, base against branch):
@@ -3678,5 +3679,11 @@ Ladder replay of the day (the same logs and the same start state, base against b
   - 18:04: the climb after 16:50 started the ladder over.
   - After 18:04, no reset. The Zubat was owned at 17:46 and rung 12 was the last reset's
     archive, so the branch holds to restarts three hours apart.
+
+- **Review r3** (names, from a live-like 00:00 state, then the post-16:54 log with the state carried
+  over): restarts at 01:30, 05:55, 08:55, 11:55 and 15:10, as live; a reset to 12 at 16:50 (the
+  13:54 to 14:20 trainers were new, so the ladder had started over). After 16:54 the Route 3
+  trainers, AREA 59, OWNED #8 and the rung are the replay's and do not count; OWNED #41 (the
+  Zubat, 17:46) is new, so a restart at 18:04 and then the protection hold through 18:54, no reset.
 
 The replay is open loop: the log after 16:50 is what the base's reset produced.

@@ -4,9 +4,10 @@
 Ladder (infra/docs/loop-recovery.md): restart flysim, then reset to the current rung's
 milestone, then to the rung below. It climbs one step per confirmed trap that outlives
 the previous step, and starts over once the fly reaches a new best rung, makes lasting
-progress after the last step, or has been quiet for QUIET seconds. A milestone reset
-never erases a species owned within PROTECT seconds, and never repeats the last reset's
-archive (a restore replays it exactly); either is a restart instead. A router model can
+progress after the last step that it had not made before (a reset's replay re-earns its
+archive's rewards, which is not progress), or has been quiet for QUIET seconds. A milestone reset
+never erases a species first owned within PROTECT seconds, and never repeats the last
+reset's archive (a restore replays it exactly); either is a restart instead. A router model can
 delay a step, never deny it.
 """
 import json
@@ -34,6 +35,7 @@ DAY = 24 * 3600
 MAX_RESETS = 2       # milestone resets per DAY
 AGAIN = 12 * 3600    # after this long the last reset's archive may be restored again (row 70)
 PROTECT = 2 * 3600   # a species owned this recently is not reset away (row 70)
+SEEN = 2000          # lasting-progress names remembered, oldest dropped first (row 70 r3)
 VETO_LIMIT = 3       # model vetoes of one step before it goes ahead anyway
 MODEL_BUDGET = 90    # seconds across all models in one decision
 VERIFY_TIMEOUT = 240
@@ -249,13 +251,40 @@ def run(now=None, sleep=time.sleep, clock=None):
     # a trainer or badge beaten; the watchdog's window.progress). The ladder climbs for a trap that
     # OUTLIVES its last step; one that follows real progress after that step is a new trap and
     # starts again from a restart. A species owned is also kept from a milestone reset for PROTECT.
+    # A new trap means the old one let go: a clear probe more than SETTLE after the step, so a catch
+    # made while the fly stays flagged does not start the ladder over.
+    #
+    # Progress is measured against everything the ladder has seen before, not against the
+    # restored archive (row 70 review r3): a milestone reset restores the reward ledger, so the
+    # replay pays the archive's areas, trainers, species and rungs again, and counting those
+    # started the ladder over after every reset (a rung-12 replay re-earning an area and a
+    # species cost two extra steps and a three-hour hold before the rung below). The watchdog
+    # names each lasting reward (`window.progress.keys`, `kind:label`); only a name not in
+    # `progressSeen` is progress, and only a species not in it is protected (the replayed catch
+    # was the fly's before the reset too, and was protected then). A watchdog without names falls
+    # back to the counts.
     progress = (report.get("window") or {}).get("progress") or {}
-    if type(at) is int and 0 <= now - at <= 600 and type(progress) is dict:
-        if type(progress.get("lasting")) is int and progress["lasting"] > 0:
+    fresh = type(at) is int and 0 <= now - at <= 600
+    if fresh and report.get("suspected") == 0:
+        state["clearAt"] = max(at, state.get("clearAt", 0))
+    if fresh and type(progress) is dict:
+        keys = progress.get("keys")
+        if type(keys) is list:
+            seen = state.get("progressSeen")
+            seen = [key for key in seen if type(key) is str] if type(seen) is list else []
+            known = set(seen)
+            new = [key for key in dict.fromkeys(key for key in keys if type(key) is str) if key not in known]
+            state["progressSeen"] = (seen + new)[-SEEN:]
+            lasting, species = len(new), sum(key.startswith("pokedex:") for key in new)
+        else:
+            lasting, species = (progress.get(name) if type(progress.get(name)) is int else 0
+                                for name in ("lasting", "species"))
+        if lasting > 0:
             state["progressAt"] = max(at, state.get("progressAt", 0))
-        if type(progress.get("species")) is int and progress["species"] > 0:
+        if species > 0:
             state["speciesAt"] = max(at, state.get("speciesAt", 0))
-    if level and state.get("progressAt", 0) > state.get("actedAt", 0) + SETTLE:
+    since = state.get("actedAt", 0) + SETTLE
+    if level and state.get("progressAt", 0) > since and state.get("clearAt", 0) > since:
         log({"at": now, "event": "ladder-reset", "why": "progress since the last step", "rank": rank})
         state["level"] = level = 0
     # The last probe that saw progress (new places, or a higher rung than the last probe), kept across
@@ -297,10 +326,13 @@ def run(now=None, sleep=time.sleep, clock=None):
     held_reset = protected
     if protected:
         action, target = "restart", None
-    if action == "restart" and level and now - acted < HOLD:
+    # Restarts are at least HOLD apart, also when the ladder has started over since the last one.
+    if action == "restart" and (level or state.get("lastAction") == "restart") and now - acted < HOLD:
         write_json(STATE, state)
         if protected:
             return "holding: a species owned within the protection window, next restart after the hold"
+        if not level:
+            return "holding: the last restart was under three hours ago"
         return "holding: no reset to take, next restart after the hold"
     if protected:
         log({"at": now, "event": "protect", "why": "a species owned within the protection window",
@@ -335,6 +367,8 @@ def run(now=None, sleep=time.sleep, clock=None):
     notice(base, "acting", started)
     ok = act(action, target)
     finished = int(clock())
+    if action == "reset" and not ok:
+        state.pop("lastReset", None)  # not known to have been restored, so it may be tried again
     notice(base, "done" if ok else "failed", finished)
     state["actedAt"] = finished
     write_json(STATE, state)

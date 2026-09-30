@@ -2037,6 +2037,15 @@ LPCAT
     else
         fail "check 10: loop.json read back as '${lp_report:-UNREADABLE}' — expected 'unwon-battles 2 3 1'"
     fi
+    # ... and names each once (review r3): a reset's replay pays the same rewards again, and only
+    # the names let the ladder tell them from new ones.
+    lp_expected='pokedex:OWNED #41|area:AREA 59|milestone:Reached MT. MOON'
+    if lp_report="$(jq -e -r '.window.progress.keys | join("|")' "$lp_fixture/run/loop.json" 2>/dev/null)" \
+       && [ "$lp_report" = "$lp_expected" ]; then
+        pass "check 10: loop.json names the window's lasting progress (kind:label) so the ladder can tell a replayed reward from a new one"
+    else
+        fail "check 10: window.progress.keys read back as '${lp_report:-UNREADABLE}' — expected '${lp_expected}'"
+    fi
 
     # The ethos, asserted rather than reviewed: over every case above, check 10
     # restarted nothing. It reports; a human or a review agent decides.

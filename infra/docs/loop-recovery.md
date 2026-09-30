@@ -16,15 +16,25 @@ a ladder one step per trap that outlives the previous step:
   their 10-brain-minute window lies after it. The helper waits that long after every step.
 - **Budget:** at most two milestone resets per 24 hours. With the budget spent the step is a
   restart, at most every three hours, until a reset is free again. The same three-hour spacing applies
-  when a reset level finds no restorable rung and restarts instead.
+  when a reset level finds no restorable rung and restarts instead, and between any two restarts in a
+  row, also when the ladder has started over in between.
 - **Starting over:** the ladder returns to level 0 when the fly reaches a new best rung, after
-  six hours with no suspected report, or when a probe's window shows lasting progress more than
-  20 minutes after the last step (row 70). Lasting progress is the watchdog's `window.progress`:
-  a new rung, a species owned for the first time, a map entered for the first time, or a trainer
-  or badge beaten. The run pays each of these once, so a ring cannot earn them twice. A trap that
-  follows real progress is a new trap, and it starts again from a restart.
-- **Protected catches:** a milestone reset never erases a species owned in the last two hours
-  (`PROTECT`, from `window.progress.species`). Within that window the step is a restart, spaced by
+  six hours with no suspected report, or when the fly makes new lasting progress more than
+  20 minutes after the last step and a clear probe shows the old trap let go (row 70). Lasting
+  progress is the watchdog's `window.progress`: a rung reached, a species owned, a map entered, or
+  a trainer or badge beaten, each named in `window.progress.keys` as `kind:label` (`pokedex:OWNED
+  #41`). A ring cannot earn them twice, but a milestone reset restores the reward ledger, so its
+  replay pays the archive's rewards again. Progress is therefore measured against every name the
+  ladder has seen (`progressSeen` in the state file, the last 2,000), not against the restored
+  archive: a replay re-earning what the run had before the reset is not progress, and the ladder
+  climbs on to the rung below as it did before row 70. A trap that follows new progress is a new
+  trap, and it starts again from a restart. A catch made while the fly stays flagged is not a new
+  trap. With a watchdog that reports no names, the counts are used as before.
+  Names the ladder never saw (before this version was deployed, or while an older one ran) count
+  as new once.
+- **Protected catches:** a milestone reset never erases a species first owned in the last two hours
+  (`PROTECT`, a `pokedex:` name not seen before). A species a reset's replay owns again was the fly's
+  before the reset and was protected then, so it does not open a second window. Within that window the step is a restart, spaced by
   the hold like a spent budget, and `history.jsonl` records a `protect` event. A reset turned into a
   restart this way does not climb the ladder: the level keeps its slot and the reset comes, at the
   same rung, once the window ends. Evolution also counts as a species owned.
@@ -33,7 +43,8 @@ a ladder one step per trap that outlives the previous step:
   is reset again in bounded time, no later than before this rule). Such a step does climb, so the rung below is reached promptly. A restore is deterministic, so the same archive replays the
   same run into the same trap. Row 70's second reset to rung 11 matched the first one event for
   event: the same Zubat caught, the same trap an hour later, and the catch erased. That step is
-  a restart instead.
+  a restart instead. A reset that fails does not mark its archive: it is not known to have been
+  restored, so the next reset may try it again.
 
 A milestone step only uses an archive the running build can restore. `fly-loop-reset --list`
 compares each archive's compatibility string with `flysim --print-compatibility` and accepts an
