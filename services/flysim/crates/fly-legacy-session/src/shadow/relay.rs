@@ -17,6 +17,14 @@
 //! Trace files older than the run (`FLY_SHADOW_RUN_ID` is the start's Unix ms) and saves written
 //! more than a minute before it are not sent: they belong to processes this run never follows.
 //!
+//! **A stalled link.** A writer thread owns the ssh pipe, so the relay never blocks on it: it keeps
+//! ticking, reports itself unhealthy and stops the heartbeat. New saves are still read the moment
+//! they appear and held in memory ([`QUEUE_SAVES`], about 8 minutes of hot saves), because the
+//! container keeps a hot save only about ten seconds; trace bytes wait on disk ([`QUEUE_TRACE`]),
+//! and a newer trace file and the journal are held back until every older file is complete on its
+//! way to the box (the box ends a segment when a newer file appears, and checks each boot header
+//! against the files it has).
+//!
 //! **The heartbeat.** flysim traces only while `<trace dir>/consumer` is fresh. The relay touches
 //! it every 10 s only while it is *healthy*: connected; the box reported within the last 30 s that
 //! the shadow of this run is alive; and the box has acknowledged everything that was on the
@@ -35,8 +43,9 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc;
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -110,10 +119,20 @@ pub enum RelayEnd {
     Diverged,
 }
 
+/// Saves are read and queued for the box while less than this is waiting to be written.
+pub const QUEUE_SAVES: u64 = 256 << 20;
+
+/// Trace bytes (and the journal) are queued only while less than this is waiting.
+pub const QUEUE_TRACE: u64 = 16 << 20;
+
 /// One connection to the box.
 struct Conn {
     child: Child,
-    stdin: BufWriter<ChildStdin>,
+    /// Frames for the writer thread, which owns the pipe; body bytes not yet written; the
+    /// writer's error, once it has one.
+    tx: Option<mpsc::Sender<(Value, Vec<u8>)>>,
+    queued: Arc<AtomicU64>,
+    write_error: Arc<Mutex<Option<String>>>,
     frames: mpsc::Receiver<std::io::Result<Frame>>,
     /// Bytes of each trace file the box has (sent, or reported at the handshake).
     sent: BTreeMap<String, u64>,
@@ -133,16 +152,32 @@ struct Conn {
 }
 
 impl Conn {
-    fn send(&mut self, header: Value, body: &[u8]) -> std::io::Result<()> {
-        remote::write_frame(&mut self.stdin, header, body)?;
-        self.sent_total += body.len() as u64;
+    /// Queues a frame for the writer; never blocks. An error is the writer's (a broken link).
+    fn send(&mut self, header: Value, body: Vec<u8>) -> std::io::Result<()> {
+        if let Some(e) = self.write_error.lock().unwrap_or_else(|p| p.into_inner()).clone() {
+            return Err(std::io::Error::other(e));
+        }
+        let len = body.len() as u64;
+        self.queued.fetch_add(len, Ordering::Relaxed);
+        self.tx
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("closed"))?
+            .send((header, body))
+            .map_err(|_| std::io::Error::other("the writer stopped"))?;
+        self.sent_total += len;
         self.last_frame_sent = Instant::now();
         Ok(())
     }
 
+    /// Body bytes queued and not yet written to the link.
+    fn queued(&self) -> u64 {
+        self.queued.load(Ordering::Relaxed)
+    }
+
     fn close(mut self) {
-        let _ = remote::write_frame(&mut self.stdin, json!({"t": "bye"}), b"");
-        drop(self.stdin);
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send((json!({"t": "bye"}), Vec::new()));
+        }
         let deadline = Instant::now() + Duration::from_secs(3);
         while Instant::now() < deadline {
             if let Ok(Some(_)) = self.child.try_wait() {
@@ -264,6 +299,26 @@ impl Relay {
             .map_err(|e| (format!("{}: {e}", self.config.command[0]), retry))?;
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
+        let (out_tx, outgoing) = mpsc::channel::<(Value, Vec<u8>)>();
+        let queued = Arc::new(AtomicU64::new(0));
+        let write_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        {
+            let (queued, write_error) = (Arc::clone(&queued), Arc::clone(&write_error));
+            std::thread::Builder::new()
+                .name("fly-shadow-relay-write".to_owned())
+                .spawn(move || {
+                    let mut out = BufWriter::with_capacity(1 << 20, stdin);
+                    for (header, body) in outgoing {
+                        if let Err(e) = remote::write_frame(&mut out, header, &body) {
+                            *write_error.lock().unwrap_or_else(|p| p.into_inner()) =
+                                Some(e.to_string());
+                            return;
+                        }
+                        queued.fetch_sub(body.len() as u64, Ordering::Relaxed);
+                    }
+                })
+                .expect("the writer thread starts");
+        }
         let (tx, frames) = mpsc::channel();
         std::thread::Builder::new()
             .name("fly-shadow-relay-read".to_owned())
@@ -294,7 +349,9 @@ impl Relay {
         let now = Instant::now();
         let mut conn = Conn {
             child,
-            stdin: BufWriter::with_capacity(1 << 20, stdin),
+            tx: Some(out_tx),
+            queued,
+            write_error,
             frames,
             sent: BTreeMap::new(),
             acked: BTreeMap::new(),
@@ -314,7 +371,7 @@ impl Relay {
             "binaries": self.config.binaries,
             "env": self.config.env,
         });
-        if let Err(e) = conn.send(hello, b"") {
+        if let Err(e) = conn.send(hello, Vec::new()) {
             conn.close();
             return Err((format!("sending hello: {e}"), retry));
         }
@@ -355,13 +412,14 @@ impl Relay {
             }
         }
         self.absorb_done(&h["done"]);
-        let held: BTreeSet<u64> = h["gens"]
+        // What the box holds, not what this relay once queued: saves queued on a connection that
+        // broke are sent again while they are still on disk.
+        self.sent_gens = h["gens"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(Value::as_u64)
             .collect();
-        self.sent_gens.extend(held);
         Ok(conn)
     }
 
@@ -437,7 +495,8 @@ impl Relay {
                 break Ok(Some(RelayEnd::Diverged));
             }
             if conn.last_frame_sent.elapsed() >= Duration::from_secs(5)
-                && let Err(e) = conn.send(json!({"t": "ping"}), b"")
+                && conn.queued() == 0
+                && let Err(e) = conn.send(json!({"t": "ping"}), Vec::new())
             {
                 break Err(format!("sending: {e}"));
             }
@@ -503,6 +562,9 @@ impl Relay {
                 if self.sent_gens.contains(&generation) {
                     continue;
                 }
+                if conn.queued() >= QUEUE_SAVES {
+                    break;
+                }
                 if let (Some(floor), Some(modified)) = (floor_ms, modified)
                     && modified < floor
                 {
@@ -513,13 +575,18 @@ impl Relay {
                 let Ok(bytes) = std::fs::read(&path) else {
                     continue;
                 };
-                conn.send(json!({"t": "ckpt", "store": store, "gen": generation}), &bytes)?;
+                conn.send(json!({"t": "ckpt", "store": store, "gen": generation}), bytes)?;
                 self.sent_gens.insert(generation);
             }
         }
-        // Trace bytes: list, then read each size.
+        // Trace bytes: list, then read each size. A file that cannot be brought up to date now holds
+        // back every newer file and the journal.
         let files = follow::trace_files(&self.config.trace_dir).unwrap_or_default();
+        let mut complete = true;
         for path in files {
+            if !complete {
+                break;
+            }
             let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
                 continue;
             };
@@ -537,7 +604,7 @@ impl Relay {
             // A new file exists on the box at once, even while flysim's buffer still holds its
             // first bytes: its boot header may reach the box in this very tick (coverage).
             if !conn.sent.contains_key(&name) {
-                conn.send(json!({"t": "trace", "name": name, "offset": 0}), b"")?;
+                conn.send(json!({"t": "trace", "name": name, "offset": 0}), Vec::new())?;
                 conn.sent.insert(name.clone(), 0);
             }
             let mut offset = conn.sent.get(&name).copied().unwrap_or(0);
@@ -549,29 +616,37 @@ impl Relay {
             };
             file.seek(SeekFrom::Start(offset))?;
             while offset < size {
+                if conn.queued() >= QUEUE_TRACE {
+                    complete = false;
+                    break;
+                }
                 let want = (size - offset).min(remote::TRACE_CHUNK) as usize;
                 let mut chunk = vec![0u8; want];
                 file.read_exact(&mut chunk)?;
-                conn.send(
-                    json!({"t": "trace", "name": name, "offset": offset}),
-                    &chunk,
-                )?;
                 self.trace_bytes += chunk.len() as u64;
                 self.trace_lines += chunk.iter().filter(|b| **b == b'\n').count() as u64;
-                offset += chunk.len() as u64;
+                conn.send(json!({"t": "trace", "name": name, "offset": offset}), chunk)?;
+                offset += want as u64;
                 conn.sent.insert(name.clone(), offset);
             }
         }
-        // The journal as read above.
-        for (name, bytes, signature) in journal {
-            conn.send(json!({"t": "journal", "name": name}), &bytes)?;
-            conn.journal_sent.insert(name, signature);
+        // The journal as read above, once every trace file it can name is on its way.
+        if complete {
+            for (name, bytes, signature) in journal {
+                conn.send(json!({"t": "journal", "name": name}), bytes)?;
+                conn.journal_sent.insert(name, signature);
+            }
+            if journal_names != conn.journal_names {
+                conn.send(
+                    json!({"t": "journal-set", "names": journal_names}),
+                    Vec::new(),
+                )?;
+                conn.journal_names = journal_names;
+            }
         }
-        if journal_names != conn.journal_names {
-            conn.send(json!({"t": "journal-set", "names": journal_names}), b"")?;
-            conn.journal_names = journal_names;
-        }
-        // Keep the set of sent generations bounded: nothing below the oldest one still on disk.
+        // Keep the set of sent generations bounded (the newest 2048, about 3 h of hot saves). An
+        // older one still on disk is skipped again by its age, or at worst sent again (harmless:
+        // the ingest rewrites the same file).
         if self.sent_gens.len() > 4096
             && let Some(&oldest) = self.sent_gens.iter().nth(self.sent_gens.len() - 2048)
         {
@@ -707,6 +782,7 @@ impl Relay {
             "remoteWhy": conn.and_then(|c| c.last_status.as_ref()).map(|(_, _, why)| why.clone()),
             "caughtUpSecondsAgo": conn.map(|c| c.caught_up_at.elapsed().as_secs()),
             "sentBytes": conn.map(|c| c.sent_total),
+            "queuedBytes": conn.map(|c| c.queued()),
             "unsyncedBytes": unsynced_bytes,
             "unsyncedTransitions": unsynced,
             "remoteLagTransitions": self.remote_lag,

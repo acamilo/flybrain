@@ -392,6 +392,10 @@ fn the_remote_shadow_follows_through_the_relay_and_fails_closed() {
     wait_for("flysim to stop its trace for want of a consumer", 180, || {
         std::fs::read_to_string(&live_file).is_ok_and(|t| t.contains("\"no-consumer\""))
     });
+    // The relay never blocks on the stalled link: it keeps reporting, and says it is not healthy.
+    wait_for("relay.json to say the stalled relay is not healthy", 60, || {
+        json_of(&container.join("shadow/relay.json"))["healthy"] == false
+    });
     // The sync comes back (a new connection): the box sees the gap.
     Command::new("kill").args(["-KILL", &pid]).status().unwrap();
     let end = relay.join().unwrap().expect("the relay ran");
