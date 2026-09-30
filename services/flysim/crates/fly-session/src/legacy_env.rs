@@ -1015,6 +1015,7 @@ impl LegacyGameboyEnvironment {
     // -- Environment.Advance -----------------------------------------------------------------
 
     async fn advance(&mut self, ctx: &HandlerCtx<'_>) -> DomainResult<HandlerReply> {
+        let _span = crate::profile::span("env.advance.handler");
         let scope = ctx.scope()?.clone();
         let params: AdvanceParams = ctx.params()?;
         let status = self.status.clone();

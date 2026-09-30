@@ -114,6 +114,7 @@ pub async fn send(
             .iter()
             .map(|(name, artifact)| ((*name).to_owned(), (*artifact).clone()))
             .collect();
+        let _span = crate::profile::span("rpc.local.send");
         let pending = lane.send(method, request, attachments).await?;
         return Ok(SentCall {
             method: method.to_owned(),
@@ -152,7 +153,10 @@ impl SentCall {
         let mut pending = match self.pending {
             Pending::Bus(pending) => pending,
             Pending::Local(pending) => {
-                let reply = pending.finish().await.ok_or_else(|| {
+                let wait_span = crate::profile::span("rpc.local.wait");
+                let reply = pending.finish().await;
+                drop(wait_span);
+                let reply = reply.ok_or_else(|| {
                     DomainError::new(
                         ErrorCode::BackendFailure,
                         format!("{method}: the worker stopped before it answered"),

@@ -53,6 +53,20 @@ impl Drop for Span {
     }
 }
 
+/// Adds one sample measured elsewhere (a clock the caller already runs) under `name`.
+pub fn record(name: &'static str, elapsed: Duration) {
+    if !on() {
+        return;
+    }
+    let mut table = TABLE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let entry = table.entry(name).or_insert((0, Duration::ZERO, Duration::ZERO));
+    entry.0 += 1;
+    entry.1 += elapsed;
+    entry.2 = entry.2.max(elapsed);
+}
+
 /// `(name, count, mean)` for every span recorded, then clears the table.
 pub fn report() -> Vec<(&'static str, u64, Duration)> {
     let mut table = TABLE

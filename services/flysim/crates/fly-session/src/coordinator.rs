@@ -326,8 +326,6 @@ pub struct Coordinator {
     /// in-memory artifact's id (PERF-01): begun as soon as `Environment.Advance` answers, so the
     /// store round trips overlap the task's evaluation and the commits.
     promoting: BTreeMap<String, tokio::task::JoinHandle<DomainResult<flybus::Artifact>>>,
-    /// [`Coordinator::defer_snapshots`].
-    defer_snapshots: bool,
     /// One chunk sequence per declared audio stream, for this epoch.
     timelines: AudioTimelines,
     /// The attachment names this session's native media travels under. The composition
@@ -474,7 +472,6 @@ impl Coordinator {
             audio: BTreeMap::new(),
             pending_audio: BTreeMap::new(),
             promoting: BTreeMap::new(),
-            defer_snapshots: false,
             timelines: AudioTimelines::default(),
             media_names: vec![
                 media::view_attachment(crate::environment::VIEW_ID),
@@ -674,14 +671,6 @@ impl Coordinator {
     /// (`publishing-v1`), and the legacy feed publishes at `snapshot_hz` (30 Hz) from its 60 Hz
     /// loop, so a live composition need not pay a publication on every frame. 1 (every boundary)
     /// by default.
-    /// Publishes committed snapshots without waiting for the router's admission (PERF-01): the
-    /// bus publish runs beside the next transition and its outcome is settled at the next
-    /// snapshot, in order, so a session fault still fails the epoch, one publication later.
-    /// Off by default; the legacy composition's service configuration turns it on.
-    pub fn defer_snapshots(&mut self, on: bool) {
-        self.defer_snapshots = on;
-    }
-
     pub fn snapshot_every(&mut self, n: u64) {
         self.snapshot_every = n.max(1);
     }
@@ -2269,6 +2258,34 @@ impl Coordinator {
                     });
                 }
             }
+            // One job has nothing to run beside it: it is called in place, not spawned.
+            DispatchOrder::Concurrent if jobs.len() == 1 => {
+                let job = jobs.into_iter().next().expect("one job");
+                let started = Instant::now();
+                let outcome = call_owned(
+                    self.bus.clone(),
+                    job.worker.clone(),
+                    job.method,
+                    job.scope.clone(),
+                    job.params.clone(),
+                    job.attachments.clone(),
+                    job.request_id.clone(),
+                    job.want.clone(),
+                    deadline,
+                )
+                .await;
+                out.push(JobResult {
+                    agent_id: job.agent_id,
+                    outcome,
+                    scope: job.scope,
+                    worker: job.worker,
+                    method: job.method,
+                    request_id: job.request_id,
+                    params: job.params,
+                    attachments: job.attachments,
+                    elapsed: started.elapsed(),
+                });
+            }
             DispatchOrder::Concurrent => {
                 let mut tasks = Vec::new();
                 for job in jobs {
@@ -2984,6 +3001,7 @@ impl Coordinator {
         controls: &[PortControl],
     ) -> Outcome<StepResult> {
         let scope = self.scope(k);
+        let build_span = crate::profile::span("coord.advance.build");
         let params = AdvanceParams {
             batch_id: batch_id.clone(),
             controls: controls.to_vec(),
@@ -2992,6 +3010,7 @@ impl Coordinator {
             Value::Object(m) => m,
             _ => Map::new(),
         };
+        drop(build_span);
         let worker = self.environment.clone();
         let request_id = self.serials.next(&worker.service);
         self.last_advance_request = Some(request_id.clone());
@@ -3112,10 +3131,12 @@ impl Coordinator {
             }
         };
 
+        let parse_span = crate::profile::span("coord.advance.parse");
         let result: StepResult = match reply.parse() {
             Ok(result) => result,
             Err(e) => return Err(self.fail_now(e, "advance")),
         };
+        drop(parse_span);
         self.blame(None);
         let mut artifacts = reply.artifacts;
         self.pending_inspection = self.take_inspection(&mut artifacts);
@@ -4309,25 +4330,6 @@ impl Coordinator {
             });
         }
         let positions = self.timelines.positions();
-        if self.defer_snapshots {
-            // The previous snapshot's outcome is settled here; this one's at the next.
-            let previous = match self
-                .publisher
-                .publish_snapshot_deferred(&descriptor, &snapshot, &attachments, &positions)
-                .await
-            {
-                Ok(previous) => previous,
-                Err(e) => return Err(self.fail_now(e, "publish")),
-            };
-            self.audit.push(format!("publish:{boundary}"));
-            if let Some(outcome) = previous {
-                let outcome = self.settle(outcome, "publish")?;
-                if outcome.is_accepted() {
-                    self.stats.publications += 1;
-                }
-            }
-            return Ok(());
-        }
         let outcome = match self
             .publisher
             .publish_snapshot(&descriptor, &snapshot, &attachments, &positions)

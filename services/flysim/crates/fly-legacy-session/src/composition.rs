@@ -41,8 +41,14 @@ fn grants(f: impl FnOnce(&mut Grants)) -> Grants {
 /// The transitions a service session keeps in memory for diagnosis (about a minute at 60 Hz).
 const HISTORY: usize = 4096;
 
-/// Every other boundary's snapshot: the legacy feed's `snapshot_hz` (30 Hz) at 60 Hz.
-const SNAPSHOT_EVERY: u64 = 2;
+/// A service session's committed-snapshot cadence on the session topic: once a second of frames
+/// (every 60th boundary), plus every boundary with task events or boundary actions, which the
+/// coordinator always publishes. The live presentation is the legacy feed (`docs/feed-protocol.md`,
+/// 30 Hz, built by the service host from the committed boundary), not this topic, which nothing
+/// in the release subscribes to; each snapshot attaches a sealed copy of the frame and the audio
+/// chunk, so publishing it every other frame cost about 0.7 ms a frame on the release CPU
+/// (PERF-01; was 2).
+const SNAPSHOT_EVERY: u64 = 60;
 
 const COORDINATOR_CLIENT: &str = "coordinator";
 const ENV_CLIENT: &str = "legacy-world";
@@ -432,9 +438,6 @@ impl LegacySession {
             coordinator.bound_history(HISTORY);
             // The legacy feed publishes at `snapshot_hz` (30 Hz) from a 60 Hz loop.
             coordinator.snapshot_every(SNAPSHOT_EVERY);
-            // Nothing in the service reads the committed-snapshot topic's admission receipt on
-            // the frame: the publish overlaps the next transition (PERF-01).
-            coordinator.defer_snapshots(std::env::var("FLY_PERF_DEFER").map_or(true, |v| v != "0"));
         }
         Ok(LegacySession {
             coordinator,

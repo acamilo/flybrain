@@ -666,7 +666,10 @@ impl<E: WorkerEndpoint> Shell<E> {
             return;
         };
 
-        let body = match request.body_digest(&method) {
+        let digest_span = crate::profile::span("shell.digest");
+        let body = request.body_digest(&method);
+        drop(digest_span);
+        let body = match body {
             Ok(body) => body,
             Err(e) => {
                 let outcome = refuse(DomainError::invalid(format!("{method}: {e}")), request.scope.clone());
@@ -835,8 +838,9 @@ async fn execute<E: WorkerEndpoint>(
     };
     let _span = crate::profile::span("shell.record");
     match outcome {
-        Ok(reply) => {
-            let outcome = success(&request, worker_id, incarnation_id, reply.result.clone());
+        Ok(mut reply) => {
+            let result = std::mem::take(&mut reply.result);
+            let outcome = success(&request, worker_id, incarnation_id, result);
             // The cache owns its own hold on every artifact, so a replay survives the first
             // caller consuming its delivery. The holds are independent router round trips, so
             // they are taken concurrently; an in-memory artifact is its own hold.

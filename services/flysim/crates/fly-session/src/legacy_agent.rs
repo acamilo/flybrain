@@ -489,6 +489,11 @@ pub struct LegacyAgentWorker {
     prepared: Option<(DomainRequestId, PreparedDecision)>,
     /// The brain time before the in-flight transition's ticks: the spike window's start.
     transition_start_ms: f64,
+    /// The in-flight transition's spike bitset, gathered tick by tick from the kernel's spike
+    /// lists during Prepare (PERF-01). It is the bitset `spike_bitset` would scan out of
+    /// `last_spike_ms` for the same window, without the 139,255-neuron scan. `None` when the
+    /// kernel keeps no per-tick list (the GPU backend): Commit scans as before.
+    tick_spikes: Option<Vec<u8>>,
     staged: Option<StagedAgent>,
     activated: BTreeSet<Id>,
     /// Every mutation this worker applied, reported as its progress counter.
@@ -628,6 +633,7 @@ impl LegacyAgentWorker {
             context: None,
             prepared: None,
             transition_start_ms: 0.0,
+            tick_spikes: None,
             staged: None,
             activated: BTreeSet::new(),
             mutations: 0,
@@ -1057,9 +1063,29 @@ impl LegacyAgentWorker {
         // Profiling runs the brain's own phase clock too, as a measured legacy loop does, so
         // the two brains carry the same instrumentation (PERF-01).
         agent.network.profile = crate::profile::enabled();
+        let phase_before = agent.network.timings().total_ns();
         let ticks_span = crate::profile::span("agent.ticks");
-        agent.network.step(ticks);
+        // One tick at a time is the loop `step(ticks)` runs; after each, the neurons it stamped
+        // are its spike list, so the transition's bitset is their union.
+        let mut bits = vec![0u8; agent.network.last_spike_ms.len().div_ceil(8)];
+        let mut listed = true;
+        for _ in 0..ticks {
+            let count = agent.network.step(1) as usize;
+            match agent.network.tick_spikes(count) {
+                Some(list) if listed => {
+                    for &neuron in list {
+                        bits[neuron as usize >> 3] |= 1 << (neuron & 7);
+                    }
+                }
+                _ => listed = false,
+            }
+        }
+        self.tick_spikes = listed.then_some(bits);
         drop(ticks_span);
+        crate::profile::record(
+            "agent.ticks.phase_clock",
+            std::time::Duration::from_nanos(agent.network.timings().total_ns() - phase_before),
+        );
         if agent.network.ms != brain_ticks as f64 {
             return Err(applied(
                 ErrorCode::Internal,
@@ -1134,7 +1160,9 @@ impl LegacyAgentWorker {
                 "Agent.Commit must carry the step of its transition, not the new boundary",
             ));
         }
+        let parse_span = crate::profile::span("agent.commit.parse");
         let params: CommitParams = ctx.params()?;
+        drop(parse_span);
         params
             .validate_against_scope(&scope)
             .map_err(DomainError::invalid)?;
@@ -1196,7 +1224,10 @@ impl LegacyAgentWorker {
             self.transient.blocked_since_ms = ms;
         }
         let spikes_span = crate::profile::span("agent.spikes");
-        let spikes = spike_bitset(&agent.network.last_spike_ms, self.transition_start_ms, ms);
+        let spikes = match self.tick_spikes.take() {
+            Some(bits) => bits,
+            None => spike_bitset(&agent.network.last_spike_ms, self.transition_start_ms, ms),
+        };
         drop(spikes_span);
         // 4. Retain the next context and acknowledge k+1.
         let digest = context.digest.clone();
@@ -1822,8 +1853,14 @@ impl WorkerEndpoint for LegacyAgentWorker {
         Box::pin(async move {
             let outcome = match ctx.method {
                 "Agent.Initialize" => self.initialize(&ctx).await,
-                "Agent.Prepare" => self.prepare(&ctx).await,
-                "Agent.Commit" => self.commit(&ctx).await,
+                "Agent.Prepare" => {
+                    let _span = crate::profile::span("agent.prepare.handler");
+                    self.prepare(&ctx).await
+                }
+                "Agent.Commit" => {
+                    let _span = crate::profile::span("agent.commit.handler");
+                    self.commit(&ctx).await
+                }
                 METHOD_AGENT_ROLLBACK => self.rollback(&ctx).await,
                 "State.Capture" => self.state_capture(&ctx).await,
                 "State.StageRestore" => self.state_stage_restore(&ctx).await,
