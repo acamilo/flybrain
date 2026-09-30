@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# infra/box/fly-shadow-remote-setup — prepare a BUILD BOX to run the remote shadow (SHADOW-02).
+# Run as root ON THE BOX (never on the release container, never on the host), by the coordinator.
+# Idempotent: re-run it for every release the container runs.
+#
+#   fly-shadow-remote-setup RELEASE_TARBALL ROM_FILE RELAY_PUBKEY [--from ADDRS] [--cpus LIST]
+#
+#   RELEASE_TARBALL  the exact flybrain-<version>.tar.gz deployed to the release container. It is
+#                    installed at the SAME path, /opt/fly/releases/<version>, MANIFEST-verified,
+#                    root-owned, and /opt/fly/current points to it: the shadow's verdict names
+#                    that directory and the SHA-256 of its binaries, and `fly-shadow ingest`
+#                    refuses a relay whose release differs.
+#   ROM_FILE         the cartridge; its SHA-256 must be the container's ROM_SHA256.
+#   RELAY_PUBKEY     the public half of the relay's key (the private half lives only on the
+#                    release container, /etc/fly/shadow-remote/id_ed25519, owned by fly).
+#   --from ADDRS     restricts the key to the container's address (authorized_keys from=).
+#   --cpus LIST      AllowedCPUs for the shadow (e.g. 3 cores of this box), a drop-in.
+#
+# What it sets up:
+#   - user flyshadow, home /srv/fly-shadow-remote (the mirror; 0750);
+#   - /srv/fly-shadow-remote/.ssh/authorized_keys, ROOT-owned (the user cannot change it), with one
+#     line: restrict,command="/opt/fly/current/fly-shadow ingest --root /srv/fly-shadow-remote"
+#     [,from="..."] <key>. restrict turns off forwarding, agent, X11 and the pty; the forced command
+#     ignores what the client asks for; the ingest writes nothing outside the mirror;
+#   - /etc/fly/fly-shadow-remote.env: FLY_ROM, FLY_DATASET (this box's paths);
+#   - flyshadow-remote.service and flyshadow-remote.path (enabled; the service starts at the first
+#     run id the relay brings).
+# Nothing here knows or stores the release container's address; the relay dials out to the box.
+set -euo pipefail
+
+die() { echo "fly-shadow-remote-setup: $*" >&2; exit 2; }
+log() { echo "fly-shadow-remote-setup: $*"; }
+
+[ "$(id -u)" = 0 ] || die "run as root on the build box"
+[ $# -ge 3 ] || die "usage: fly-shadow-remote-setup RELEASE_TARBALL ROM_FILE RELAY_PUBKEY [--from ADDRS] [--cpus LIST]"
+tarball="$1"; rom="$2"; pubkey="$3"; shift 3
+from=""; cpus=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --from) from="$2"; shift 2 ;;
+        --cpus) cpus="$2"; shift 2 ;;
+        *) die "unknown option $1" ;;
+    esac
+done
+here="$(cd "$(dirname "$0")" && pwd)"
+ROOT=/srv/fly-shadow-remote
+[ -f "$tarball" ] || die "no tarball $tarball"
+[ -f "$rom" ] || die "no ROM $rom"
+[ -f "$pubkey" ] || die "no public key $pubkey"
+base="$(basename "$tarball")"; version="${base#flybrain-}"; version="${version%.tar.gz}"
+[[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || die "cannot parse a version from $base"
+[[ "$from" =~ ^[0-9A-Fa-f.:,/*]*$ ]] || die "--from takes addresses or patterns only"
+[[ "$cpus" =~ ^[0-9,-]*$ ]] || die "--cpus takes a CPU list"
+key="$(head -n 1 "$pubkey")"
+[[ "$key" =~ ^ssh-(ed25519|rsa)\ [A-Za-z0-9+/=]+( [^\"]*)?$ ]] || die "$pubkey is not one ssh public key line"
+command -v sshd >/dev/null || [ -x /usr/sbin/sshd ] || die "this box has no sshd"
+
+# The release, exactly as 05-deploy installs it on the container (but root-owned here).
+release="/opt/fly/releases/${version}"
+if [ -f "$release/MANIFEST" ]; then
+    log "release $version already at $release"
+else
+    install -d -m 0755 "$release"
+    tar -xzf "$tarball" -C "$release"
+    chown -R root:root "$release"
+fi
+(cd "$release" && sha256sum -c MANIFEST --quiet) || die "MANIFEST verification failed for $release"
+[ -x "$release/fly-shadow" ] || die "$release has no fly-shadow: this release predates SHADOW-01"
+"$release/fly-shadow" ingest 2>&1 | grep -q 'needs --root' \
+    || die "$release/fly-shadow has no ingest: this release predates SHADOW-02"
+ln -sfn "$release" /opt/fly/current.tmp && mv -T /opt/fly/current.tmp /opt/fly/current
+log "/opt/fly/current -> $release"
+
+# The user and the mirror.
+id flyshadow >/dev/null 2>&1 || useradd --system --home-dir "$ROOT" --shell /bin/sh --user-group flyshadow
+install -d -o flyshadow -g flyshadow -m 0750 "$ROOT"
+for d in trace hot durable out; do install -d -o flyshadow -g flyshadow -m 0750 "$ROOT/$d"; done
+install -d -o root -g root -m 0755 "$ROOT/.ssh"
+line="restrict,command=\"/opt/fly/current/fly-shadow ingest --root $ROOT\""
+[ -n "$from" ] && line="$line,from=\"$from\""
+printf '%s %s\n' "$line" "$key" > "$ROOT/.ssh/authorized_keys.new"
+chown root:root "$ROOT/.ssh/authorized_keys.new"; chmod 0644 "$ROOT/.ssh/authorized_keys.new"
+mv -f "$ROOT/.ssh/authorized_keys.new" "$ROOT/.ssh/authorized_keys"
+log "authorized_keys: the relay key may run only the ingest"
+
+# The cartridge and this box's paths.
+rom_sha="$(sha256sum "$rom" | cut -d' ' -f1)"
+install -d -m 0755 /srv/fly/rom
+install -o root -g flyshadow -m 0640 "$rom" "/srv/fly/rom/${rom_sha}.gb"
+install -d -m 0755 /etc/fly
+cat > /etc/fly/fly-shadow-remote.env <<ENV
+# written by infra/box/fly-shadow-remote-setup (SHADOW-02): this box's paths for the remote shadow.
+FLY_ROM=/srv/fly/rom/${rom_sha}.gb
+FLY_DATASET=/opt/fly/current/data/fafb-v783
+ENV
+log "ROM sha256 $rom_sha (must equal the container's ROM_SHA256)"
+
+# The units.
+install -m 0644 "$here/flyshadow-remote.service" /etc/systemd/system/flyshadow-remote.service
+install -m 0644 "$here/flyshadow-remote.path" /etc/systemd/system/flyshadow-remote.path
+if [ -n "$cpus" ]; then
+    install -d -m 0755 /etc/systemd/system/flyshadow-remote.service.d
+    printf '[Service]\nAllowedCPUs=%s\n' "$cpus" > /etc/systemd/system/flyshadow-remote.service.d/cpuset.conf
+    log "AllowedCPUs=$cpus"
+fi
+systemctl daemon-reload
+systemctl enable --now flyshadow-remote.path
+systemctl enable flyshadow-remote.service
+# A running shadow of an older release restarts on this one (the relay's next run resets anyway).
+systemctl try-restart flyshadow-remote.service || true
+log "ready: the container's fly-shadow-run start brings the first run id"

@@ -683,7 +683,8 @@ cs_start() { # name, expect (refuse|proceed), shadow cpus, sim cpus, drop-in (ye
     out="$(PATH="$cs_tmp/bin:$PATH" CS_DIR="$cs_tmp" CS_SHADOW_CPUS="$3" CS_SIM_CPUS="$4" \
         FLY_SHADOW_DIR="$cs_tmp/shadow" FLY_SHADOW_BIN="$cs_tmp/fly-shadow" \
         FLY_SHADOW_CPUSET_DROPIN="$cs_tmp/dropin.conf" FLY_SHADOW_BASELINE_SECONDS=1 \
-        FLY_METRICS_URL=http://127.0.0.1:1 "$INFRA_DIR/bin/fly-shadow-run" start 2>&1)" || rc=$?
+        FLY_SHADOW_REMOTE_ENV="$cs_tmp/no-remote.env" \
+        FLY_METRICS_URL=http://127.0.0.1:1 "$INFRA_DIR/bin/fly-shadow-run" start --local 2>&1)" || rc=$?
     case "$2" in
         refuse)
             if [ "$rc" -ne 0 ] && ! grep -qE '^(start|restart|daemon-reload)' "$cs_tmp/systemctl.log" \
@@ -710,7 +711,83 @@ if command -v python3 >/dev/null 2>&1; then
 else
     fail "python3 is needed to test fly-shadow-run's cpuset check"
 fi
+# SHADOW-02: the shadow runs on a build box. `start` without the operator's remote file refuses
+# (unless --local); with one whose key is missing it refuses too, starting nothing either way.
+rs_start() { # name, remote env file content (or "none")
+    local rc=0 out
+    : > "$cs_tmp/systemctl.log"
+    rm -f "$cs_tmp/remote.env"
+    [ "$2" = none ] || printf '%s\n' "$2" > "$cs_tmp/remote.env"
+    out="$(PATH="$cs_tmp/bin:$PATH" CS_DIR="$cs_tmp" CS_SHADOW_CPUS="0 2" CS_SIM_CPUS="1 3" \
+        FLY_SHADOW_DIR="$cs_tmp/shadow" FLY_SHADOW_BIN="$cs_tmp/fly-shadow" \
+        FLY_SHADOW_CPUSET_DROPIN="$cs_tmp/dropin.conf" FLY_SHADOW_REMOTE_ENV="$cs_tmp/remote.env" \
+        FLY_SHADOW_REMOTE_DROPIN_DIR="$cs_tmp/flyshadow.d" \
+        "$INFRA_DIR/bin/fly-shadow-run" start 2>&1)" || rc=$?
+    if [ "$rc" -ne 0 ] && ! grep -qE '^(start|restart|daemon-reload)' "$cs_tmp/systemctl.log" \
+        && [ ! -e "$cs_tmp/flyshadow.d/remote.conf" ]; then
+        pass "fly-shadow-run start refuses, $1: ${out#fly-shadow-run: }"
+    else
+        fail "fly-shadow-run start must refuse and start nothing, $1 (rc=$rc): $out"
+    fi
+}
+: > "$cs_tmp/dropin.conf"
+rs_start "no remote file (the shadow runs on a build box; --local to override)" none
+rs_start "a remote file without its key" "FLY_SHADOW_REMOTE=user@box
+FLY_SHADOW_REMOTE_KEY=$cs_tmp/missing-key
+FLY_SHADOW_REMOTE_KNOWN_HOSTS=$cs_tmp/missing-known"
 rm -rf "$cs_tmp"
+# SHADOW-02: `check` in remote mode also needs the relay healthy now (relay.json under a minute old).
+if command -v python3 >/dev/null 2>&1; then
+    rc_tmp="$(mktemp -d "${TMPDIR:-/tmp}/fly-lint-relay.XXXXXX")"
+    mkdir -p "$rc_tmp/bin" "$rc_tmp/shadow" "$rc_tmp/flyshadow.d"
+    printf '#!/bin/sh\ncase "$1" in is-active) exit 0 ;; esac\nexit 0\n' > "$rc_tmp/bin/systemctl"
+    chmod +x "$rc_tmp/bin/systemctl"
+    : > "$rc_tmp/flyshadow.d/remote.conf"
+    printf '{"rtfMean":1,"rtfSd":0,"lagRate":0,"samples":60,"margin":0.05}\n' > "$rc_tmp/shadow/baseline.json"
+    rc_check() { # name, expect (refused|passes-gates), relay.json (or none)
+        local rc=0 out
+        rm -f "$rc_tmp/shadow/relay.json"
+        [ "$3" = none ] || printf '%s\n' "$3" > "$rc_tmp/shadow/relay.json"
+        out="$(PATH="$rc_tmp/bin:$PATH" FLY_SHADOW_DIR="$rc_tmp/shadow" FLY_SHADOW_BIN="$rc_tmp/none" \
+            FLY_SHADOW_REMOTE_DROPIN_DIR="$rc_tmp/flyshadow.d" "$INFRA_DIR/bin/fly-shadow-run" check 2>&1)" || rc=$?
+        case "$2:$rc" in
+            refused:1) pass "fly-shadow-run check (remote), $1: ${out#cutover refused: }" ;;
+            passes-gates:2) pass "fly-shadow-run check (remote), $1: past the relay precondition" ;;
+            *) fail "fly-shadow-run check (remote), $1: expected $2, got exit $rc: $out" ;;
+        esac
+    }
+    now="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+    old="$(date -u -d '-5 min' +%Y-%m-%dT%H:%M:%S.000Z)"
+    rc_check "no relay.json" refused none
+    rc_check "relay not healthy" refused "{\"updatedAt\":\"$now\",\"healthy\":false,\"connected\":true,\"remoteAlive\":false,\"remoteWhy\":\"the shadow has no heartbeat\"}"
+    rc_check "relay.json 5 minutes old" refused "{\"updatedAt\":\"$old\",\"healthy\":true}"
+    rc_check "relay healthy and current" passes-gates "{\"updatedAt\":\"$now\",\"healthy\":true}"
+    rm -rf "$rc_tmp"
+fi
+# SHADOW-02: the build box's units live outside infra/units (05-deploy converges every unit there
+# onto the release container) and keep the remote shadow's semantics.
+BOX_UNIT="$INFRA_DIR/box/flyshadow-remote.service"
+if ls "$INFRA_DIR"/units/flyshadow-remote* >/dev/null 2>&1; then
+    fail "the build box's flyshadow-remote units must not be in infra/units (05-deploy would install them on the release container)"
+elif [ ! -f "$BOX_UNIT" ] || [ ! -f "$INFRA_DIR/box/flyshadow-remote.path" ]; then
+    fail "infra/box/flyshadow-remote.service and .path are missing"
+else
+    grep -qE '^ExecStart=/opt/fly/current/fly-shadow run --run-id-file /srv/fly-shadow-remote/run-id --lag-guard-margin 0( |$)' "$BOX_UNIT" \
+        && pass "flyshadow-remote.service runs the release's fly-shadow on the mirror, for the relay's run" \
+        || fail "flyshadow-remote.service must run /opt/fly/current/fly-shadow run --run-id-file /srv/fly-shadow-remote/run-id --lag-guard-margin 0"
+    { grep -qE '^Restart=always$' "$BOX_UNIT" && grep -qE '^RestartPreventExitStatus=3$' "$BOX_UNIT"; } \
+        && pass "flyshadow-remote.service restarts for a new run (exit 4) and stays stopped after a divergence (exit 3)" \
+        || fail "flyshadow-remote.service needs Restart=always and RestartPreventExitStatus=3"
+    grep -qE '^CPUSchedulingPolicy=idle' "$BOX_UNIT" \
+        && fail "flyshadow-remote.service must not be idle-scheduled: it has its own cores" \
+        || pass "flyshadow-remote.service runs at normal priority on its own cores"
+    grep -qE '^PathChanged=/srv/fly-shadow-remote/run-id$' "$INFRA_DIR/box/flyshadow-remote.path" \
+        && pass "flyshadow-remote.path starts the shadow on a new run id" \
+        || fail "flyshadow-remote.path must watch /srv/fly-shadow-remote/run-id"
+fi
+grep -qF 'restrict,command=\"/opt/fly/current/fly-shadow ingest --root $ROOT\"' "$INFRA_DIR/box/fly-shadow-remote-setup" \
+    && pass "fly-shadow-remote-setup limits the relay key to the ingest (restrict, forced command)" \
+    || fail "fly-shadow-remote-setup must write restrict,command=\"/opt/fly/current/fly-shadow ingest --root \$ROOT\""
 if grep -qF 'flyshadow) cpus="${page_cpus},${encoder_cpus}" ;;' "$INFRA_DIR/05-deploy.sh"; then
     pass "05-deploy.sh keeps flyshadow.service off flysim's CPUs"
 else

@@ -1,0 +1,765 @@
+//! `fly-shadow relay`: the release container's half of the remote shadow (SHADOW-02; the protocol
+//! is [`super::remote`]). It runs as `flyshadow.service` in place of the local shadow, so
+//! `fly-shadow-run check`, its guard and CUT-01 see the unit they always did, and it is a few
+//! file reads and one ssh stream instead of a second brain on the stream's CPUs.
+//!
+//! Every tick (a quarter second) it pushes, in this order:
+//!
+//! 1. the new live saves in both stores (a hot one lives about ten seconds), so a trace line never
+//!    arrives on the box before the save it names;
+//! 2. the new bytes of every trace file of this run, oldest file first, listed *after* reading the
+//!    sugar journal, and a file's size read after the listing: when a newer file exists the older
+//!    process has exited and flushed, so the older file is complete when the newer one appears on
+//!    the box;
+//! 3. the sugar journal it read at the start of the tick, so every boot header the box sees has
+//!    its trace file there already (the shadow's coverage check).
+//!
+//! Trace files older than the run (`FLY_SHADOW_RUN_ID` is the start's Unix ms) and saves written
+//! more than a minute before it are not sent: they belong to processes this run never follows.
+//!
+//! **The heartbeat.** flysim traces only while `<trace dir>/consumer` is fresh. The relay touches
+//! it every 10 s only while it is *healthy*: connected; the box reported within the last 30 s that
+//! the shadow of this run is alive; and the box has acknowledged everything that was on the
+//! container's disk a minute ago (`received` against the bytes sent by the end of each tick). A
+//! dead box, a dead shadow, a broken or a stalled connection all stop the heartbeat, and flysim
+//! then stops its trace as it would for a dead local shadow. The relay removes the file when it
+//! stops.
+//!
+//! **The verdict.** The box's `verdict.json` is written to `/srv/fly/shadow/verdict.json` only
+//! when it is this run's (`runId`), with `lagTransitions` raised by the live trace not yet on the
+//! box and a `relay` member (the `fly-shadow-verdict-v1` amendment of 2026-09-30); `check`'s
+//! catch-up and age bounds therefore cover the sync as well as the shadow. `relay.json` beside it
+//! says whether the relay is healthy. A diverged verdict brings `divergence.json` and its
+//! checkpoint files back, and then the relay exits with status 3, as a diverged local shadow does.
+
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
+
+use super::remote::{self, Frame};
+use super::spool::generation_of;
+use super::{StopFlag, follow, verdict};
+
+/// How the relay runs.
+#[derive(Clone, Debug)]
+pub struct RelayConfig {
+    /// The live service's `FLY_TRACE_DIR` (and the heartbeat in it), its stores, and where the
+    /// verdict goes (`FLY_SHADOW_DIR`).
+    pub trace_dir: PathBuf,
+    pub hot_dir: PathBuf,
+    pub durable_dir: PathBuf,
+    pub out_dir: PathBuf,
+    /// The command whose stdin and stdout are the box's ingest: `ssh ... <box>`.
+    pub command: Vec<String>,
+    pub run_id: String,
+    pub release: String,
+    pub binaries: BTreeMap<String, String>,
+    /// [`remote::FORWARDED_ENV`] as the live service has them.
+    pub env: BTreeMap<String, String>,
+    /// The sync may be at most this far behind the container's disk for the relay to be healthy.
+    pub stall: Duration,
+    /// The box's last report that the shadow is alive may be at most this old.
+    pub alive_within: Duration,
+    pub beat_every: Duration,
+    pub tick: Duration,
+    pub reconnect_after: Duration,
+    /// How long to wait for the box's answer to `hello`.
+    pub handshake: Duration,
+}
+
+impl RelayConfig {
+    /// The defaults beside the directories, command and release.
+    pub fn with_defaults(
+        trace_dir: PathBuf,
+        hot_dir: PathBuf,
+        durable_dir: PathBuf,
+        out_dir: PathBuf,
+        command: Vec<String>,
+        run_id: String,
+    ) -> RelayConfig {
+        RelayConfig {
+            trace_dir,
+            hot_dir,
+            durable_dir,
+            out_dir,
+            command,
+            run_id,
+            release: String::new(),
+            binaries: BTreeMap::new(),
+            env: BTreeMap::new(),
+            stall: Duration::from_secs(60),
+            alive_within: Duration::from_secs(30),
+            beat_every: Duration::from_secs(10),
+            tick: Duration::from_millis(250),
+            reconnect_after: Duration::from_secs(5),
+            handshake: Duration::from_secs(120),
+        }
+    }
+}
+
+/// How the relay ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RelayEnd {
+    Stopped,
+    /// The remote shadow diverged; its verdict and divergence files are in `out_dir`.
+    Diverged,
+}
+
+/// One connection to the box.
+struct Conn {
+    child: Child,
+    stdin: BufWriter<ChildStdin>,
+    frames: mpsc::Receiver<std::io::Result<Frame>>,
+    /// Bytes of each trace file the box has (sent, or reported at the handshake).
+    sent: BTreeMap<String, u64>,
+    /// Sizes the box last acknowledged.
+    acked: BTreeMap<String, u64>,
+    /// Journal files sent: (length, modification ms), and the set last announced.
+    journal_sent: BTreeMap<String, (u64, u64)>,
+    journal_names: BTreeSet<String>,
+    /// Body bytes sent on this connection, the ends of recent ticks, and the latest tick start
+    /// whose bytes the box has all received.
+    sent_total: u64,
+    ticks: VecDeque<(Instant, u64)>,
+    caught_up_at: Instant,
+    /// The box's last status: when, and whether this run's shadow is alive.
+    last_status: Option<(Instant, bool, String)>,
+    last_frame_sent: Instant,
+}
+
+impl Conn {
+    fn send(&mut self, header: Value, body: &[u8]) -> std::io::Result<()> {
+        remote::write_frame(&mut self.stdin, header, body)?;
+        self.sent_total += body.len() as u64;
+        self.last_frame_sent = Instant::now();
+        Ok(())
+    }
+
+    fn close(mut self) {
+        let _ = remote::write_frame(&mut self.stdin, json!({"t": "bye"}), b"");
+        drop(self.stdin);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if let Ok(Some(_)) = self.child.try_wait() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The relay's state across connections.
+struct Relay {
+    config: RelayConfig,
+    stop: StopFlag,
+    run_start_ms: Option<u64>,
+    /// Trace files the box has finished with (its shadow deleted them): deleted here too.
+    done: BTreeSet<String>,
+    /// Generations sent (or held by the box, or older than the run).
+    sent_gens: BTreeSet<u64>,
+    /// Trace bytes and lines sent, for the mean line length.
+    trace_bytes: u64,
+    trace_lines: u64,
+    last_beat: Option<Instant>,
+    last_relay_json: Instant,
+    diverged_at: Option<Instant>,
+    have_divergence: bool,
+    remote_lag: u64,
+}
+
+fn log(message: impl std::fmt::Display) {
+    eprintln!("fly-shadow relay: {message}");
+}
+
+/// Runs the relay until it is stopped or the remote shadow diverges.
+pub fn run(config: RelayConfig, stop: StopFlag) -> Result<RelayEnd, String> {
+    if config.command.is_empty() {
+        return Err("no command to reach the box".to_owned());
+    }
+    for dir in [&config.out_dir, &config.trace_dir] {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let mut relay = Relay {
+        run_start_ms: config.run_id.parse().ok(),
+        config,
+        stop,
+        done: BTreeSet::new(),
+        sent_gens: BTreeSet::new(),
+        trace_bytes: 0,
+        trace_lines: 0,
+        last_beat: None,
+        last_relay_json: Instant::now() - Duration::from_secs(60),
+        diverged_at: None,
+        have_divergence: false,
+        remote_lag: 0,
+    };
+    let heartbeat = relay.config.trace_dir.join(flysim::trace::CONSUMER_FILE);
+    let ended = relay.run_loop();
+    let _ = std::fs::remove_file(&heartbeat);
+    relay.write_relay_json(None, false);
+    ended
+}
+
+impl Relay {
+    fn run_loop(&mut self) -> Result<RelayEnd, String> {
+        loop {
+            if self.stop.requested() {
+                return Ok(RelayEnd::Stopped);
+            }
+            let conn = match self.connect() {
+                Ok(conn) => conn,
+                Err((message, wait)) => {
+                    log(format!("{message}; retrying in {} s", wait.as_secs()));
+                    self.write_relay_json(None, false);
+                    if self.sleep(wait) {
+                        return Ok(RelayEnd::Stopped);
+                    }
+                    continue;
+                }
+            };
+            log("connected; following the live trace");
+            match self.session(conn) {
+                Ok(Some(end)) => return Ok(end),
+                Ok(None) => {}
+                Err(message) => log(format!("the connection ended: {message}")),
+            }
+            if self.stop.requested() {
+                return Ok(RelayEnd::Stopped);
+            }
+            self.write_relay_json(None, false);
+            if self.sleep(self.config.reconnect_after) {
+                return Ok(RelayEnd::Stopped);
+            }
+        }
+    }
+
+    /// Sleeps `d`, or less when stopped (then `true`).
+    fn sleep(&self, d: Duration) -> bool {
+        let until = Instant::now() + d;
+        while Instant::now() < until {
+            if self.stop.requested() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        self.stop.requested()
+    }
+
+    /// Starts the command, says hello and reads the box's state.
+    fn connect(&mut self) -> Result<Conn, (String, Duration)> {
+        let retry = self.config.reconnect_after;
+        let mut child = Command::new(&self.config.command[0])
+            .args(&self.config.command[1..])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|e| (format!("{}: {e}", self.config.command[0]), retry))?;
+        let stdin = child.stdin.take().expect("piped stdin");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let (tx, frames) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("fly-shadow-relay-read".to_owned())
+            .spawn(move || {
+                let mut reader = BufReader::with_capacity(1 << 20, stdout);
+                loop {
+                    match remote::read_frame(&mut reader) {
+                        Ok(Some(frame)) => {
+                            if tx.send(Ok(frame)).is_err() {
+                                return;
+                            }
+                        }
+                        Ok(None) => {
+                            let _ = tx.send(Err(std::io::Error::new(
+                                std::io::ErrorKind::UnexpectedEof,
+                                "the box closed the connection",
+                            )));
+                            return;
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Err(e));
+                            return;
+                        }
+                    }
+                }
+            })
+            .expect("the reader thread starts");
+        let now = Instant::now();
+        let mut conn = Conn {
+            child,
+            stdin: BufWriter::with_capacity(1 << 20, stdin),
+            frames,
+            sent: BTreeMap::new(),
+            acked: BTreeMap::new(),
+            journal_sent: BTreeMap::new(),
+            journal_names: BTreeSet::new(),
+            sent_total: 0,
+            ticks: VecDeque::new(),
+            caught_up_at: now,
+            last_status: None,
+            last_frame_sent: now,
+        };
+        let hello = json!({
+            "t": "hello",
+            "protocol": remote::PROTOCOL,
+            "runId": self.config.run_id,
+            "release": self.config.release,
+            "binaries": self.config.binaries,
+            "env": self.config.env,
+        });
+        if let Err(e) = conn.send(hello, b"") {
+            conn.close();
+            return Err((format!("sending hello: {e}"), retry));
+        }
+        let state = match conn.frames.recv_timeout(self.config.handshake) {
+            Ok(Ok(frame)) if frame.kind() == "state" => frame,
+            Ok(Ok(frame)) if frame.kind() == "error" => {
+                let message = frame.header["message"].as_str().unwrap_or("").to_owned();
+                conn.close();
+                // A refusal (another release, another protocol) will not fix itself soon.
+                return Err((
+                    format!("the box refused: {message}"),
+                    retry.max(Duration::from_secs(60)),
+                ));
+            }
+            Ok(Ok(frame)) => {
+                let kind = frame.kind().to_owned();
+                conn.close();
+                return Err((format!("expected state, got {kind:?}"), retry));
+            }
+            Ok(Err(e)) => {
+                conn.close();
+                return Err((format!("the handshake: {e}"), retry));
+            }
+            Err(_) => {
+                conn.close();
+                return Err(("no answer to hello".to_owned(), retry));
+            }
+        };
+        let h = &state.header;
+        if h["runId"].as_str() != Some(self.config.run_id.as_str()) {
+            conn.close();
+            return Err((format!("the box answered for the run {}", h["runId"]), retry));
+        }
+        for (name, size) in h["traces"].as_object().into_iter().flatten() {
+            if let Some(size) = size.as_u64() {
+                conn.sent.insert(name.clone(), size);
+                conn.acked.insert(name.clone(), size);
+            }
+        }
+        self.absorb_done(&h["done"]);
+        let held: BTreeSet<u64> = h["gens"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_u64)
+            .collect();
+        self.sent_gens.extend(held);
+        Ok(conn)
+    }
+
+    /// Trace files the box has finished: delete them here, never send them again.
+    fn absorb_done(&mut self, done: &Value) {
+        for name in done.as_array().into_iter().flatten().filter_map(Value::as_str) {
+            if !remote::is_trace_name(name) {
+                continue;
+            }
+            if self.done.insert(name.to_owned()) {
+                let path = self.config.trace_dir.join(name);
+                if path.is_file() && std::fs::remove_file(&path).is_ok() {
+                    log(format!("{name} is finished on the box; removed here"));
+                }
+            }
+        }
+    }
+
+    /// One connection's life. `Ok(Some(end))` ends the relay; `Ok(None)` or `Err` reconnects.
+    fn session(&mut self, mut conn: Conn) -> Result<Option<RelayEnd>, String> {
+        let result = loop {
+            if self.stop.requested() {
+                break Ok(Some(RelayEnd::Stopped));
+            }
+            let tick = Instant::now();
+            if let Err(e) = self.push(&mut conn) {
+                break Err(format!("sending: {e}"));
+            }
+            conn.ticks.push_back((tick, conn.sent_total));
+            // Incoming frames.
+            let mut ended = None;
+            loop {
+                match conn.frames.try_recv() {
+                    Ok(Ok(frame)) => {
+                        if let Err(e) = self.receive(&mut conn, frame) {
+                            ended = Some(Err(e));
+                            break;
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        ended = Some(Err(e.to_string()));
+                        break;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        ended = Some(Err("the reader stopped".to_owned()));
+                        break;
+                    }
+                }
+            }
+            if let Some(ended) = ended {
+                break ended;
+            }
+            let healthy = self.healthy(&conn);
+            if healthy
+                && self
+                    .last_beat
+                    .is_none_or(|t| t.elapsed() >= self.config.beat_every)
+            {
+                let path = self.config.trace_dir.join(flysim::trace::CONSUMER_FILE);
+                if let Err(e) = std::fs::write(&path, verdict::now_iso()) {
+                    log(format!("could not write {}: {e}", path.display()));
+                }
+                self.last_beat = Some(Instant::now());
+            }
+            if self.last_relay_json.elapsed() >= Duration::from_secs(5) {
+                self.write_relay_json(Some(&conn), healthy);
+            }
+            if let Some(at) = self.diverged_at
+                && (self.have_divergence || at.elapsed() >= Duration::from_secs(60))
+            {
+                log("the remote shadow diverged: its verdict and divergence are in place");
+                break Ok(Some(RelayEnd::Diverged));
+            }
+            if conn.last_frame_sent.elapsed() >= Duration::from_secs(5)
+                && let Err(e) = conn.send(json!({"t": "ping"}), b"")
+            {
+                break Err(format!("sending: {e}"));
+            }
+            let spent = tick.elapsed();
+            if spent < self.config.tick {
+                std::thread::sleep(self.config.tick - spent);
+            }
+        };
+        conn.close();
+        result
+    }
+
+    /// Healthy: connected, the box's shadow for this run alive lately, the sync caught up.
+    fn healthy(&self, conn: &Conn) -> bool {
+        let alive = conn.last_status.as_ref().is_some_and(|(at, alive, _)| {
+            *alive && at.elapsed() <= self.config.alive_within
+        });
+        alive && conn.caught_up_at.elapsed() <= self.config.stall && self.diverged_at.is_none()
+    }
+
+    /// One tick's sends: saves, then trace bytes, then the journal read first.
+    fn push(&mut self, conn: &mut Conn) -> std::io::Result<()> {
+        // The journal, read before the trace directory is listed (coverage).
+        let mut journal: Vec<(String, Vec<u8>, (u64, u64))> = Vec::new();
+        let mut journal_names = BTreeSet::new();
+        for entry in std::fs::read_dir(&self.config.hot_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !remote::is_journal_name(&name) {
+                continue;
+            }
+            journal_names.insert(name.clone());
+            let Ok(meta) = entry.metadata() else { continue };
+            let signature = (meta.len(), remote::mtime_ms(&meta).unwrap_or(0));
+            if conn.journal_sent.get(&name) == Some(&signature) {
+                continue;
+            }
+            if let Ok(bytes) = std::fs::read(entry.path()) {
+                journal.push((name, bytes, signature));
+            }
+        }
+        // New saves.
+        let floor_ms = self.run_start_ms.map(|ms| ms.saturating_sub(60_000));
+        for (store, dir) in [
+            ("hot", self.config.hot_dir.clone()),
+            ("durable", self.config.durable_dir.clone()),
+        ] {
+            let mut found: Vec<(u64, PathBuf, Option<u64>)> = std::fs::read_dir(&dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|e| {
+                    let generation = generation_of(e.file_name().to_str()?)?;
+                    let modified = e.metadata().ok().and_then(|m| remote::mtime_ms(&m));
+                    Some((generation, e.path(), modified))
+                })
+                .collect();
+            found.sort();
+            for (generation, path, modified) in found {
+                if self.sent_gens.contains(&generation) {
+                    continue;
+                }
+                if let (Some(floor), Some(modified)) = (floor_ms, modified)
+                    && modified < floor
+                {
+                    self.sent_gens.insert(generation);
+                    continue;
+                }
+                // Rotated away since the listing: gone for good.
+                let Ok(bytes) = std::fs::read(&path) else {
+                    continue;
+                };
+                conn.send(json!({"t": "ckpt", "store": store, "gen": generation}), &bytes)?;
+                self.sent_gens.insert(generation);
+            }
+        }
+        // Trace bytes: list, then read each size.
+        let files = follow::trace_files(&self.config.trace_dir).unwrap_or_default();
+        for path in files {
+            let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            if self.done.contains(&name) || !remote::is_trace_name(&name) {
+                continue;
+            }
+            if let (Some(start), Some(run)) = (super::trace_start_ms(&path), self.run_start_ms)
+                && start < run
+            {
+                continue;
+            }
+            let Ok(size) = std::fs::metadata(&path).map(|m| m.len()) else {
+                continue;
+            };
+            // A new file exists on the box at once, even while flysim's buffer still holds its
+            // first bytes: its boot header may reach the box in this very tick (coverage).
+            if !conn.sent.contains_key(&name) {
+                conn.send(json!({"t": "trace", "name": name, "offset": 0}), b"")?;
+                conn.sent.insert(name.clone(), 0);
+            }
+            let mut offset = conn.sent.get(&name).copied().unwrap_or(0);
+            if size <= offset {
+                continue;
+            }
+            let Ok(mut file) = std::fs::File::open(&path) else {
+                continue;
+            };
+            file.seek(SeekFrom::Start(offset))?;
+            while offset < size {
+                let want = (size - offset).min(remote::TRACE_CHUNK) as usize;
+                let mut chunk = vec![0u8; want];
+                file.read_exact(&mut chunk)?;
+                conn.send(
+                    json!({"t": "trace", "name": name, "offset": offset}),
+                    &chunk,
+                )?;
+                self.trace_bytes += chunk.len() as u64;
+                self.trace_lines += chunk.iter().filter(|b| **b == b'\n').count() as u64;
+                offset += chunk.len() as u64;
+                conn.sent.insert(name.clone(), offset);
+            }
+        }
+        // The journal as read above.
+        for (name, bytes, signature) in journal {
+            conn.send(json!({"t": "journal", "name": name}), &bytes)?;
+            conn.journal_sent.insert(name, signature);
+        }
+        if journal_names != conn.journal_names {
+            conn.send(json!({"t": "journal-set", "names": journal_names}), b"")?;
+            conn.journal_names = journal_names;
+        }
+        // Keep the set of sent generations bounded: nothing below the oldest one still on disk.
+        if self.sent_gens.len() > 4096
+            && let Some(&oldest) = self.sent_gens.iter().nth(self.sent_gens.len() - 2048)
+        {
+            self.sent_gens = self.sent_gens.split_off(&oldest);
+        }
+        Ok(())
+    }
+
+    fn receive(&mut self, conn: &mut Conn, frame: Frame) -> Result<(), String> {
+        let h = &frame.header;
+        match frame.kind() {
+            "status" => {
+                let received = h["received"].as_u64().unwrap_or(0);
+                while conn
+                    .ticks
+                    .front()
+                    .is_some_and(|(_, total)| *total <= received)
+                {
+                    let (at, _) = conn.ticks.pop_front().expect("a tick");
+                    conn.caught_up_at = at;
+                }
+                conn.acked.clear();
+                for (name, size) in h["traces"].as_object().into_iter().flatten() {
+                    if let Some(size) = size.as_u64() {
+                        conn.acked.insert(name.clone(), size);
+                    }
+                }
+                self.absorb_done(&h["done"]);
+                let alive = h["alive"].as_bool().unwrap_or(false);
+                let why = h["why"].as_str().unwrap_or("").to_owned();
+                if !alive
+                    && conn
+                        .last_status
+                        .as_ref()
+                        .is_none_or(|(_, was, old)| *was || *old != why)
+                {
+                    log(format!("the remote shadow is not alive: {why}"));
+                }
+                conn.last_status = Some((Instant::now(), alive, why));
+            }
+            "resync" => {
+                let name = h["name"].as_str().unwrap_or("");
+                if remote::is_trace_name(name) {
+                    let size = h["size"].as_u64().unwrap_or(0);
+                    log(format!("the box has {size} bytes of {name}; resending from there"));
+                    conn.sent.insert(name.to_owned(), size);
+                }
+            }
+            "verdict" => self.relay_verdict(conn, &frame.body),
+            "file" => {
+                let name = h["name"].as_str().unwrap_or("");
+                if remote::is_divergence_file(name) {
+                    let path = self.config.out_dir.join(name);
+                    remote::atomic_write(&path, &frame.body)
+                        .map_err(|e| format!("{}: {e}", path.display()))?;
+                    if name == "divergence.json" {
+                        self.have_divergence = true;
+                    }
+                }
+            }
+            "error" => return Err(format!("the box: {}", h["message"])),
+            other => return Err(format!("an unknown frame {other:?}")),
+        }
+        Ok(())
+    }
+
+    /// Live trace bytes not yet on the box, and about how many transitions that is.
+    fn unsynced(&self, conn: Option<&Conn>) -> (u64, u64) {
+        let bytes: u64 = follow::trace_files(&self.config.trace_dir)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|path| {
+                let name = path.file_name()?.to_string_lossy().into_owned();
+                if self.done.contains(&name) {
+                    return None;
+                }
+                if let (Some(start), Some(run)) = (super::trace_start_ms(path), self.run_start_ms)
+                    && start < run
+                {
+                    return None;
+                }
+                let size = std::fs::metadata(path).ok()?.len();
+                let acked = conn.and_then(|c| c.acked.get(&name).copied()).unwrap_or(0);
+                Some(size.saturating_sub(acked))
+            })
+            .sum();
+        let mean = if self.trace_lines > 0 {
+            (self.trace_bytes / self.trace_lines).max(1)
+        } else {
+            750
+        };
+        (bytes, bytes.div_ceil(mean))
+    }
+
+    /// Writes the box's verdict here, when it is this run's, with the sync's backlog added.
+    fn relay_verdict(&mut self, conn: &Conn, bytes: &[u8]) {
+        let Ok(mut v) = serde_json::from_slice::<Value>(bytes) else {
+            log("the box sent a verdict that does not parse");
+            return;
+        };
+        if v["runId"].as_str() != Some(self.config.run_id.as_str()) {
+            return;
+        }
+        let (unsynced_bytes, unsynced) = self.unsynced(Some(conn));
+        let remote_lag = v["lagTransitions"].as_u64().unwrap_or(u64::MAX / 2);
+        self.remote_lag = remote_lag;
+        v["lagTransitions"] = json!(remote_lag.saturating_add(unsynced));
+        v["relay"] = json!({
+            "relayedAt": verdict::now_iso(),
+            "remoteLagTransitions": remote_lag,
+            "unsyncedBytes": unsynced_bytes,
+            "unsyncedTransitions": unsynced,
+        });
+        if v["status"] == "diverged" && self.diverged_at.is_none() {
+            self.diverged_at = Some(Instant::now());
+        }
+        let path = self.config.out_dir.join("verdict.json");
+        if let Err(e) = verdict::write_json(&path, &v) {
+            log(format!("could not write {}: {e}", path.display()));
+        }
+    }
+
+    fn write_relay_json(&mut self, conn: Option<&Conn>, healthy: bool) {
+        self.last_relay_json = Instant::now();
+        let (unsynced_bytes, unsynced) = self.unsynced(conn);
+        let value = json!({
+            "format": "fly-shadow-relay-v1",
+            "updatedAt": verdict::now_iso(),
+            "runId": self.config.run_id,
+            "connected": conn.is_some(),
+            "healthy": healthy,
+            "remoteAlive": conn.and_then(|c| c.last_status.as_ref()).map(|(_, alive, _)| *alive),
+            "remoteWhy": conn.and_then(|c| c.last_status.as_ref()).map(|(_, _, why)| why.clone()),
+            "caughtUpSecondsAgo": conn.map(|c| c.caught_up_at.elapsed().as_secs()),
+            "sentBytes": conn.map(|c| c.sent_total),
+            "unsyncedBytes": unsynced_bytes,
+            "unsyncedTransitions": unsynced,
+            "remoteLagTransitions": self.remote_lag,
+            "lastBeatSecondsAgo": self.last_beat.map(|t| t.elapsed().as_secs()),
+        });
+        let path = self.config.out_dir.join("relay.json");
+        if let Err(e) = verdict::write_json(&path, &value) {
+            log(format!("could not write {}: {e}", path.display()));
+        }
+    }
+}
+
+/// The ssh command that reaches the box's ingest, with nothing from the user's ssh configuration:
+/// this key, these known hosts, batch mode, keep-alives that end a dead connection in 30 s.
+pub fn ssh_command(
+    target: &str,
+    key: &Path,
+    known_hosts: &Path,
+    port: Option<u16>,
+) -> Vec<String> {
+    let mut argv: Vec<String> = [
+        "ssh",
+        "-F",
+        "/dev/null",
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "ServerAliveInterval=10",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "ClearAllForwardings=yes",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .collect();
+    argv.push("-o".to_owned());
+    argv.push(format!("UserKnownHostsFile={}", known_hosts.display()));
+    argv.push("-i".to_owned());
+    argv.push(key.display().to_string());
+    if let Some(port) = port {
+        argv.push("-p".to_owned());
+        argv.push(port.to_string());
+    }
+    argv.push(target.to_owned());
+    // Ignored by the box: its authorized_keys forces `fly-shadow ingest`.
+    argv.push("fly-shadow-ingest".to_owned());
+    argv
+}

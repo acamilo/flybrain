@@ -1,0 +1,13 @@
+# infra/box/flyshadow-remote.path — installed on a BUILD BOX with flyshadow-remote.service
+# (SHADOW-02). A new run id (the container's `fly-shadow-run start`, written by the ingest) starts
+# the shadow when it is down: the first run, or after a divergence (exit 3 is not restarted). A
+# running shadow restarts itself on the change (exit 4, Restart=always).
+[Unit]
+Description=Start the remote shadow for a new run (SHADOW-02)
+
+[Path]
+PathChanged=/srv/fly-shadow-remote/run-id
+Unit=flyshadow-remote.service
+
+[Install]
+WantedBy=multi-user.target

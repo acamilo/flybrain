@@ -217,6 +217,7 @@ fn config(
         binary_sha256: "test".to_owned(),
         binaries: Default::default(),
         release: String::new(),
+        run_id_file: None,
     }
 }
 

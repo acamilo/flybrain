@@ -527,18 +527,30 @@ report-only: it presses no button, serves no port, and only reads flysim's store
 the release container in the host log first, as for any host work.
 
 ```
-pct exec <ctid> -- /opt/fly/bin/fly-shadow-run start     # baseline, trace on, shadow + guard, one flysim restart
-pct exec <ctid> -- /opt/fly/bin/fly-shadow-run status    # the verdict (and a guard trip) in one screen
+pct exec <ctid> -- /opt/fly/bin/fly-shadow-run start     # baseline, trace on, remote shadow + guard, one flysim restart
+pct exec <ctid> -- /opt/fly/bin/fly-shadow-run status    # the verdict, the relay (and a guard trip) in one screen
 pct exec <ctid> -- /opt/fly/bin/fly-shadow-run check     # CUT-01's hook: exit 0 = cutover allowed
 pct exec <ctid> -- /opt/fly/bin/fly-shadow-run stop --restart-flysim   # shadow, guard and trace off
 ```
 
+- **Where it runs (SHADOW-02).** On a build box, not on the release container: there it cost the
+  live fly real time (2026-09-30: the realtime factor fell from 0.9998 to 0.93-0.98 and came back
+  to 0.999-1.0 the moment the shadow stopped), and at about 27 ms a frame on shared CPUs it fell
+  further behind every hour. `start` refuses without the remote configuration below; `start --local`
+  runs it on the container anyway. In remote mode `flyshadow.service` on the container is the
+  *relay* (`fly-shadow relay`, from a drop-in `start` writes): normal scheduling off flysim's CPUs,
+  a few file reads and one outbound ssh stream that carries the trace, the new saves and the sugar
+  journal to the box and brings the box shadow's verdict back to `/srv/fly/shadow/verdict.json`.
+  The guard, `check` and CUT-01 see the unit and the files they always did. Set-up below
+  ("Remote shadow set-up").
 - **Start** first records the live fly's baseline for 10 minutes, before the shadow exists: sixty
   10-s means of `fly_realtime_factor` (their mean and spread) and the `fly_lag_seconds` growth
   rate. It refuses unless flysim ran normally for most of that time. Then it:
   1. installs `flysim.service.d/shadow-trace.conf` (`FLY_TRACE_DIR=/srv/fly/shadow/trace`,
-     `FLY_TRACE_LEDGERS=60`);
-  2. starts `flyshadow.service` and waits for its heartbeat;
+     `FLY_TRACE_LEDGERS=60`) and, remote, `flyshadow.service.d/remote.conf` (the relay, and this
+     run's id: the start's Unix ms);
+  2. starts `flyshadow.service` and waits for its heartbeat (remote: up to 5 minutes, while the
+     box resets its mirror, restarts its shadow for the new run and reports it alive);
   3. restarts `flysim.service` once;
   4. starts `flyshadow-guard.timer`.
 
@@ -569,6 +581,9 @@ pct exec <ctid> -- /opt/fly/bin/fly-shadow-run stop --restart-flysim   # shadow,
   - at least 10,800 brain seconds, whatever window the shadow was started with;
   - the guard has not tripped, `flyshadow.service` is running, `flyshadow-guard.timer` is active and
     `baseline.json` exists (a run no guard watched is never cut over);
+  - remote: `/srv/fly/shadow/relay.json` is less than a minute old and `healthy` (connected, the
+    box's shadow of this run alive, the sync caught up), and the verdict is this run's (`runId`);
+    its `lagTransitions` counts the live trace not yet on the box as well;
   - the verdict is for the release `/opt/fly/current` points to, with `flysim-session` and every
     other shadowed binary unchanged;
   - the shadow is caught up (at most about a minute behind);
@@ -586,18 +601,69 @@ pct exec <ctid> -- /opt/fly/bin/fly-shadow-run stop --restart-flysim   # shadow,
   heartbeat (`/srv/fly/shadow/trace/consumer`), and stops a running trace within a minute once the
   heartbeat is more than 10 minutes old. That happens when the shadow crashed, diverged, was
   stopped, or the guard tripped. flysim keeps the trace directory under 8 GiB, and the shadow
-  deletes every file it has compared.
-- **Resources**: the shadow is a second whole brain, at about the live fly's CPU per frame. It
-  runs `SCHED_IDLE` on the page and encoder CPUs, never on flysim's (05-deploy.sh writes its
-  `cpuset.conf`). It pauses for a minute while flysim's lag grows faster than its baseline rate, and
-  it stops pausing when a pause does not help. Disk: about
-  160 MB of trace per live hour, and a spool of at most 512 MiB.
+  deletes every file it has compared (remote: the box deletes its copy, and the relay then deletes
+  the container's). Remote, the heartbeat is the relay's, and it is written only while the relay is
+  healthy: a dead box, a dead box shadow, a broken link or a sync more than a minute behind all stop
+  it, and flysim then stops its trace as for a dead local shadow. A trace that stops that way while
+  the shadow follows it is a `coverage` divergence: that process can no longer be compared. A
+  network blip shorter than the 10 minutes costs nothing: the relay resumes where the box's copy
+  ends.
+- **Resources**: the shadow is a second whole brain, at about the live fly's CPU per frame.
+  Remote, it runs on the box's own cores at normal priority (`flyshadow-remote.service`), and the
+  container pays the relay: a few ms of CPU a second, about 2.1 GB an hour over the network
+  (the hot save every 5 s is 2.7 MB; the trace about 160 MB an hour), and the trace writer inside
+  flysim. `--local` runs it `SCHED_IDLE` on the page and encoder CPUs, never on flysim's (05-deploy.sh
+  writes its `cpuset.conf`), pausing for a minute while flysim's lag grows faster than its
+  baseline rate. Disk on the container: the trace until the box has compared it (under 8 GiB);
+  on the box: the mirrored saves (under 3 GiB) and a spool of at most 4 GiB.
 - **Start** refuses, and starts nothing, unless `flyshadow.service.d/cpuset.conf` exists and the
   unit's `AllowedCPUs` (`systemctl show`) is disjoint from flysim.service's (05-deploy skips every
   cpuset drop-in when the CT conf and CPUSET disagree).
-- **Stop** stops the unit and the guard, removes the drop-in, and deletes the trace and the spool
+- **Stop** stops the unit and the guard, removes the drop-ins, and deletes the trace and the spool
   (`--keep` keeps them). Without `--restart-flysim`, the running flysim stops its current trace
-  within a minute, because its consumer is gone.
+  within a minute, because its consumer is gone. Remote, the box's shadow keeps running idle until
+  the next `start`, which resets its mirror and restarts it for the new run.
+- **Remote divergence**: the box's shadow stops (exit 3); the relay brings `divergence.json` and
+  both checkpoint files back to `/srv/fly/shadow/`, writes the diverged verdict and exits with
+  status 3 (the unit stays stopped, the guard stops itself). Pull the files from the container as
+  for a local divergence.
+
+### Remote shadow set-up (SHADOW-02)
+
+Once per build box, and again for every release the container runs. The real values (the box's
+address, the key's path) go in the operator's private files, never in this repository. Nothing
+on the build box can reach the release container: the container dials out.
+
+1. **The relay's key**, on the release container (as root, claimed):
+   `install -d -o root -g fly -m 0750 /etc/fly/shadow-remote`, then
+   `ssh-keygen -t ed25519 -N '' -C fly-shadow-relay -f /etc/fly/shadow-remote/id_ed25519` and
+   `chown fly:fly /etc/fly/shadow-remote/id_ed25519*`. The private half never leaves the container.
+   The container needs an ssh client (`openssh-client`; `02-base.sh` installs it) and no sshd.
+2. **The box** (as root on the box): copy the release tarball the container runs, the cartridge,
+   `infra/box/` and the public key there, then
+   `infra/box/fly-shadow-remote-setup flybrain-<version>.tar.gz <rom> id_ed25519.pub --from <container address> --cpus <3 of the box's cores>`.
+   It installs the release at the same `/opt/fly/releases/<version>` path (MANIFEST-verified,
+   root-owned), a `flyshadow` user whose home is the mirror `/srv/fly-shadow-remote`, a
+   root-owned `authorized_keys` whose only line is
+   `restrict,command="/opt/fly/current/fly-shadow ingest --root /srv/fly-shadow-remote",from="…" <key>`,
+   `/etc/fly/fly-shadow-remote.env` (the box's `FLY_ROM`, `FLY_DATASET`), and
+   `flyshadow-remote.service` + `.path` (enabled). Put the box's host key into
+   `/etc/fly/shadow-remote/known_hosts` on the container (`ssh-keyscan` from the host, checked by
+   hand).
+3. **The container's remote file**, `/etc/fly/shadow-remote.env` (root, 0600):
+   `FLY_SHADOW_REMOTE=flyshadow@<box address>`,
+   `FLY_SHADOW_REMOTE_KEY=/etc/fly/shadow-remote/id_ed25519`,
+   `FLY_SHADOW_REMOTE_KNOWN_HOSTS=/etc/fly/shadow-remote/known_hosts`
+   (and `FLY_SHADOW_REMOTE_PORT` if the box's sshd is not on 22). `fly-shadow-run start` finds
+   it and runs in remote mode.
+4. `fly-shadow-run start` as above. The ingest refuses a relay whose release directory or binaries
+   differ from the box's (another release on the container: re-run step 2 with its tarball);
+   `journalctl -u flyshadow` on the container shows it.
+
+Which box: one whose cores the live fly does not share, preferably on the other NUMA node or
+another host (flysim is memory-bandwidth-bound). Keep other heavy work off the shadow's cores for
+the 3 h (the shadow runs at `CPUWeight=1000`, `Nice=-5`). The shadow must run faster than real
+time to catch up after a restart: measured in the SHADOW-02 report.
 
 ## Cutover to the session runtime (CUT-01)
 
@@ -609,7 +675,8 @@ container in the host log first, as for any host work.
 ```
 # 1. Deploy v0.7.0 with flysim-session installed but NOT selected (no drop-in): the ordinary deploy.
 #    The container keeps running legacy; nothing else changes. (fly-runtime status: legacy)
-# 2. Shadow, 3 h of brain time, zero divergence, guarded against live impact:
+# 2. Shadow, 3 h of brain time, zero divergence, guarded against live impact; on a build box
+#    (Remote shadow set-up above, once per box and release):
 pct exec $CTID -- /opt/fly/bin/fly-shadow-run start
 pct exec $CTID -- /opt/fly/bin/fly-shadow-run status       # until: verdict pass
 # 3. Cutover: the shadow's gate, then the switch. One command line:

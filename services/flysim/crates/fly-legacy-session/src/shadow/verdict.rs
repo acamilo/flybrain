@@ -13,6 +13,8 @@
 //! | `passedAt` | when `compared.brainSeconds` first reached `required.brainSeconds` with no divergence |
 //! | `firstDivergence` | `null`, or the first difference with its context (also `divergence.json`) |
 //! | `declaredDifferences` | the named exclusions the comparison applied |
+//! | `runId` | SHADOW-02, a remote shadow: the relay's run (`null` for a shadow on the container) |
+//! | `relay` | SHADOW-02, added by the relay on the container: `lagTransitions` there includes the live trace not yet on the box |
 //!
 //! `pass` is sticky only while nothing diverges: a shadow that keeps running after it passed and
 //! then finds a difference turns the verdict to `diverged`. `stopped` is a shadow that exited
@@ -49,7 +51,9 @@ pub const FORMAT: &str = "fly-shadow-verdict-v1";
 
 /// Skips that are the live side's own events, not the session runtime's failures: the operator
 /// reward pulse (declared), a startup save rotated away before the shadow reached it, a trace
-/// stopped at its byte cap or for want of a consumer, and a process that ran no transition.
+/// stopped at its byte cap (or for want of a consumer *before* this shadow started: one that stops
+/// while the shadow follows it is a `coverage` divergence, SHADOW-02), and a process that ran no
+/// transition.
 pub const SKIP_KINDS: [&str; 4] = [
     "operator-reward-pulse",
     "startup-save-gone",
@@ -235,6 +239,8 @@ pub struct Verdict {
     pub live_lag_seconds: Option<f64>,
     pub spool_evicted: u64,
     pub cost: Cost,
+    /// SHADOW-02: the relay's run id, for a remote shadow (`null` on the release container).
+    pub run_id: Option<String>,
 }
 
 pub fn now_iso() -> String {
@@ -325,6 +331,7 @@ impl Verdict {
             "liveLagSeconds": self.live_lag_seconds,
             "spoolEvicted": self.spool_evicted,
             "cost": self.cost.to_json(),
+            "runId": self.run_id,
         })
     }
 }
@@ -524,6 +531,7 @@ mod tests {
             live_lag_seconds: None,
             spool_evicted: 0,
             cost: Cost::default(),
+            run_id: None,
         }
         .to_json()
     }

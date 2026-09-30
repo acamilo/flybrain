@@ -30,6 +30,10 @@
 
 pub mod checkpoint;
 pub mod follow;
+pub mod ingest;
+pub mod relay;
+pub mod release;
+pub mod remote;
 pub mod spool;
 pub mod verdict;
 
@@ -105,6 +109,12 @@ pub struct ShadowConfig {
     /// The release binaries beside it, by name, and their directory (the verdict's `candidate`).
     pub binaries: std::collections::BTreeMap<String, String>,
     pub release: String,
+    /// SHADOW-02, a remote shadow on a build box: the file `fly-shadow ingest` writes the relay's
+    /// run id into. The id is read at start and written into the verdict (`runId`), which is how
+    /// the relay on the release container knows the verdict is this run's; when the file changes
+    /// (the coordinator ran `fly-shadow-run start` again), the shadow stops with
+    /// [`Ended::NewRun`] and its unit starts a fresh one. `None` on the release container itself.
+    pub run_id_file: Option<PathBuf>,
 }
 
 /// The back-off that keeps the shadow from costing the live fly real time, judged against the
@@ -278,6 +288,8 @@ pub enum Ended {
     Diverged,
     Stopped,
     Limit,
+    /// The run id changed ([`ShadowConfig::run_id_file`]): a new run was started.
+    NewRun,
 }
 
 /// Why a segment ended.
@@ -454,6 +466,12 @@ pub async fn run(config: ShadowConfig, stop: StopFlag) -> Result<(Ended, Verdict
         record: true,
     };
     let compatibility = crate::composition::compatibility_of(&session_config);
+    let run_id = match &config.run_id_file {
+        Some(path) => Some(read_run_id(path).ok_or_else(|| {
+            format!("{}: no run id (the relay has not connected yet)", path.display())
+        })?),
+        None => None,
+    };
     let mut spool = Spool::new(
         &config.spool_dir,
         vec![config.hot_dir.clone(), config.durable_dir.clone()],
@@ -515,7 +533,18 @@ pub async fn run(config: ShadowConfig, stop: StopFlag) -> Result<(Ended, Verdict
             live_lag_seconds: None,
             spool_evicted: 0,
             cost: Cost::default(),
+            run_id: run_id.clone(),
         },
+        run_id,
+        last_run_check: Instant::now(),
+        initial_sizes: follow::trace_files(&config.trace_dir)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|path| {
+                let size = std::fs::metadata(&path).ok()?.len();
+                Some((path.file_name()?.to_string_lossy().into_owned(), size))
+            })
+            .collect(),
         config,
         session_config,
         compatibility,
@@ -540,11 +569,12 @@ pub async fn run(config: ShadowConfig, stop: StopFlag) -> Result<(Ended, Verdict
     match ended {
         Ended::Diverged => {}
         Ended::Pass => {}
-        Ended::Stopped | Ended::Limit => {
+        Ended::Stopped | Ended::Limit | Ended::NewRun => {
             if shadow.verdict.status == Status::Running {
                 shadow.verdict.status = Status::Stopped;
                 shadow.verdict.reason = match ended {
                     Ended::Limit => "stopped at the transition limit".to_owned(),
+                    Ended::NewRun => "a new run was started (the run id changed)".to_owned(),
                     _ => "stopped before the window was complete".to_owned(),
                 };
             }
@@ -574,9 +604,36 @@ struct Shadow {
     traces_seen: std::collections::BTreeSet<u64>,
     boots_checked: std::collections::BTreeSet<u64>,
     last_coverage: Instant,
+    /// The run id this shadow started with, and when the file was last looked at.
+    run_id: Option<String>,
+    last_run_check: Instant,
+    /// The size of every trace file present when this shadow started: a trace that stopped for
+    /// want of a consumer *before* then is history; one that stopped while this shadow ran is a
+    /// coverage gap.
+    initial_sizes: std::collections::BTreeMap<String, u64>,
+}
+
+/// The run id in `path` (trimmed), if the file exists and is not empty.
+pub fn read_run_id(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let id = text.trim();
+    (!id.is_empty()).then(|| id.to_owned())
 }
 
 impl Shadow {
+    /// Whether the run id file names another run now (looked at every 5 s).
+    fn new_run(&mut self) -> bool {
+        let Some(path) = self.config.run_id_file.clone() else {
+            return false;
+        };
+        if self.last_run_check.elapsed() < Duration::from_secs(5) {
+            return false;
+        }
+        self.last_run_check = Instant::now();
+        // A file that cannot be read is not a new run: the relay rewrites it atomically.
+        read_run_id(&path).is_some_and(|id| Some(&id) != self.run_id.as_ref())
+    }
+
     fn write(&mut self) {
         self.verdict.spool_evicted = self.spool.evicted();
         // Refreshed on every write, backed off or not, so the verdict's catch-up bound is current.
@@ -603,11 +660,15 @@ impl Shadow {
             return None;
         }
         self.last_coverage = Instant::now();
+        // The journal first, then the trace directory: a process creates its trace file before it
+        // writes its boot header, so every boot read here already has its file on disk when the
+        // directory is listed after it (read the other way round, a boot between the two reads
+        // would look untraced). A remote shadow's mirror is written in the same order.
+        let segments = flysim::journal::read_segments(&self.config.hot_dir).ok()?;
         if let Ok(files) = follow::trace_files(&self.config.trace_dir) {
             self.traces_seen
                 .extend(files.iter().filter_map(|f| trace_start_ms(f)));
         }
-        let segments = flysim::journal::read_segments(&self.config.hot_dir).ok()?;
         let boots: Vec<Value> = segments.into_iter().filter_map(|s| s.boot).collect();
         let untraced = untraced_boots(
             &boots,
@@ -681,6 +742,9 @@ impl Shadow {
                 if self.stop.requested() {
                     return Ok(Ended::Stopped);
                 }
+                if self.new_run() {
+                    return Ok(Ended::NewRun);
+                }
                 match follow::next_file(&dir, current.as_deref()) {
                     Ok(Some(path)) => break path,
                     Ok(None) => {}
@@ -750,6 +814,9 @@ impl Shadow {
             }
             if self.stop.requested() {
                 return Err(SegmentEnd::Stop(Ended::Stopped));
+            }
+            if self.new_run() {
+                return Err(SegmentEnd::Stop(Ended::NewRun));
             }
             if follow::superseded(follower.path()) {
                 // The next process exists, so this one has exited and flushed: one more read for
@@ -996,6 +1063,27 @@ impl Shadow {
                 }
             };
             if live.get("truncated").is_some() {
+                // A trace stopped for want of a consumer while this shadow was following means its
+                // heartbeat did not reach flysim (a remote shadow's relay stalled, SHADOW-02): the
+                // rest of that live process runs uncompared, so it fails the verdict like an
+                // untraced process. One that had stopped before this shadow started is history.
+                let before_start = self
+                    .initial_sizes
+                    .get(name)
+                    .is_some_and(|size| follower.consumed <= *size);
+                if live["reason"] == "no-consumer" && !before_start {
+                    return SegmentEnd::Diverged(Box::new(Divergence {
+                        kind: "coverage".to_owned(),
+                        trace: name.to_owned(),
+                        step: None,
+                        difference: None,
+                        detail: "the live trace stopped for want of a consumer while the shadow \
+                                 was following it (a stale heartbeat: a stalled relay or a hung \
+                                 shadow): the rest of that live process can never be compared"
+                            .to_owned(),
+                        context: context.into_iter().collect(),
+                    }));
+                }
                 return SegmentEnd::Skipped(
                     "trace-cap",
                     format!("the live trace stopped ({})", live["reason"]),
@@ -1294,6 +1382,9 @@ impl Shadow {
             }
             if let Some(divergence) = self.coverage() {
                 return SegmentEnd::Diverged(Box::new(divergence));
+            }
+            if self.new_run() {
+                return SegmentEnd::Stop(Ended::NewRun);
             }
             self.write_if_due();
         }

@@ -1,0 +1,55 @@
+# infra/box/flyshadow-remote.service — installed on a BUILD BOX, never on the release container,
+# by infra/bin/fly-shadow-remote-setup (SHADOW-02).
+#
+# The shadow run (SHADOW-01, legacy-gameboy-v1 section 18) moved off the release container: there it
+# cost the live fly real time (2026-09-30: RTF 0.999 -> 0.93-0.98 with the shadow SCHED_IDLE on the
+# page and encoder CPUs, 27 ms of shadow per frame, falling further behind every hour). Here it runs
+# the SAME release (installed from the same tarball at the same /opt/fly/releases/<version> path,
+# so the verdict's release and binary hashes are the container's), on this box's own cores, at
+# normal priority.
+#
+# Its input is the mirror /srv/fly-shadow-remote, written by `fly-shadow ingest`, the forced
+# command of the one key the container's relay (`fly-shadow relay`, flyshadow.service there) holds;
+# the relay writes this shadow's verdict back to the container, where `fly-shadow-run check`, its
+# guard and CUT-01 read it as before. REPORT-ONLY: it reads the mirror, writes <root>/out and its
+# runtime directory, and serves nothing.
+#
+# The run: `fly-shadow-run start` on the container gives each run an id; the ingest writes it to
+# <root>/run-id (after resetting the mirror). A running shadow sees the change within 5 s and exits
+# with status 4, and Restart=always starts the new run; a shadow that is down (it diverged: exit 3,
+# which is not restarted, so the diverged verdict stays) is started by flyshadow-remote.path.
+[Unit]
+Description=flyshadow-remote: the session runtime shadowing the live fly from a build box (SHADOW-02, report only)
+ConditionPathExists=/opt/fly/current/fly-shadow
+ConditionPathExists=/srv/fly-shadow-remote/run-id
+
+[Service]
+Type=simple
+User=flyshadow
+# The live composition's settings, as the relay forwarded them (game, macro mode, accepted
+# adapters, pins; never a path or a secret), then this box's own paths: FLY_ROM (the cartridge,
+# with the container's ROM_SHA256) and FLY_DATASET (the release's connectome).
+EnvironmentFile=-/srv/fly-shadow-remote/live.env
+EnvironmentFile=/etc/fly/fly-shadow-remote.env
+Environment=FLY_TRACE_DIR=/srv/fly-shadow-remote/trace
+Environment=FLY_STATE_HOT=/srv/fly-shadow-remote/hot
+Environment=FLY_STATE=/srv/fly-shadow-remote/durable
+Environment=FLY_SHADOW_DIR=/srv/fly-shadow-remote/out
+Environment=FLY_SHADOW_WORK=/run/flyshadow-remote
+RuntimeDirectory=flyshadow-remote
+# 3 sweep threads (the SHADOW-01 measurements: 13-15 ms a frame against 16.7 ms of real time).
+Environment=FLY_SHADOW_THREADS=3
+# No lag back-off: the live fly is on another machine. The spool holds a long catch-up.
+ExecStart=/opt/fly/current/fly-shadow run --run-id-file /srv/fly-shadow-remote/run-id --lag-guard-margin 0 --spool-max-mib 4096
+Restart=always
+RestartSec=2
+RestartPreventExitStatus=3
+# Dedicated cores (fly-shadow-remote-setup --cpus writes AllowedCPUs= in a drop-in) at a weight
+# above anything else on the box: a build must not starve the shadow.
+CPUWeight=1000
+Nice=-5
+MemoryMax=6G
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
