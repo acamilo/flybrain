@@ -792,7 +792,14 @@ failure, which is **never** a skip:
 - a session that does not start;
 - a startup save the candidate's restore gate refuses or the session runtime cannot restore;
 - a step, capture or rollback error;
-- a transition the session did not record.
+- a transition the session did not record;
+- *coverage*: a live flysim process that booted while the shadow ran and left no trace
+  (amended 2026-09-30).
+
+The shadow reads every boot header in the live sugar journal. Every flysim process writes one,
+traced or not. It holds each header to a trace file created after the previous boot and before
+this one. A process that ran untraced can never be compared, so the verdict fails. It does not
+pass on the processes that were traced.
 
 A shadow that keeps running after `pass` turns the verdict to `diverged` on a later difference.
 
@@ -802,7 +809,10 @@ make sure of it:
 - *The trace is on only while a shadow consumes it.* The shadow writes a heartbeat
   (`<trace dir>/consumer`) every 30 s and removes it when it stops. flysim starts no trace without
   a fresh heartbeat, stops a running one within a minute of frames once the heartbeat is more than
-  10 minutes old, and keeps the directory under 8 GiB.
+  10 minutes old, and keeps the directory under 8 GiB. A heartbeat dated ahead of flysim's clock
+  counts as fresh. A trace flysim cannot create (a full disk, the directory's permissions) never
+  stops the live fly from starting: that process runs untraced, and the shadow reports it as a
+  coverage divergence.
 - *The guard* (`fly-shadow-run guard`, every 60 s, root) judges the live fly against its own pace
   before the shadow existed. The live fly does not always keep real time: the release container
   has run at a realtime factor of 0.66, and at 0.77-0.99 after its cpuset rebalance. So `start`

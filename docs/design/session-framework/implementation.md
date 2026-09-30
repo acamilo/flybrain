@@ -630,6 +630,21 @@ The fixtures were already v8 on main.
 - *N3.* `lagTransitions` is recomputed at every verdict write, over the rest of the current file
   and every newer one, including while the shadow is backed off.
 
+**2026-09-30: `tests/shadow.rs` "one trace file per process" (0 vs 2) on a build box.** It is not
+a timing, load or segment-handling bug.
+- *Cause.* The failing runs used a `flysim` binary that was not built from the tree under test.
+  `cargo test -p fly-legacy-session` does not build `flysim`'s binary, and the build box's bx
+  target directory was shared by name with other trees. That binary predated `FLY_TRACE_DIR`, so
+  it wrote no trace at all. The failure was reproduced by running such a test binary against its
+  own stale `flysim`.
+- *Fix.* The test now builds the `flysim` binary itself: `cargo build -p flysim --bin flysim`,
+  with the same target directory and profile, which does nothing when the binary is current.
+  This was proved on a target that another tree's `flysim` had populated.
+- *What production could miss, and now cannot.* A live process that runs without a trace is now
+  a `coverage` divergence (above). That covers a process whose consumer check failed, and one
+  whose trace could not be created. In `FLY_TRACE_DIR` mode, a trace-creation failure no longer
+  stops flysim from starting. The test adds such a process, untraced, and the shadow fails.
+
 ### STATE-01 — Coherent all-participant checkpoint/recovery
 
 **Depends on:** SESSION-02, MEDIA-01; validate with fake agents first, then AGENT-01/ENV-01.

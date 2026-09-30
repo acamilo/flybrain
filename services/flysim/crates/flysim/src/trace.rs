@@ -101,7 +101,12 @@ pub fn consumer_alive(dir: &Path, stale: std::time::Duration) -> bool {
     std::fs::metadata(dir.join(CONSUMER_FILE))
         .and_then(|m| m.modified())
         .ok()
-        .and_then(|t| std::time::SystemTime::now().duration_since(t).ok())
+        // A heartbeat dated ahead of this clock (a clock stepped back) is fresh, not missing.
+        .map(|t| {
+            std::time::SystemTime::now()
+                .duration_since(t)
+                .unwrap_or_default()
+        })
         .is_some_and(|age| age <= stale)
 }
 
@@ -285,7 +290,17 @@ impl FrameTrace {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_millis() as u64);
             let path = dir.join(dir_file_name(wall_ms, std::process::id()));
-            let mut trace = Self::create_with(&path, Some(cap), ledgers_every)?;
+            // A trace the live service cannot create (a full disk, a missing directory, its
+            // permissions) never stops the live fly from starting: it runs untraced, and the
+            // shadow, which checks every boot header in the sugar journal against the trace
+            // files, reports that process as a coverage gap and fails its verdict.
+            let mut trace = match Self::create_with(&path, Some(cap), ledgers_every) {
+                Ok(trace) => trace,
+                Err(error) => {
+                    tracing::error!(%error, path = %path.display(), "could not create the frame trace: this run is untraced");
+                    return Ok(None);
+                }
+            };
             trace.consumer = Some((dir.to_owned(), stale));
             return Ok(Some(trace));
         }

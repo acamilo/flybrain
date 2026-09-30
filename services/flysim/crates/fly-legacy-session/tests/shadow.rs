@@ -25,11 +25,45 @@ use fly_session::legacy_agent::LegacyProfileKind;
 use fly_session::legacy_parity;
 use flysim::snapshot::MacroMode;
 
+/// The `flysim` binary built from *this* tree, in this test's own target directory and profile.
+///
+/// `cargo test -p fly-legacy-session` does not build `flysim`'s binary, so a binary found beside the
+/// test can be stale -- built from another tree that shared the target directory -- and a stale
+/// flysim that predates `FLY_TRACE_DIR` writes no trace at all (the "one trace file per process"
+/// failure, 0 files, seen on a build box whose target directory other trees shared). So the test
+/// builds it: `cargo build -p flysim --bin flysim` with the same target directory, profile and
+/// flags, a no-op when it is current. `None` (skip) only when cargo is not reachable.
 fn flysim_binary() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let release = exe.parent()?.parent()?;
-    let path = release.join("flysim");
-    path.is_file().then_some(path)
+    let profile_dir = exe.parent()?.parent()?; // <target>/<profile>/deps/<test>
+    let target = profile_dir.parent()?;
+    let release = profile_dir.file_name()? == "release";
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut build = Command::new(cargo);
+    build
+        .args(["build", "-p", "flysim", "--bin", "flysim"])
+        .env("CARGO_TARGET_DIR", target)
+        .current_dir(env!("CARGO_MANIFEST_DIR"));
+    if release {
+        build.arg("--release");
+    }
+    match build.status() {
+        Ok(status) => assert!(
+            status.success(),
+            "building the flysim binary under test failed"
+        ),
+        Err(e) => {
+            eprintln!("skipping: cargo is not reachable to build flysim ({e})");
+            return None;
+        }
+    }
+    let path = profile_dir.join("flysim");
+    assert!(
+        path.is_file(),
+        "no flysim binary at {} after the build",
+        path.display()
+    );
+    Some(path)
 }
 
 fn free_port() -> u16 {
@@ -72,6 +106,17 @@ struct LiveDirs {
 }
 
 fn start_live(binary: &Path, rom: &Path, dirs: &LiveDirs, log: &Path) -> Live {
+    start_live_traced(binary, rom, dirs, log, true)
+}
+
+/// `traced = false` starts the service with no `FLY_TRACE_DIR`: a live process that leaves no
+/// trace, as one whose trace cannot be created would.
+fn start_live_traced(binary: &Path, rom: &Path, dirs: &LiveDirs, log: &Path, traced: bool) -> Live {
+    let trace_dir = if traced {
+        dirs.trace.clone()
+    } else {
+        PathBuf::new()
+    };
     let control = free_port();
     let child = Command::new(binary)
         .env("FLY_ROM", rom)
@@ -88,7 +133,7 @@ fn start_live(binary: &Path, rom: &Path, dirs: &LiveDirs, log: &Path) -> Live {
         .env("FLYSIM_LOOP_HOT_SECONDS", "1")
         .env("FLYSIM_LOOP_CHECKPOINT_SECONDS", "4")
         .env("RAYON_NUM_THREADS", "1")
-        .env("FLY_TRACE_DIR", &dirs.trace)
+        .env("FLY_TRACE_DIR", &trace_dir)
         .env("FLY_TRACE_LEDGERS", "1")
         .env_remove("FLY_TRACE")
         .env_remove("NOTIFY_SOCKET")
@@ -330,7 +375,13 @@ fn the_shadow_follows_the_real_service_and_catches_every_planted_difference() {
     live.stop();
 
     let files = transitions(&dirs.trace);
-    assert_eq!(files.len(), 2, "one trace file per process");
+    assert_eq!(
+        files.len(),
+        2,
+        "one trace file per process; the shadow's verdict: {}; divergence: {}",
+        verdict_of(&out),
+        std::fs::read_to_string(out.join("divergence.json")).unwrap_or_default()
+    );
     let total: usize = files.iter().map(|(_, n)| n).sum();
     let deadline = Instant::now() + Duration::from_secs(600);
     loop {
@@ -344,19 +395,42 @@ fn the_shadow_follows_the_real_service_and_catches_every_planted_difference() {
         );
         std::thread::sleep(Duration::from_millis(200));
     }
-    stop.request();
-    let (ended, verdict) = handle.join().unwrap().expect("the shadow ran");
-    let v = verdict_of(&out);
+    let passed = verdict_of(&out);
     eprintln!(
-        "shadow: {ended:?} {}",
-        serde_json::to_string_pretty(&v).unwrap()
+        "shadow after both processes: {}",
+        serde_json::to_string_pretty(&passed).unwrap()
     );
-    assert_eq!(ended, Ended::Stopped);
-    assert!(verdict.divergence.is_none());
     assert_eq!(
-        verdict.status,
-        Status::Pass,
+        passed["status"], "pass",
         "40 brain seconds against a 30 s window"
+    );
+    assert!(passed["firstDivergence"].is_null());
+
+    // Process three runs untraced while the shadow follows: it can never be compared, so the
+    // shadow must fail its verdict (coverage), not keep a pass built on the traced processes.
+    let live = start_live_traced(&binary, &rom, &dirs, &root.join("flysim-3.log"), false);
+    live.run_for(3_000.0);
+    live.stop();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while !handle.is_finished() {
+        if Instant::now() > deadline {
+            stop.request();
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let (ended, verdict) = handle.join().unwrap().expect("the shadow ran");
+    assert_eq!(
+        ended,
+        Ended::Diverged,
+        "an untraced live process fails the verdict"
+    );
+    let coverage = verdict.divergence.as_ref().expect("a divergence");
+    assert_eq!(coverage.kind, "coverage", "{}", coverage.detail);
+    assert_eq!(verdict.status, Status::Diverged);
+    assert_eq!(
+        transitions(&dirs.trace).len(),
+        2,
+        "process three left no trace"
     );
     assert_eq!(verdict.agreement.transitions, total as u64);
     assert_eq!(verdict.segments_compared, 2);

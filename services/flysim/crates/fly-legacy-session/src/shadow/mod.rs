@@ -370,6 +370,57 @@ pub fn parse_lag_seconds(text: &str) -> Option<f64> {
         })
 }
 
+/// Unix milliseconds now.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// The start wall ms a trace file's name carries (`trace-<ms>-<pid>.jsonl`).
+pub fn trace_start_ms(path: &Path) -> Option<u64> {
+    path.file_name()?
+        .to_str()?
+        .strip_prefix("trace-")?
+        .split('-')
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// The live processes that booted after `since` and have no trace file, in the sugar journal's
+/// boot headers (every flysim process writes one, traced or not) against the trace files seen.
+/// A process's trace file is created during its boot, after the previous process's boot header
+/// and before its own, so each boot owns the trace files started in that interval. Returns the
+/// untraced boots' headers; `checked` collects the boots matched, so each is judged once.
+pub fn untraced_boots(
+    boots: &[Value],
+    traces_seen: &std::collections::BTreeSet<u64>,
+    since: u64,
+    checked: &mut std::collections::BTreeSet<u64>,
+) -> Vec<Value> {
+    let mut walls: Vec<(u64, &Value)> = boots
+        .iter()
+        .filter(|b| b["runtime"] == "flysim")
+        .filter_map(|b| Some((b["wallMs"].as_u64()?, b)))
+        .collect();
+    walls.sort_by_key(|(w, _)| *w);
+    walls.dedup_by_key(|(w, _)| *w);
+    let mut untraced = Vec::new();
+    let mut previous = 0u64;
+    for (wall, boot) in walls {
+        if wall > since && !checked.contains(&wall) {
+            if traces_seen.range(previous + 1..=wall).next().is_some() {
+                checked.insert(wall);
+            } else {
+                untraced.push(boot.clone());
+            }
+        }
+        previous = wall;
+    }
+    untraced
+}
+
 /// Writes the heartbeat file (its modification time is what counts).
 fn touch(path: &Path) {
     if let Err(e) = std::fs::write(path, verdict::now_iso()) {
@@ -473,6 +524,10 @@ pub async fn run(config: ShadowConfig, stop: StopFlag) -> Result<(Ended, Verdict
         stop,
         last_write: Instant::now() - Duration::from_secs(60),
         following: None,
+        started_wall_ms: now_ms(),
+        traces_seen: Default::default(),
+        boots_checked: Default::default(),
+        last_coverage: Instant::now() - Duration::from_secs(60),
     };
     shadow.write();
     let ended = shadow.follow().await;
@@ -513,6 +568,12 @@ struct Shadow {
     last_write: Instant,
     /// The file being compared, the bytes and lines of it compared so far.
     following: Option<(PathBuf, u64, u64)>,
+    /// Coverage: when this shadow started (Unix ms), every trace file it has seen (start ms),
+    /// the live boots already matched to one, and when it last looked.
+    started_wall_ms: u64,
+    traces_seen: std::collections::BTreeSet<u64>,
+    boots_checked: std::collections::BTreeSet<u64>,
+    last_coverage: Instant,
 }
 
 impl Shadow {
@@ -531,6 +592,44 @@ impl Shadow {
             eprintln!("fly-shadow: could not write {}: {e}", path.display());
         }
         self.last_write = Instant::now();
+    }
+
+    /// Every live process since the shadow started must have left a trace: one that ran untraced
+    /// (its trace could not be created, or its consumer check failed) can never be compared, so
+    /// it fails the verdict as a `coverage` divergence rather than letting the window pass on the
+    /// processes that were traced. Looked at every 5 s.
+    fn coverage(&mut self) -> Option<Divergence> {
+        if self.last_coverage.elapsed() < Duration::from_secs(5) {
+            return None;
+        }
+        self.last_coverage = Instant::now();
+        if let Ok(files) = follow::trace_files(&self.config.trace_dir) {
+            self.traces_seen
+                .extend(files.iter().filter_map(|f| trace_start_ms(f)));
+        }
+        let segments = flysim::journal::read_segments(&self.config.hot_dir).ok()?;
+        let boots: Vec<Value> = segments.into_iter().filter_map(|s| s.boot).collect();
+        let untraced = untraced_boots(
+            &boots,
+            &self.traces_seen,
+            self.started_wall_ms,
+            &mut self.boots_checked,
+        );
+        let boot = untraced.first()?;
+        Some(Divergence {
+            kind: "coverage".to_owned(),
+            trace: String::new(),
+            step: boot["startFrame"].as_str().and_then(|s| s.parse().ok()),
+            difference: None,
+            detail: format!(
+                "a live flysim process booted at {} ({}, frame {}) left no trace while the shadow \
+                 was running: its transitions can never be compared",
+                verdict::iso(boot["wallMs"].as_i64().unwrap_or(0)),
+                boot["origin"].as_str().unwrap_or("?"),
+                boot["startFrame"].as_str().unwrap_or("?"),
+            ),
+            context: Vec::new(),
+        })
     }
 
     fn write_if_due(&mut self) {
@@ -587,6 +686,10 @@ impl Shadow {
                     Ok(None) => {}
                     Err(e) => return Err(format!("{}: {e}", dir.display())),
                 }
+                if let Some(divergence) = self.coverage() {
+                    self.diverged(divergence);
+                    return Ok(Ended::Diverged);
+                }
                 self.write_if_due();
                 tokio::time::sleep(self.config.poll).await;
             };
@@ -595,6 +698,7 @@ impl Shadow {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             eprintln!("fly-shadow: following {name}");
+            self.traces_seen.extend(trace_start_ms(&next));
             self.verdict.current_trace = Some(name.clone());
             let compared_before = self.verdict.agreement.transitions;
             let end = self.segment(&next).await;
@@ -658,6 +762,9 @@ impl Shadow {
                         format!("reading the trace: {e}"),
                     )),
                 };
+            }
+            if let Some(divergence) = self.coverage() {
+                return Err(SegmentEnd::Diverged(Box::new(divergence)));
             }
             self.write_if_due();
             tokio::time::sleep(self.config.poll).await;
@@ -1185,6 +1292,9 @@ impl Shadow {
             {
                 return SegmentEnd::Stop(Ended::Limit);
             }
+            if let Some(divergence) = self.coverage() {
+                return SegmentEnd::Diverged(Box::new(divergence));
+            }
             self.write_if_due();
         }
     }
@@ -1255,6 +1365,26 @@ mod tests {
         // The lag falls to zero (a new process): no rate across the restart.
         assert!(!j.observe(t0 + Duration::from_secs(82), 0.0));
         assert!(!j.observe(t0 + Duration::from_secs(84), 0.0));
+    }
+
+    #[test]
+    fn every_boot_after_the_start_owns_a_trace() {
+        let boot = |wall: u64| serde_json::json!({"runtime": "flysim", "wallMs": wall, "startFrame": "1", "origin": "x"});
+        let boots = vec![boot(1_000), boot(2_000), boot(3_000), boot(4_000)];
+        let mut checked = Default::default();
+        // Traces created during boots 2 and 4 (the one at 1,000 predates the shadow).
+        let traces: std::collections::BTreeSet<u64> = [1_950, 3_990].into();
+        let untraced = untraced_boots(&boots, &traces, 1_500, &mut checked);
+        assert_eq!(untraced.len(), 1);
+        assert_eq!(untraced[0]["wallMs"], 3_000);
+        assert_eq!(checked, [2_000u64, 4_000].into());
+        // A session-runtime boot is not this shadow's to follow; a boot before the start neither.
+        let other = vec![serde_json::json!({"runtime": "fly-session", "wallMs": 5_000})];
+        assert!(untraced_boots(&other, &traces, 1_500, &mut checked).is_empty());
+        assert_eq!(
+            trace_start_ms(Path::new("/x/trace-0001790741297310-444741.jsonl")),
+            Some(1_790_741_297_310)
+        );
     }
 
     #[test]
