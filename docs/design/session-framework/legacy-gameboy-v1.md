@@ -803,12 +803,20 @@ make sure of it:
   (`<trace dir>/consumer`) every 30 s and removes it when it stops. flysim starts no trace without
   a fresh heartbeat, stops a running one within a minute of frames once the heartbeat is more than
   10 minutes old, and keeps the directory under 8 GiB.
-- *The guard* (`fly-shadow-run guard`, every 60 s, root) compares the live fly with the baseline
-  recorded before the shadow started. It stops everything and restarts flysim without the trace
-  when either of these happens while the fly runs:
-  - `fly_lag_seconds` grew by a second in the same process;
-  - the 10-s mean `fly_realtime_factor` fell below min(0.97, baseline - 0.03).
-- *The shadow* runs at `SCHED_IDLE` off flysim's CPUs, and pauses while the live lag grows.
+- *The guard* (`fly-shadow-run guard`, every 60 s, root) judges the live fly against its own pace
+  before the shadow existed. The live fly does not always keep real time: the release container
+  has run at a realtime factor of 0.66, and at 0.77-0.99 after its cpuset rebalance. So `start`
+  first measures a 10-minute baseline: the mean and spread of 10-s `fly_realtime_factor` means,
+  and the `fly_lag_seconds` growth rate. The guard trips only on a *sustained* degradation against
+  that baseline: 3 checks in a row in which the last 5 samples of the same process fall below the
+  baseline realtime factor, or grow lag faster than the baseline rate, by more than
+  max(0.05, 4 x spread / sqrt 5). A trip stops everything and restarts flysim without the trace.
+  The guard stops itself when the shadow is not running. `lint.sh` holds the rule to the release
+  container's profiles, synthesized, and to traces recorded from a real flysim with and without a
+  shadow. It found no false trip in 600 synthetic 3-hour runs.
+- *The shadow* runs at `SCHED_IDLE` off flysim's CPUs. It pauses for a minute while the live lag
+  grows faster than the baseline rate. When a pause does not help, the shadow is not the cause,
+  and it stops pausing for 10 minutes.
 
 **The verdict contract (for CUT-01).** The shadow writes `verdict.json` in the format
 `fly-shadow-verdict-v1` (`shadow::verdict`, whose module notes list the fields). CUT-01 cuts over
@@ -816,7 +824,8 @@ automatically only if all of the following hold when it reads the file, at the m
 over:
 
 - `status` is `pass` and `firstDivergence` is `null`;
-- `compared.brainSeconds` ≥ `required.brainSeconds`.
+- `compared.brainSeconds` ≥ `required.brainSeconds`, and never less than the operator's 10,800 s,
+  whatever window the shadow was run with;
 - *Saves were compared.* At least one per 600 brain seconds was compared byte for byte, and at
   most 10 % of those the trace named were unavailable.
 - *The release.* `candidate.release` is the directory `/opt/fly/current` resolves to now. Every
@@ -825,7 +834,9 @@ over:
 - `candidate.compatibility` is the live `--print-compatibility`;
 - every `skipped` entry is one of the live side's own kinds;
 - *the shadow is alive and caught up*: `updatedAt` is at most 5 minutes old and
-  `lagTransitions` is at most 3,600.
+  `lagTransitions` is at most 3,600, counted at every write (paused or not) over the rest of the
+  current file and every newer one;
+- (`fly-shadow-run check`) the guard has not tripped and `flyshadow.service` is running.
 
 `fly-shadow check` (and `fly-shadow-run check`) implements exactly this rule and exits 0 only when
 it holds. Anything else keeps the legacy fly. The one-command rollback `fly-runtime legacy` is

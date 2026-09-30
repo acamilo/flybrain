@@ -4,7 +4,7 @@
 # container, by the coordinator, with the container claimed in the host's agent claim log (one
 # agent at a time).
 #
-#   fly-shadow-run start     baseline the live fly, turn flysim's trace on, start flyshadow.service
+#   fly-shadow-run start     baseline the live fly (10 min), turn flysim's trace on, start flyshadow.service
 #                            and the live-impact guard, restart flysim once
 #   fly-shadow-run stop      stop the shadow and the guard, turn the trace off (at flysim's next
 #                            restart; --restart-flysim restarts it now), remove trace and spool
@@ -13,7 +13,8 @@
 #                            into the release /opt/fly/current points to, onto flysim-session
 #   fly-shadow-run guard     (flyshadow-guard.timer, every 60 s) stop everything and restart flysim
 #                            without the trace if the live fly pays for the shadow
-#   fly-shadow-run decide BASELINE SAMPLE   the guard's rule on two JSON files (lint tests it)
+#   fly-shadow-run simulate BASELINE.jsonl CHECKS.jsonl   the guard's rule over recorded samples
+#   fly-shadow-run baseline SAMPLES.jsonl                  the baseline those samples give
 #
 # The shadow is report-only (infra/units/flyshadow.service). `start` restarts flysim.service once,
 # the same operator action as the unstick rule's restart: a restore keeps the rung and clears the
@@ -25,14 +26,26 @@
 # 10 minutes; flysim also keeps the trace directory under 8 GiB, and the shadow deletes every file
 # it has compared.
 #
-# The guard (N2 of the SHADOW-01 review). `start` records the live fly's baseline first: the mean
-# fly_realtime_factor over 10 s, fly_lag_seconds and fly_uptime_seconds. Every minute the guard
-# samples again and TRIPS when, while flysim is running (not paused, booting or recovering):
-#   - fly_lag_seconds grew by at least GUARD_LAG_SECONDS (1 s) in the same flysim process -- the
-#     loop fell more than a second behind real time; a new process restarts the count from 0; or
-#   - the 10-s mean fly_realtime_factor is below min(0.97, baseline - 0.03).
+# The guard (SHADOW-01 review N2, recalibrated by round 2, G1). The live fly does not always run
+# at real time (the release CT has run at a realtime factor of 0.66, and 0.77-0.99 after its cpuset
+# rebalance), so the guard judges the live fly against ITSELF, before the shadow existed:
+#   - `start` first measures a BASELINE over FLY_SHADOW_BASELINE_SECONDS (600): sixty 10-s means
+#     of fly_realtime_factor (their mean and spread) and the lag growth rate of fly_lag_seconds
+#     (seconds of lag per wall second: about 1 - RTF when the loop is behind real time). It
+#     refuses to start on fewer than half the samples running.
+#   - Every 60 s the guard takes one 10-s sample. Over the last 5 samples of the same flysim
+#     process (a restart starts the window again) it compares the mean RTF and the lag growth
+#     rate with the baseline. The margin is max(0.05, 4 x the baseline spread / sqrt(5)), so it
+#     scales with how noisy this fly already was.
+#   - It TRIPS only on a SUSTAINED degradation: 3 checks in a row with the 5-sample mean RTF below
+#     the baseline mean minus the margin, or the lag growth rate above the baseline rate plus it.
+#     A paused, booting or recovering fly is not judged.
+# `fly-shadow-run simulate BASELINE.jsonl CHECKS.jsonl` runs this rule over recorded samples;
+# lint drives it over real and synthetic RTF traces (infra/tests/fixtures/shadow-guard/).
 # Tripping stops flyshadow.service and the guard timer, removes the trace drop-in, restarts
-# flysim.service without the trace, and writes /srv/fly/shadow/guard-tripped.json.
+# flysim.service without the trace, and writes /srv/fly/shadow/guard-tripped.json. When the shadow
+# is no longer running (it diverged, passed and stopped, or crashed), the guard stops its own
+# timer and changes nothing: it only ever acts against a running shadow.
 #
 # Files (all owned by fly):
 #   /srv/fly/shadow/trace/trace-<ms>-<pid>.jsonl   flysim's per-process trace (4 GiB each, 8 in all)
@@ -40,7 +53,8 @@
 #   /srv/fly/shadow/spool/                          copies of the live saves, bounded (512 MiB)
 #   /srv/fly/shadow/verdict.json                    fly-shadow-verdict-v1 (the CUT-01 contract)
 #   /srv/fly/shadow/divergence.json                 the first divergence with its context
-#   /srv/fly/shadow/baseline.json                   the guard's baseline
+#   /srv/fly/shadow/baseline.json                   the guard's baseline (and baseline-samples.jsonl)
+#   /srv/fly/shadow/guard-state.json                the guard's recent samples
 set -euo pipefail
 
 SHADOW_DIR="${FLY_SHADOW_DIR:-/srv/fly/shadow}"
@@ -52,14 +66,14 @@ CONTROL_URL="${FLY_CONTROL_URL:-http://127.0.0.1:7401}"
 # The ledger digest period in transitions: about one a second. Every boundary is proved in the
 # offline rehearsal (the SHADOW-01 report); on the stream a digest a second bounds the extra work.
 LEDGERS_EVERY="${FLY_SHADOW_LEDGERS_EVERY:-60}"
-GUARD_LAG_SECONDS="${FLY_SHADOW_GUARD_LAG_SECONDS:-1}"
+BASELINE_SECONDS="${FLY_SHADOW_BASELINE_SECONDS:-600}"
 
 die() { echo "fly-shadow-run: $*" >&2; exit 2; }
 log() { echo "fly-shadow-run: $*"; }
 
 need_root() { [ "$(id -u)" = 0 ] || die "run as root (it installs a drop-in and restarts flysim)"; }
 
-# One JSON sample of the live fly: {status, rtMean, lag, uptime}, the realtime factor averaged
+# One JSON sample of the live fly: {t, status, rtMean, lag, uptime}, the realtime factor averaged
 # over 10 one-second reads.
 sample() {
     python3 - "$METRICS_URL" "$CONTROL_URL" <<'PY'
@@ -87,33 +101,92 @@ try:
     status = json.load(urllib.request.urlopen(control_url + "/status", timeout=3)).get("status")
 except Exception:
     status = None
-print(json.dumps({"status": status, "rtMean": sum(factors) / len(factors),
+print(json.dumps({"t": time.time(), "status": status, "rtMean": sum(factors) / len(factors),
                   "lag": m.get("fly_lag_seconds"), "uptime": m.get("fly_uptime_seconds")}))
 PY
 }
 
-# The guard's rule: BASELINE and SAMPLE are JSON files. Prints "ok", "rebaseline <json>" (a new
-# flysim process: the lag count restarts) or "trip <reason>"; exit 0, 0 or 1.
-decide() {
-    python3 - "$1" "$2" "$GUARD_LAG_SECONDS" <<'PY'
-import json, sys
-base = json.load(open(sys.argv[1])); now = json.load(open(sys.argv[2])); lag_bound = float(sys.argv[3])
-if now.get("status") != "running" or now.get("lag") is None or now.get("uptime") is None:
-    print("ok (flysim is %s: not judged)" % now.get("status")); sys.exit(0)
-if now["uptime"] < base["uptime"]:
-    # A new process (a restart the shadow follows): its lag starts at zero.
-    base = dict(base, lag=0.0, uptime=now["uptime"])
-    rebased = True
-else:
-    rebased = False
-if now["lag"] - base["lag"] >= lag_bound:
-    print("trip fly_lag_seconds grew %.1f s since the baseline" % (now["lag"] - base["lag"])); sys.exit(1)
-floor = min(0.97, base["rtMean"] - 0.03)
-if now["rtMean"] < floor:
-    print("trip fly_realtime_factor %.3f below %.3f (baseline %.3f)" % (now["rtMean"], floor, base["rtMean"])); sys.exit(1)
-print(("rebaseline " + json.dumps(base)) if rebased else "ok"); sys.exit(0)
-PY
-}
+# The guard's rule, one definition for `baseline`, `decide` and `simulate`.
+GUARD_PY='
+import json, math, sys
+WINDOW, SUSTAIN, MIN_MARGIN = 5, 3, 0.05
+
+def running(s):
+    return s.get("status") == "running" and s.get("lag") is not None and s.get("uptime") is not None
+
+def rate(samples):
+    """Lag growth per wall second over the longest same-process run of samples."""
+    best, run = None, []
+    for s in samples:
+        if run and s["uptime"] < run[-1]["uptime"]:
+            run = []
+        run.append(s)
+        if len(run) >= 2 and (best is None or len(run) > len(best)):
+            best = list(run)
+    if not best or best[-1]["t"] <= best[0]["t"]:
+        return None
+    return max(0.0, (best[-1]["lag"] - best[0]["lag"]) / (best[-1]["t"] - best[0]["t"]))
+
+def baseline(samples):
+    ok = [s for s in samples if running(s)]
+    if len(ok) < max(3, len(samples) // 2):
+        raise SystemExit("baseline: only %d of %d samples running" % (len(ok), len(samples)))
+    rtf = [s["rtMean"] for s in ok]
+    mean = sum(rtf) / len(rtf)
+    sd = math.sqrt(sum((x - mean) ** 2 for x in rtf) / max(1, len(rtf) - 1))
+    lag_rate = rate(ok)
+    return {"rtfMean": mean, "rtfSd": sd, "lagRate": lag_rate if lag_rate is not None else 0.0,
+            "samples": len(ok), "margin": max(MIN_MARGIN, 4 * sd / math.sqrt(WINDOW))}
+
+def decide(base, state, s):
+    """Returns (state, verdict); the verdict starts with ok or trip."""
+    history, run = state.get("history", []), state.get("degradedRun", 0)
+    if not running(s):
+        return state, "ok (flysim is %s: not judged)" % s.get("status")
+    if history and s["uptime"] < history[-1]["uptime"]:
+        history, run = [], 0
+    history = (history + [s])[-WINDOW:]
+    state = {"history": history, "degradedRun": run}
+    if len(history) < WINDOW:
+        state["degradedRun"] = 0
+        return state, "ok (warming: %d of %d samples in this process)" % (len(history), WINDOW)
+    rtf = sum(h["rtMean"] for h in history) / WINDOW
+    lag_rate = rate(history) or 0.0
+    m = base["margin"]
+    why = []
+    if rtf < base["rtfMean"] - m:
+        why.append("realtime factor %.3f < baseline %.3f - %.3f" % (rtf, base["rtfMean"], m))
+    if lag_rate > base["lagRate"] + m:
+        why.append("lag growth %.3f s/s > baseline %.3f + %.3f" % (lag_rate, base["lagRate"], m))
+    state["degradedRun"] = run + 1 if why else 0
+    if state["degradedRun"] >= SUSTAIN:
+        return state, "trip " + "; ".join(why) + " (%d checks in a row)" % state["degradedRun"]
+    if why:
+        return state, "ok degraded %d/%d: %s" % (state["degradedRun"], SUSTAIN, "; ".join(why))
+    return state, "ok"
+
+def load_jsonl(path):
+    return [json.loads(line) for line in open(path) if line.strip()]
+
+mode = sys.argv[1]
+if mode == "baseline":
+    print(json.dumps(baseline(load_jsonl(sys.argv[2]))))
+elif mode == "decide":
+    base, state = json.load(open(sys.argv[2])), json.load(open(sys.argv[3]))
+    state, verdict = decide(base, state, json.load(open(sys.argv[4])))
+    json.dump(state, open(sys.argv[3], "w"))
+    print(verdict)
+    sys.exit(1 if verdict.startswith("trip") else 0)
+elif mode == "simulate":
+    base = baseline(load_jsonl(sys.argv[2]))
+    state, n = {}, 0
+    for n, s in enumerate(load_jsonl(sys.argv[3]), 1):
+        state, verdict = decide(base, state, s)
+        if verdict.startswith("trip"):
+            print("trip at check %d: %s (baseline %s)" % (n, verdict, json.dumps(base)))
+            sys.exit(1)
+    print("no trip over %d checks (baseline %s)" % (n, json.dumps(base)))
+'
 
 start() {
     need_root
@@ -125,13 +198,20 @@ start() {
         mv "$SHADOW_DIR/verdict.json" "$SHADOW_DIR/verdict.$(date -u +%Y%m%dT%H%M%SZ).json"
     fi
     rm -f "$SHADOW_DIR/divergence.json" "$SHADOW_DIR/guard-tripped.json"
-    log "recording the live fly's baseline (10 s)"
-    local base
-    base="$(sample)" || die "could not read flysim's metrics for the baseline"
-    python3 -c 'import json,sys; b=json.loads(sys.argv[1]); assert b["status"]=="running" and b["lag"] is not None, b' "$base" \
-        || die "flysim is not running normally; not starting the shadow ($base)"
+    log "recording the live fly's baseline over ${BASELINE_SECONDS} s, before the shadow exists"
+    local n samples base
+    n=$(( BASELINE_SECONDS / 10 ))
+    [ "$n" -ge 3 ] || die "FLY_SHADOW_BASELINE_SECONDS must be at least 30"
+    samples="$SHADOW_DIR/baseline-samples.jsonl"
+    : > "$samples"
+    for _ in $(seq 1 "$n"); do
+        sample >> "$samples" || die "could not read flysim's metrics for the baseline"
+    done
+    base="$(python3 -c "$GUARD_PY" baseline "$samples")" \
+        || die "flysim did not run normally during the baseline; not starting the shadow"
     printf '%s\n' "$base" > "$SHADOW_DIR/baseline.json"
-    chown fly:fly "$SHADOW_DIR/baseline.json"
+    printf '{}\n' > "$SHADOW_DIR/guard-state.json"
+    chown fly:fly "$SHADOW_DIR/baseline.json" "$samples" "$SHADOW_DIR/guard-state.json"
     log "baseline: $base"
     mkdir -p "$DROPIN_DIR"
     cat > "$DROPIN" <<EOF
@@ -180,7 +260,7 @@ stop() {
     else
         log "flysim stops its current trace within a minute (no consumer) and starts none at its next restart"
     fi
-    rm -f "$SHADOW_DIR/baseline.json"
+    rm -f "$SHADOW_DIR/baseline.json" "$SHADOW_DIR/guard-state.json"
     if [ "$keep" = 0 ]; then
         rm -rf "$SHADOW_DIR/spool" "$SHADOW_DIR/work"
         find "$SHADOW_DIR/trace" -name 'trace-*.jsonl' -delete 2>/dev/null || true
@@ -190,15 +270,24 @@ stop() {
 
 guard() {
     need_root
-    [ -f "$SHADOW_DIR/baseline.json" ] || { log "no baseline: nothing to guard"; exit 0; }
+    if [ ! -f "$SHADOW_DIR/baseline.json" ]; then
+        log "no baseline: nothing to guard"
+        systemctl stop flyshadow-guard.timer 2>/dev/null || true
+        exit 0
+    fi
+    # The guard acts only against a running shadow: one that diverged, stopped or crashed costs
+    # the live fly nothing more, and flysim stops its trace without the shadow's heartbeat.
+    if ! systemctl is-active --quiet flyshadow.service; then
+        log "flyshadow.service is not running: the guard stops itself and changes nothing"
+        systemctl stop flyshadow-guard.timer 2>/dev/null || true
+        exit 0
+    fi
+    [ -f "$SHADOW_DIR/guard-state.json" ] || printf '{}\n' > "$SHADOW_DIR/guard-state.json"
     local now tmp verdict
     now="$(sample)" || { log "could not read flysim's metrics; not judged this minute"; exit 0; }
     tmp="$(mktemp)"
     printf '%s\n' "$now" > "$tmp"
-    if verdict="$(decide "$SHADOW_DIR/baseline.json" "$tmp")"; then
-        case "$verdict" in
-            rebaseline*) printf '%s\n' "${verdict#rebaseline }" > "$SHADOW_DIR/baseline.json" ;;
-        esac
+    if verdict="$(python3 -c "$GUARD_PY" decide "$SHADOW_DIR/baseline.json" "$SHADOW_DIR/guard-state.json" "$tmp")"; then
         rm -f "$tmp"
         log "guard: $verdict ($now)"
         exit 0
@@ -206,7 +295,7 @@ guard() {
     rm -f "$tmp"
     log "guard TRIPPED: $verdict ($now)"
     stop_all "guard: $verdict"
-    rm -f "$SHADOW_DIR/baseline.json"
+    rm -f "$SHADOW_DIR/baseline.json" "$SHADOW_DIR/guard-state.json"
     python3 -c 'import json,sys,datetime; json.dump({"at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "reason": sys.argv[1], "sample": json.loads(sys.argv[2])}, open(sys.argv[3], "w"))' \
         "$verdict" "$now" "$SHADOW_DIR/guard-tripped.json"
     systemctl restart flysim.service
@@ -236,6 +325,16 @@ PY
 
 check() {
     [ -x "$BIN" ] || die "$BIN is missing"
+    # A tripped guard, or a shadow that is not running, never allows a cutover, whatever the
+    # verdict file says.
+    if [ -f "$SHADOW_DIR/guard-tripped.json" ]; then
+        echo "cutover refused: the guard tripped ($(cat "$SHADOW_DIR/guard-tripped.json"))"
+        exit 1
+    fi
+    if ! systemctl is-active --quiet flyshadow.service; then
+        echo "cutover refused: flyshadow.service is not running"
+        exit 1
+    fi
     # The live service's configuration, for its compatibility string.
     set -a
     # shellcheck disable=SC1091
@@ -254,6 +353,7 @@ case "$cmd" in
     status) status ;;
     check) check "$@" ;;
     guard) guard ;;
-    decide) [ $# = 2 ] || die "decide BASELINE SAMPLE"; decide "$1" "$2" ;;
-    *) echo "usage: fly-shadow-run start|stop [--restart-flysim] [--keep]|status|check [--max-age-seconds N]|guard|decide BASELINE SAMPLE" >&2; exit 2 ;;
+    baseline) [ $# = 1 ] || die "baseline SAMPLES.jsonl"; python3 -c "$GUARD_PY" baseline "$1" ;;
+    simulate) [ $# = 2 ] || die "simulate BASELINE.jsonl CHECKS.jsonl"; python3 -c "$GUARD_PY" simulate "$1" "$2" ;;
+    *) echo "usage: fly-shadow-run start|stop [--restart-flysim] [--keep]|status|check [--max-age-seconds N]|guard|baseline SAMPLES.jsonl|simulate BASELINE.jsonl CHECKS.jsonl" >&2; exit 2 ;;
 esac

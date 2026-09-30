@@ -20,10 +20,11 @@
 # about the live fly's own CPU per frame. It must never take a cycle the live
 # fly, the page or the encoder wants, so it runs SCHED_IDLE (it only gets CPU
 # nobody else is using), off flysim's cpuset (05-deploy.sh writes
-# AllowedCPUs= for it from the page and encoder groups), and it pauses for a
-# minute whenever flysim's own fly_lag_seconds grows. flyshadow-guard.timer
-# (fly-shadow-run guard) stops it and restarts flysim without the trace if
-# the live fly loses real time anyway. It is lag-tolerant: the trace and the
+# AllowedCPUs= for it from the page and encoder groups). It pauses for a minute
+# while flysim's lag grows faster than its pre-start baseline rate (and stops
+# pausing when that does not help: then it is not the cause).
+# flyshadow-guard.timer (fly-shadow-run guard) stops it and restarts flysim
+# without the trace on a sustained degradation against that baseline. It is lag-tolerant: the trace and the
 # spool are on disk, so running behind real time only delays the verdict (the
 # 512 MiB spool covers about 15 minutes of lag for hot saves).
 #
