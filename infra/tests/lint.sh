@@ -756,9 +756,9 @@ grep -qF 'flysim.service.d/10-runtime.conf' "$INFRA_DIR/05-deploy.sh" \
     && grep -qF '"${release_path}/flysim-session"' "$INFRA_DIR/05-deploy.sh" \
     && pass "05-deploy.sh refuses a release without flysim-session while the session runtime runs" \
     || fail "05-deploy.sh must refuse a release without flysim-session while 10-runtime.conf is present"
-grep -qE -- '--bin flysim-session' "$INFRA_DIR/build/build-flysim.sh" \
-    && grep -qE 'for extra in flysim-session fly-session' "$INFRA_DIR/build/package-release.sh" \
-    && pass "build-flysim.sh builds flysim-session and package-release.sh ships it" \
+grep -qE -- '--bin flysim-session --bin fly-shadow --bin fly-session' "$INFRA_DIR/build/build-flysim.sh" \
+    && grep -qE 'for extra in flysim-session fly-shadow fly-session' "$INFRA_DIR/build/package-release.sh" \
+    && pass "build-flysim.sh builds flysim-session and package-release.sh ships it (with fly-shadow)" \
     || fail "build-flysim.sh must build flysim-session (and fly-session) and package-release.sh ship them"
 
 rt_dir="$(mktemp -d "${TMPDIR:-/tmp}/fly-lint-runtime.XXXXXX")"
