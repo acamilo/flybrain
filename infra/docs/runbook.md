@@ -455,7 +455,7 @@ written and removed by `fly-runtime` (`infra/bin/fly-runtime`, installed to `/op
 
 ```
 pct exec $CTID -- /opt/fly/bin/fly-runtime status     # legacy | session
-pct exec $CTID -- /opt/fly/bin/fly-runtime session    # CUT-01, after the shadow's verdict
+pct exec $CTID -- /opt/fly/bin/fly-runtime session    # CUT-01, after the shadow's verdict (starts the speed probation)
 pct exec $CTID -- /opt/fly/bin/fly-runtime legacy     # the one-command rollback
 ```
 
@@ -595,6 +595,91 @@ pct exec <ctid> -- /opt/fly/bin/fly-shadow-run stop --restart-flysim   # shadow,
 - **Stop** stops the unit and the guard, removes the drop-in, and deletes the trace and the spool
   (`--keep` keeps them). Without `--restart-flysim`, the running flysim stops its current trace
   within a minute, because its consumer is gone.
+
+## Cutover to the session runtime (CUT-01)
+
+Operator decision (2026-09-30): the stream moves to the session runtime only if that runtime
+sustains at least 1.0x real time on the release container, otherwise it stays on legacy. Only the
+release container can measure that, so the switch is guarded by a **probation**. Claim the
+container in the host log first, as for any host work.
+
+```
+# 1. Deploy v0.7.0 with flysim-session installed but NOT selected (no drop-in): the ordinary deploy.
+#    The container keeps running legacy; nothing else changes. (fly-runtime status: legacy)
+# 2. Shadow, 3 h of brain time, zero divergence, guarded against live impact:
+pct exec $CTID -- /opt/fly/bin/fly-shadow-run start
+pct exec $CTID -- /opt/fly/bin/fly-shadow-run status       # until: verdict pass
+# 3. Cutover: the shadow's gate, then the switch. One command line:
+pct exec $CTID -- sh -c '/opt/fly/bin/fly-shadow-run check && /opt/fly/bin/fly-runtime session'
+# 4. Watch the probation (30 minutes after the switch):
+pct exec $CTID -- /opt/fly/bin/fly-runtime-probation status
+pct exec $CTID -- /opt/fly/bin/fly-runtime status
+# 5. Pass, or automatic fallback (below). Then stop the shadow:
+pct exec $CTID -- /opt/fly/bin/fly-shadow-run stop --restart-flysim
+# Manual rollback, any time (cancels the probation too):
+pct exec $CTID -- /opt/fly/bin/fly-runtime legacy
+```
+
+- **Step 3 in detail.** `check` refuses unless the verdict, the guard and the release all line
+  up (Shadow run above). `session` then does what "Switch the runtime" describes (compatibility
+  check, drop-in, restart, health wait) and, once flysim is healthy on the session runtime, starts
+  the probation. `session` returns 0 at that point: the probation is judged later, by the timer.
+  Stop the shadow only after the probation has passed (step 5): its trace costs the live fly, and
+  the session runtime is being measured. Until then `fly-shadow-run stop --restart-flysim` would
+  restart flysim inside the probation, which only restarts the warm-up.
+- **The probation** (`infra/bin/fly-runtime-probation`, `fly-runtime-probation.timer` every 60 s,
+  root). Each tick takes one sample of flysim's `/metrics` (`fly_realtime_factor` averaged over 10
+  one-second reads, `fly_lag_seconds`, `fly_uptime_seconds`; the same sampling as the shadow
+  guard). It judges the session runtime only:
+  - *Warm-up.* A flysim process is not judged before it has been up 300 s (connectome load,
+    restore, first minutes). A restart, a pause or a fly that is not `running` starts the window
+    again; it is never counted as slow.
+  - *Failure*, sustained and not one sample: over the judged samples of the last 10 minutes (at
+    least 8 of them) the **median** realtime factor is below **0.97**, or the lag grew by more than
+    **30 s** from the window's start to its end (median of the first and of the last three
+    samples). The median is the robust statistic the shadow guard's baseline uses: one or two
+    stalled minutes do not fail it, a steady 0.85x does, at the earliest about 13 minutes after the
+    switch (5 min warm-up, 8 samples). A lag step of more than 30 s inside the window counts as
+    lag growth.
+  - *Pass*: 30 minutes since the switch, and the latest window is full and healthy. A probation
+    that cannot fill a window within 2 h (a fly that never runs) fails as inconclusive: no proof
+    of 1.0x, no cutover. `FLY_PROBATION_*` variables tune every number (tests and rehearsals only).
+  - **On failure** it runs `fly-runtime fallback "speed: ..."`, exactly the fallback of "Switch
+    the runtime": under the same lock, `/run/fly/runtime-fellback.json` with the reason
+    (`"speed: median realtime factor 0.850 < 0.97 ..."`), the drop-in removed, flysim restarted on
+    legacy, a `fly-runtime` journal line (`journalctl -t fly-runtime`,
+    `/var/lib/fly/runtime.log`), and the probation ended (`/var/lib/fly/probation/last.json`
+    says `passed: false`). If that fallback cannot complete (no executable `flysim`) it is retried
+    every minute. The container is then on legacy and the decision is "no cutover": do not retry
+    `session` without a fix (or a new measurement) for the cause.
+  - **On pass** it writes `/run/fly/runtime-probation.json` (`{"passed": true, "at", "startedAt",
+    "medianRtf", "lagGrowth", "samples", "detail"}`; also kept in
+    `/var/lib/fly/probation/last.json` because `/run` is cleared by a reboot) and disables its
+    timer. **Nothing judges the speed afterwards.** A continuous guard would make a passing
+    cutover fall back at 03:00 on one noisy hour, on a stream that has proven itself, and the
+    watchdog already covers a stuck or dead loop. The start-limit fallback also stays as it is.
+- **Cancel and resume.** `fly-runtime legacy` cancels the probation, as does every fallback
+  (including the start-limit one), and a tick that finds the legacy runtime selected ends it
+  without a verdict. The state is `/var/lib/fly/probation/state.json` and the timer is enabled while
+  a probation runs (`[Install] WantedBy=timers.target`; nothing else enables it), so a reboot
+  during the probation resumes it: `OnBootSec=90s` runs the first tick, flysim's new process
+  starts a new warm-up and window, and the 30 minutes keep counting from the original switch.
+  `fly-runtime session --no-restart` (05-deploy's refresh of the drop-in) starts no probation;
+  `fly-runtime session --no-probation` is for rehearsals. A `session` that cannot start the
+  probation (helper or timer unit missing) falls back: an unguarded cutover is not allowed.
+- **Reading the result honestly.** The probation is absolute, as decided: a container on which the
+  legacy loop itself runs below 0.97x (the release container has been measured at 0.66, and 0.77-0.99
+  after its cpuset rebalance) will fail it, and the session runtime was measured at 1.25-1.35x
+  legacy's time per frame on the dev box. A fallback with reason `speed` therefore means "this box
+  cannot hold real time on the session runtime", not necessarily "the session runtime is
+  broken"; compare with `fly-shadow-run`'s baseline (`/srv/fly/shadow/baseline.json`) before
+  anything else. The `check` before it measures the live fly against itself; this measures it
+  against the clock.
+- **Rehearsal** without a host: `fly-runtime-probation simulate CHECKS.jsonl` runs the rule over
+  recorded samples (`{t, status, rtMean, lag, uptime}`, one a minute); `infra/tests/lint.sh` drives
+  the real `fly-runtime` and the probation over synthetic traces (healthy, 0.85x, a stall, lag
+  growth, a restore, a restart, legacy cancel), and the unit wiring has been run under a real
+  systemd 257 user manager (state, timer enable/disable, `OnFailure`-style fallback, resume).
 
 ## CPU partition (cpuset)
 

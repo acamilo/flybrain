@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+# infra/bin/fly-runtime-probation -- CUT-01's speed probation after `fly-runtime session`.
+# Pushed to /opt/fly/bin by 05-deploy.sh. Root, inside the container. Normally nobody runs it by
+# hand: `fly-runtime session` starts it, `fly-runtime legacy` and every fallback cancel it, and
+# fly-runtime-probation.timer runs `tick` every 60 s.
+#
+#   fly-runtime-probation start      begin a probation (enables and starts the timer)
+#   fly-runtime-probation cancel     end it without a verdict (disables the timer)
+#   fly-runtime-probation status     state, latest samples, result
+#   fly-runtime-probation tick       (timer) one sample and one decision
+#   fly-runtime-probation simulate CHECKS.jsonl   the rule over recorded samples (lint)
+#
+# Operator decision 2026-09-30: cut over only if the session runtime sustains >= 1.0x real time on
+# the release container. Only that box can measure it, so the switch is guarded. The rule:
+#   - A sample is one fly_realtime_factor mean over 10 one-second reads of flysim's /metrics (the
+#     same sampling as fly-shadow-run's guard), with fly_lag_seconds and fly_uptime_seconds.
+#   - Warm-up: a flysim process is not judged before it has been up FLY_PROBATION_WARMUP (300 s:
+#     the connectome load, the restore, the first minutes). A restart (uptime goes backwards)
+#     starts the window again; so does a paused or not running fly: it is not judged.
+#   - Window: the judged samples of the last FLY_PROBATION_WINDOW (600 s), at least
+#     FLY_PROBATION_MIN_SAMPLES (8). FAIL when the window's MEDIAN realtime factor is below
+#     FLY_PROBATION_MIN_RTF (0.97), or the lag grew by more than FLY_PROBATION_MAX_LAG_GROWTH
+#     (30 s) between the start and the end of the window (median of the first and of the last 3
+#     samples). The median is the same robust statistic fly-shadow-run's baseline uses: one
+#     stalled sample, or two, never fails it.
+#   - PASS when FLY_PROBATION_SECONDS (1800) have passed since `start` and the latest window is
+#     full and healthy. A probation that cannot fill a window within FLY_PROBATION_MAX_SECONDS
+#     (7200: a fly that never runs) fails as inconclusive: no proof of 1.0x, no cutover.
+# FAIL runs `fly-runtime fallback "speed: ..."` (the ordinary fallback: lock, reason file
+# /run/fly/runtime-fellback.json, journal line, flysim.service restarted on legacy). It is retried
+# every minute until it succeeds. PASS writes ${RESULT} (passed: true) and disables the timer.
+# Nothing judges the speed afterwards: the watchdog and the start-limit fallback are unchanged.
+#
+# State is ${DIR}/state.json (on disk, so a reboot resumes the probation: the timer is enabled,
+# and OnBootSec= runs it after boot); ${DIR}/last.json keeps the last verdict.
+set -euo pipefail
+
+: "${FLY_PROBATION_DIR:=/var/lib/fly/probation}"
+: "${FLY_PROBATION_RESULT:=/run/fly/runtime-probation.json}"
+: "${FLY_PROBATION_TIMER:=fly-runtime-probation.timer}"
+: "${FLY_PROBATION_READS:=10}"
+: "${FLY_METRICS_URL:=http://127.0.0.1:9101}"
+: "${FLY_CONTROL_URL:=http://127.0.0.1:7401}"
+RUNTIME_BIN="${FLY_RUNTIME_BIN:-$(dirname "$(readlink -f "$0")")/fly-runtime}"
+STATE="$FLY_PROBATION_DIR/state.json"
+LAST="$FLY_PROBATION_DIR/last.json"
+
+log() { echo "fly-runtime-probation: $*" >&2; }
+die() { log "$*"; exit 1; }
+journal() {
+    if command -v logger >/dev/null 2>&1; then logger -t fly-runtime -- "probation: $*" || true; fi
+    log "$*"
+}
+need_root() { [ "$(id -u)" = 0 ] || die "run as root"; }
+
+take_lock() {
+    mkdir -p "$FLY_PROBATION_DIR"
+    exec 8>>"$FLY_PROBATION_DIR/lock"
+    flock -w 60 8 || die "could not take $FLY_PROBATION_DIR/lock"
+}
+drop_lock() { exec 8>&-; }
+
+# One sample of the live fly: {t, status, rtMean, lag, uptime} (fly-shadow-run's format).
+sample() {
+    python3 - "$FLY_METRICS_URL" "$FLY_CONTROL_URL" "$FLY_PROBATION_READS" <<'PY'
+import json, sys, time, urllib.request
+metrics_url, control_url, reads = sys.argv[1], sys.argv[2], int(sys.argv[3])
+def metrics():
+    text = urllib.request.urlopen(metrics_url + "/metrics", timeout=3).read().decode()
+    out = {}
+    for line in text.splitlines():
+        if line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) == 2:
+            try:
+                out[parts[0]] = float(parts[1])
+            except ValueError:
+                pass
+    return out
+factors = []
+for i in range(reads):
+    factors.append(metrics().get("fly_realtime_factor", 0.0))
+    if i + 1 < reads:
+        time.sleep(1)
+m = metrics()
+try:
+    status = json.load(urllib.request.urlopen(control_url + "/status", timeout=3)).get("status")
+except Exception:
+    status = None
+print(json.dumps({"t": time.time(), "status": status, "rtMean": sum(factors) / len(factors),
+                  "lag": m.get("fly_lag_seconds"), "uptime": m.get("fly_uptime_seconds")}))
+PY
+}
+
+PROBATION_PY='
+import json, os, sys
+def env(name, default):
+    return type(default)(os.environ.get(name, default))
+WARMUP = env("FLY_PROBATION_WARMUP", 300.0)
+WINDOW = env("FLY_PROBATION_WINDOW", 600.0)
+MIN_SAMPLES = env("FLY_PROBATION_MIN_SAMPLES", 8)
+MIN_RTF = env("FLY_PROBATION_MIN_RTF", 0.97)
+MAX_LAG_GROWTH = env("FLY_PROBATION_MAX_LAG_GROWTH", 30.0)
+DURATION = env("FLY_PROBATION_SECONDS", 1800.0)
+MAX_SECONDS = env("FLY_PROBATION_MAX_SECONDS", 7200.0)
+
+def running(s):
+    return s.get("status") == "running" and s.get("lag") is not None and s.get("uptime") is not None
+
+def median(xs):
+    xs = sorted(xs)
+    n = len(xs)
+    return xs[n // 2] if n % 2 else (xs[n // 2 - 1] + xs[n // 2]) / 2
+
+def step(state, s):
+    """Returns (state, verdict, detail): verdict is wait, ok, pass or fail."""
+    started = state["startedAt"]
+    history = state.get("history", [])
+    elapsed = s["t"] - started
+    if not running(s):
+        return state, "wait", "flysim is %s: not judged" % s.get("status")
+    if history and s["uptime"] < history[-1]["uptime"]:
+        history = []
+    if s["uptime"] < WARMUP:
+        state["history"] = []
+        return state, "wait", "warming up (flysim up %.0f of %.0f s)" % (s["uptime"], WARMUP)
+    history = [h for h in history if h["t"] > s["t"] - WINDOW] + [s]
+    state["history"] = history
+    n = len(history)
+    if n < MIN_SAMPLES:
+        if elapsed >= MAX_SECONDS:
+            return state, "fail", "speed: probation inconclusive after %.0f s (%d judged samples in the window): no proof of 1.0x" % (elapsed, n)
+        return state, "wait", "collecting %d of %d samples" % (n, MIN_SAMPLES)
+    rtf = median([h["rtMean"] for h in history])
+    lag_growth = median([h["lag"] for h in history[-3:]]) - median([h["lag"] for h in history[:3]])
+    detail = "median realtime factor %.3f over %d samples, lag growth %+.1f s over %.0f s" % (
+        rtf, n, lag_growth, history[-1]["t"] - history[0]["t"])
+    state["last"] = {"medianRtf": rtf, "lagGrowth": lag_growth, "samples": n}
+    why = []
+    if rtf < MIN_RTF:
+        why.append("median realtime factor %.3f < %.2f" % (rtf, MIN_RTF))
+    if lag_growth > MAX_LAG_GROWTH:
+        why.append("lag grew %.1f s > %.0f s" % (lag_growth, MAX_LAG_GROWTH))
+    if why:
+        return state, "fail", "speed: " + ", ".join(why) + " over %d samples / %.0f s" % (
+            n, history[-1]["t"] - history[0]["t"])
+    if elapsed >= DURATION:
+        return state, "pass", detail
+    return state, "ok", detail + " (%.0f of %.0f s)" % (elapsed, DURATION)
+
+mode = sys.argv[1]
+if mode == "step":
+    state = json.load(open(sys.argv[2]))
+    state, verdict, detail = step(state, json.loads(sys.argv[3]))
+    json.dump(state, open(sys.argv[2], "w"))
+    print(verdict + " " + detail)
+elif mode == "simulate":
+    samples = [json.loads(l) for l in open(sys.argv[2]) if l.strip()]
+    state = {"startedAt": samples[0]["t"] - 60, "history": []}
+    verdict, detail = "wait", ""
+    for n, s in enumerate(samples, 1):
+        state, verdict, detail = step(state, s)
+        if verdict in ("pass", "fail"):
+            print("%s at check %d: %s" % (verdict, n, detail))
+            sys.exit(0 if verdict == "pass" else 1)
+    print("undecided after %d checks: %s %s" % (len(samples), verdict, detail))
+    sys.exit(3)
+'
+
+now_iso() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+
+enabled_timer() { systemctl "$1" --now "$FLY_PROBATION_TIMER" >/dev/null 2>&1; }
+
+start() {
+    need_root
+    take_lock
+    mkdir -p "$(dirname "$FLY_PROBATION_RESULT")" 2>/dev/null || true
+    rm -f "$FLY_PROBATION_RESULT"
+    printf '{"startedAt":%s,"startedAtIso":"%s","history":[]}\n' "$(date +%s.%N)" "$(now_iso)" >"$STATE.tmp.$$"
+    mv -f "$STATE.tmp.$$" "$STATE"
+    if ! enabled_timer enable; then
+        rm -f "$STATE"
+        die "could not enable --now $FLY_PROBATION_TIMER (is the unit installed?)"
+    fi
+    journal "started: ${FLY_PROBATION_SECONDS:-1800} s, median realtime factor >= ${FLY_PROBATION_MIN_RTF:-0.97} over ${FLY_PROBATION_WINDOW:-600} s after ${FLY_PROBATION_WARMUP:-300} s warm-up, lag growth <= ${FLY_PROBATION_MAX_LAG_GROWTH:-30} s; else fallback to legacy"
+}
+
+cancel() {
+    local quiet=0
+    [ "${1:-}" = --quiet ] && quiet=1
+    need_root
+    take_lock
+    local had=0
+    if [ -f "$STATE" ]; then had=1; fi
+    rm -f "$STATE" "$FLY_PROBATION_RESULT"
+    enabled_timer disable || true
+    if [ "$had" -eq 1 ] || [ "$quiet" -eq 0 ]; then journal "cancelled"; fi
+}
+
+# The verdict, persisted in last.json (and in ${RESULT} on a pass).
+finish() { # passed(true|false) detail state-file
+    local tmp="$LAST.tmp.$$"
+    python3 - "$1" "$2" "$3" >"$tmp" <<'PY'
+import json, sys, datetime
+passed, detail = sys.argv[1] == "true", sys.argv[2]
+st = {}
+try:
+    st = json.load(open(sys.argv[3]))
+except Exception:
+    pass
+out = {"passed": passed, "at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+       "startedAt": st.get("startedAtIso"), "detail": detail}
+out.update(st.get("last", {}))
+print(json.dumps(out))
+PY
+    mv -f "$tmp" "$LAST"
+    if [ "$1" = true ]; then
+        mkdir -p "$(dirname "$FLY_PROBATION_RESULT")" 2>/dev/null || true
+        cp -f "$LAST" "$FLY_PROBATION_RESULT"
+    fi
+}
+
+tick() {
+    need_root
+    local sample_json="" now out verdict detail rc
+    if [ "${1:-}" = --sample-json ]; then sample_json="$2"; fi   # the test seam: a recorded sample
+    if [ ! -f "$STATE" ]; then
+        log "no probation: disabling $FLY_PROBATION_TIMER"
+        enabled_timer disable || true
+        exit 0
+    fi
+    # Only the session runtime is judged: a fallback, a legacy switch or a deploy that removed the
+    # drop-in ended it.
+    if [ "$("$RUNTIME_BIN" status 2>/dev/null | head -n1)" != session ]; then
+        journal "the session runtime is not selected; probation ends"
+        cancel --quiet
+        exit 0
+    fi
+    if [ -n "$sample_json" ]; then now="$sample_json"; else now="$(sample)" || { log "could not read flysim's metrics; not judged this minute"; exit 0; }; fi
+    take_lock
+    [ -f "$STATE" ] || { log "cancelled while sampling"; exit 0; }
+    rc=0
+    out="$(python3 -c "$PROBATION_PY" step "$STATE" "$now")" || rc=$?
+    [ "$rc" -eq 0 ] || die "probation rule failed: $out"
+    verdict="${out%% *}"
+    detail="${out#* }"
+    case "$verdict" in
+        wait|ok) drop_lock; log "$verdict: $detail" ;;
+        pass)
+            finish true "$detail" "$STATE"
+            rm -f "$STATE"
+            enabled_timer disable || true
+            journal "PASSED: $detail"
+            ;;
+        fail)
+            cp -f "$STATE" "$STATE.failed.$$"
+            drop_lock
+            journal "FAILED: $detail; falling back to legacy"
+            if "$RUNTIME_BIN" fallback "$detail"; then
+                take_lock
+                finish false "$detail" "$STATE.failed.$$"
+                rm -f "$STATE" "$STATE.failed.$$"
+                enabled_timer disable || true
+            else
+                rm -f "$STATE.failed.$$"
+                log "fallback did not complete; probation stays and retries in a minute"
+                exit 1
+            fi
+            ;;
+        *) die "unexpected verdict: $out" ;;
+    esac
+}
+
+status() {
+    if [ -f "$STATE" ]; then
+        python3 - "$STATE" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+print("probation running since %s; %d judged samples in the window; last %s" % (
+    s.get("startedAtIso"), len(s.get("history", [])), json.dumps(s.get("last"))))
+PY
+    else
+        echo "no probation running"
+    fi
+    if [ -f "$LAST" ]; then echo "last verdict: $(cat "$LAST")"; fi
+    if [ -f "$FLY_PROBATION_RESULT" ]; then echo "passed: $FLY_PROBATION_RESULT"; fi
+}
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+    start) start ;;
+    cancel) cancel "$@" ;;
+    tick) tick "$@" ;;
+    status) status ;;
+    simulate) [ $# = 1 ] || die "simulate CHECKS.jsonl"; python3 -c "$PROBATION_PY" simulate "$1" ;;
+    *) echo "usage: fly-runtime-probation start|cancel|status|tick|simulate CHECKS.jsonl" >&2; exit 2 ;;
+esac

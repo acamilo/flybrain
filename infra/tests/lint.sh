@@ -795,6 +795,7 @@ fly_runtime() {
         FLY_ENV_FILE="$rt_dir/fly.env" FLY_SYSTEMD_DIR="$rt_dir/systemd" \
         FLY_RUNTIME_LOG="$rt_dir/runtime.log" FLY_RUNTIME_HEALTH_TIMEOUT=4 \
         FLY_RUNTIME_FELLBACK="$rt_dir/run/runtime-fellback.json" FLY_RUNTIME_LOCK="$rt_dir/run/runtime.lock" \
+        FLY_PROBATION_DIR="$rt_dir/probation" FLY_PROBATION_RESULT="$rt_dir/run/runtime-probation.json" \
         "$@" bash "$INFRA_DIR/bin/fly-runtime" "${RT_ARGS[@]}" >/dev/null 2>&1
 }
 rt_dropin="$rt_dir/systemd/flysim.service.d/10-runtime.conf"
@@ -1014,6 +1015,173 @@ if ! fly_runtime && [ ! -f "$rt_dropin" ]; then
     pass "fly-runtime session refuses a release without flysim-session"
 else
     fail "fly-runtime session must refuse a release without flysim-session"
+fi
+mv "$rt_dir/flysim-session.away" "$rt_dir/release/flysim-session"
+
+# CUT-01's speed probation (fly-runtime-probation), driven end to end with the real fly-runtime
+# against the stubs above: `session` starts it, `tick --sample-json` feeds one recorded sample a
+# minute (the sample times are synthetic, so 30 "minutes" take a second), and the outcome is read
+# from the drop-in, the fallback reason file, the result file and the stubbed systemctl.
+echo "--- the speed probation ---"
+PROBATION="$INFRA_DIR/bin/fly-runtime-probation"
+pr_state="$rt_dir/probation/state.json"
+pr_result="$rt_dir/run/runtime-probation.json"
+pr_fellback="$rt_dir/run/runtime-fellback.json"
+pr_env() {
+    env RT_DIR="$rt_dir" PATH="$rt_dir/bin:$PATH" FLY_RELEASE_DIR="$rt_dir/release" \
+        FLY_ENV_FILE="$rt_dir/fly.env" FLY_SYSTEMD_DIR="$rt_dir/systemd" \
+        FLY_RUNTIME_LOG="$rt_dir/runtime.log" FLY_RUNTIME_HEALTH_TIMEOUT=4 \
+        FLY_RUNTIME_FELLBACK="$pr_fellback" FLY_RUNTIME_LOCK="$rt_dir/run/runtime.lock" \
+        FLY_PROBATION_DIR="$rt_dir/probation" FLY_PROBATION_RESULT="$pr_result" "$@"
+}
+pr_reset() {
+    rm -rf "$rt_dir/probation" "$pr_result" "$pr_fellback" "$rt_dir/systemd/flysim.service.d"
+    : > "$rt_dir/systemctl.log"
+}
+pr_traces() { # case, n, t0 -> JSON samples, one a minute: {t,status,rtMean,lag,uptime}
+    python3 - "$1" "$2" "$3" <<'PRPY'
+import json, sys
+case, n, t0 = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+lag, up = 2.0, 3600.0
+for i in range(1, n + 1):
+    rtf, status = 1.0 + (0.008 if i % 2 else -0.008), "running"
+    if case == "slow":                       # a steady 0.85x
+        rtf = 0.85 + (0.01 if i % 2 else -0.01); lag += 0.15 * 60
+    elif case == "stall" and i in (12, 13):  # two stalled minutes (a GC, a disk hiccup): 18 s of lag
+        rtf = 0.1; lag += 18 if i == 12 else 0
+    elif case == "lag":                      # at real time on average, but 5 s more behind each minute
+        lag += 5
+    elif case == "warmup":                   # a slow restore: the first 5 samples are before the warm-up
+        up = 30.0 + 60 * i if i <= 5 else 3600.0 + 60 * i
+        if i <= 5:
+            rtf = 0.2
+    elif case == "restart" and i == 10:      # flysim restarted (uptime goes backwards), then a warm-up again
+        up, lag = 20.0, 2.0
+    if case in ("slow", "stall", "lag", "healthy"):
+        up = 3600.0 + 60 * i
+    elif case == "restart":
+        up = up + 60 if i != 10 else up
+    print(json.dumps({"t": t0 + 60 * i, "status": status, "rtMean": rtf, "lag": lag, "uptime": up}))
+PRPY
+}
+pr_ticks() { # case, n: feed n samples to tick; leaves the last exit code in pr_rc
+    local t0 line
+    t0="$(date +%s)"
+    pr_rc=0
+    while IFS= read -r line; do
+        pr_env bash "$PROBATION" tick --sample-json "$line" >/dev/null 2>&1 || pr_rc=$?
+        [ -f "$pr_state" ] || break
+    done < <(pr_traces "$1" "$2" "$t0")
+}
+pr_session() { pr_reset; rm -f "$rt_dir/systemd/flysim.service.d/10-runtime.conf"; RT_ARGS=(session); fly_runtime; }
+pr_case() { # name, case, samples, expect: pass|fallback-speed|fallback-lag|no-verdict
+    pr_session || { fail "probation $1: fly-runtime session failed"; return; }
+    if [ ! -f "$pr_state" ] || ! grep -qx 'enable --now fly-runtime-probation.timer' "$rt_dir/systemctl.log"; then
+        fail "probation $1: fly-runtime session did not start the probation (state file, timer)"
+        return
+    fi
+    pr_ticks "$2" "$3"
+    case "$4" in
+        pass)
+            if [ -f "$pr_result" ] && grep -q '"passed": true' "$pr_result" && [ -f "$rt_dropin" ] \
+                && [ ! -f "$pr_fellback" ] && [ ! -f "$pr_state" ] \
+                && grep -qx 'disable --now fly-runtime-probation.timer' "$rt_dir/systemctl.log"; then
+                pass "probation $1: passes, writes runtime-probation.json, stops its timer, stays on session"
+            else
+                fail "probation $1: expected a pass with the session drop-in kept (result: $(cat "$pr_result" 2>/dev/null))"
+            fi ;;
+        fallback-*)
+            if [ ! -f "$rt_dropin" ] && [ ! -f "$pr_result" ] && [ ! -f "$pr_state" ] \
+                && grep -q '"reason":"speed: ' "$pr_fellback" 2>/dev/null \
+                && grep -q "${4#fallback-}" "$pr_fellback" \
+                && grep -q 'legacy (automatic fallback: speed: ' "$rt_dir/runtime.log" \
+                && grep -q '"passed": false' "$rt_dir/probation/last.json" \
+                && grep -qx 'disable --now fly-runtime-probation.timer' "$rt_dir/systemctl.log"; then
+                pass "probation $1: falls back to legacy with reason speed (reason file, journal line, timer off)"
+            else
+                fail "probation $1: expected a speed fallback ($(cat "$pr_fellback" 2>/dev/null), drop-in $([ -f "$rt_dropin" ] && echo present || echo gone))"
+            fi ;;
+        no-verdict)
+            if [ -f "$rt_dropin" ] && [ -f "$pr_state" ] && [ ! -f "$pr_fellback" ] && [ ! -f "$pr_result" ]; then
+                pass "probation $1: no verdict yet, still on probation, no fallback"
+            else
+                fail "probation $1: expected it to be running undecided"
+            fi ;;
+    esac
+}
+pr_case "healthy session at 1.0x" healthy 32 pass
+pr_case "a session at 0.85x, sustained" slow 40 fallback-speed
+pr_case "a transient stall (2 stalled minutes, 18 s of lag)" stall 32 pass
+pr_case "lag growth at real time (5 s a minute)" lag 40 fallback-lag
+pr_case "a slow restore before the warm-up ends is not judged" warmup 36 pass
+pr_case "a flysim restart inside the window starts it again" restart 50 pass
+pr_case "a healthy session before 30 minutes" healthy 20 no-verdict
+# A probation that has not finished is still there, with its state on disk, after a "reboot": a
+# new process reads state.json and goes on (the timer stays enabled; nothing is held in memory).
+pr_session && pr_ticks healthy 12
+if [ -f "$pr_state" ] && [ "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["history"]))' "$pr_state")" -ge 8 ]; then
+    pass "probation state is persisted on disk between ticks (a reboot resumes it)"
+else
+    fail "probation state was not persisted"
+fi
+# fly-runtime legacy cancels a probation in progress.
+RT_ARGS=(legacy)
+if fly_runtime && [ ! -f "$pr_state" ] && [ ! -f "$rt_dropin" ] \
+    && grep -qx 'disable --now fly-runtime-probation.timer' "$rt_dir/systemctl.log"; then
+    pass "fly-runtime legacy cancels the probation (state gone, timer disabled)"
+else
+    fail "fly-runtime legacy must cancel the probation"
+fi
+# A tick with the legacy runtime selected ends a leftover probation and judges nothing.
+pr_session && rm -f "$rt_dropin"
+pr_env bash "$PROBATION" tick --sample-json '{"t":1,"status":"running","rtMean":0.1,"lag":1,"uptime":9999}' >/dev/null 2>&1 || true
+if [ ! -f "$pr_state" ] && [ ! -f "$pr_fellback" ]; then
+    pass "probation tick with the legacy runtime selected cancels itself, no fallback"
+else
+    fail "probation tick must end when the legacy runtime is selected"
+fi
+# A switch without a restart (05-deploy's refresh) or with --no-probation starts none.
+pr_reset
+RT_ARGS=(session --no-restart); fly_runtime
+if [ ! -f "$pr_state" ]; then pass "fly-runtime session --no-restart starts no probation"; else fail "session --no-restart must not start a probation"; fi
+pr_reset
+rm -f "$rt_dropin"
+RT_ARGS=(session --no-probation); fly_runtime
+if [ ! -f "$pr_state" ] && [ -f "$rt_dropin" ]; then pass "fly-runtime session --no-probation starts no probation"; else fail "session --no-probation must not start a probation"; fi
+# No probation helper, no cutover: an unguarded switch falls back.
+pr_reset
+rm -f "$rt_dropin"
+RT_ARGS=(session)
+if ! fly_runtime FLY_PROBATION_BIN="$rt_dir/none" && [ ! -f "$rt_dropin" ] && grep -q 'probation could not be started' "$pr_fellback"; then
+    pass "fly-runtime session falls back when the probation cannot be started"
+else
+    fail "fly-runtime session must not leave an unguarded session runtime"
+fi
+# The rule over recorded traces, the way fly-shadow-run simulate does it.
+pr_sim="$rt_dir/sim.jsonl"
+pr_traces slow 40 1790000000 > "$pr_sim"
+pr_out="$(bash "$PROBATION" simulate "$pr_sim" 2>&1)" && pr_rc=0 || pr_rc=$?
+if [ "$pr_rc" = 1 ]; then pass "probation simulate: ${pr_out%%:*}, a steady 0.85x: ${pr_out#*: }"; else fail "probation simulate: slow trace: rc $pr_rc: $pr_out"; fi
+pr_traces healthy 35 1790000000 > "$pr_sim"
+pr_out="$(bash "$PROBATION" simulate "$pr_sim" 2>&1)" && pr_rc=0 || pr_rc=$?
+if [ "$pr_rc" = 0 ]; then pass "probation simulate: healthy trace passes"; else fail "probation simulate: healthy trace: rc $pr_rc: $pr_out"; fi
+# The unit files.
+for u in fly-runtime-probation.service fly-runtime-probation.timer; do
+    [ -f "$INFRA_DIR/units/$u" ] || fail "units/$u is missing"
+done
+if grep -qx 'ExecStart=/opt/fly/bin/fly-runtime-probation tick' "$INFRA_DIR/units/fly-runtime-probation.service" \
+    && grep -qx 'OnUnitActiveSec=60s' "$INFRA_DIR/units/fly-runtime-probation.timer" \
+    && grep -qx 'OnBootSec=90s' "$INFRA_DIR/units/fly-runtime-probation.timer" \
+    && grep -qx 'WantedBy=timers.target' "$INFRA_DIR/units/fly-runtime-probation.timer" \
+    && ! grep -q 'fly-runtime-probation' "$INFRA_DIR/units/fly.target" "$INFRA_DIR/07-enable.sh"; then
+    pass "fly-runtime-probation units: a 60 s timer, enabled only by fly-runtime-probation start (boot resumes it)"
+else
+    fail "fly-runtime-probation units are wrong"
+fi
+if grep -qE 'for name in .*\bfly-runtime-probation\b.*; do$' "$INFRA_DIR/05-deploy.sh"; then
+    pass "05-deploy.sh installs fly-runtime-probation"
+else
+    fail "05-deploy.sh must converge bin/fly-runtime-probation to /opt/fly/bin"
 fi
 rm -rf "$rt_dir"
 

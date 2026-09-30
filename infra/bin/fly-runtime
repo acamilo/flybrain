@@ -4,7 +4,7 @@
 #
 # Usage (INSIDE the container, as root):
 #   fly-runtime status              print `legacy` or `session`, and what flysim.service runs
-#   fly-runtime session [--no-restart] [--no-fallback]
+#   fly-runtime session [--no-restart] [--no-fallback] [--no-probation]
 #   fly-runtime legacy  [--no-restart]
 #   fly-runtime fallback [reason]   (run by fly-runtime-fallback.service, see below; idempotent)
 #
@@ -61,6 +61,14 @@
 # puts the previous state back (drop-in removed, or the earlier one restored) and restarts
 # flysim.service on it, so a dropped ssh never leaves a drop-in that was not health-checked.
 #
+# The speed probation (CUT-01). Operator decision 2026-09-30: the session runtime stays only if it
+# sustains >= 1.0x real time on the release container. A `session` that restarted flysim and saw
+# it healthy therefore starts infra/bin/fly-runtime-probation (fly-runtime-probation.timer, every
+# 60 s for 30 minutes): a sustained speed failure ends in `fly-runtime fallback "speed: ..."`, the
+# same fallback as above under the same lock. `legacy` and every fallback cancel it. `--no-restart`
+# (05-deploy's refresh of the drop-in) and `--no-probation` (rehearsals) start none. If the
+# probation cannot be started, `session` falls back: an unguarded cutover is not allowed.
+#
 # Every switch is logged to the journal (tag fly-runtime) and appended to ${RUNTIME_LOG}.
 set -euo pipefail
 
@@ -82,12 +90,19 @@ FALLBACK_UNIT=fly-runtime-fallback.service
 SESSION_BIN="${FLY_RELEASE_DIR}/flysim-session"
 LEGACY_BIN="${FLY_RELEASE_DIR}/flysim"
 SESSION_DIR=/run/fly/session
+PROBATION_BIN="${FLY_PROBATION_BIN:-$(dirname "$(readlink -f "$0")")/fly-runtime-probation}"
 
 log() { echo "fly-runtime: $*" >&2; }
+
+# The speed probation's hooks (best effort except `start`, which the caller checks).
+probation() {
+    [ -x "$PROBATION_BIN" ] || return 0
+    "$PROBATION_BIN" "$@" || log "fly-runtime-probation $1 failed"
+}
 die() { log "$*"; exit 1; }
 
 usage() {
-    echo "usage: fly-runtime status | session [--no-restart] [--no-fallback] | legacy [--no-restart] | fallback [reason]" >&2
+    echo "usage: fly-runtime status | session [--no-restart] [--no-fallback] [--no-probation] | legacy [--no-restart] | fallback [reason]" >&2
     exit 2
 }
 
@@ -240,6 +255,7 @@ do_fallback() {
     cp -f "$DROPIN" "$saved"
     rm -f "$DROPIN"
     rmdir "$DROPIN_DIR" 2>/dev/null || true
+    probation cancel --quiet
     record "legacy (automatic fallback: ${reason}; was session)"
     systemctl daemon-reload || true
     systemctl reset-failed "$FLY_SERVICE" 2>/dev/null || true
@@ -304,12 +320,14 @@ trap 'exit 129' HUP
 command="$1"; shift
 restart=1
 fallback=1
+probe=1
 fallback_reason=""
 if [ "$command" = fallback ]; then fallback_reason="$*"; set --; fi
 for arg in "$@"; do
     case "$arg" in
         --no-restart) restart=0 ;;
         --no-fallback) fallback=0 ;;
+        --no-probation) probe=0 ;;
         *) usage ;;
     esac
 done
@@ -318,6 +336,7 @@ case "$command" in
     status)
         current
         if [ -f "$FELLBACK_FILE" ]; then echo "  fell back to legacy: $(cat "$FELLBACK_FILE")"; fi
+        if [ -x "$PROBATION_BIN" ]; then "$PROBATION_BIN" status 2>/dev/null | sed 's/^/  /' || true; fi
         systemctl show -p ExecStart --value "$FLY_SERVICE" 2>/dev/null | sed -n 's/.*path=\([^ ;]*\).*/  flysim.service runs \1/p' || true
         exit 0
         ;;
@@ -365,7 +384,18 @@ if [ "$command" = session ]; then
         # check above too): only report success if the session drop-in is still what runs.
         if [ -f "$DROPIN" ] && [ ! -f "$FELLBACK_FILE" ]; then
             switching=0
-            log "flysim.service runs the session runtime"
+            if [ "$probe" -eq 1 ]; then
+                if [ ! -x "$PROBATION_BIN" ] || ! "$PROBATION_BIN" start; then
+                    log "the speed probation could not be started; an unguarded cutover is not allowed"
+                    if [ "$fallback" -eq 1 ]; then
+                        do_fallback "the speed probation could not be started" || true
+                    fi
+                    exit 1
+                fi
+                log "flysim.service runs the session runtime, on probation: fly-runtime-probation status"
+            else
+                log "flysim.service runs the session runtime (no probation)"
+            fi
             exit 0
         fi
         switching=0
@@ -394,6 +424,7 @@ switch_target=legacy
 switching=1
 rm -f "$DROPIN"
 rmdir "$DROPIN_DIR" 2>/dev/null || true
+probation cancel
 record "legacy (was ${before})"
 [ "$restart" -eq 1 ] || { systemctl daemon-reload; switching=0; log "drop-in removed; restart ${FLY_SERVICE} to apply"; exit 0; }
 if restart_and_check; then
