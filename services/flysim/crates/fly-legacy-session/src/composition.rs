@@ -642,42 +642,33 @@ impl LegacySession {
     }
 
     /// The saves queued so far that have committed (or failed), without waiting; with `wait`,
-    /// every queued save's outcome. A failed save is an error: the caller decides.
-    pub async fn completed_saves(&mut self, wait: bool) -> Result<Vec<SaveReport>, String> {
+    /// every queued save's outcome. Every outcome is reported, a failed save as its own `Err`
+    /// beside the others (TASK-01 review R2-2): the caller decides.
+    pub async fn completed_saves(&mut self, wait: bool) -> Vec<Result<SaveReport, String>> {
         let mut done = Vec::new();
         let mut still = Vec::new();
         for mut ticket in std::mem::take(&mut self.pending_saves) {
-            let outcome = if wait {
-                Some((&mut ticket.reply).await.map_err(|_| ()))
+            let stopped = || Err("the checkpoint writer stopped".to_owned());
+            if wait {
+                done.push((&mut ticket.reply).await.unwrap_or_else(|_| stopped()));
             } else {
                 match ticket.reply.try_recv() {
-                    Ok(result) => Some(Ok(result)),
-                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
-                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(Err(())),
+                    Ok(result) => done.push(result),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => still.push(ticket),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed) => done.push(stopped()),
                 }
-            };
-            match outcome {
-                None => still.push(ticket),
-                Some(Ok(result)) => done.push(result?),
-                Some(Err(())) => return Err("the checkpoint writer stopped".to_owned()),
             }
         }
         self.pending_saves = still;
-        Ok(done)
+        done
     }
 
-    /// One transition and what the legacy loop does at the boundary it reaches, in the declared
-    /// order (`legacy-gameboy-v1` sections 4 and 16): the slot save (inside the step), the
-    /// milestone archive when the rank climbed (`Sim::track_rank`), the rollback, a durable save
-    /// after it, then the interval saves (`checkpoint_if_due`).
-    pub async fn advance(&mut self) -> Result<(Step, Vec<SaveQueued>), String> {
-        let report = self
-            .coordinator
-            .step()
-            .await
-            .map_err(|e| format!("step ({} at {}): {}", e.detail, e.phase, e.error.message))?;
-        // The captures begun at the last boundary: the agent sealed its payload while this
-        // transition's Prepare ticked.
+    /// Hands every begun capture to the writer now and reports what was queued. `advance` does
+    /// this after the next step so the agent's sealing overlaps it; a step that fails does it
+    /// before returning the error, and a caller that pauses (or is about to stop stepping) calls
+    /// this so a save begun at the last boundary reaches the writer as the legacy loop's
+    /// immediate hand-off would have (TASK-01 review R2-1).
+    pub async fn flush_captures(&mut self) -> Result<Vec<SaveQueued>, String> {
         let mut saves = Vec::new();
         for ticket in self.finish_captures().await? {
             saves.push(SaveQueued {
@@ -687,6 +678,31 @@ impl LegacySession {
             });
             self.pending_saves.push(ticket);
         }
+        Ok(saves)
+    }
+
+    /// One transition and what the legacy loop does at the boundary it reaches, in the declared
+    /// order (`legacy-gameboy-v1` sections 4 and 16): the slot save (inside the step), the
+    /// milestone archive when the rank climbed (`Sim::track_rank`), the rollback, a durable save
+    /// after it, then the interval saves (`checkpoint_if_due`).
+    pub async fn advance(&mut self) -> Result<(Step, Vec<SaveQueued>), String> {
+        let report = match self.coordinator.step().await {
+            Ok(report) => report,
+            Err(e) => {
+                // The legacy writer already has the saves of the earlier boundaries: hand the
+                // begun captures over before reporting the failure (TASK-01 review R2-1).
+                let flushed = self.flush_captures().await.err();
+                let mut message =
+                    format!("step ({} at {}): {}", e.detail, e.phase, e.error.message);
+                if let Some(flush) = flushed {
+                    message.push_str(&format!("; and the pending saves: {flush}"));
+                }
+                return Err(message);
+            }
+        };
+        // The captures begun at the last boundary: the agent sealed its payload while this
+        // transition's Prepare ticked.
+        let saves = self.flush_captures().await?;
         if self.checkpointer.is_some() {
             let rank = self.task.rank();
             let ms = self.task.brain_ms();
@@ -743,13 +759,15 @@ impl LegacySession {
         if self.checkpointer.is_none() {
             return Ok(None);
         }
-        for ticket in self.finish_captures().await? {
-            self.pending_saves.push(ticket);
-        }
+        self.flush_captures().await?;
         let report = self.save(SaveKind::Durable).await?;
-        self.completed_saves(true).await?;
+        let outcomes = self.completed_saves(true).await;
         if let Some(checkpointer) = self.checkpointer.as_mut() {
             checkpointer.close();
+        }
+        // Every queued save has been waited for; the first failure is the shutdown's.
+        for outcome in outcomes {
+            outcome?;
         }
         Ok(Some(report))
     }

@@ -75,31 +75,34 @@ impl LegacyAdmission {
     /// `POST /stimulate`: the legacy rule over the last commit's pulse. On admission the sugar is
     /// queued for the next Prepare; the result is its interaction id and the clamped duration.
     pub fn sugar(&mut self, now_ms: u64, duration_ms: Option<f64>) -> Result<(Id, f64), Refusal> {
-        let Some(remaining) = self.queue.stimulus_remaining_ms(&self.agent_id) else {
-            return Err(Refusal::PulseActive {
-                retry_after_ms: UNKNOWN_PULSE_RETRY_MS,
-            });
-        };
-        // A sugar admitted and not yet reported on by a commit is an active pulse, as it is in
-        // the legacy loop the moment `stimulate` runs: a second request before the next commit
-        // is refused (`PulseActive`), not admitted into a pulse that would take the max and add
-        // nothing (TASK-01 review N1).
-        let pending = self
-            .queue
-            .pending_stimulus_ms(&self.agent_id)
-            .unwrap_or(0.0);
-        self.limiter.admit(now_ms, remaining.max(pending))?;
-        let duration = duration_ms
-            .unwrap_or(self.default_ms)
-            .clamp(1.0, self.max_ms)
-            .min(self.max_ms);
+        // Read the pulse, decide and queue under one lock, so a commit cannot land between the
+        // reads and the push (TASK-01 review R2-3). A sugar admitted and not yet reported on by
+        // a commit is an active pulse, as it is in the legacy loop the moment `stimulate` runs:
+        // a second request before the next commit is refused (`PulseActive`), not admitted
+        // into a pulse that would take the max and add nothing (review N1).
+        let agent_id = self.agent_id.clone();
         let interaction_id = self.next_id("sugar");
-        self.queue.admit(Admission::Stimulus {
-            agent_id: self.agent_id.clone(),
-            interaction_id: interaction_id.clone(),
-            kind_id: id(STIMULUS_REWARD_PULSE),
-            duration_ms: duration,
+        let (limiter, default_ms, max_ms) = (&mut self.limiter, self.default_ms, self.max_ms);
+        let admission = self.queue.admit_with(&agent_id, |remaining, pending| {
+            let Some(remaining) = remaining else {
+                return Err(Refusal::PulseActive {
+                    retry_after_ms: UNKNOWN_PULSE_RETRY_MS,
+                });
+            };
+            limiter.admit(now_ms, remaining.max(pending.unwrap_or(0.0)))?;
+            let duration = duration_ms.unwrap_or(default_ms).clamp(1.0, max_ms).min(max_ms);
+            Ok(Admission::Stimulus {
+                agent_id: agent_id.clone(),
+                interaction_id: interaction_id.clone(),
+                kind_id: id(STIMULUS_REWARD_PULSE),
+                duration_ms: duration,
+            })
         });
+        if admission.is_err() {
+            // A refusal spends no id.
+            self.serial -= 1;
+        }
+        let Admission::Stimulus { duration_ms: duration, .. } = admission?;
         Ok((interaction_id, duration))
     }
 
