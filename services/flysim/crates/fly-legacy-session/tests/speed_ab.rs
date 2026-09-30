@@ -114,10 +114,26 @@ impl Legacy {
     }
 }
 
+/// The service's runtime: two Tokio workers (SERVE-01's `flysim-session`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_against_legacy_interleaved() {
+    run(2).await;
+}
+
+/// PERF-01: the same with one Tokio worker, the coordinator, the router and every in-process
+/// participant on one thread beside the brain's sweep pool. `FLY_PERF_WORKERS` picks which of
+/// the two runs (default 2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn session_against_legacy_interleaved_one_worker() {
+    run(1).await;
+}
+
+async fn run(workers: usize) {
     if std::env::var_os("FLY_TASK01_BENCH").is_none() {
         eprintln!("skipping: FLY_TASK01_BENCH is not set");
+        return;
+    }
+    if env_usize("FLY_PERF_WORKERS", 2) != workers {
         return;
     }
     let (Some(rom_path), Some(dataset), Some(checkpoint_path)) = (
@@ -134,7 +150,26 @@ async fn session_against_legacy_interleaved() {
     let rom = std::fs::read(&rom_path).unwrap();
     let bytes = std::fs::read(&checkpoint_path).unwrap();
     let checkpoint = flysim::store::decode(&bytes).unwrap();
-    for mode in [ExecutionMode::InProcess, ExecutionMode::Process] {
+    // PERF-01: `FLY_PERF_ARMS` picks the session arms, comma-separated: `local` (in-process
+    // over the local lane, the default in-process path), `bus` (in-process over the bus,
+    // `FLY_SESSION_LOCAL_LANE=0`, the TASK-01 path) and `process`. Default: all three.
+    let arms = std::env::var("FLY_PERF_ARMS").unwrap_or_else(|_| "local,bus,process".to_owned());
+    // `FLY_PERF_SERVICE=1` adds the service host's per-frame reads (SERVE-01's
+    // `flysim-session`): the spike bitset of every commit and the audio chunk of every boundary.
+    let service = std::env::var_os("FLY_PERF_SERVICE").is_some();
+    for arm in arms.split(',') {
+        let mode = match arm {
+            "local" | "bus" => ExecutionMode::InProcess,
+            "process" => ExecutionMode::Process,
+            other => panic!("unknown arm {other}"),
+        };
+        // SAFETY: set before the session's runtime reads it; nothing else reads the variable.
+        unsafe {
+            std::env::set_var(
+                fly_legacy_session::composition::LOCAL_LANE_ENV,
+                if arm == "bus" { "0" } else { "1" },
+            );
+        }
         let mut legacy = Legacy::new(&rom, &dataset, &checkpoint, threads);
         let root = tempfile::tempdir().unwrap();
         let mut session = LegacySession::start(
@@ -155,6 +190,14 @@ async fn session_against_legacy_interleaved() {
         session.bootstrap().await.unwrap();
         session.import_flysim01(&bytes, &id("e2")).await.unwrap();
         session.coordinator.disable_pacing();
+        if service {
+            session
+                .coordinator
+                .request_commit_attachments(&[fly_session::legacy_agent::SPIKES_ATTACHMENT]);
+            session.coordinator.digest_views(false);
+        }
+        let audio_name =
+            fly_session::media::audio_attachment(fly_session::legacy_env::AUDIO_STREAM_ID);
         // Warm both.
         for _ in 0..chunk {
             legacy.step();
@@ -162,6 +205,10 @@ async fn session_against_legacy_interleaved() {
         }
         session.coordinator.metrics.clear();
         let _ = fly_session::profile::report();
+        // The legacy brain's own phase clock, to set its ticks beside the session's
+        // `agent.ticks` span.
+        legacy.agent.network.profile = true;
+        legacy.agent.network.reset_timings();
         let (mut legacy_ms, mut session_ms) = (0.0, 0.0);
         let mut done = 0;
         while done < frames {
@@ -173,24 +220,35 @@ async fn session_against_legacy_interleaved() {
             let at = Instant::now();
             for _ in 0..chunk {
                 session.step().await.unwrap();
+                if service {
+                    let _ = session.coordinator.take_details();
+                    let _ = session.coordinator.media_bytes(&audio_name).await.unwrap();
+                }
             }
             session_ms += at.elapsed().as_secs_f64() * 1000.0;
             done += chunk;
         }
         let (l, s) = (legacy_ms / done as f64, session_ms / done as f64);
         eprintln!(
-            "{}: legacy {l:.2} ms/frame ({:.0} fps), session {s:.2} ms/frame ({:.0} fps); session/legacy {:.2}; headroom at 1x legacy {:.2} ms, session {:.2} ms ({done} frames each, {chunk}-frame chunks, {threads} threads)",
+            "{} ({arm}{}, {workers} tokio workers): legacy {l:.2} ms/frame ({:.0} fps), session {s:.2} ms/frame ({:.0} fps); session/legacy {:.2}; headroom at 1x legacy {:.2} ms, session {:.2} ms ({done} frames each, {chunk}-frame chunks, {threads} threads)",
             mode.label(),
+            if service { ", service reads" } else { "" },
             1000.0 / l,
             1000.0 / s,
             s / l,
             FRAME_MS - l,
             FRAME_MS - s
         );
-        for (name, count, mean) in fly_session::profile::report() {
+        let timings = legacy.agent.network.timings();
+        eprintln!(
+            "  legacy ticks (phase clock) mean {:>8.0} us over {done} frames",
+            timings.total_ns() as f64 / done as f64 / 1000.0
+        );
+        for (name, count, mean, max) in fly_session::profile::report_with_max() {
             eprintln!(
-                "  span {name:<26} mean {:>8.0} us  n {count}",
-                mean.as_secs_f64() * 1e6
+                "  span {name:<26} mean {:>8.0} us  max {:>8.0} us  n {count}",
+                mean.as_secs_f64() * 1e6,
+                max.as_secs_f64() * 1e6
             );
         }
         for name in session.coordinator.metrics.names() {

@@ -64,6 +64,14 @@ pub struct LegacyConfig {
     pub record: bool,
 }
 
+/// `FLY_SESSION_LOCAL_LANE=0` keeps in-process participants on the bus: a measurement knob,
+/// so the local lane can be compared with the bus path in one build. On by default.
+pub const LOCAL_LANE_ENV: &str = "FLY_SESSION_LOCAL_LANE";
+
+fn local_lane_enabled() -> bool {
+    std::env::var(LOCAL_LANE_ENV).map_or(true, |v| v != "0")
+}
+
 /// The macro channels and the macro group's hold for a mode: the decoder preset flysim builds.
 pub fn channels_and_hold(mode: MacroMode) -> (Vec<String>, f64) {
     let channels: Vec<&str> = if mode.dealt() {
@@ -311,8 +319,10 @@ impl LegacySession {
             router,
             config.mode,
             // In-process participants reach the router in memory: no socket between two tasks
-            // of one process (a separate process always uses the socket).
-            Via::Memory,
+            // of one process (a separate process always uses the socket). They are called over
+            // the local lane: the same worker shell, no bus message and no store file per
+            // artifact (PERF-01, `workers-v1` amendment).
+            if local_lane_enabled() { Via::Local } else { Via::Memory },
             &store_root,
             &sockets,
             budget,
@@ -422,6 +432,9 @@ impl LegacySession {
             coordinator.bound_history(HISTORY);
             // The legacy feed publishes at `snapshot_hz` (30 Hz) from a 60 Hz loop.
             coordinator.snapshot_every(SNAPSHOT_EVERY);
+            // Nothing in the service reads the committed-snapshot topic's admission receipt on
+            // the frame: the publish overlaps the next transition (PERF-01).
+            coordinator.defer_snapshots(std::env::var("FLY_PERF_DEFER").map_or(true, |v| v != "0"));
         }
         Ok(LegacySession {
             coordinator,
