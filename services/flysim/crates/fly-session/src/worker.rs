@@ -165,7 +165,7 @@ pub struct HandlerCtx<'a> {
 /// How a domain request reached the shell, and so where its attachments are.
 pub enum Incoming {
     /// A bus request delivery: the attachments are the delivery's.
-    Bus(flybus::Request),
+    Bus(Box<flybus::Request>),
     /// The in-process local lane ([`LocalLane`]): the caller's own handles, in memory or
     /// sealed, handed over without a bus message.
     Local(Vec<(String, flybus::Artifact)>),
@@ -620,7 +620,7 @@ async fn run<E: WorkerEndpoint>(shell: Arc<Shell<E>>, mut service: flybus::Servi
             _ => {}
         }
         shell
-            .admit(method, request, Incoming::Bus(incoming), Answer::Bus(responder))
+            .admit(method, request, Incoming::Bus(Box::new(incoming)), Answer::Bus(responder))
             .await;
     }
     shell.drain().await;

@@ -6123,6 +6123,14 @@ mod admission_race_tests {
         };
         let stop = AtomicBool::new(false);
         let torn = AtomicBool::new(false);
+        // The hammer must never find the queue's empty initial state (no pulse, nothing
+        // pending), which is a legitimate admission, not a torn commit: on a loaded box it
+        // can run before the first iteration below sets the state up (PERF-01 saw it once).
+        {
+            let mut state = queue.lock();
+            state.in_flight = vec![in_flight.clone()];
+            state.set_remaining(&agent, Some(0.0));
+        }
         std::thread::scope(|scope| {
             scope.spawn(|| {
                 while !stop.load(Ordering::Relaxed) {
