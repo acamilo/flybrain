@@ -3,7 +3,8 @@
 # The persistent fallback from the session runtime to the legacy loop (SERVE-01 review, C1).
 # It is never enabled and in no target: the drop-in that `fly-runtime session` writes on
 # flysim.service (10-runtime.conf) carries `OnFailure=fly-runtime-fallback.service` together with
-# StartLimitIntervalSec=600 and StartLimitBurst=3, so three starts of flysim.service on the
+# StartLimitIntervalSec=600, StartLimitBurst=3 and RestartMode=direct (without it OnFailure= fires on
+# every crash, not at the start limit), so three starts of flysim.service on the
 # session binary inside ten minutes -- from any cause, and from any caller: a reboot, the
 # watchdog, fly-loop-recover, a deploy -- run this unit once. `fly-runtime fallback` removes the
 # drop-in (which removes this OnFailure= too), daemon-reloads, restarts flysim.service on the

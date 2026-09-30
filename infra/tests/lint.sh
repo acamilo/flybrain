@@ -653,7 +653,7 @@ if fly_runtime && [ -f "$rt_dropin" ] \
     && grep -qx "ExecStart=$rt_dir/release/flysim-session" "$rt_dropin" \
     && grep -qx 'ExecStart=' "$rt_dropin" \
     && grep -qx 'Environment=FLY_SESSION_DIR=/run/fly/session' "$rt_dropin" \
-    && grep -qx 'restart flysim.service' "$rt_dir/systemctl.log" \
+    && grep -qx 'restart --no-block flysim.service' "$rt_dir/systemctl.log" \
     && [ "$(env RT_DIR="$rt_dir" PATH="$rt_dir/bin:$PATH" FLY_SYSTEMD_DIR="$rt_dir/systemd" bash "$INFRA_DIR/bin/fly-runtime" status 2>/dev/null | head -n1)" = session ]; then
     pass "fly-runtime session: the drop-in names flysim-session and /run/fly/session, flysim.service restarted, healthy"
 else
@@ -685,12 +685,13 @@ fly_runtime || fail "fly-runtime session (healthy) failed before the fallback te
 if grep -qx 'OnFailure=fly-runtime-fallback.service' "$rt_dropin" \
     && grep -qx 'StartLimitBurst=3' "$rt_dropin" \
     && grep -qx 'StartLimitIntervalSec=600' "$rt_dropin" \
+    && grep -qx 'RestartMode=direct' "$rt_dropin" \
     && grep -qx 'Environment=MALLOC_ARENA_MAX=2' "$rt_dropin" \
     && [ -f "$FALLBACK_UNIT" ] \
     && grep -qE '^ExecStart=/opt/fly/bin/fly-runtime fallback$' "$FALLBACK_UNIT" \
     && grep -qx 'Type=oneshot' "$FALLBACK_UNIT" \
     && ! grep -q '^\[Install\]' "$FALLBACK_UNIT"; then
-    pass "session drop-in: OnFailure= fallback unit, 3 starts in 600 s, MALLOC_ARENA_MAX=2; the unit runs 'fly-runtime fallback'"
+    pass "session drop-in: OnFailure= fallback unit, 3 starts in 600 s, RestartMode=direct (else OnFailure= fires on every crash), MALLOC_ARENA_MAX=2; the unit runs 'fly-runtime fallback'"
 else
     fail "session drop-in/fallback unit wrong ($(tr '\n' ' ' < "$rt_dropin"))"
 fi
@@ -778,7 +779,7 @@ fi
 # Signals: an interrupted switch rolls back to the previous state.
 rt_interrupt() {  # $1 = signal: run `session` on an unhealthy runtime, signal it mid-wait, print its status
     local sig="$1" pid rc=0 n=0 base
-    base="$(rt_ncalls '^restart flysim.service')"
+    base="$(rt_ncalls '^restart --no-block flysim.service')"
     env RT_DIR="$rt_dir" PATH="$rt_dir/bin:$PATH" FLY_RELEASE_DIR="$rt_dir/release" \
         FLY_ENV_FILE="$rt_dir/fly.env" FLY_SYSTEMD_DIR="$rt_dir/systemd" \
         FLY_RUNTIME_LOG="$rt_dir/runtime.log" FLY_RUNTIME_HEALTH_TIMEOUT=60 RT_HEALTHY=0 \
@@ -787,9 +788,10 @@ rt_interrupt() {  # $1 = signal: run `session` on an unhealthy runtime, signal i
 signal.signal(signal.SIGINT, signal.SIG_DFL)  # a background job of a non-interactive shell starts with INT ignored
 os.execvp(sys.argv[1], sys.argv[1:])' bash "$INFRA_DIR/bin/fly-runtime" session >/dev/null 2>&1 &
     pid=$!
-    while [ "$(rt_ncalls '^restart flysim.service')" -le "$base" ] && [ "$n" -lt 100 ]; do
+    while [ "$(rt_ncalls '^restart --no-block flysim.service')" -le "$base" ] && [ "$n" -lt 100 ]; do
         n=$((n + 1)); sleep 0.1
     done
+    if [ -n "${2:-}" ]; then "$2" >/dev/null 2>&1 || true; fi
     kill "-$sig" "$pid" 2>/dev/null || true
     wait "$pid" || rc=$?
     echo "$rc"
@@ -816,6 +818,41 @@ if [ "$got_rc" = 143 ] && cmp -s "$rt_dropin" "$rt_dir/dropin.before" \
     pass "fly-runtime session interrupted while already on session: the earlier drop-in is restored, no temp files left"
 else
     fail "an interrupted re-run of session must restore the earlier drop-in (rc=$got_rc)"
+fi
+# M2, deterministic interleaving: a re-run of `session` over an older drop-in is waiting for
+# health, an OnFailure= fallback completes, THEN the switch is interrupted. The rollback must
+# not put the older drop-in back (it has no OnFailure=, and the stream would be stranded on the
+# session runtime).
+# shellcheck disable=SC2317  # called through rt_interrupt
+rt_fallback_now() {
+    env RT_DIR="$rt_dir" PATH="$rt_dir/bin:$PATH" FLY_RELEASE_DIR="$rt_dir/release" \
+        FLY_SYSTEMD_DIR="$rt_dir/systemd" FLY_RUNTIME_LOG="$rt_dir/runtime.log" \
+        FLY_RUNTIME_FELLBACK="$rt_fellback" FLY_RUNTIME_LOCK="$rt_dir/run/runtime.lock" \
+        bash "$INFRA_DIR/bin/fly-runtime" fallback "lint interleaving"
+}
+mkdir -p "$(dirname "$rt_dropin")"
+printf '# older-session-marker\n[Service]\nExecStart=\nExecStart=/previous\n' > "$rt_dropin"
+got_rc="$(rt_interrupt TERM rt_fallback_now)"
+if [ "$got_rc" = 143 ] && [ ! -f "$rt_dropin" ] && [ -f "$rt_fellback" ] \
+    && grep -q 'a fallback completed meanwhile' "$rt_dir/runtime.log"; then
+    pass "rollback after a completed fallback leaves legacy selected (does not restore the older drop-in)"
+else
+    fail "rollback must not restore an older drop-in after a completed fallback (rc=$got_rc, drop-in present=$([ -f "$rt_dropin" ] && echo yes || echo no))"
+fi
+# ... and the two share ONE lock: a held lock stops `session` from touching anything.
+rm -f "$rt_dropin" "$rt_fellback"
+(
+    exec 8>>"$rt_dir/run/runtime.lock"
+    flock 8
+    RT_ARGS=(session)
+    if ! fly_runtime FLY_RUNTIME_LOCK_WAIT=1 && [ ! -f "$rt_dropin" ]; then
+        touch "$rt_dir/lock-respected"
+    fi
+)
+if [ -f "$rt_dir/lock-respected" ]; then
+    pass "fly-runtime session waits on the same lock as fallback and does not switch without it"
+else
+    fail "fly-runtime session must take the shared ${FLY_RUNTIME_LOCK:-runtime.lock} lock"
 fi
 rm -f "$rt_dropin"
 mv "$rt_dir/release/flysim-session" "$rt_dir/flysim-session.away"

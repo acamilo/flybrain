@@ -41,8 +41,13 @@
 #   OnFailure=fly-runtime-fallback.service
 #   StartLimitIntervalSec=600
 #   StartLimitBurst=3
+#   [Service]
+#   RestartMode=direct
 #
-# so while the session runtime is selected, three starts of flysim.service inside ten minutes
+# RestartMode=direct is essential (systemd >= 254; verified on 257): with the default
+# RestartMode=normal the unit passes through `failed` before every Restart=always restart and
+# OnFailure= fires on the FIRST crash, watchdog kill or start timeout. With `direct` the unit
+# goes from one start straight to the next and only the start limit puts it in `failed`. So while the session runtime is selected, three starts of flysim.service inside ten minutes
 # (crashes, watchdog kills, a start that never becomes ready, the restarts fly-watchdog and
 # fly-loop-recover make for a stream that does not come up) end in the failed state, and systemd
 # runs fly-runtime-fallback.service, i.e. `fly-runtime fallback`: write ${FELLBACK_FILE}, remove
@@ -68,6 +73,7 @@ set -euo pipefail
 : "${FLY_RUNTIME_LOG:=/var/lib/fly/runtime.log}"
 : "${FLY_RUNTIME_FELLBACK:=/run/fly/runtime-fellback.json}"
 : "${FLY_RUNTIME_LOCK:=/run/fly/runtime.lock}"
+: "${FLY_RUNTIME_LOCK_WAIT:=150}"
 DROPIN_DIR="${FLY_SYSTEMD_DIR}/${FLY_SERVICE}.d"
 DROPIN="${DROPIN_DIR}/10-runtime.conf"
 RUNTIME_LOG="$FLY_RUNTIME_LOG"
@@ -123,12 +129,15 @@ write_dropin() {
     cat >"$tmp" <<EOF
 # Written by fly-runtime session (SERVE-01): flysim.service runs the session runtime.
 # \`fly-runtime legacy\` removes this file, and so does fly-runtime-fallback.service (OnFailure=,
-# after three starts in ten minutes). Keep [Service] in step with units/flysim-session.service.
+# after three starts in ten minutes). RestartMode=direct is what makes OnFailure= wait for the start
+# limit: systemd >= 254 otherwise passes through the failed state (and OnFailure=) before EVERY auto-restart.
+# Keep [Service] in step with units/flysim-session.service.
 [Unit]
 OnFailure=${FALLBACK_UNIT}
 StartLimitIntervalSec=600
 StartLimitBurst=3
 [Service]
+RestartMode=direct
 ExecStart=
 ExecStart=${SESSION_BIN}
 Environment=FLY_SESSION_DIR=${SESSION_DIR}
@@ -143,6 +152,11 @@ healthy() {
     local deadline=$(( $(date +%s) + FLY_RUNTIME_HEALTH_TIMEOUT ))
     local first=""
     while [ "$(date +%s)" -lt "$deadline" ]; do
+        if [ -n "$old_invocation" ] \
+            && [ "$(systemctl show -p InvocationID --value "$FLY_SERVICE" 2>/dev/null | head -n1 || true)" = "$old_invocation" ]; then
+            sleep 1
+            continue
+        fi
         if curl -fsS -o /dev/null "${FLY_CONTROL_URL}/healthz" 2>/dev/null; then
             local frame
             frame="$(curl -fsS "${FLY_CONTROL_URL}/status" 2>/dev/null \
@@ -161,13 +175,38 @@ healthy() {
     return 1
 }
 
+# One lock (${FLY_RUNTIME_LOCK}) serialises every change of the drop-in: `fallback`, `session`,
+# `legacy` and the rollback in on_exit. A switch holds it from before it reads the current state
+# until its restart has been queued (`restart --no-block`), and lets go before the health wait, so
+# an OnFailure= fallback is never held up by a start that does not become ready. Re-entrant per
+# process. Waits FLY_RUNTIME_LOCK_WAIT (150 s).
+locked=0
+take_lock() {
+    if [ "$locked" -eq 1 ]; then return 0; fi
+    mkdir -p "$(dirname "$FLY_RUNTIME_LOCK")" 2>/dev/null || true
+    exec 9>>"$FLY_RUNTIME_LOCK"
+    if flock -w "$FLY_RUNTIME_LOCK_WAIT" 9; then locked=1; return 0; fi
+    log "could not take ${FLY_RUNTIME_LOCK} within ${FLY_RUNTIME_LOCK_WAIT} s"
+    return 1
+}
+drop_lock() {
+    exec 9>&-
+    locked=0
+}
+
 restarted=0
+old_invocation=""
 restart_and_check() {
     systemctl daemon-reload
     systemctl reset-failed "$FLY_SERVICE" 2>/dev/null || true
     log "restarting ${FLY_SERVICE} on the $(current) runtime"
     restarted=1
-    systemctl restart "$FLY_SERVICE"
+    # --no-block: a blocking restart of a unit that never becomes READY holds this process (and
+    # the lock) for minutes, starving the OnFailure= fallback. `healthy` therefore has to prove
+    # that it is talking to the NEW invocation, not the old process that is still shutting down.
+    old_invocation="$(systemctl show -p InvocationID --value "$FLY_SERVICE" 2>/dev/null | head -n1 || true)"
+    systemctl restart --no-block "$FLY_SERVICE" || { drop_lock; return 1; }
+    drop_lock
     healthy
 }
 
@@ -179,9 +218,7 @@ restart_and_check() {
 # watchdog) judges health, and a oneshot unit must not sit in a 90 s notify start.
 do_fallback() {
     local reason="$1" result nrestarts saved
-    mkdir -p "$(dirname "$FLY_RUNTIME_LOCK")" 2>/dev/null || true
-    exec 9>>"$FLY_RUNTIME_LOCK"
-    flock -w 60 9 || log "could not take ${FLY_RUNTIME_LOCK} within 60 s; continuing"
+    take_lock || log "continuing without the lock"
     if [ ! -f "$DROPIN" ]; then
         log "fallback: the legacy runtime is already selected; nothing to do"
         return 0
@@ -221,7 +258,10 @@ do_fallback() {
 
 # An interrupted or failed switch puts the previous state back. `switching` is 1 from just
 # before the drop-in is touched until the switch has finished; `prev_dropin` is a copy of the
-# drop-in that was there before (empty: none, i.e. legacy).
+# drop-in that was there before (empty: none, i.e. legacy). The rollback runs under the lock and
+# does nothing when a fallback has completed since the switch began (FELLBACK_FILE exists: the
+# switch deleted it under the lock, only a finished fallback writes it): restoring the older
+# drop-in then would strand the stream on the session runtime after it was taken off.
 switching=0
 switch_target=""
 prev_dropin=""
@@ -231,7 +271,11 @@ on_exit() {
     trap - EXIT INT TERM HUP
     if [ "$switching" -eq 1 ]; then
         switching=0
-        if [ "$switch_target" = session ]; then
+        take_lock || true
+        if [ "$switch_target" = session ] && [ -f "$FELLBACK_FILE" ]; then
+            record "legacy (switch to session interrupted or failed (exit ${rc}); a fallback completed meanwhile, not restoring the older drop-in)"
+            restarted=0
+        elif [ "$switch_target" = session ]; then
             if [ -n "$prev_dropin" ] && [ -f "$prev_dropin" ]; then
                 mkdir -p "$DROPIN_DIR" && cp -f "$prev_dropin" "$DROPIN"
             else
@@ -299,6 +343,7 @@ if [ "$command" = session ]; then
   flysim:         ${legacy_compat}
   flysim-session: ${session_compat}"
     fi
+    take_lock || die "another fly-runtime holds ${FLY_RUNTIME_LOCK}; not switching"
     before="$(current)"
     if [ -f "$DROPIN" ]; then
         prev_dropin="$(mktemp "${DROPIN}.prev.XXXXXX")"
@@ -343,6 +388,7 @@ if [ "$command" = session ]; then
 fi
 
 # legacy
+take_lock || die "another fly-runtime holds ${FLY_RUNTIME_LOCK}; not switching"
 before="$(current)"
 switch_target=legacy
 switching=1

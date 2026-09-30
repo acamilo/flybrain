@@ -470,9 +470,13 @@ pct exec $CTID -- /opt/fly/bin/fly-runtime legacy     # the one-command rollback
   switches back to legacy by itself and exits 1 (`--no-fallback` leaves it to the operator).
   Every switch is logged (`journalctl -t fly-runtime`, `/var/lib/fly/runtime.log`).
 - **The fallback outlives the switch (C1).** While the session runtime is selected, the drop-in
-  also sets `OnFailure=fly-runtime-fallback.service`, `StartLimitBurst=3` and
-  `StartLimitIntervalSec=600`, and `MALLOC_ARENA_MAX=2` (glibc arena fragmentation was the whole
-  of the 5-8 MB/h RSS growth). Three starts of `flysim.service` within ten minutes, from any
+  also sets `OnFailure=fly-runtime-fallback.service`, `StartLimitBurst=3`,
+  `StartLimitIntervalSec=600` and `RestartMode=direct`, and `MALLOC_ARENA_MAX=2` (glibc arena
+  fragmentation was the whole of the 5-8 MB/h RSS growth). `RestartMode=direct` is what makes the
+  limit real: since systemd 254 the default (`normal`) sends the unit through the `failed` state
+  before every `Restart=always` restart, so `OnFailure=` would fire on the first crash, watchdog
+  kill or start timeout (seen on systemd 257, the container's). With `direct` the unit goes from
+  one start to the next and only hitting the start limit fails it. Three starts of `flysim.service` within ten minutes, from any
   cause and any caller (a reboot, the watchdog or `fly-loop-recover` restarting it, a deploy, a
   binary that crashes, hangs before READY or is killed by `WatchdogSec`) make systemd run
   `fly-runtime fallback`: it writes `/run/fly/runtime-fellback.json` (time, reason, unit result),
@@ -480,13 +484,18 @@ pct exec $CTID -- /opt/fly/bin/fly-runtime legacy     # the one-command rollback
   a `fly-runtime` journal line. It is idempotent, and it does nothing if the release has no
   executable `flysim`. Look with `fly-runtime status` (it prints the reason) or
   `cat /run/fly/runtime-fellback.json`; the container is then on legacy until an operator runs
-  `fly-runtime session` again, which clears the reason file. Three legitimate restarts in ten
+  `fly-runtime session` again, which clears the reason file. Restarts you make yourself count
+  too, and once the limit is reached systemd refuses the next start and runs the fallback. Three legitimate restarts in ten
   minutes count the same as three crashes: after that many, prefer `fly-runtime legacy`, do the
   work, then switch back.
 - **Interrupted switches roll back.** `fly-runtime` traps INT, TERM and HUP (an ssh that drops
   mid-switch): an unfinished `session` removes the drop-in again (or restores the one that was
   there) and restarts `flysim.service` on that state, so a drop-in that never passed its health
-  check is never left behind.
+  check is never left behind. `session`, `legacy`, `fallback` and that rollback all take one lock
+  (`/run/fly/runtime.lock`); a switch holds it while it changes the drop-in and queues the restart
+  (`systemctl restart --no-block`, so a unit that never becomes READY cannot hold it) and releases
+  it for the health wait. The rollback does nothing when a fallback finished after the switch began (the
+  reason file exists), so it can never put back an older drop-in over a fallback.
 - **What stays the same.** Everything that names `flysim.service` keeps working unchanged:
   `fly.target`, `flyedge.service`'s `Requires=`, the watchdog, `fly-loop-recover`'s restart and
   its sudoers line, `fly-loop-reset`, `fly-reset-to-milestone` (run with the service stopped, on

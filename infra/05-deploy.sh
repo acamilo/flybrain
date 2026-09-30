@@ -397,7 +397,7 @@ The 'current' symlink has NOT been moved; the running release is untouched."
     # the shadow for the new flysim-session binary; the trust gates before the release (the
     # parity and service tests, the compat check just below) are what vouch for it. A bad
     # release is caught afterwards by the persistent fallback: while the drop-in exists,
-    # flysim.service carries OnFailure=fly-runtime-fallback.service with a 3-starts-in-10-minutes
+    # flysim.service carries OnFailure=fly-runtime-fallback.service and RestartMode=direct with a 3-starts-in-10-minutes
     # limit, so a session binary that will not stay up puts the fly back on legacy by itself
     # (`fly-runtime fallback`, /run/fly/runtime-fellback.json), whoever restarted it.
     if ct_exec "$CTID" -- test -f /etc/systemd/system/flysim.service.d/10-runtime.conf; then
