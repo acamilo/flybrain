@@ -2079,6 +2079,41 @@ Nothing presses for the fly on the keyboard but the bound's one button, dealt as
 chosen by the fly's own macro group. The decoder, the reward catalog, the adapter version, the
 roles and the compatibility string are untouched.
 
+### 12.33 The SHIFT offer's party list is the fly's turn, not a forced switch (2026-09-30, row 70)
+
+Live on v0.7.0, rung 12, Mt. Moon 1F: the fly caught its first Pokémon (a Zubat). Minutes later, a
+Lass's battle. Wartortle fainted to her Oddish, the forced switch sent out the Zubat, and the Zubat
+knocked the Oddish out. With two Pokémon in the party, the cartridge's SHIFT battle style asks
+"Will ZUBAT change POKéMON?" before the trainer's next one (`EnemySendOut`,
+`engine/battle/core.asm`). The fly answered YES, and the game opened the party list. From then on,
+the event log was `NEXT start/done` every 0.8 brain seconds for 58 brain minutes, and nothing
+else happened until the ladder reset the run to rung 11.
+
+- **The misread.** `EnemySendOut` opens that list with `wPartyMenuTypeOrMessageID =
+  BATTLE_PARTY_MENU`, the same value `ChooseNextMon` uses after a faint. `state::battle` took
+  BATTLE_PARTY_MENU alone as the forced switch, so the pad was the forced switch's `SWITCH, NEXT`.
+  `SWITCH` had no one to switch to, because the Wartortle had fainted. `NEXT`'s A landed on the
+  cursor, which the game parks on the Pokémon already out. The game printed "ZUBAT is already out!"
+  and reopened the list. The one press that leaves this list is B, which declines the offer:
+  `DisplayPartyMenu` returns carry and the trainer sends the next one out. No button on the pad
+  sent B.
+- **The rule.** A battle party list is a forced switch only when BATTLE_PARTY_MENU is set **and
+  the active battler's HP is 0**. Both callers of `ChooseNextMon` (`HandlePlayerMonFainted`, and
+  the enemy's faint after a double knock-out) reach it only with `wBattleMonHP` at 0, so the faint
+  is what the forced switch has and the offer does not. On the offer's list it is the fly's turn,
+  and its pad is the party list's own answers, `SWITCH` and `BACK` (12.9). `SWITCH` is dealt only
+  when another Pokémon can go out. Nothing is chosen for the fly. It can still take the offer with
+  `SWITCH`, and `BACK` is the way out that the pad was missing.
+- **Why it waited for a catch.** The offer needs a second Pokémon (`wPartyCount - 1 != 0`), so
+  with a party of one it never appeared. Every catch from now on makes it likelier.
+
+Tests: `the_shift_offers_party_list_is_the_flys_turn_and_its_way_out_is_back`, the second half of
+`the_party_list_a_fainted_mon_forces_is_a_forced_switch`, and two ROM tests.
+`row70_the_shift_offers_party_list_is_declined_and_the_battle_goes_on` uses
+`FLY_ROW70_CHECKPOINT`, the live trap. `row70_the_list_after_a_faint_is_still_a_forced_switch_and_is_answered`
+uses `FLY_ROW70_FORCED_CHECKPOINT`, the rung-12 archive carried forward by the stub to the same
+Lass with a Zubat caught.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")

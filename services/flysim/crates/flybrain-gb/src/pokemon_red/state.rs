@@ -693,13 +693,26 @@ pub fn battle(memory: &mut dyn MemoryReader) -> Option<Battle> {
         BattleMenu::None
     };
 
-    // A forced switch is the party list that `ChooseNextMon` opens: it is the only battle path
-    // that sets BATTLE_PARTY_MENU, where choosing PKMN from the menu above sets
-    // NORMAL_PARTY_MENU.
-    let forced_switch = matches!(menu, BattleMenu::Party { .. })
-        && read(memory, ram::wPartyMenuTypeOrMessageID) == poke::BATTLE_PARTY_MENU;
-
+    // A forced switch is the party list that `ChooseNextMon` opens after the active Pokémon
+    // fainted; choosing PKMN from the menu above sets NORMAL_PARTY_MENU instead.
+    //
+    // **BATTLE_PARTY_MENU alone is not enough** (row 70). `EnemySendOut` sets it too: in a trainer
+    // battle on the SHIFT style, with a second Pokémon in the party, the game asks "Will <mon>
+    // change POKéMON?" before the trainer's next one comes out, and YES opens this same list.
+    // That list is an offer, not a faint: B declines it (`DisplayPartyMenu` returns carry and the
+    // battle goes on), and the Pokémon already out cannot be chosen ("<mon> is already out!",
+    // then the list again). Read as a forced switch, its pad was `SWITCH` and `NEXT`; with the
+    // rest of the party fainted `SWITCH` had no one to switch to, and `NEXT`'s A on the cursor,
+    // which the game parks on the Pokémon already out, printed "already out" and reopened the
+    // list: live on rung 12 in Mt. Moon, 58 brain minutes of `NEXT` and nothing else. What tells
+    // the two apart is the one thing a faint changes: the active battler's HP is 0 on
+    // `ChooseNextMon`'s list, and not on the offer's.
     let own = own_mon(memory);
+    let active_alive = own.as_ref().is_some_and(|mon| mon.hp > 0);
+    let forced_switch = matches!(menu, BattleMenu::Party { .. })
+        && read(memory, ram::wPartyMenuTypeOrMessageID) == poke::BATTLE_PARTY_MENU
+        && !active_alive;
+
     // **The fly's turn is any menu of the battle that is accepting input**, not only the top-level
     // one (2026-09-17, live: an hour and forty-one minutes in Viridian Forest).
     //

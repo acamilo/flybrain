@@ -4933,3 +4933,207 @@ fn row67_the_gym_trainer_is_beaten_from_what_the_pad_deals() {
     assert_eq!(useful_move_missing, 0, "a move with PP and an effect was not on the pad");
     assert!(beaten_at.is_some(), "the trainer was not beaten in {budget} frames: {battles:?}");
 }
+
+/// A live row-70 checkpoint named by `var`, or `None` to skip.
+///
+/// `FLY_ROW70_CHECKPOINT`: v0.7.0, rung 12, durable generation 250877, pulled from inside the
+/// trap. Mt. Moon 1F, a Lass's battle (Oddish beaten, Bellsprout L11 next), Wartortle L19 fainted,
+/// the Zubat L8 the fly had caught minutes before standing at 24/26, and the party list open under
+/// "ZUBAT is already out!" -- the list the SHIFT style's "Will ZUBAT change POKéMON?" opens on YES.
+///
+/// `FLY_ROW70_FORCED_CHECKPOINT`: the live rung-12 milestone archive carried forward by the stub
+/// (uniform choice, seed 1, 27,361 frames): a Zubat caught, then the same Lass, and Wartortle
+/// fainted to her Oddish -- `ChooseNextMon`'s list, the forced switch this row must not disturb.
+fn row70_checkpoint(var: &str) -> Option<flysim::store::Checkpoint> {
+    std::env::var_os(var).map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// The real palette driven by a uniform choice per hold (a harness choice, not the fly's), one
+/// frame at a time, as row 67's test drives it.
+struct UniformDrive {
+    palette: flybrain_gb::pokemon_red::macros::PokemonPalette,
+    rng: u32,
+    running: bool,
+    since_decision: u32,
+    ms: f64,
+    starts: std::collections::BTreeMap<&'static str, u32>,
+}
+
+impl UniformDrive {
+    const HOLD_FRAMES: u32 = 48;
+
+    fn new(run: &Run) -> Self {
+        Self {
+            palette: flybrain_gb::pokemon_red::macros::PokemonPalette::new(SEED),
+            rng: 1,
+            running: false,
+            since_decision: Self::HOLD_FRAMES,
+            ms: run.ms,
+            starts: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Observes, decides, runs one frame; returns the names the pad dealt before the frame.
+    fn frame(&mut self, run: &mut Run) -> Vec<&'static str> {
+        use flybrain_gb::{MacroPalette, Started};
+        self.palette.clock(self.ms);
+        let ledger = AdapterLedger(&run.adapter);
+        let observed = self.palette.observe(&mut run.gb, &ledger);
+        let names = observed.bindings.iter().map(|binding| binding.name).collect();
+        let mut mask = 0u8;
+        if self.running {
+            match self.palette.step(&mut run.gb, &ledger) {
+                Some(held) => mask = held,
+                None => self.running = false,
+            }
+        } else if self.since_decision >= Self::HOLD_FRAMES && !observed.bindings.is_empty() {
+            self.since_decision = 0;
+            self.rng ^= self.rng << 13;
+            self.rng ^= self.rng >> 17;
+            self.rng ^= self.rng << 5;
+            let binding = &observed.bindings[(self.rng >> 8) as usize % observed.bindings.len()];
+            if let Started::Running(_) = self.palette.start(binding.slot, &mut run.gb, &ledger) {
+                *self.starts.entry(binding.name).or_default() += 1;
+                self.running = true;
+                match self.palette.step(&mut run.gb, &ledger) {
+                    Some(held) => mask = held,
+                    None => self.running = false,
+                }
+            }
+        }
+        self.since_decision += 1;
+        run.gb.set_buttons(mask);
+        run.gb.run_frame().expect("a frame should complete");
+        self.ms += MS_PER_FRAME;
+        run.adapter.sample(&mut run.gb, self.ms);
+        names
+    }
+}
+
+/// Which battle party list is open: `Some(true)` for `ChooseNextMon`'s after a faint (the battler
+/// at 0 HP), `Some(false)` for the SHIFT style's offer (BATTLE_PARTY_MENU, the battler standing),
+/// `None` for anything else. Read from the cartridge's bytes, not through the seam under test.
+fn row70_list(gb: &mut Emulator) -> Option<bool> {
+    use flybrain_gb::MemoryReader;
+    use flybrain_gb::pokemon_red::macros::state::BattleMenu;
+    use flybrain_gb::pokemon_red::state;
+    use flybrain_gb::pokemon_red::symbols::ram;
+    let hp = u16::from(gb.read8(ram::wBattleMonHP)) << 8 | u16::from(gb.read8(ram::wBattleMonHP + 1));
+    let open = gb.read8(ram::wIsInBattle) != 0
+        && gb.read8(ram::wPartyMenuTypeOrMessageID) == 2
+        && state::battle(gb).is_some_and(|battle| matches!(battle.menu, BattleMenu::Party { .. }));
+    open.then_some(hp == 0)
+}
+
+/// Whether the seam reads the fly's own turn at the top-level battle menu.
+fn row70_main_turn(gb: &mut Emulator) -> bool {
+    use flybrain_gb::pokemon_red::macros::state::BattleMenu;
+    flybrain_gb::pokemon_red::state::battle(gb)
+        .is_some_and(|battle| battle.own_turn && matches!(battle.menu, BattleMenu::Main { .. }))
+}
+
+/// Row 70: the SHIFT style's party list is an offer the fly can decline, not a forced switch.
+///
+/// **What was live** (2026-09-30, v0.7.0): after the fly's first catch, a trainer battle in
+/// Mt. Moon asked "Will ZUBAT change POKéMON?" before the trainer's next Pokémon. The fly said
+/// YES, and `EnemySendOut` opened the party list with BATTLE_PARTY_MENU, the value
+/// `ChooseNextMon` uses after a faint. The seam read a forced switch; its pad was `SWITCH, NEXT`,
+/// `SWITCH` had no one to switch to, and `NEXT`'s A on the Pokémon already out printed "already
+/// out" and reopened the list: `NEXT` and nothing else for 58 brain minutes.
+///
+/// From the live checkpoint: `NEXT` is on no frame of the offer's list, `BACK` is, the list is
+/// left, and the fly gets its turn against the trainer's next Pokémon. (On v0.7.0: 6,000 frames
+/// in the list, `NEXT` on every one, 125 `NEXT` starts.)
+#[test]
+fn row70_the_shift_offers_party_list_is_declined_and_the_battle_goes_on() {
+    use flybrain_gb::MemoryReader;
+    use flybrain_gb::pokemon_red::symbols::ram;
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = row70_checkpoint("FLY_ROW70_CHECKPOINT") else {
+        eprintln!("skipped: no FLY_ROW70_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert_eq!(row70_list(&mut run.gb), Some(false), "the checkpoint is inside the offer's party list");
+
+    let mut drive = UniformDrive::new(&run);
+    let (mut offer_frames, mut next_on_offer, mut back_on_offer) = (0u32, 0u32, 0u32);
+    let mut turn_after = None;
+    for frame in 0..6_000u32 {
+        let offer = row70_list(&mut run.gb) == Some(false);
+        let names = drive.frame(&mut run);
+        if offer {
+            offer_frames += 1;
+            next_on_offer += u32::from(names.contains(&"NEXT"));
+            back_on_offer += u32::from(names.contains(&"BACK"));
+        } else if row70_main_turn(&mut run.gb) {
+            turn_after = Some(frame);
+            break;
+        }
+    }
+    eprintln!(
+        "offer frames {offer_frames}, NEXT dealt on {next_on_offer}, BACK on {back_on_offer}; the \
+         fly's turn against the next Pokémon at {turn_after:?} (enemy {:#04x}); starts {:?}",
+        run.gb.read8(ram::wEnemyMonSpecies),
+        drive.starts,
+    );
+    assert_eq!(next_on_offer, 0, "NEXT's A on the Pokémon already out is the ring");
+    assert!(back_on_offer > 0, "B declines the offer, so BACK is on its pad");
+    assert!(turn_after.is_some(), "the offer was never left: {:?}", drive.starts);
+    assert_eq!(row70_list(&mut run.gb), None, "the list is closed");
+}
+
+/// Row 70's other side: the party list `ChooseNextMon` opens after a faint is still a forced
+/// switch. Its pad is `SWITCH` (and the `NEXT` that confirms the cursor), never a `BACK` the game
+/// would ignore; the fly sends out the Pokémon still standing and gets its turn with it.
+#[test]
+fn row70_the_list_after_a_faint_is_still_a_forced_switch_and_is_answered() {
+    use flybrain_gb::MemoryReader;
+    use flybrain_gb::pokemon_red::macros::state::GameState;
+    use flybrain_gb::pokemon_red::symbols::ram;
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = row70_checkpoint("FLY_ROW70_FORCED_CHECKPOINT") else {
+        eprintln!("skipped: no FLY_ROW70_FORCED_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert_eq!(row70_list(&mut run.gb), Some(true), "the checkpoint is inside ChooseNextMon's list");
+
+    let mut drive = UniformDrive::new(&run);
+    let (mut forced_frames, mut read_forced) = (0u32, 0u32);
+    let (mut switch_on_forced, mut back_on_forced) = (0u32, 0u32);
+    let mut turn_after = None;
+    for frame in 0..6_000u32 {
+        let forced = row70_list(&mut run.gb) == Some(true);
+        if forced {
+            let ledger = AdapterLedger(&run.adapter);
+            let mut state =
+                flybrain_gb::pokemon_red::state::PokeState::with_ledger(&mut run.gb, &ledger);
+            read_forced += u32::from(state.battle().is_some_and(|battle| battle.forced_switch));
+        }
+        let names = drive.frame(&mut run);
+        if forced {
+            forced_frames += 1;
+            switch_on_forced += u32::from(names.contains(&"SWITCH"));
+            back_on_forced += u32::from(names.contains(&"BACK"));
+        } else if row70_main_turn(&mut run.gb) {
+            turn_after = Some(frame);
+            break;
+        }
+    }
+    let out = run.gb.read8(ram::wPlayerMonNumber);
+    eprintln!(
+        "forced frames {forced_frames} (read forced on {read_forced}), SWITCH dealt on \
+         {switch_on_forced}, BACK on {back_on_forced}; the fly's turn at {turn_after:?} with party \
+         slot {out} out; starts {:?}",
+        drive.starts,
+    );
+    assert_eq!(read_forced, forced_frames, "every frame of ChooseNextMon's list reads as a forced switch");
+    assert!(switch_on_forced > 0, "SWITCH is on the forced switch's pad");
+    assert_eq!(back_on_forced, 0, "the game ignores B on this list, so BACK is not dealt");
+    assert!(turn_after.is_some(), "the forced switch was never answered: {:?}", drive.starts);
+    assert_eq!(out, 1, "the Pokémon still standing (the Zubat, slot 1) was sent out");
+}
