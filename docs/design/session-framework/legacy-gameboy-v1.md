@@ -894,7 +894,10 @@ verdict comes back (`shadow::remote`, `shadow::relay`, `shadow::ingest`).
   (oldest first; a file's size read after the directory listing, so an older file is complete
   when a newer one reaches the box), then the sugar journal as read before the listing. Trace files
   that started before the run (`FLY_SHADOW_RUN_ID`, the start's Unix ms) and saves older than a
-  minute before it are not sent.
+  minute before it are not sent. A writer thread owns the link, so a stall never blocks the relay:
+  new saves are read as they appear and held in memory (256 MiB, about 8 minutes; a hot save lives
+  about ten seconds), trace bytes wait on disk, and a newer file and the journal wait until every
+  older file is complete on its way.
 - *The ingest* (`fly-shadow ingest --root <dir>`) is the forced command of the relay's key on the
   box (`authorized_keys` `restrict,command=`); the box holds no credential for the container. It
   refuses a relay whose release directory or binary SHA-256 differ from its own, so the box runs the

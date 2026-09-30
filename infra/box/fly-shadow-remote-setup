@@ -3,7 +3,7 @@
 # Run as root ON THE BOX (never on the release container, never on the host), by the coordinator.
 # Idempotent: re-run it for every release the container runs.
 #
-#   fly-shadow-remote-setup RELEASE_TARBALL ROM_FILE RELAY_PUBKEY [--from ADDRS] [--cpus LIST]
+#   fly-shadow-remote-setup RELEASE_TARBALL ROM_FILE RELAY_PUBKEY [--from ADDRS] [--cpus LIST] [--threads N]
 #
 #   RELEASE_TARBALL  the exact flybrain-<version>.tar.gz deployed to the release container. It is
 #                    installed at the SAME path, /opt/fly/releases/<version>, MANIFEST-verified,
@@ -14,7 +14,10 @@
 #   RELAY_PUBKEY     the public half of the relay's key (the private half lives only on the
 #                    release container, /etc/fly/shadow-remote/id_ed25519, owned by fly).
 #   --from ADDRS     restricts the key to the container's address (authorized_keys from=).
-#   --cpus LIST      AllowedCPUs for the shadow (e.g. 3 cores of this box), a drop-in.
+#   --cpus LIST      AllowedCPUs for the shadow, a drop-in: its own cores, never shared with the
+#                    live fly's NUMA node.
+#   --threads N      the shadow's sweep threads (default 4; one per core in --cpus). It must run
+#                    clearly faster than real time: see the runbook's "Which box".
 #
 # What it sets up:
 #   - user flyshadow, home /srv/fly-shadow-remote (the mirror; 0750);
@@ -32,13 +35,14 @@ die() { echo "fly-shadow-remote-setup: $*" >&2; exit 2; }
 log() { echo "fly-shadow-remote-setup: $*"; }
 
 [ "$(id -u)" = 0 ] || die "run as root on the build box"
-[ $# -ge 3 ] || die "usage: fly-shadow-remote-setup RELEASE_TARBALL ROM_FILE RELAY_PUBKEY [--from ADDRS] [--cpus LIST]"
+[ $# -ge 3 ] || die "usage: fly-shadow-remote-setup RELEASE_TARBALL ROM_FILE RELAY_PUBKEY [--from ADDRS] [--cpus LIST] [--threads N]"
 tarball="$1"; rom="$2"; pubkey="$3"; shift 3
-from=""; cpus=""
+from=""; cpus=""; threads=4
 while [ $# -gt 0 ]; do
     case "$1" in
         --from) from="$2"; shift 2 ;;
         --cpus) cpus="$2"; shift 2 ;;
+        --threads) threads="$2"; shift 2 ;;
         *) die "unknown option $1" ;;
     esac
 done
@@ -51,6 +55,7 @@ base="$(basename "$tarball")"; version="${base#flybrain-}"; version="${version%.
 [[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || die "cannot parse a version from $base"
 [[ "$from" =~ ^[0-9A-Fa-f.:,/*]*$ ]] || die "--from takes addresses or patterns only"
 [[ "$cpus" =~ ^[0-9,-]*$ ]] || die "--cpus takes a CPU list"
+[[ "$threads" =~ ^[1-9][0-9]?$ ]] || die "--threads takes a number"
 key="$(head -n 1 "$pubkey")"
 [[ "$key" =~ ^ssh-(ed25519|rsa)\ [A-Za-z0-9+/=]+( [^\"]*)?$ ]] || die "$pubkey is not one ssh public key line"
 command -v sshd >/dev/null || [ -x /usr/sbin/sshd ] || die "this box has no sshd"
@@ -98,11 +103,12 @@ log "ROM sha256 $rom_sha (must equal the container's ROM_SHA256)"
 # The units.
 install -m 0644 "$here/flyshadow-remote.service" /etc/systemd/system/flyshadow-remote.service
 install -m 0644 "$here/flyshadow-remote.path" /etc/systemd/system/flyshadow-remote.path
-if [ -n "$cpus" ]; then
-    install -d -m 0755 /etc/systemd/system/flyshadow-remote.service.d
-    printf '[Service]\nAllowedCPUs=%s\n' "$cpus" > /etc/systemd/system/flyshadow-remote.service.d/cpuset.conf
-    log "AllowedCPUs=$cpus"
-fi
+install -d -m 0755 /etc/systemd/system/flyshadow-remote.service.d
+{
+    printf '# written by fly-shadow-remote-setup\n[Service]\nEnvironment=FLY_SHADOW_THREADS=%s\n' "$threads"
+    [ -n "$cpus" ] && printf 'AllowedCPUs=%s\n' "$cpus"
+} > /etc/systemd/system/flyshadow-remote.service.d/10-cores.conf
+log "${threads} threads${cpus:+ on CPUs $cpus}"
 systemctl daemon-reload
 systemctl enable --now flyshadow-remote.path
 systemctl enable flyshadow-remote.service

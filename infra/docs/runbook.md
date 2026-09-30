@@ -610,9 +610,12 @@ pct exec <ctid> -- /opt/fly/bin/fly-shadow-run stop --restart-flysim   # shadow,
   ends.
 - **Resources**: the shadow is a second whole brain, at about the live fly's CPU per frame.
   Remote, it runs on the box's own cores at normal priority (`flyshadow-remote.service`), and the
-  container pays the relay: a few ms of CPU a second, about 2.1 GB an hour over the network
-  (the hot save every 5 s is 2.7 MB; the trace about 160 MB an hour), and the trace writer inside
-  flysim. `--local` runs it `SCHED_IDLE` on the page and encoder CPUs, never on flysim's (05-deploy.sh
+  container pays the relay (about 0.5 % of a core, measured; about 2.1 GB an hour over the network:
+  the hot save every 5 s is 2.7 MB, the trace about 140 MB an hour) and the trace writer inside
+  flysim: about 1.3 ms of the sim thread a frame (measured unpaced on a build box's Haswell, 3
+  threads: 11.1 to 12.5 ms). The guard's baseline is taken before the trace is on, so that cost
+  counts against it; if the guard trips on a remote run, the trace alone is too much for the live
+  fly's headroom. `--local` runs it `SCHED_IDLE` on the page and encoder CPUs, never on flysim's (05-deploy.sh
   writes its `cpuset.conf`), pausing for a minute while flysim's lag grows faster than its
   baseline rate. Disk on the container: the trace until the box has compared it (under 8 GiB);
   on the box: the mirrored saves (under 3 GiB) and a spool of at most 4 GiB.
@@ -641,7 +644,7 @@ on the build box can reach the release container: the container dials out.
    The container needs an ssh client (`openssh-client`; `02-base.sh` installs it) and no sshd.
 2. **The box** (as root on the box): copy the release tarball the container runs, the cartridge,
    `infra/box/` and the public key there, then
-   `infra/box/fly-shadow-remote-setup flybrain-<version>.tar.gz <rom> id_ed25519.pub --from <container address> --cpus <3 of the box's cores>`.
+   `infra/box/fly-shadow-remote-setup flybrain-<version>.tar.gz <rom> id_ed25519.pub --from <container address> --cpus <its cores> --threads <one per core>`.
    It installs the release at the same `/opt/fly/releases/<version>` path (MANIFEST-verified,
    root-owned), a `flyshadow` user whose home is the mirror `/srv/fly-shadow-remote`, a
    root-owned `authorized_keys` whose only line is
@@ -660,10 +663,14 @@ on the build box can reach the release container: the container dials out.
    differ from the box's (another release on the container: re-run step 2 with its tarball);
    `journalctl -u flyshadow` on the container shows it.
 
-Which box: one whose cores the live fly does not share, preferably on the other NUMA node or
-another host (flysim is memory-bandwidth-bound). Keep other heavy work off the shadow's cores for
-the 3 h (the shadow runs at `CPUWeight=1000`, `Nice=-5`). The shadow must run faster than real
-time to catch up after a restart: measured in the SHADOW-02 report.
+Which box: never one on the live fly's NUMA node (flysim is memory-bandwidth-bound: in the
+SHADOW-02 rehearsal an unpaced flysim on a neighbouring box of the same node took a paced one from
+1.0 to 0.68-0.88). The shadow must also run clearly faster than real time (16.7 ms a frame) to
+catch up after a restart; measured per frame (mean, unthrottled replay): 11.8 ms on the second
+host's box with 4 threads, 11.9-12.2 ms on the build boxes of the release host's other node with
+6 threads (13-14 ms with 3-4). Give it 4 cores (second host) or all 6 (same host, other node)
+with `--cpus` and `--threads`; keep other heavy work (bx) off that box
+for the 3 h (the shadow runs at `CPUWeight=1000`, `Nice=-5`).
 
 ## Cutover to the session runtime (CUT-01)
 

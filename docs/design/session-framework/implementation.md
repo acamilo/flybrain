@@ -683,6 +683,70 @@ a timing, load or segment-handling bug.
   whose trace could not be created. In `FLY_TRACE_DIR` mode, a trace-creation failure no longer
   stops flysim from starting. The test adds such a process, untraced, and the shadow fails.
 
+### SHADOW-02 — The shadow on a build box (port slice)
+
+**2026-09-30: built** on `port/shadow-02` off main (v0.7.0), and awaiting review. It changes no
+live behaviour until `fly-shadow-run start` runs; the flysim binary is unchanged. The contract is
+the SHADOW-02 amendment of [legacy-gameboy-v1](legacy-gameboy-v1.md) section 18.
+
+**Why.** On the release container the shadow (v0.7.0, started 2026-09-30) compared 1,119 brain
+seconds with zero divergence, but at about 27 ms a frame on the page and encoder CPUs it fell
+further behind every hour, and the live realtime factor fell from 0.9998 to 0.93-0.98. It went
+back to 0.999-1.0 the moment the shadow was stopped.
+
+- **`shadow::remote`**: the frame protocol (a JSON header line and a body), the name checks that
+  guard every path, the forwarded settings (`FORWARDED_ENV`: game, macro mode, accepted adapters,
+  pins; no path, no secret).
+- **`shadow::relay`** (`fly-shadow relay`, the container's `flyshadow.service` through a drop-in):
+  per quarter-second tick, the new saves, then the trace bytes of this run in file order, then
+  the journal read before the listing. A writer thread owns the ssh pipe, so a stalled link never
+  blocks it: saves are read as they appear and queued in memory (256 MiB), trace bytes wait on
+  disk, and a newer file and the journal wait for every older file. The heartbeat is touched only
+  while healthy (connected, the box's shadow of this run alive within 30 s, the box has every
+  byte that was on disk a minute ago). The box's verdict is written back only when it is this
+  run's, with the unsynced tail added to `lagTransitions` and a `relay` member.
+- **`shadow::ingest`** (`fly-shadow ingest --root`, the forced command of the relay's key on the
+  box): the release directory and binary hashes must equal its own; a new run id resets the mirror
+  and restarts the shadow; appends only at the offset it holds (else `resync`); a file the shadow
+  finished is never written again (`done`, and the relay then deletes the container's copy);
+  reports liveness (heartbeat fresh, verdict this run's and running or passed).
+- **The shadow**: `--run-id-file` (the verdict's `runId`; a new id exits 4); a `no-consumer` trace
+  stop while following is a `coverage` divergence; coverage reads the journal before listing the
+  traces. `shadow::release` holds the release hashing the binary and `check` share.
+- **infra.** `fly-shadow-run start` runs remote when `/etc/fly/shadow-remote.env` exists and
+  refuses otherwise (`--local` keeps the old placement); `check` also needs `relay.json` healthy
+  and under a minute old; `status` shows the relay. `infra/box/` (never deployed by 05-deploy):
+  `flyshadow-remote.service` (the same release at the same path, `--run-id-file`, no lag back-off,
+  `Restart=always`, stays stopped on exit 3, `CPUWeight=1000`), `flyshadow-remote.path` (starts it
+  on a new run id) and `fly-shadow-remote-setup` (MANIFEST-verified root-owned release, the
+  `flyshadow` user, a root-owned `authorized_keys` with `restrict,command=` and optional `from=`).
+  `02-base.sh` installs `openssh-client` (no sshd). Lint holds all of it; the runbook's shadow
+  section has the set-up.
+
+**Tests.** `tests/shadow_remote.rs` (ROM, the toy connectome) runs the real `flysim`, the relay and
+the real `fly-shadow ingest` binary (over pipes where production has ssh) and a remote shadow:
+a fresh fly and a restart with sugar pass and come back with the run id; a dead remote shadow stops
+the heartbeat and flysim's trace, and the new shadow skips that stop as history (`trace-cap`) and
+follows the next process; a stalled ingest leaves the relay reporting "not healthy", flysim stops
+its trace, and when the link is back the box fails the verdict as `coverage` and the relay brings
+it and `divergence.json` back and exits 3. Unit tests: frames, names, the release refusal, offsets
+and `resync`, the run reset, the env allowlist.
+
+**Two-box rehearsal** (FAFB, macros, row 67, real time, sugar every 10-30 s; a real flysim on one
+build box standing in for the release container, the remote shadow on another behind a real sshd
+with a `restrict,command=` key): see the SHADOW-02 run report. Cost of the shadow per live frame
+(unthrottled replay of a recorded trace, mean of the step): fly-build-1 14.1 ms with 3 threads,
+11.9 ms with 6; fly-build-2 13.9 / 13.0 / 12.2 ms with 3 / 4 / 6; fly-build-3 11.9 / 11.8 ms with
+3 / 4 (beside another agent's 1.6-core soak). The relay took about 0.5 % of a core; the stream to
+the box is about 2.1 GB per live hour (a 2.7 MB hot save every 5 s, and about 140 MB of trace).
+
+**The trace's own cost on the live loop** (the coordinator's question): +1.3 ms a frame on the
+sim thread (11.14 to 12.45 ms, unpaced, 3 threads, 4 A/B rounds on a build box), about half in
+the post-frame digests (frame and work RAM) and half in the record's digests and JSON. A writer
+thread for the digests and the file was tried and rejected: on flysim's pinned CPUs it preempts
+the brain's parallel sweep and the frame took 19 ms. The live guard's baseline is taken before
+the trace is on, so the trace's cost counts against it.
+
 ### STATE-01 — Coherent all-participant checkpoint/recovery
 
 **Depends on:** SESSION-02, MEDIA-01; validate with fake agents first, then AGENT-01/ENV-01.
