@@ -54,6 +54,38 @@ pub struct Parts<'a> {
     pub macros: Option<&'a mut MacroLayer>,
 }
 
+/// The ledgers after a boundary as one canonical string: the adapter's export (its lifetime
+/// ledgers), the ratchet's state and whether it holds a snapshot, and the macro layer's observable
+/// state -- scene, bound channels, running macro, outcome counts, "nearer the objective".
+///
+/// This is the one definition both runtimes use: `FLY_TRACE_LEDGERS` digests it here, and the
+/// session runtime's task (`fly-legacy-session::task::ledgers_of`) computes it from its own parts,
+/// which is how the shadow run holds the executor's ledgers -- which no checkpoint carries -- to
+/// the live loop's (SHADOW-01). Reading it changes nothing.
+pub fn ledgers_string(
+    adapter: &dyn GameAdapter,
+    ratchet: &Ratchet,
+    macros: Option<&MacroLayer>,
+) -> String {
+    let executor = match macros {
+        Some(layer) => serde_json::json!({
+            "scene": layer.scene_name(),
+            "bound": layer.bound_channels(),
+            "running": layer.running(),
+            "counts": format!("{:?}", layer.counts()),
+            "nearer": layer.nearer_the_objective(),
+        }),
+        None => serde_json::Value::Null,
+    };
+    serde_json::json!({
+        "adapter": adapter.export_state(),
+        "ratchet": serde_json::to_value(ratchet.state).expect("a ratchet state serializes"),
+        "slot": ratchet.snapshot.is_some(),
+        "executor": executor,
+    })
+    .to_string()
+}
+
 /// Where a host may look in, or time a phase. Every method defaults to nothing.
 ///
 /// The stream's loop uses [`FrameObserver::after`] for its per-phase profile and nothing else. A
@@ -654,6 +686,15 @@ impl LegacyFrame {
         } else {
             None
         };
+        if let Some(trace) = self.trace.as_mut()
+            && trace.wants_ledgers()
+        {
+            trace.ledgers(&ledgers_string(
+                &*parts.adapter,
+                parts.ratchet,
+                parts.macros.as_deref(),
+            ));
+        }
         Ok(Boundary {
             captured: saved,
             rollback,

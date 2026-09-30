@@ -1,0 +1,18 @@
+# infra/units/fly-runtime-probation.timer -- CUT-01's speed probation, every 60 s.
+#
+# Not enabled by provisioning or deploy. `fly-runtime session` runs `fly-runtime-probation start`
+# (systemctl enable --now), which is why this unit has an [Install] section: the enablement is
+# what makes a probation survive a reboot (OnBootSec= then runs the first tick). The probation
+# disables the timer when it passes, fails over to legacy, or is cancelled (`fly-runtime legacy`).
+[Unit]
+Description=fly-runtime-probation: the session runtime's speed probation, every minute (CUT-01)
+
+[Timer]
+OnBootSec=90s
+OnActiveSec=60s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=fly-runtime-probation.service
+
+[Install]
+WantedBy=timers.target

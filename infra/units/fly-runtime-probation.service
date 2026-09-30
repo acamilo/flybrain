@@ -1,0 +1,13 @@
+# infra/units/fly-runtime-probation.service -- triggered by fly-runtime-probation.timer.
+#
+# One sample (10 s of flysim's /metrics) and one decision of CUT-01's speed probation: see
+# infra/bin/fly-runtime-probation. On a sustained speed failure it runs `fly-runtime fallback
+# "speed: ..."`. With no probation running it disables its own timer. Root: the fallback removes a
+# drop-in in /etc/systemd and restarts flysim.
+[Unit]
+Description=fly-runtime-probation: is the session runtime at real time? (CUT-01)
+
+[Service]
+Type=oneshot
+ExecStart=/opt/fly/bin/fly-runtime-probation tick
+TimeoutStartSec=240

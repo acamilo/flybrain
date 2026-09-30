@@ -288,6 +288,37 @@ signal. The object serves exactly one agent on one port.
 - **Cancel.** `cancel(ms)` abandons a running macro. It is followed by `observe` on the world
   the fly now stands in.
 
+**Amendment, 2026-09-29 (TASK-01).** Choices the section above leaves open, fixed as built by
+`fly-legacy-session::task`:
+
+- *The ratchet's slot.* The ratchet ledger stays in the task. Its snapshot lives in the environment
+  as the slot `best`. The ratchet only asks whether one exists: its budget test is "no snapshot".
+  So the task holds a marker snapshot in its place, and a task ledger records `slotFilled`. A slot
+  save is asked for exactly when the legacy capture closure runs: safe, and rank above best.
+- *The task ledger is artifact-backed* (amended 2026-09-29, TASK-01 review B1). The adapter's
+  lifetime ledger grows with play: it is 42-46 KB on the live fly at rungs 12-15, which is past
+  the 32 KiB `TypedValue` bound. So the typed ledger is `{reward: {digest, byteLength}, ratchet,
+  slotFilled}`, and the adapter state's JSON travels as the ledger attachment `reward`. A
+  checkpoint files it as the payload `task-ledger-reward` ([workers-v1](workers-v1.md) section 1's
+  explicit artifact-backed schema; `Task::capture_attachments`). A missing, altered or unreadable
+  attachment is `INCOMPATIBLE_STATE`, never a panic, so a boot falls to the next candidate.
+- *The palette seed* (amended 2026-09-29, TASK-01 review N3). The legacy loop seeds the palette
+  from the brain's RNG state after boot. A restore does the same: it seeds with the restored
+  agent state's RNG, which it holds. A fresh start cannot see the agent's RNG after the warm-up,
+  so it uses a constant. That is exact because `MacroMachine` never reads its generator: no macro
+  has a random step. `fly-legacy-session` `tests/palette_seed.rs` holds this on the cartridge:
+  two seeds, driven by the same decisions, press the same buttons for 3000 frames. A future
+  macro that draws from the generator fails there.
+- *The clock of the first observation.* A fresh start's layer observes O[0] at the end of the
+  warm-up, `warmupMs` = 2500 ms, which the profile pins. That is the same time the legacy loop's
+  `Sim::boot` observes at, although the agent is initialized after the task bootstraps. After a
+  restore the layer observes at the restored brain time.
+- *A reward event with `stimulation_ms` = 0* is one `Reward` and no `Stimulus`, because
+  `Stimulus.durationMs` is positive. The legacy `stimulate(0)` changes nothing.
+- *Executor events.* Macro starts and finishes are not `executionEvents`. They are reported as
+  `FLY_TRACE` `macroEvents` (phases `execute`, `evaluate`, `rollback`). Reward events are the
+  task's `TaskEvent`s.
+
 ## 11. Episode policy `legacy-ratchet-rollback-v1`
 
 The ratchet's game-only rollback is a declared episode policy. When the ratchet fires during
@@ -330,6 +361,14 @@ reward history, the ratchet ledger (its attempt and lifetime budgets were spent 
 the adapter's persistent state. The first audio chunk after the rollback marks a
 discontinuity. This is the legacy `recover_game` sequence with the neural half moved into the agent.
 Each half touches only its own state, so the order between the halves does not matter.
+
+**Amendment, 2026-09-29 (TASK-01).** The coordinator applies the policy itself, as the section
+describes. The phase is `RollingBack(k)`. The new epoch is the session's epoch root plus `.rb<n>`,
+which is deterministic, so two runs of one session name the same epochs. A composition that
+declares the policy refuses to start unless every agent advertises `legacy-ratchet-rollback-v1`.
+The task's rollback request carries `{slotId: best, trigger}`. The world must advertise
+`gameboy-slots-v1` before anything is saved or restored. Service traces with a ratchet slot save
+and a ratchet rollback reproduce as described in the implementation guide's TASK-01 entry.
 
 ## 12. Composition declaration and digest
 
@@ -375,6 +414,31 @@ interface LegacyGameboyComposition {
   (`flybrain_gb::compatibility::decide`, `FLY_ACCEPT_ADAPTERS`). The composition digest is the identity
   for publication, traces and descriptor revisions, not a restore gate. This matches today's
   behaviour, where a decoder change does not refuse a checkpoint.
+
+**Amendment, 2026-09-30 (PERF-01): the in-process release configuration.** Nothing in the
+declaration, the digest or the compatibility string changes; these are execution choices of the
+composition as `fly-legacy-session` builds it, recorded here because the shadow compares the
+behaviour they must not change.
+
+- *In-process participants are called over the local lane* ([session RPCs](ipc-v1.md) section 1,
+  2026-09-30): the frame, the memory image, the audio chunk and the spike bitset are in-memory
+  artifacts, handed over without a store file. Process mode is unchanged and still goes through
+  the router. `FLY_SESSION_LOCAL_LANE=0` puts an in-process session back on the bus.
+- *`telemetry.spikes` is unchanged*: one bitset per transition, bit `i` set when neuron `i`
+  spiked in `[transition start, brain time)`, the legacy layout. The agent now builds it as the
+  union of the kernel's per-tick spike lists while Prepare ticks (`LifNetwork::tick_spikes`)
+  instead of scanning 139,255 last-spike times in Commit; the two are equal by construction and
+  by test, and the parity runs compare the bitset every frame. The AGENT-01 alternative -- attach
+  it only at the feed rate -- was not needed and was not made.
+- *Committed snapshots on the session topic*: a service session publishes every 60th boundary and
+  every boundary with task events or boundary actions (it was every other boundary). The live
+  presentation is the legacy feed, which the service host builds from the committed boundary at
+  30 Hz; nothing in the release subscribes to the session topic, and each publication seals a
+  store copy of the frame and the audio chunk. Every publication is still of a committed
+  boundary and still attaches the media it names (publishing-v1 section 3).
+- *Nothing runs beside the brain's ticks.* On the release CPU with the sweep owning every core of
+  the flysim cpuset, work overlapping Prepare (a publication left in flight, for instance) slowed
+  the ticks by up to a third, so the coordinator finishes each boundary before the next Prepare.
 
 ## 13. Machine-readable parts
 
@@ -500,6 +564,27 @@ Resume tests compare against the legacy restore outcome, not against an uninterr
 unstick procedure depends on: restarting the service clears the ledger-shaped traps and keeps
 the rung.
 
+**Amendment, 2026-09-29 (TASK-01): a FLYSIM01 checkpoint as the start.** A new-runtime session
+starts from the live fly's own save through the ordinary group restore
+(`Coordinator::import`, `fly-legacy-session::import`):
+
+- The world is ENV-01's `WorldState::from_flysim01` at `k = emulatorFrame - 1`, staged on a
+  replacement world.
+- The agent is the checkpoint's agent state in the worker's own capture format: STATE-02's
+  `legacy_checkpoint::agent_payload`. It carries the file's reinforcement count and the file's
+  framebuffer as the next input, and its ids come from the file.
+- The task is STATE-02's ledger `{reward, ratchet, slotFilled}`.
+
+A session boots from the live stores the way `Sim::boot` does: the legacy candidate order, the
+legacy gate, the next candidate on any refusal, then a startup durable save. See the
+implementation guide's TASK-01 entry.
+
+This section's resets then apply, and nothing else. The executor is fresh and observes the restored
+image once, at the restored brain time. The agent's readout transient is a fresh process's. The
+decision context is computed from the checkpoint's memory image before the install, and the
+coordinator refuses the install if the task, re-observing the restored world, derives another
+context.
+
 ## 15. Sugar admission
 
 The coordinator owns admission, with the legacy rules: the per-minute limiter, and "no overlap
@@ -522,6 +607,29 @@ between the two, so each admission record carries its interaction id. If the Pre
 applies it never commits, the admission is reported aborted and the edge refunds it. The
 bridge's fulfil path and refund path both get tests in the slice that wires them
 ([workers-v1](workers-v1.md) section 5 amendment).
+
+**Amendment, 2026-09-29 (TASK-01).** As built:
+
+- *Admission.* The coordinator's `AdmissionQueue` is cut at the top of each Prepare. It reports
+  every admission `applied` at the boundary its Prepare committed at, or `aborted` when the epoch
+  fails first. The legacy rules run on the edge side, unchanged: flysim's `RateLimiter` and the
+  clamp. They read `stimulusRemainingMs` from the last `Agent.Commit` or `Agent.Rollback` reply.
+  After a restore the pulse is unknown and a request is refused with a retry of one frame.
+  *Amended 2026-09-29 (TASK-01 review N1):* a sugar admitted but not yet reported on by a commit
+  counts as an active pulse, at its full duration (`AdmissionQueue::pending_stimulus_ms`). The
+  legacy `stimulate` activates the pulse the moment it admits, so this matches:
+  - two sugars between two commits get one admission and one `PulseActive`, as the legacy drain
+    gives them;
+  - the rate-limit slot is not spent on the refused one.
+
+  The retry advice may differ by less than a frame. Legacy reports the pulse decayed by the
+  ticks between drains; here it is undecayed until the commit reports it.
+- *The operator's `POST /reward` pulse is refused (declared).* In the legacy loop it is off unless
+  an operator sets `control.allow_reward`. Every shipped configuration leaves it off, and the API
+  answers 403. The session runtime has no counterpart to turn on, because a reinforcement outside
+  `Agent.Commit` is not a session-framework operation. `LegacyAdmission::reward` therefore always
+  refuses. A legacy trace that carries a reward pulse cannot be reproduced; FND-01's checker
+  refuses one as well.
 
 ## 16. Checkpoint format of record
 
@@ -597,3 +705,176 @@ graph validation for new bundles, and the composite behaviour identity of FOUNDA
 **not** in this document. They ship with PROF-02b, before DATA-01, as their own contract.
 Nothing here constrains them, except that a new profile never reuses this profile's id or its
 legacy exception.
+
+## 18. The shadow run (SHADOW-01)
+
+**Amendment, 2026-09-29 (SHADOW-01).** The operator's decision of 2026-09-23 gates the automatic
+cutover (CUT-01) on "a 3-hour shadow run with zero divergence". This section fixes what that
+means. The implementation is `fly-legacy-session::shadow` and the binary `fly-shadow`, with the unit
+`infra/units/flyshadow.service` and the script `infra/bin/fly-shadow-run`.
+
+**The inputs.** The legacy loop is deterministic, given two things: the state a process starts
+from and the admissions applied at the top of each frame. Every nondeterministic input reaches
+the fly through one of those two:
+
+| Input | How it reaches the fly | How the shadow gets it |
+| --- | --- | --- |
+| Restart, watchdog kill, `fly-loop-recover`, `fly-reset-to-milestone`, deploy | A new process restores a checkpoint (section 14), or warms up a fresh fly, and writes a durable startup save of the state it starts from | The trace's start line names that save (`g<N>`); the shadow boots a new session from it through the ordinary FLYSIM01 import |
+| Sugar (`POST /stimulate`) | Admitted on wall time and the live pulse (rate limiter, "no overlap"), applied at the top of a frame | The transition's `admissions`, replayed into the admission queue (`LegacyAdmission::replay_sugar`) |
+| Operator reward pulse (`POST /reward`) | Off in every shipped configuration (403) | Cannot be reproduced (section 15 amendment): the rest of that segment is reported uncompared |
+| Wall time | Pacing, publish rate, checkpoint intervals, pause (no frame runs). None changes a transition | Not needed. The trace records which saves were taken where |
+| Chat | A caption track; it reaches nothing the fly does | Not needed |
+| Threads | The sweep's result does not depend on the thread count (AGENT-01) | The shadow picks its own |
+
+So "the same inputs" means *the same start state per process and the same admissions per
+transition*. Admission itself is not compared. The session runtime decides admission against a
+pulse one commit stale, by the operator's decision (section 15). A shadow that re-decided sugar on
+its own clock would diverge by design, not by fault.
+
+**The architecture: the legacy fly stays primary, and the shadow follows its trace.** The live
+service writes `FLY_TRACE` (FND-01) with three switches added for the shadow. None changes a
+behaviour field or anything the fly does:
+
+- `FLY_TRACE_DIR` writes one file per process, `trace-<start wall ms>-<pid>.jsonl`.
+- `FLY_TRACE_MAX_BYTES` caps each file (4 GiB by default in directory mode).
+- `FLY_TRACE_LEDGERS=<n>` adds `ledgersDigest` every *n* transitions. This is the SHA-256 of
+  `flysim::frame::ledgers_string` after the boundary: adapter export, ratchet, slot, and the
+  executor's scene, bound set, running macro, counts and "nearer".
+
+`fly-shadow` follows the files in start order. For each file it takes these steps:
+
+1. It boots a session (agent, world, task and executor, as in TASK-01) from that process's startup
+   save. A fresh start is different: the stores were empty and the startup save is at boundary 0.
+   In that case the shadow runs the same power-on scaffold and warm-up
+   (`Environment.Initialize`, `Agent.Initialize`), and holds the startup save to its own
+   boundary 0, byte for byte. An import would not give the same emulator. binjgb's audio
+   resampler phase is not in its exported state, so the channel accumulators of an imported
+   emulator drift from those of a powered-on one, in the exported state only. Both restores of a
+   restart import, so they agree.
+2. For every transition, it replays the admissions and runs `Coordinator::step`. It takes a
+   capture wherever the live trace records one, before or after the boundary's rollback as the
+   live loop took it, then applies the deferred rollback.
+3. It builds its own trace line from what crossed the session's boundaries (`trace::line`) and
+   compares it with the live line, field by field.
+
+A spool thread copies every new store generation as it appears, because a hot file lives only
+about ten seconds. The shadow never writes to the live stores.
+
+The reverse arrangement was considered: the session runtime as primary, with legacy as the
+checker. It would make the shadow run the cutover itself, and a divergence would already be on
+the stream. A second legacy process in lockstep was also considered. It adds nothing, because the
+live process's own trace *is* the legacy behaviour.
+
+**What is compared, per boundary.**
+
+- *The trace line*, every transition. The fields are `step`, `admissions`, `ticksAdvanced`,
+  `brainTicks`, `remainder`, `ratesDigest`, `spikesDigest`, `spikeCount`, `decision`, `mask`,
+  `macroEvents`, `framebufferDigest`, `wramDigest`, `rewards`, `rank`, `acknowledgedBoundary`
+  and `boundaryActions`. `boundaryActions` covers the slot saves with their state digests and
+  the rollbacks.
+- *The ledgers*: `ledgersDigest` on the transitions that carry it. The shadow digests the same
+  string from its own task (`task::ledgers_of` is `ledgers_string`). This covers the executor's
+  ledgers, which no checkpoint carries.
+- *The checkpoint bytes*, at every live save the spool still holds. The shadow captures the same
+  boundary and exports FLYSIM01 through the shared encoder (STATE-02). It compares the export
+  byte for byte with the live file after the substitutions named below. `compatibility`,
+  `speed` and `rankSinceMs` are the shadow's own, so they are compared too.
+
+**Declared differences**, excluded by name. The verdict lists the same names.
+
+| Name | What is excluded |
+| --- | --- |
+| `archive-order` | A legacy milestone archive taken before that boundary's slot save (`afterActions` 0 ahead of a `save-slot`, sections 4 and 16) holds the pre-capture ratchet and slot. The live file's `ratchet`, `ratchetGame` and `ratchetFrame` stand in for the shadow's in that capture only. The operator accepted this on 2026-09-23 ("Archive order") |
+| `decision-list-order` | The decision is compared as `gameboy-channels-v1` sees it (section 6, `trace::channels`) |
+| `host-fields` | `generation`, `wallMs` and `lastEventId` are the live file's. They are host bookkeeping: the shadow keeps no feed event log (SERVE-01's service host keeps its own) and allocates no generations, because it writes no store |
+| `admission-replay` | Sugar is replayed, not re-decided (above) |
+| `operator-reward-pulse` | A segment with one is reported uncompared from that transition on |
+
+**The window.** The verdict is `pass` once the compared transitions add up to **10,800 s of
+live brain time** (the sum of `ticksAdvanced`, 3 h at real time) with zero divergence, and at least
+one live save per 600 of those brain seconds has been compared byte for byte. That time may span
+several processes.
+
+*Skips* are only the live side's own events (`SKIP_KINDS`):
+
+- `startup-save-gone`: a process whose startup save was already gone when the shadow reached it,
+  because the shadow started late or its spool evicted the file;
+- `operator-reward-pulse`;
+- `trace-cap`: the live trace stopped at its byte cap, or with no consumer;
+- `no-transition`: a process that ran none.
+
+A skip adds nothing to the window. A trace the shadow cannot read is `trace-malformed`, which
+refuses the cutover. A process killed hard loses its unflushed tail, and those transitions are
+not compared.
+
+The first difference of any kind stops the shadow with `diverged` (exit status 3) and writes
+`divergence.json` with the 30 transition pairs before it. The same applies to every session-side
+failure, which is **never** a skip:
+
+- a trace field;
+- the ledgers;
+- the checkpoint bytes;
+- a session that does not start;
+- a startup save the candidate's restore gate refuses or the session runtime cannot restore;
+- a step, capture or rollback error;
+- a transition the session did not record;
+- *coverage*: a live flysim process that booted while the shadow ran and left no trace
+  (amended 2026-09-30).
+
+The shadow reads every boot header in the live sugar journal. Every flysim process writes one,
+traced or not. It holds each header to a trace file created after the previous boot and before
+this one. A process that ran untraced can never be compared, so the verdict fails. It does not
+pass on the processes that were traced.
+
+A shadow that keeps running after `pass` turns the verdict to `diverged` on a later difference.
+
+**The live fly never pays for the shadow (amended by the SHADOW-01 review).** Three mechanisms
+make sure of it:
+
+- *The trace is on only while a shadow consumes it.* The shadow writes a heartbeat
+  (`<trace dir>/consumer`) every 30 s and removes it when it stops. flysim starts no trace without
+  a fresh heartbeat, stops a running one within a minute of frames once the heartbeat is more than
+  10 minutes old, and keeps the directory under 8 GiB. A heartbeat dated ahead of flysim's clock
+  counts as fresh. A trace flysim cannot create (a full disk, the directory's permissions) never
+  stops the live fly from starting: that process runs untraced, and the shadow reports it as a
+  coverage divergence.
+- *The guard* (`fly-shadow-run guard`, every 60 s, root) judges the live fly against its own pace
+  before the shadow existed. The live fly does not always keep real time: the release container
+  has run at a realtime factor of 0.66, and at 0.77-0.99 after its cpuset rebalance. So `start`
+  first measures a 10-minute baseline over sixty 10-s `fly_realtime_factor` means. It records
+  their median and their spread (1.4826 x MAD), so a step in the window cannot set or widen it,
+  and the `fly_lag_seconds` growth rate over the most recent half. The guard trips only on a *sustained* degradation against
+  that baseline: 3 checks in a row in which the last 5 samples of the same process fall below the
+  baseline realtime factor, or grow lag faster than the baseline rate, by more than
+  max(0.05, 4 x spread / sqrt 5). A trip stops everything and restarts flysim without the trace.
+  The guard stops itself when the shadow is not running. `lint.sh` holds the rule to the release
+  container's profiles, synthesized, and to four traces recorded from a real flysim with and
+  without a real shadow (`infra/tests/fixtures/shadow-guard`). In 800 synthetic 3-hour runs it
+  found no false trip, and it caught all 400 degradations.
+- *The shadow* runs at `SCHED_IDLE` off flysim's CPUs. It pauses for a minute while the live lag
+  grows faster than the baseline rate. When a pause does not help, the shadow is not the cause,
+  and it stops pausing for 10 minutes.
+
+**The verdict contract (for CUT-01).** The shadow writes `verdict.json` in the format
+`fly-shadow-verdict-v1` (`shadow::verdict`, whose module notes list the fields). CUT-01 cuts over
+automatically only if all of the following hold when it reads the file, at the moment of cutting
+over:
+
+- `status` is `pass` and `firstDivergence` is `null`;
+- `compared.brainSeconds` ≥ `required.brainSeconds`, and never less than the operator's 10,800 s,
+  whatever window the shadow was run with;
+- *Saves were compared.* At least one per 600 brain seconds was compared byte for byte, and at
+  most 10 % of those the trace named were unavailable.
+- *The release.* `candidate.release` is the directory `/opt/fly/current` resolves to now. Every
+  binary in `candidate.binaries` still has its recorded SHA-256 there. The binary switched to,
+  `flysim-session` (SERVE-01's service), is one of them.
+- `candidate.compatibility` is the live `--print-compatibility`;
+- every `skipped` entry is one of the live side's own kinds;
+- *the shadow is alive and caught up*: `updatedAt` is at most 5 minutes old and
+  `lagTransitions` is at most 3,600, counted at every write (paused or not) over the rest of the
+  current file and every newer one;
+- (`fly-shadow-run check`) the guard has not tripped and `flyshadow.service` is running.
+
+`fly-shadow check` (and `fly-shadow-run check`) implements exactly this rule and exits 0 only when
+it holds. Anything else keeps the legacy fly. The one-command rollback `fly-runtime legacy` is
+CUT-01's.

@@ -1,0 +1,11 @@
+# infra/units/flyshadow-guard.timer — SHADOW-01's live-impact guard, every 60 s while a shadow
+# runs. Started by `fly-shadow-run start`, stopped by `fly-shadow-run stop` and by the guard
+# itself when it trips. No [Install]: it is never enabled, so a reboot does not start it.
+[Unit]
+Description=Stop the shadow run if the live fly pays for it (SHADOW-01)
+
+[Timer]
+OnActiveSec=60s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=flyshadow-guard.service

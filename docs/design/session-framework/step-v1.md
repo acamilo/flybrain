@@ -12,6 +12,14 @@ ordering. Its frame order is this document's transaction order (legacy-gameboy-v
 maps it step by step), so the amendments below add capabilities to the protocol and change
 none of its ordering rules.
 
+**Amendment, 2026-09-30 (PERF-01).** In-process participants MAY be called over the local lane of
+[session RPC](ipc-v1.md) section 1 (amendment of the same date) instead of through the router:
+the arrows below are then direct calls into the same worker shell, carrying the same requests and
+replies. No ordering rule changes. Measured on the release container's CPU and cpuset, work that
+overlaps the brain's ticks slows them (the sweep owns every core of the cpuset), so the
+coordinator overlaps nothing with Prepare: a boundary's publication copies are made while the
+world, the task and the commits run, and the snapshot is published before the next Prepare.
+
 ## 1. Committed boundary
 
 At `Ready(epoch, k)`:
@@ -65,6 +73,19 @@ amendment). The boundary number does not change; the epoch does. A pause request
 lands on `Ready(e', k)`; any failure inside it is `Failed → Restoring(new epoch)`. Capture is
 not allowed in `RollingBack`.
 
+**Amendment, 2026-09-29 (TASK-01).** Two edges are implemented as written above (`fly-session`
+`phase.rs`): `Ready(k) -> RollingBack(k) -> Ready(k)`, where the epoch is the coordinator's and
+the boundary stays the same. One edge is added for a checkpoint of another format installed as a
+session's start (the legacy composition's FLYSIM01 import):
+
+```text
+Ready(0), no transition taken -> Restoring(k) -> Paused(k)
+```
+
+The install is the group restore of [state-media-v1](state-media-v1.md) section 6, unchanged. Only
+a session that has not advanced may take the edge; the coordinator enforces this, because the phase
+alone cannot tell a fresh `Ready(0)` from a reset one.
+
 ## 3. Transaction sequence
 
 ### Phase A: prepare all agents concurrently
@@ -110,6 +131,12 @@ The environment applies all controls at its agreed boundary, advances exactly on
 and returns StepResult for `k+1`. It MUST NOT advance another interval while waiting for
 the next request. Transport/control scaffolding may have a measured fixed latency; it must
 be declared in its descriptor and conformance tests.
+
+*Amendment, 2026-09-29 (TASK-01):* as built, the clock the executor is handed is
+`brainTicks x tickDuration` from the agent's `PreparedDecision`, exact in `RationalNs`. For the
+legacy profile this is the legacy `network.ms` in nanoseconds. An artifact-backed inspection reaches
+the executor and the task as bytes: the coordinator holds each attachment the task declares
+(`inspection.memory`) from the world's reply until the transition that reads it has been evaluated.
 
 ### Phase C: observe and evaluate the task
 

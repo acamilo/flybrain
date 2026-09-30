@@ -282,6 +282,7 @@ async fn a_reply_from_another_incarnation_is_rejected(via: Via) {
         bus_incarnation: restarted.service_incarnation.clone(),
         worker_id: fly_b(),
         domain_incarnation: old.domain_incarnation.clone(),
+        local: None,
     };
     assert_ne!(old.domain_incarnation, Some(restarted.incarnation_id.clone()));
     let err = within("status", f.harness.coordinator.status(&stale))

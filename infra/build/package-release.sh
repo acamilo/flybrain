@@ -14,6 +14,12 @@
 #   fly-edge              (the feed-bus edge, mode 0755, when build-flysim.sh
 #                          left one beside FLYSIM_BIN; flyedge.service stays
 #                          inactive on a release without it)
+#   flysim-session        (the session runtime, SERVE-01, and fly-session, its
+#   fly-shadow             worker program; mode 0755, when build-flysim.sh left
+#   fly-session            them beside FLYSIM_BIN. `fly-runtime session` refuses
+#                          a release without flysim-session. fly-shadow is
+#                          SHADOW-01's shadow; flyshadow.service stays inactive
+#                          on a release without it)
 #   stage/...             (apps/stage's build output)
 #   bridge/...             (services/bridge + node_modules)
 #   data/fafb-v783/...     (the connectome, from the repo; FLY_DATASET points here)
@@ -82,6 +88,18 @@ if [ -x "$EDGE_BIN" ]; then
 else
     log "no fly-edge beside $FLYSIM_BIN; packaging without it (FLY_FEED_VIA=bus unavailable in this release)"
 fi
+for extra in flysim-session fly-shadow fly-session; do
+    EXTRA_BIN="$(dirname "$FLYSIM_BIN")/${extra}"
+    if [ -x "$EXTRA_BIN" ]; then
+        cp "$EXTRA_BIN" "${release_dir}/${extra}"
+        chmod 0755 "${release_dir}/${extra}"
+    else
+        case "$extra" in
+            fly-shadow) log "no ${extra} beside $FLYSIM_BIN; packaging without it (no shadow run in this release)" ;;
+            *) log "no ${extra} beside $FLYSIM_BIN; packaging without it (fly-runtime session unavailable in this release)" ;;
+        esac
+    fi
+done
 cp -a "$STAGE_DIR" "${release_dir}/stage"
 cp -a "$BRIDGE_DIR" "${release_dir}/bridge"
 

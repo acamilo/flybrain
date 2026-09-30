@@ -317,7 +317,7 @@ struct WriteJob {
 }
 
 /// Which stimulation pathway an accepted pulse came from, for the event label.
-fn sugar_label(by: &str) -> String {
+pub fn sugar_label(by: &str) -> String {
     format!("{by} fed the fly sugar")
 }
 
@@ -1163,44 +1163,12 @@ impl Sim {
     /// Nothing here touches the network, the emulator, the decoder or plasticity. That is the
     /// whole point: chat is a caption track, not an input.
     fn chat(&mut self, by: &str, text: &str, bot: bool) -> Result<u64, ChatRefusal> {
-        let refuse = |sim: &Self, refusal: ChatRefusal| {
-            sim.shared.metrics.chat_rejected(refusal.reason());
-            refusal
-        };
-
-        if !crate::chat::is_valid_display_name(by) {
-            return Err(refuse(self, ChatRefusal::Rejected(RejectReason::Name)));
-        }
-        let text = match crate::chat::sanitize_chat_text(text) {
-            Ok(text) => text,
-            Err(reason) => return Err(refuse(self, ChatRefusal::Rejected(reason))),
-        };
-        if self.deny_list.blocks(by, &text) {
-            tracing::info!(by, "chat line refused by the deny list");
-            return Err(refuse(self, ChatRefusal::Rejected(RejectReason::DenyList)));
-        }
-
-        let now_ms = now_wall_ms();
-        if let Err(refusal) = self.chat_limits.admit(by, now_ms) {
-            return Err(refuse(self, refusal));
-        }
-
-        let event = self.emit(NewEvent::new(FeedEventKind::Viewer, "chat").by(by));
-        self.chat_ring.push(ChatLine {
-            id: event.id,
-            wall_ms: event.wall_ms,
-            by: by.to_string(),
-            text,
-            bot: if bot { Some(true) } else { None },
-        });
-        // The ring survives a restart because it is written here, not because it is in a
-        // checkpoint: one atomic rename onto tmpfs per accepted line, and a failure is a warning
-        // rather than a refusal — the line is already on screen.
-        if let Err(error) = self.chat_ring.save_sidecar(&self.shared.config.paths.hot_dir) {
-            tracing::warn!(%error, "could not persist the chat ring; it will not survive a restart");
-        }
-        Metrics::incr(&self.shared.metrics.chat_accepted_total);
-        Ok(event.id)
+        let ms = self.agent.network.ms;
+        let Self { shared, chat_ring, chat_limits, deny_list, log, .. } = self;
+        admit_chat(shared, chat_ring, chat_limits, deny_list, by, text, bot, |event| {
+            Metrics::incr(&shared.metrics.events_total);
+            log.append(now_wall_ms(), ms, event)
+        })
     }
 
     /// One `macro` feed event per start and per finish (`docs/design/macros.md` section 5).
@@ -1447,26 +1415,10 @@ impl Sim {
         self.publish_decoder_status();
         let ms = self.agent.network.ms;
         let stats = self.agent.network.plasticity.statistics();
-        let progress = self.adapter.progress();
-        let ladder = self.adapter.rank_ladder();
-        // Which rung the fly is going for, when the adapter knows: see `next_label`.
-        let next_rung = self.adapter.next_rung();
-        let rank = progress.rank.min(progress.rank_max);
-
-        let mut rates = Map::new();
-        for (name, value) in self.agent.network.rates.iter() {
-            rates.insert(name.clone(), json_number(value));
-        }
-
-        let mut reward_counts = RewardCounts::default();
-        for (kind, count) in &progress.counts {
-            if let Some(kind) = RewardKind::from_adapter(kind) {
-                reward_counts.add(kind, *count);
-            }
-        }
-
         let remaining = self.agent.network.reward_remaining();
         let cooldown = self.limiter.cooldown_ms(now_wall_ms());
+        // One read of the adapter per publish: the header's `game` and `milestone` share it.
+        let progress = self.adapter.progress();
 
         let (frame, audio, spikes, spike_count, attachments) = if with_attachments {
             let (bitset, count) =
@@ -1502,59 +1454,26 @@ impl Sim {
             brain_ms: finite(ms).max(0.0),
             frame: self.frame.frame_counter,
             buttons: self.frame.buttons & 0xff,
-            rates,
+            rates: feed_rates(self.agent.network.rates.iter()),
             population_rate: finite(self.agent.network.population_rate).max(0.0),
             spike_count,
-            learning: FeedLearning {
-                enabled: stats.enabled,
-                updates: finite(stats.updates).max(0.0) as u64,
-                changed: stats.changed,
-                synapses: stats.synapses as u64,
-                signal: finite(stats.signal),
-            },
-            game: FeedGame {
-                mode: GameMode::from_adapter(self.adapter.mode()),
-                semantic_rewards: self.semantic_rewards,
-                map: self.adapter.map_id(),
-                badges: progress.counter.min(8),
-                unique_locations: progress.unique_locations as u64,
-                reward_total: finite(progress.reward_total),
-                reward_counts,
-                // Raw mode deals no palette, so it claims no scene either: an empty palette and
-                // `unknown` are the honest answers, and the page's MODE chip says which it is.
-                scene: self.macros.as_ref().map_or(FeedScene::Unknown, MacroLayer::scene),
-                macro_mode: self.shared.config.macros.mode,
-                palette: self
-                    .macros
-                    .as_ref()
-                    .map(MacroLayer::feed_palette)
-                    .unwrap_or_default(),
-                running_macro: self.macros.as_ref().and_then(|layer| layer.feed_macro(ms)),
-                macro_outcome: self.macros.as_ref().and_then(MacroLayer::feed_outcome),
-                // Report-only (`docs/design/macros.md` section 13.1): how long the pad has had
-                // nothing on it in a playable scene. Nothing in the loop reads it back.
-                pad_empty_ms: finite(
-                    self.macros.as_ref().map_or(0.0, |layer| layer.pad_empty_ms(ms)),
-                ),
-            },
-            // `total` is the running adapter's ladder length, never a number spelled out here:
-            // 38 rungs for Pokémon (`docs/design/ladder.md`), 16 for the platformer
-            // (`docs/design/platformer.md` §3). `rank_ladder()` is also what the page draws.
-            milestone: FeedMilestone {
-                rank,
-                label: progress.rank_label.to_string(),
-                next: next_label(ladder, rank, progress.rank_label, next_rung).to_string(),
-                since_seconds: finite((ms - self.rank_since_ms) / 1000.0).max(0.0),
-                attempts: self.ratchet.state.attempts,
-                total: ladder.len() as u32,
-            },
-            sugar: FeedSugar {
-                active: remaining > 0.0,
-                remaining_ms: finite(remaining).max(0.0),
-                cooldown_ms: cooldown as f64,
-                last_by: self.sugar_last_by.clone(),
-                today_count: self.sugar_today,
-            },
+            learning: feed_learning(&stats),
+            game: feed_game(
+                self.adapter.as_ref(),
+                &progress,
+                self.semantic_rewards,
+                self.macros.as_ref(),
+                self.shared.config.macros.mode,
+                ms,
+            ),
+            milestone: feed_milestone(
+                self.adapter.as_ref(),
+                &progress,
+                self.rank_since_ms,
+                ms,
+                self.ratchet.state.attempts,
+            ),
+            sugar: feed_sugar(remaining, cooldown, self.sugar_last_by.clone(), self.sugar_today),
             events: self.log.take_pending(),
             // The kill switch omits the field rather than sending an empty array.
             chat: if self.shared.config.chat.enabled {
@@ -1570,6 +1489,67 @@ impl Sim {
         Metrics::incr(&self.shared.metrics.snapshots_published);
         let _ = self.snapshots.send(Arc::new(snapshot));
     }
+}
+
+/// `POST /chat`: the on-screen chat path, enforced here rather than trusted from the bridge.
+///
+/// Name, sanitizer, deny list, then the admission limits, in that order — a line that a rule
+/// refuses must not spend anyone's rate budget. On acceptance the line joins the ring and one
+/// `viewer` event labelled `chat` joins the event log (`emit`); the event carries the name only,
+/// so no chat text is ever written to `events.jsonl`.
+///
+/// Nothing here touches the network, the emulator, the decoder or plasticity. That is the
+/// whole point: chat is a caption track, not an input. Shared by the legacy loop and the session
+/// runtime's service host (SERVE-01).
+#[allow(clippy::too_many_arguments)]
+pub fn admit_chat(
+    shared: &Shared,
+    chat_ring: &mut ChatRing,
+    chat_limits: &mut ChatLimiter,
+    deny_list: &DenyList,
+    by: &str,
+    text: &str,
+    bot: bool,
+    emit: impl FnOnce(NewEvent) -> FeedEvent,
+) -> Result<u64, ChatRefusal> {
+    let refuse = |refusal: ChatRefusal| {
+        shared.metrics.chat_rejected(refusal.reason());
+        refusal
+    };
+
+    if !crate::chat::is_valid_display_name(by) {
+        return Err(refuse(ChatRefusal::Rejected(RejectReason::Name)));
+    }
+    let text = match crate::chat::sanitize_chat_text(text) {
+        Ok(text) => text,
+        Err(reason) => return Err(refuse(ChatRefusal::Rejected(reason))),
+    };
+    if deny_list.blocks(by, &text) {
+        tracing::info!(by, "chat line refused by the deny list");
+        return Err(refuse(ChatRefusal::Rejected(RejectReason::DenyList)));
+    }
+
+    let now_ms = now_wall_ms();
+    if let Err(refusal) = chat_limits.admit(by, now_ms) {
+        return Err(refuse(refusal));
+    }
+
+    let event = emit(NewEvent::new(FeedEventKind::Viewer, "chat").by(by));
+    chat_ring.push(ChatLine {
+        id: event.id,
+        wall_ms: event.wall_ms,
+        by: by.to_string(),
+        text,
+        bot: if bot { Some(true) } else { None },
+    });
+    // The ring survives a restart because it is written here, not because it is in a
+    // checkpoint: one atomic rename onto tmpfs per accepted line, and a failure is a warning
+    // rather than a refusal — the line is already on screen.
+    if let Err(error) = chat_ring.save_sidecar(&shared.config.paths.hot_dir) {
+        tracing::warn!(%error, "could not persist the chat ring; it will not survive a restart");
+    }
+    Metrics::incr(&shared.metrics.chat_accepted_total);
+    Ok(event.id)
 }
 
 /// The rung the fly is trying for: the label of the adapter's own next rung, or of `rank + 1`
@@ -1595,9 +1575,113 @@ fn next_label<'a>(
     ladder.get(index).copied().unwrap_or(current)
 }
 
+/// The header's `rates`: every rate role in the network's own order, each clamped to a finite
+/// number ([`json_number`]).
+///
+/// This and the other `feed_*` functions below are the pieces of a feed header that come from
+/// the fly and its game rather than from the service. They are free functions, shared by the
+/// legacy loop's `publish` and the session runtime's (SERVE-01), so the two cannot compute a field
+/// two ways.
+pub fn feed_rates<'a>(rates: impl Iterator<Item = (&'a String, f64)>) -> Map<String, Value> {
+    let mut out = Map::new();
+    for (name, value) in rates {
+        out.insert(name.clone(), json_number(value));
+    }
+    out
+}
+
+/// The header's `learning`, from the plasticity rule's statistics.
+pub fn feed_learning(stats: &flybrain_core::plasticity::LearningStats) -> FeedLearning {
+    FeedLearning {
+        enabled: stats.enabled,
+        updates: finite(stats.updates).max(0.0) as u64,
+        changed: stats.changed,
+        synapses: stats.synapses as u64,
+        signal: finite(stats.signal),
+    }
+}
+
+/// The header's `game`: the adapter's progress and the macro layer's scene, palette and macro.
+pub fn feed_game(
+    adapter: &dyn GameAdapter,
+    progress: &ProgressSnapshot,
+    semantic_rewards: bool,
+    macros: Option<&MacroLayer>,
+    macro_mode: MacroMode,
+    ms: f64,
+) -> FeedGame {
+    let mut reward_counts = RewardCounts::default();
+    for (kind, count) in &progress.counts {
+        if let Some(kind) = RewardKind::from_adapter(kind) {
+            reward_counts.add(kind, *count);
+        }
+    }
+    FeedGame {
+        mode: GameMode::from_adapter(adapter.mode()),
+        semantic_rewards,
+        map: adapter.map_id(),
+        badges: progress.counter.min(8),
+        unique_locations: progress.unique_locations as u64,
+        reward_total: finite(progress.reward_total),
+        reward_counts,
+        // Raw mode deals no palette, so it claims no scene either: an empty palette and
+        // `unknown` are the honest answers, and the page's MODE chip says which it is.
+        scene: macros.map_or(FeedScene::Unknown, MacroLayer::scene),
+        macro_mode,
+        palette: macros.map(MacroLayer::feed_palette).unwrap_or_default(),
+        running_macro: macros.and_then(|layer| layer.feed_macro(ms)),
+        macro_outcome: macros.and_then(MacroLayer::feed_outcome),
+        // Report-only (`docs/design/macros.md` section 13.1): how long the pad has had
+        // nothing on it in a playable scene. Nothing in the loop reads it back.
+        pad_empty_ms: finite(macros.map_or(0.0, |layer| layer.pad_empty_ms(ms))),
+    }
+}
+
+/// The header's `milestone`.
+///
+/// `total` is the running adapter's ladder length, never a number spelled out here: 38 rungs
+/// for Pokémon (`docs/design/ladder.md`), 16 for the platformer (`docs/design/platformer.md`
+/// §3). `rank_ladder()` is also what the page draws.
+pub fn feed_milestone(
+    adapter: &dyn GameAdapter,
+    progress: &ProgressSnapshot,
+    rank_since_ms: f64,
+    ms: f64,
+    attempts: u64,
+) -> FeedMilestone {
+    let ladder = adapter.rank_ladder();
+    // Which rung the fly is going for, when the adapter knows: see `next_label`.
+    let next_rung = adapter.next_rung();
+    let rank = progress.rank.min(progress.rank_max);
+    FeedMilestone {
+        rank,
+        label: progress.rank_label.to_string(),
+        next: next_label(ladder, rank, progress.rank_label, next_rung).to_string(),
+        since_seconds: finite((ms - rank_since_ms) / 1000.0).max(0.0),
+        attempts,
+        total: ladder.len() as u32,
+    }
+}
+
+/// The header's `sugar`, from the pulse still running and the limiter's cooldown.
+pub fn feed_sugar(
+    remaining_ms: f64,
+    cooldown_ms: u64,
+    last_by: Option<String>,
+    today_count: u64,
+) -> FeedSugar {
+    FeedSugar {
+        active: remaining_ms > 0.0,
+        remaining_ms: finite(remaining_ms).max(0.0),
+        cooldown_ms: cooldown_ms as f64,
+        last_by,
+        today_count,
+    }
+}
+
 /// Serde writes `null` for a non-finite f64, which would break the header schema; every rate is
 /// clamped to a finite number first.
-fn json_number(value: f64) -> Value {
+pub fn json_number(value: f64) -> Value {
     serde_json::Number::from_f64(finite(value)).map_or(Value::from(0), Value::Number)
 }
 

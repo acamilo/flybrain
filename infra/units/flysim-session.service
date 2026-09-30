@@ -1,0 +1,56 @@
+# infra/units/flysim-session.service — pushed to /etc/systemd/system/flysim-session.service.
+#
+# The live fly on the session runtime (SERVE-01): `flysim-session`, a drop-in for `flysim` that
+# reads the same /etc/fly/fly.env, writes the same checkpoint stores, event log, sugar journal and
+# chat sidecar, and serves the same feed (:7400, or the feed bus for fly-edge), control API
+# (:7401) and metrics (:9101) -- through flysim's own listener code, so the binding contracts
+# (docs/feed-protocol.md, docs/control-api.md) are the same bytes.
+#
+# NOT ENABLED, IN NO TARGET, and it Conflicts= with flysim.service: the two own the same ports
+# and the same stores, so at most one of them runs. It is not how the stream is switched either.
+# `fly-runtime session` (infra/bin/fly-runtime; the runbook's "Switch the runtime") points
+# flysim.service itself at this unit's ExecStart and Environment with a drop-in, so that every
+# consumer that names flysim.service -- fly.target, flyedge.service's Requires=, the watchdog,
+# fly-loop-recover's restart (and its sudoers line), fly-loop-reset, fly-reset-to-milestone, the
+# unstick rule, `journalctl -u flysim` -- keeps working unchanged, a reboot keeps the choice, and
+# `fly-runtime legacy` is one command back. This unit is the standalone form of the same
+# service: for a rehearsal or a soak on a container whose flysim.service is stopped
+# (`systemctl stop flysim.service && systemctl start flysim-session.service`).
+#
+# Everything below except ExecStart, FLY_SESSION_DIR, MALLOC_ARENA_MAX, Conflicts= and the missing [Install] is
+# flysim.service's, line for line (infra/tests/lint.sh checks it), and so are the limits and the cpuset: 05-deploy.sh writes
+# flysim-session.service.d/cpuset.conf with flysim's set (docs/design/infra.md section 3 and
+# flysim.service's own notes on RAYON_NUM_THREADS, Nice, CPUWeight and AllowedCPUs apply as they
+# stand).
+[Unit]
+Description=flysim-session: the fly brain and its Game Boy on the session runtime
+After=network.target
+Conflicts=flysim.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+WatchdogSec=30
+User=fly
+EnvironmentFile=/etc/fly/fly.env
+Environment=FLY_FEED_BIND=127.0.0.1:7400
+Environment=FLY_BUS_DIR=/run/fly/bus
+Environment=FLY_CONTROL_BIND=127.0.0.1:7401
+Environment=FLY_METRICS_ADDR=0.0.0.0:9101
+Environment=FLY_STATE_HOT=/run/fly/state
+Environment=FLY_STATE=/srv/fly/state
+# The session's own router store and worker sockets (tmpfs, fly 0700, config/fly-tmpfiles.conf).
+Environment=FLY_SESSION_DIR=/run/fly/session
+# glibc per-thread arenas fragment under the session's MB-sized capture/encode buffers: without
+# this RSS grows about 5-8 MB/h (SERVE-01 review); with it the growth plateaus. Legacy is unaffected.
+Environment=MALLOC_ARENA_MAX=2
+ExecStart=/opt/fly/current/flysim-session
+Restart=always
+RestartSec=2
+Nice=-5
+CPUWeight=400
+MemoryMax=4G
+# No [Install] section, deliberately: `systemctl enable flysim-session.service` has nothing to
+# do, so it can never be pulled in beside flysim.service by fly.target.

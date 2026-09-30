@@ -635,8 +635,31 @@ impl Publisher {
             .map(|(name, artifact)| (name.clone(), artifact.reference().clone()))
             .collect();
         check_publication(descriptor, snapshot, &named, audio_next_sample)?;
-        let refs: Vec<(&str, &flybus::Artifact)> =
-            attachments.iter().map(|(n, a)| (n.as_str(), a)).collect();
+        // An in-memory artifact (the in-process local lane) is in no router's store, so the
+        // published message carries a sealed copy of it and names that copy: the coherence
+        // check above ran against the handles the agents were given.
+        let mut published = std::borrow::Cow::Borrowed(snapshot);
+        let mut sealed = Vec::with_capacity(attachments.len());
+        for (name, artifact) in attachments {
+            let copy = crate::rpc::promote(&self.bus, artifact).await?;
+            if copy.reference() != artifact.reference() {
+                let (old, new) = (artifact.reference(), copy.reference());
+                let snapshot = published.to_mut();
+                for view in &mut snapshot.views {
+                    if &view.pixels == old {
+                        view.pixels = new.clone();
+                    }
+                }
+                for chunk in &mut snapshot.audio {
+                    if &chunk.samples == old {
+                        chunk.samples = new.clone();
+                    }
+                }
+            }
+            sealed.push((name.as_str(), copy));
+        }
+        let refs: Vec<(&str, &flybus::Artifact)> = sealed.iter().map(|(n, a)| (*n, a)).collect();
+        let snapshot = published.as_ref();
         let topic = self.snapshot_topic.topic.clone();
         let outcome = PublicationOutcome::from_bus(
             &topic,

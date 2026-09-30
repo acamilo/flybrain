@@ -443,6 +443,249 @@ One `ln -sfn` plus a restart, per `docs/design/infra.md` section 2. Nothing else
 touching: `flycast`/`flypush`/`mediamtx` do not read anything under `/opt/fly/current`.
 On the release container, `<previous-version>` is a tag (e.g. `v0.1.0`) — "Cutting a release" above.
 
+## Switch the runtime (legacy loop or session runtime)
+
+Two binaries in every release from SERVE-01 on run the same fly: `flysim`, the legacy loop, and
+`flysim-session`, the same composition on the session framework (agent, Game Boy environment and
+macro task as participants). They read the same `/etc/fly/fly.env`, write the same checkpoint
+stores, event log, sugar journal and chat sidecar, and serve the same feed, control API and
+metrics through the same listener code, so nothing else on the container can tell them apart.
+`flysim.service` is the fly's one unit name either way; which binary it runs is one drop-in,
+written and removed by `fly-runtime` (`infra/bin/fly-runtime`, installed to `/opt/fly/bin`).
+
+```
+pct exec $CTID -- /opt/fly/bin/fly-runtime status     # legacy | session
+pct exec $CTID -- /opt/fly/bin/fly-runtime session    # CUT-01, after the shadow's verdict (starts the speed probation)
+pct exec $CTID -- /opt/fly/bin/fly-runtime legacy     # the one-command rollback
+```
+
+- **What it does.** `session` writes `/etc/systemd/system/flysim.service.d/10-runtime.conf`
+  (`ExecStart=/opt/fly/current/flysim-session`, `FLY_SESSION_DIR=/run/fly/session`),
+  daemon-reloads and restarts `flysim.service`; `legacy` deletes the file and does the same. No
+  data moves: the store is shared, and each runtime restores the other's checkpoints.
+- **What it checks.** `session` refuses a release without `flysim-session`, and refuses when
+  `flysim --print-compatibility` and `flysim-session --print-compatibility` differ. After the
+  restart both wait for `/healthz` and a `/status` frame that advances
+  (`FLY_RUNTIME_HEALTH_TIMEOUT`, 300 s). If the session runtime does not come up healthy, it
+  switches back to legacy by itself and exits 1 (`--no-fallback` leaves it to the operator).
+  Every switch is logged (`journalctl -t fly-runtime`, `/var/lib/fly/runtime.log`).
+- **The fallback outlives the switch (C1).** While the session runtime is selected, the drop-in
+  also sets `OnFailure=fly-runtime-fallback.service`, `StartLimitBurst=3`,
+  `StartLimitIntervalSec=600` and `RestartMode=direct`, and `MALLOC_ARENA_MAX=2` (glibc arena
+  fragmentation was the whole of the 5-8 MB/h RSS growth). `RestartMode=direct` is what makes the
+  limit real: since systemd 254 the default (`normal`) sends the unit through the `failed` state
+  before every `Restart=always` restart, so `OnFailure=` would fire on the first crash, watchdog
+  kill or start timeout (seen on systemd 257, the container's). With `direct` the unit goes from
+  one start to the next and only hitting the start limit fails it. Three starts of `flysim.service` within ten minutes, from any
+  cause and any caller (a reboot, the watchdog or `fly-loop-recover` restarting it, a deploy, a
+  binary that crashes, hangs before READY or is killed by `WatchdogSec`) make systemd run
+  `fly-runtime fallback`: it writes `/run/fly/runtime-fellback.json` (time, reason, unit result),
+  deletes the drop-in, daemon-reloads and restarts `flysim.service` on the legacy binary, and logs
+  a `fly-runtime` journal line. It is idempotent, and it does nothing if the release has no
+  executable `flysim`. Look with `fly-runtime status` (it prints the reason) or
+  `cat /run/fly/runtime-fellback.json`; the container is then on legacy until an operator runs
+  `fly-runtime session` again, which clears the reason file. Restarts you make yourself count
+  too, and once the limit is reached systemd refuses the next start and runs the fallback. Three legitimate restarts in ten
+  minutes count the same as three crashes: after that many, prefer `fly-runtime legacy`, do the
+  work, then switch back.
+- **Interrupted switches roll back.** `fly-runtime` traps INT, TERM and HUP (an ssh that drops
+  mid-switch): an unfinished `session` removes the drop-in again (or restores the one that was
+  there) and restarts `flysim.service` on that state, so a drop-in that never passed its health
+  check is never left behind. `session`, `legacy`, `fallback` and that rollback all take one lock
+  (`/run/fly/runtime.lock`); a switch holds it while it changes the drop-in and queues the restart
+  (`systemctl restart --no-block`, so a unit that never becomes READY cannot hold it) and releases
+  it for the health wait. The rollback does nothing when a fallback finished after the switch began (the
+  reason file exists), so it can never put back an older drop-in over a fallback.
+- **What stays the same.** Everything that names `flysim.service` keeps working unchanged:
+  `fly.target`, `flyedge.service`'s `Requires=`, the watchdog, `fly-loop-recover`'s restart and
+  its sudoers line, `fly-loop-reset`, `fly-reset-to-milestone` (run with the service stopped, on
+  the shared store), the unstick rule's `systemctl restart flysim.service`, `journalctl -u
+  flysim`, the cpuset drop-in. The choice survives a reboot and a deploy: `05-deploy.sh`
+  converges unit files but never removes a drop-in (it rewrites it in place from the current
+  template, without a restart), and it refuses a release without `flysim-session` or with a
+  different compatibility string while the drop-in is present (`fly-runtime legacy` first to
+  deploy one). **Policy (C2, operator decision 2026-09-29, "Session stays, trust gates"):** a
+  deploy keeps the chosen runtime on the new release's `flysim-session`, without re-running the
+  shadow for it. The trust gates before the release vouch for the binary, and the persistent
+  fallback above protects a bad one.
+- **What differs, by declaration.** `POST /reward` is always 403 on the session runtime (the
+  operator pulse has no session-framework counterpart, `legacy-gameboy-v1` section 15); a
+  fresh start publishes no audio for its one setup frame; `FLY_TRACE` and
+  `FLY_PROFILE_SECONDS` are legacy-loop tools (the session runtime logs a `session profile`
+  line of per-phase timings every minute instead). The sugar journal's boot header says
+  `runtime: fly-session`.
+- **The standalone unit.** `flysim-session.service` is the same service as a unit of its own
+  (flysim's limits, cpuset and environment; `Conflicts=flysim.service`; no `[Install]`, so it
+  cannot be enabled). It is for a rehearsal or a soak on a container whose `flysim.service` is
+  stopped, not for switching the stream.
+
+## Shadow run (SHADOW-01)
+
+The session runtime, run beside the live fly as the gate for the automatic cutover (CUT-01). The
+contract is `docs/design/session-framework/legacy-gameboy-v1.md` section 18. The shadow is
+report-only: it presses no button, serves no port, and only reads flysim's stores and trace. Claim
+the release container in the host log first, as for any host work.
+
+```
+pct exec <ctid> -- /opt/fly/bin/fly-shadow-run start     # baseline, trace on, shadow + guard, one flysim restart
+pct exec <ctid> -- /opt/fly/bin/fly-shadow-run status    # the verdict (and a guard trip) in one screen
+pct exec <ctid> -- /opt/fly/bin/fly-shadow-run check     # CUT-01's hook: exit 0 = cutover allowed
+pct exec <ctid> -- /opt/fly/bin/fly-shadow-run stop --restart-flysim   # shadow, guard and trace off
+```
+
+- **Start** first records the live fly's baseline for 10 minutes, before the shadow exists: sixty
+  10-s means of `fly_realtime_factor` (their mean and spread) and the `fly_lag_seconds` growth
+  rate. It refuses unless flysim ran normally for most of that time. Then it:
+  1. installs `flysim.service.d/shadow-trace.conf` (`FLY_TRACE_DIR=/srv/fly/shadow/trace`,
+     `FLY_TRACE_LEDGERS=60`);
+  2. starts `flyshadow.service` and waits for its heartbeat;
+  3. restarts `flysim.service` once;
+  4. starts `flyshadow-guard.timer`.
+
+  `FLY_SHADOW_BASELINE_SECONDS` shortens the baseline, for tests only. The restart is the same one
+  the unstick rule uses: the rung is kept and the ledgers are cleared. A previous `verdict.json`
+  is kept beside the new one, renamed with its time.
+- **The guard** runs every 60 s, automatically, and judges the live fly against its own baseline,
+  not against real time. A fly that already ran at 0.66 is fine at 0.66. It trips only on a
+  sustained degradation: 3 checks in a row in which the last 5 samples of the same flysim process
+  fall below the baseline, or grow lag faster than it, by more than the margin. The margin is
+  max(0.05, 4 x the baseline spread / sqrt 5). A trip is at the earliest about 7 minutes after a
+  real degradation begins. A tripped guard stops the shadow and the guard, removes the drop-in and
+  restarts flysim without the trace. It records why in `/srv/fly/shadow/guard-tripped.json`, and
+  `status` shows it. A paused fly is not judged, and a restarted one starts its window again.
+  Once the shadow is down for good (`ActiveState` inactive or failed: diverged, stopped, given up),
+  the guard stops itself and changes nothing. While the shadow waits out its 10-s crash-restart delay
+  (`activating`) the guard keeps running. A trip is not a divergence: fix the resources, then `start` again.
+- **While it runs**, every later flysim restart (the unstick rule, the watchdog,
+  `fly-loop-recover`, `fly-reset-to-milestone`) starts a new trace file. The shadow follows it on
+  its own; nothing needs doing. The 3 h window is live *brain* time summed over those processes.
+  Stopping or restarting `flyshadow.service` itself starts the window again.
+- **Pass**: `status` shows `verdict pass` once both of these hold with zero divergence:
+  - 10,800 brain seconds are compared;
+  - at least one live save per 10 brain minutes has been compared byte for byte.
+
+  The shadow keeps following, and the verdict stays `pass` only while nothing diverges. CUT-01
+  runs `check` at the moment it cuts over. `check` also requires all of these:
+  - at least 10,800 brain seconds, whatever window the shadow was started with;
+  - the guard has not tripped, `flyshadow.service` is running, `flyshadow-guard.timer` is active and
+    `baseline.json` exists (a run no guard watched is never cut over);
+  - the verdict is for the release `/opt/fly/current` points to, with `flysim-session` and every
+    other shadowed binary unchanged;
+  - the shadow is caught up (at most about a minute behind);
+  - the verdict's `updatedAt` is neither older than the max age nor more than 60 s in the future
+    (a clock stepped back must not keep an old pass fresh);
+  - no segment was skipped for a reason other than the live side's own.
+- **Divergence**: the shadow stops itself (exit status 3; the unit does not restart it). A failure
+  of the session runtime itself counts: it did not start, the restore gate refused the live save,
+  or a step failed. The shadow leaves `verdict.json` at `diverged` and
+  `/srv/fly/shadow/divergence.json` with the field, both values and the 30 transitions before it.
+  On a checkpoint difference it also leaves both checkpoint files. It removes its heartbeat, so
+  flysim stops tracing within a minute. The live fly is untouched. Run `stop --keep`, pull the
+  files for the review, and do not cut over.
+- **The trace cannot outlive the shadow.** flysim starts no trace without the shadow's fresh
+  heartbeat (`/srv/fly/shadow/trace/consumer`), and stops a running trace within a minute once the
+  heartbeat is more than 10 minutes old. That happens when the shadow crashed, diverged, was
+  stopped, or the guard tripped. flysim keeps the trace directory under 8 GiB, and the shadow
+  deletes every file it has compared.
+- **Resources**: the shadow is a second whole brain, at about the live fly's CPU per frame. It
+  runs `SCHED_IDLE` on the page and encoder CPUs, never on flysim's (05-deploy.sh writes its
+  `cpuset.conf`). It pauses for a minute while flysim's lag grows faster than its baseline rate, and
+  it stops pausing when a pause does not help. Disk: about
+  160 MB of trace per live hour, and a spool of at most 512 MiB.
+- **Start** refuses, and starts nothing, unless `flyshadow.service.d/cpuset.conf` exists and the
+  unit's `AllowedCPUs` (`systemctl show`) is disjoint from flysim.service's (05-deploy skips every
+  cpuset drop-in when the CT conf and CPUSET disagree).
+- **Stop** stops the unit and the guard, removes the drop-in, and deletes the trace and the spool
+  (`--keep` keeps them). Without `--restart-flysim`, the running flysim stops its current trace
+  within a minute, because its consumer is gone.
+
+## Cutover to the session runtime (CUT-01)
+
+Operator decision (2026-09-30): the stream moves to the session runtime only if that runtime
+sustains at least 1.0x real time on the release container, otherwise it stays on legacy. Only the
+release container can measure that, so the switch is guarded by a **probation**. Claim the
+container in the host log first, as for any host work.
+
+```
+# 1. Deploy v0.7.0 with flysim-session installed but NOT selected (no drop-in): the ordinary deploy.
+#    The container keeps running legacy; nothing else changes. (fly-runtime status: legacy)
+# 2. Shadow, 3 h of brain time, zero divergence, guarded against live impact:
+pct exec $CTID -- /opt/fly/bin/fly-shadow-run start
+pct exec $CTID -- /opt/fly/bin/fly-shadow-run status       # until: verdict pass
+# 3. Cutover: the shadow's gate, then the switch. One command line:
+pct exec $CTID -- sh -c '/opt/fly/bin/fly-shadow-run check && /opt/fly/bin/fly-runtime session'
+# 4. Watch the probation (30 minutes after the switch):
+pct exec $CTID -- /opt/fly/bin/fly-runtime-probation status
+pct exec $CTID -- /opt/fly/bin/fly-runtime status
+# 5. Pass, or automatic fallback (below). Nothing to stop: step 3 already stopped the shadow.
+# Manual rollback, any time (cancels the probation too):
+pct exec $CTID -- /opt/fly/bin/fly-runtime legacy
+```
+
+- **Step 3 in detail.** `check` refuses unless the verdict, the guard and the release all line
+  up (Shadow run above). `session` then does what "Switch the runtime" describes (compatibility
+  check, drop-in, restart, health wait) and, once flysim is healthy on the session runtime, starts
+  the probation. `session` returns 0 at that point: the probation is judged later, by the timer.
+  `session` also stops the shadow and its guard (`fly-shadow-run stop`, never
+  `--restart-flysim`) as soon as flysim is healthy on the session runtime, before the probation
+  starts. A guard left running would judge the session runtime against the legacy baseline and
+  restart flysim on a trip (a second start inside the 600 s start-limit window, and a reset
+  warm-up), and the session writes no trace, so the shadow has nothing to follow. If you stop the
+  shadow by hand at any time during the probation, do it without `--restart-flysim`.
+- **The probation** (`infra/bin/fly-runtime-probation`, `fly-runtime-probation.timer` every 60 s,
+  root). Each tick takes one sample of flysim's `/metrics` (`fly_realtime_factor` averaged over 10
+  one-second reads, `fly_lag_seconds`, `fly_uptime_seconds`; the same sampling as the shadow
+  guard). It judges the session runtime only:
+  - *Warm-up.* A flysim process is not judged before it has been up 300 s (connectome load,
+    restore, first minutes). A restart, a pause or a fly that is not `running` starts the window
+    again; it is never counted as slow.
+  - *Failure*, sustained and not one sample: over the judged samples of the last 10 minutes (at
+    least 8 of them) the **median** realtime factor is below **0.97**, or the lag grew by more than
+    **30 s** from the window's start to its end (median of the first and of the last three
+    samples). The median is the robust statistic the shadow guard's baseline uses: one or two
+    stalled minutes do not fail it, a steady 0.85x does, at the earliest about 13 minutes after the
+    switch (5 min warm-up, 8 samples). A lag step of more than 30 s inside the window counts as
+    lag growth.
+  - *Pass*: 30 minutes since the switch, and the latest window is full and healthy. A probation
+    that cannot fill a window within 2 h (a fly that never runs) fails as inconclusive: no proof
+    of 1.0x, no cutover. `FLY_PROBATION_*` variables tune every number (tests and rehearsals only).
+  - **On failure** it runs `fly-runtime fallback "speed: ..."`, exactly the fallback of "Switch
+    the runtime": under the same lock, `/run/fly/runtime-fellback.json` with the reason
+    (`"speed: median realtime factor 0.850 < 0.97 ..."`), the drop-in removed, flysim restarted on
+    legacy, a `fly-runtime` journal line (`journalctl -t fly-runtime`,
+    `/var/lib/fly/runtime.log`), and the probation ended (`/var/lib/fly/probation/last.json`
+    says `passed: false`). If that fallback cannot complete (no executable `flysim`) it is retried
+    every minute. The container is then on legacy and the decision is "no cutover": do not retry
+    `session` without a fix (or a new measurement) for the cause.
+  - **On pass** it writes `/run/fly/runtime-probation.json` (`{"passed": true, "at", "startedAt",
+    "medianRtf", "lagGrowth", "samples", "detail"}`; also kept in
+    `/var/lib/fly/probation/last.json` because `/run` is cleared by a reboot) and disables its
+    timer. **Nothing judges the speed afterwards.** A continuous guard would make a passing
+    cutover fall back at 03:00 on one noisy hour, on a stream that has proven itself, and the
+    watchdog already covers a stuck or dead loop. The start-limit fallback also stays as it is.
+- **Cancel and resume.** `fly-runtime legacy` cancels the probation, as does every fallback
+  (including the start-limit one), and a tick that finds the legacy runtime selected ends it
+  without a verdict. The state is `/var/lib/fly/probation/state.json` and the timer is enabled while
+  a probation runs (`[Install] WantedBy=timers.target`; nothing else enables it), so a reboot
+  during the probation resumes it: `OnBootSec=90s` runs the first tick, flysim's new process
+  starts a new warm-up and window, and the 30 minutes keep counting from the original switch.
+  `fly-runtime session --no-restart` (05-deploy's refresh of the drop-in) starts no probation;
+  `fly-runtime session --no-probation` is for rehearsals. A `session` that cannot start the
+  probation (helper or timer unit missing) falls back: an unguarded cutover is not allowed.
+- **Reading the result honestly.** The probation is absolute, as decided: a container on which the
+  legacy loop itself runs below 0.97x (the release container has been measured at 0.66, and 0.77-0.99
+  after its cpuset rebalance) will fail it, and the session runtime was measured at 1.25-1.35x
+  legacy's time per frame on the dev box. A fallback with reason `speed` therefore means "this box
+  cannot hold real time on the session runtime", not necessarily "the session runtime is
+  broken"; compare with `fly-shadow-run`'s baseline (`/srv/fly/shadow/baseline.json`) before
+  anything else. The `check` before it measures the live fly against itself; this measures it
+  against the clock.
+- **Rehearsal** without a host: `fly-runtime-probation simulate CHECKS.jsonl` runs the rule over
+  recorded samples (`{t, status, rtMean, lag, uptime}`, one a minute); `infra/tests/lint.sh` drives
+  the real `fly-runtime` and the probation over synthetic traces (healthy, 0.85x, a stall, lag
+  growth, a restore, a restart, legacy cancel), and the unit wiring has been run under a real
+  systemd 257 user manager (state, timer enable/disable, `OnFailure`-style fallback, resume).
+
 ## CPU partition (cpuset)
 
 `05-deploy.sh` derives the in-guest `AllowedCPUs=` drop-ins for every app unit

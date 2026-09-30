@@ -84,6 +84,19 @@ pub const SPIKES_ATTACHMENT: &str = "telemetry.spikes";
 /// Bit `i` is neuron `i` in dataset order, little-endian within a byte, `ceil(neurons/8)` bytes:
 /// the legacy feed's `spike_bitset` layout.
 pub const SPIKES_CONTENT_TYPE: &str = "application/x-fly-spike-bitset";
+/// The legacy agent's read-only feed status (SERVE-01), and the capability that advertises it.
+///
+/// The legacy feed header and `GET /status` carry numbers from inside the network that no
+/// session-framework message carries: the plasticity rule's whole statistics (`learning.changed`
+/// counts synapses whose gain moved, `learning.synapses` the rule's edges), the decoder's
+/// per-channel baseline and last score, and the rates and pulse as they stand at the committed
+/// boundary. The session runtime's service host reads them here, once per published snapshot, at a
+/// committed `Ready(k)`, which is where the legacy loop reads them for its own publish. It is a
+/// declared extension of this one worker, not a `workers-v1` method: it changes nothing, is
+/// answered in any phase once initialized, and is not in any trace.
+pub const METHOD_FEED_STATUS: &str = "Legacy.FeedStatus";
+pub const FEED_STATUS_CAPABILITY: &str = "legacy-feed-status-v1";
+
 /// The one stimulus kind the profile supports.
 pub const REWARD_PULSE: &str = gameboy::STIMULUS_REWARD_PULSE;
 
@@ -312,6 +325,43 @@ pub fn encode_payload(
     encode_envelope(PAYLOAD_MAGIC, &manifest, &chunks.chunks).map_err(|e| e.to_string())
 }
 
+/// A capture's inputs, copied at the boundary so the encoding can run off the endpoint's lock.
+struct CaptureSnapshot {
+    state: AgentState,
+    agent_id: Id,
+    checkpoint_id: Id,
+    scope: Scope,
+    committed_step: u64,
+    profile: AssetRef,
+    seed: i32,
+    reinforcements: u64,
+    macro_channels: Vec<String>,
+    accumulator: TickAccumulator,
+    context: TypedValue,
+}
+
+impl CaptureSnapshot {
+    fn encode(&self) -> DomainResult<Vec<u8>> {
+        encode_payload(
+            &self.state,
+            &PayloadIdentity {
+                agent_id: &self.agent_id,
+                checkpoint_id: &self.checkpoint_id,
+                source_scope: &self.scope,
+                committed_step: self.committed_step,
+                profile: &self.profile,
+                seed: self.seed,
+                reinforcements: self.reinforcements,
+                macro_channels: &self.macro_channels,
+            },
+            &self.accumulator,
+            &self.context,
+            None,
+        )
+        .map_err(|e| DomainError::new(ErrorCode::Internal, e, MutationCertainty::None))
+    }
+}
+
 /// The reinforcement calls a `FLYAGT01` capture payload records (`learning.updates`).
 pub fn decode_payload_reinforcements(bytes: &[u8]) -> Result<u64, String> {
     let parts = decode_envelope(bytes, PAYLOAD_MAGIC)
@@ -365,9 +415,21 @@ pub fn spike_bitset(last_spike_ms: &[f64], since_ms: f64, now_ms: f64) -> Vec<u8
     if now_ms <= since_ms {
         return bytes;
     }
-    for (index, last) in last_spike_ms.iter().enumerate() {
-        if *last >= since_ms {
-            bytes[index >> 3] |= 1 << (index & 7);
+    // Eight neurons per byte, branch-free, so the compiler vectorises the comparison (PERF-01:
+    // 139,255 neurons a frame). The same `last >= since` test as the bit-at-a-time loop.
+    let chunks = last_spike_ms.chunks_exact(8);
+    let tail = chunks.remainder();
+    for (byte, chunk) in bytes.iter_mut().zip(chunks) {
+        let mut bits = 0u8;
+        for (bit, last) in chunk.iter().enumerate() {
+            bits |= u8::from(*last >= since_ms) << bit;
+        }
+        *byte = bits;
+    }
+    if !tail.is_empty() {
+        let at = last_spike_ms.len() / 8;
+        for (bit, last) in tail.iter().enumerate() {
+            bytes[at] |= u8::from(*last >= since_ms) << bit;
         }
     }
     bytes
@@ -440,6 +502,11 @@ pub struct LegacyAgentWorker {
     prepared: Option<(DomainRequestId, PreparedDecision)>,
     /// The brain time before the in-flight transition's ticks: the spike window's start.
     transition_start_ms: f64,
+    /// The in-flight transition's spike bitset, gathered tick by tick from the kernel's spike
+    /// lists during Prepare (PERF-01). It is the bitset `spike_bitset` would scan out of
+    /// `last_spike_ms` for the same window, without the 139,255-neuron scan. `None` when the
+    /// kernel keeps no per-tick list (the GPU backend): Commit scans as before.
+    tick_spikes: Option<Vec<u8>>,
     staged: Option<StagedAgent>,
     activated: BTreeSet<Id>,
     /// Every mutation this worker applied, reported as its progress counter.
@@ -543,6 +610,66 @@ pub fn telemetry_of(agent: &NeuralAgent, brain_ticks: u64, reinforcements: u64) 
     }
 }
 
+/// A finite number for JSON: the legacy header's `finite`, applied before the value is sent.
+fn finite_or_zero(value: f64) -> f64 {
+    if value.is_finite() { value } else { 0.0 }
+}
+
+/// The [`METHOD_FEED_STATUS`] result: exactly what the legacy loop's `publish` and
+/// `publish_decoder_status` read from the network, in the network's own order.
+///
+/// ```text
+/// { brainMs, rates: [[role, hz], ...], populationRate, rewardRemainingMs,
+///   learning: { enabled, updates, changed, synapses, signal },
+///   decoder: { calibrated, pending: [...], channels: [{channel, role, baseline, score}] } }
+/// ```
+///
+/// Rates are pairs rather than an object so their order survives any JSON reader. Every
+/// number goes through the legacy `finite` first: JSON has no NaN, and the header would have
+/// written 0 for one anyway.
+pub fn feed_status_of(agent: &NeuralAgent) -> Value {
+    let network = &agent.network;
+    let stats = network.plasticity.statistics();
+    let decoder = &agent.decoder;
+    let scores = decoder.last_scores();
+    let baselines = decoder.baselines();
+    let rates: Vec<Value> = network
+        .rates
+        .iter()
+        .map(|(name, hz)| json!([name, finite_or_zero(hz)]))
+        .collect();
+    let channels: Vec<Value> = decoder
+        .channel_roles()
+        .into_iter()
+        .map(|(channel, role)| {
+            json!({
+                "channel": channel,
+                "role": role,
+                "baseline": finite_or_zero(baselines.get_or_zero(role)),
+                "score": finite_or_zero(scores.get_or_zero(channel)),
+            })
+        })
+        .collect();
+    json!({
+        "brainMs": finite_or_zero(network.ms),
+        "rates": rates,
+        "populationRate": finite_or_zero(network.population_rate),
+        "rewardRemainingMs": finite_or_zero(network.reward_remaining()),
+        "learning": {
+            "enabled": stats.enabled,
+            "updates": finite_or_zero(stats.updates),
+            "changed": stats.changed,
+            "synapses": stats.synapses,
+            "signal": finite_or_zero(stats.signal),
+        },
+        "decoder": {
+            "calibrated": decoder.calibrated(),
+            "pending": decoder.pending_baseline_roles(),
+            "channels": channels,
+        },
+    })
+}
+
 /// `gameboy-channels-v1` from a decode's active set: the button mask in `GAMEBOY_BUTTONS`
 /// order, and the first bound channel the decode holds, which is exactly the channel the legacy
 /// macro layer's `asked` would start.
@@ -579,6 +706,7 @@ impl LegacyAgentWorker {
             context: None,
             prepared: None,
             transition_start_ms: 0.0,
+            tick_spikes: None,
             staged: None,
             activated: BTreeSet::new(),
             mutations: 0,
@@ -817,6 +945,28 @@ impl LegacyAgentWorker {
     }
 
     // ---------------------------------------------------------------------------------------
+    // Legacy.FeedStatus (SERVE-01)
+
+    /// The network as the legacy loop's `publish` reads it, at the committed boundary.
+    fn feed_status(&self) -> DomainResult<HandlerReply> {
+        let Some(agent) = self.agent.as_ref() else {
+            return Err(DomainError::before(
+                ErrorCode::InvalidPhase,
+                "Legacy.FeedStatus needs an initialized agent",
+            ));
+        };
+        if matches!(self.phase, AgentPhase::Prepared(_) | AgentPhase::Failed) {
+            return Err(DomainError::before(
+                ErrorCode::InvalidPhase,
+                "Legacy.FeedStatus reads a committed boundary",
+            ));
+        }
+        let mut reply = HandlerReply::new(object(feed_status_of(agent)));
+        reply.mutated = false;
+        Ok(reply)
+    }
+
+    // ---------------------------------------------------------------------------------------
     // Agent.Initialize
 
     async fn initialize(&mut self, ctx: &HandlerCtx<'_>) -> DomainResult<HandlerReply> {
@@ -1005,7 +1155,32 @@ impl LegacyAgentWorker {
         let brain_ticks = accumulator.brain_ticks();
         let remainder = accumulator.remainder();
         self.transition_start_ms = agent.network.ms;
-        agent.network.step(ticks);
+        // Profiling runs the brain's own phase clock too, as a measured legacy loop does, so
+        // the two brains carry the same instrumentation (PERF-01).
+        agent.network.profile = crate::profile::enabled();
+        let phase_before = agent.network.timings().total_ns();
+        let ticks_span = crate::profile::span("agent.ticks");
+        // One tick at a time is the loop `step(ticks)` runs; after each, the neurons it stamped
+        // are its spike list, so the transition's bitset is their union.
+        let mut bits = vec![0u8; agent.network.last_spike_ms.len().div_ceil(8)];
+        let mut listed = true;
+        for _ in 0..ticks {
+            let count = agent.network.step(1) as usize;
+            match agent.network.tick_spikes(count) {
+                Some(list) if listed => {
+                    for &neuron in list {
+                        bits[neuron as usize >> 3] |= 1 << (neuron & 7);
+                    }
+                }
+                _ => listed = false,
+            }
+        }
+        self.tick_spikes = listed.then_some(bits);
+        drop(ticks_span);
+        crate::profile::record(
+            "agent.ticks.phase_clock",
+            std::time::Duration::from_nanos(agent.network.timings().total_ns() - phase_before),
+        );
         if agent.network.ms != brain_ticks as f64 {
             return Err(applied(
                 ErrorCode::Internal,
@@ -1080,7 +1255,9 @@ impl LegacyAgentWorker {
                 "Agent.Commit must carry the step of its transition, not the new boundary",
             ));
         }
+        let parse_span = crate::profile::span("agent.commit.parse");
         let params: CommitParams = ctx.params()?;
+        drop(parse_span);
         params
             .validate_against_scope(&scope)
             .map_err(DomainError::invalid)?;
@@ -1110,7 +1287,9 @@ impl LegacyAgentWorker {
         }
         let context = self.read_context(&params.next_decision_context)?;
         // The complete request and its owned artifact are validated before anything applies.
+        let read_span = crate::profile::span("agent.read_lcd");
         let frame = self.read_lcd(ctx, &params.next_input).await?;
+        drop(read_span);
 
         self.status.set_state(WorkerState::Committing);
         let agent = self.agent.as_mut().expect("initialized");
@@ -1139,7 +1318,12 @@ impl LegacyAgentWorker {
             self.transient.location = Some(location);
             self.transient.blocked_since_ms = ms;
         }
-        let spikes = spike_bitset(&agent.network.last_spike_ms, self.transition_start_ms, ms);
+        let spikes_span = crate::profile::span("agent.spikes");
+        let spikes = match self.tick_spikes.take() {
+            Some(bits) => bits,
+            None => spike_bitset(&agent.network.last_spike_ms, self.transition_start_ms, ms),
+        };
+        drop(spikes_span);
         // 4. Retain the next context and acknowledge k+1.
         let digest = context.digest.clone();
         self.context = Some(context);
@@ -1152,7 +1336,9 @@ impl LegacyAgentWorker {
             decision_context_digest: digest,
             telemetry: self.telemetry(),
         };
-        let artifact = crate::media::seal_copy(ctx.client, SPIKES_CONTENT_TYPE.to_owned(), &spikes)
+        let _seal_span = crate::profile::span("agent.seal_spikes");
+        let artifact = ctx
+            .seal(SPIKES_CONTENT_TYPE, spikes)
             .await
             .map_err(|e| applied(e.code, e.message))?;
         self.status.set_state(WorkerState::Ready);
@@ -1273,7 +1459,8 @@ impl LegacyAgentWorker {
     /// The capture payload: `agent_to_chunks` in a checkpoint envelope, plus a `session`
     /// manifest member with the accumulator, the context and the identities. The readout
     /// transient is not in it (`legacy-transient-reset`).
-    fn payload(&self, checkpoint_id: &Id, scope: &Scope, k: u64) -> DomainResult<Vec<u8>> {
+    /// Everything a capture payload is encoded from, copied out of the live agent.
+    fn snapshot(&self, checkpoint_id: &Id, scope: &Scope, k: u64) -> DomainResult<CaptureSnapshot> {
         let agent = self.agent.as_ref().expect("initialized");
         let accumulator = self.accumulator.as_ref().expect("initialized");
         let context = self.context.as_ref().expect("initialized");
@@ -1281,23 +1468,19 @@ impl LegacyAgentWorker {
         // The session owns the frame remainder, as the legacy loop does (`Sim::checkpoint`).
         state.remainder = rational_remainder_to_legacy(&accumulator.remainder())
             .map_err(|e| DomainError::new(ErrorCode::Internal, e, MutationCertainty::None))?;
-        encode_payload(
-            &state,
-            &PayloadIdentity {
-                agent_id: &self.config.agent_id,
-                checkpoint_id,
-                source_scope: scope,
-                committed_step: k,
-                profile: &self.profile.asset,
-                seed: self.seed,
-                reinforcements: self.reinforcements,
-                macro_channels: &self.config.macro_channels,
-            },
-            accumulator,
-            &context.typed,
-            None,
-        )
-        .map_err(|e| DomainError::new(ErrorCode::Internal, e, MutationCertainty::None))
+        Ok(CaptureSnapshot {
+            state,
+            agent_id: self.config.agent_id.clone(),
+            checkpoint_id: checkpoint_id.clone(),
+            scope: scope.clone(),
+            committed_step: k,
+            profile: self.profile.asset.clone(),
+            seed: self.seed,
+            reinforcements: self.reinforcements,
+            macro_channels: self.config.macro_channels.clone(),
+            accumulator: accumulator.clone(),
+            context: context.typed.clone(),
+        })
     }
 
     async fn state_capture(&mut self, ctx: &HandlerCtx<'_>) -> DomainResult<HandlerReply> {
@@ -1323,36 +1506,50 @@ impl LegacyAgentWorker {
             ));
         }
         let params: CaptureParams = ctx.params()?;
-        let previous = self.status.state();
-        self.status.set_state(WorkerState::Capturing);
-        let bytes = self.payload(&params.checkpoint_id, &scope, k);
-        let bytes = match bytes {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                self.status.set_state(previous);
-                return Err(e);
-            }
+        // The boundary's state, taken under the endpoint's lock: a copy, as the legacy loop's
+        // `export_state` is. Encoding, digesting and sealing it -- milliseconds on the full
+        // connectome -- run after the lock is released (`HandlerReply::deferred`), so the next
+        // Prepare does not wait for them (TASK-01 review N5).
+        let snapshot = {
+            let _span = crate::profile::span("agent.capture.snapshot");
+            self.snapshot(&params.checkpoint_id, &scope, k)?
         };
-        let digest = digest_of_bytes(&bytes);
-        let artifact = crate::state::seal_payload(ctx.client, &bytes, &digest).await;
-        self.status.set_state(previous);
-        let artifact = artifact?;
         let graph = self.graph.as_ref().expect("initialized");
-        let result = CaptureResult {
-            checkpoint_id: params.checkpoint_id,
-            boundary: k,
-            compatibility_digest: compatibility_digest(
-                &self.config.agent_id,
-                &self.profile.asset,
-                graph,
-                self.seed,
-            ),
-            payload: artifact.reference().clone(),
-        };
-        Ok(HandlerReply::with_artifacts(
-            object(result.to_json()),
-            vec![(crate::state::PAYLOAD_ATTACHMENT.to_owned(), artifact)],
-        ))
+        let compatibility = compatibility_digest(
+            &self.config.agent_id,
+            &self.profile.asset,
+            graph,
+            self.seed,
+        );
+        let client = ctx.client.clone();
+        Ok(HandlerReply::deferred(Box::pin(async move {
+            let bytes = tokio::task::spawn_blocking(move || {
+                let _span = crate::profile::span("agent.capture.encode");
+                let bytes = snapshot.encode()?;
+                let digest = {
+                    let _span = crate::profile::span("agent.capture.digest");
+                    digest_of_bytes(&bytes)
+                };
+                Ok::<_, DomainError>((bytes, digest))
+            })
+            .await
+            .map_err(|e| DomainError::new(ErrorCode::Internal, e.to_string(), MutationCertainty::None))?;
+            let (bytes, digest) = bytes?;
+            let artifact = {
+                let _span = crate::profile::span("agent.capture.seal");
+                crate::state::seal_payload(&client, &bytes, &digest).await?
+            };
+            let result = CaptureResult {
+                checkpoint_id: params.checkpoint_id,
+                boundary: k,
+                compatibility_digest: compatibility,
+                payload: artifact.reference().clone(),
+            };
+            Ok(HandlerReply::with_artifacts(
+                object(result.to_json()),
+                vec![(crate::state::PAYLOAD_ATTACHMENT.to_owned(), artifact)],
+            ))
+        })))
     }
 
     async fn state_stage_restore(&mut self, ctx: &HandlerCtx<'_>) -> DomainResult<HandlerReply> {
@@ -1724,6 +1921,7 @@ impl WorkerEndpoint for LegacyAgentWorker {
             id("pixel-observation-v1"),
             id(crate::state::CHECKPOINT_CAPABILITY),
             id(ROLLBACK_CAPABILITY),
+            id(FEED_STATUS_CAPABILITY),
         ]
     }
 
@@ -1744,6 +1942,7 @@ impl WorkerEndpoint for LegacyAgentWorker {
             "State.Capture",
             "State.StageRestore",
             "State.ActivateRestore",
+            METHOD_FEED_STATUS,
         ]
     }
 
@@ -1751,12 +1950,19 @@ impl WorkerEndpoint for LegacyAgentWorker {
         Box::pin(async move {
             let outcome = match ctx.method {
                 "Agent.Initialize" => self.initialize(&ctx).await,
-                "Agent.Prepare" => self.prepare(&ctx).await,
-                "Agent.Commit" => self.commit(&ctx).await,
+                "Agent.Prepare" => {
+                    let _span = crate::profile::span("agent.prepare.handler");
+                    self.prepare(&ctx).await
+                }
+                "Agent.Commit" => {
+                    let _span = crate::profile::span("agent.commit.handler");
+                    self.commit(&ctx).await
+                }
                 METHOD_AGENT_ROLLBACK => self.rollback(&ctx).await,
                 "State.Capture" => self.state_capture(&ctx).await,
                 "State.StageRestore" => self.state_stage_restore(&ctx).await,
                 "State.ActivateRestore" => self.state_activate_restore(&ctx).await,
+                METHOD_FEED_STATUS => self.feed_status(),
                 other => Err(DomainError::before(
                     ErrorCode::Unsupported,
                     format!("{other} is not an agent method"),
@@ -1805,6 +2011,46 @@ mod tests {
             vec![0, 0],
             "an empty window is empty"
         );
+    }
+
+    #[test]
+    fn the_bytewise_spike_bitset_is_the_bit_at_a_time_one() {
+        // PERF-01 replaced the per-neuron loop; every length and window agrees with it,
+        // including NaN (never >=) and infinities.
+        fn reference(last: &[f64], since: f64, now: f64) -> Vec<u8> {
+            let mut bytes = vec![0u8; last.len().div_ceil(8)];
+            if now <= since {
+                return bytes;
+            }
+            for (index, value) in last.iter().enumerate() {
+                if *value >= since {
+                    bytes[index >> 3] |= 1 << (index & 7);
+                }
+            }
+            bytes
+        }
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for len in 0..40usize {
+            for _ in 0..20 {
+                let last: Vec<f64> = (0..len)
+                    .map(|_| match next() % 10 {
+                        0 => f64::NAN,
+                        1 => f64::NEG_INFINITY,
+                        2 => -1_000_000.0,
+                        n => (n * 3) as f64,
+                    })
+                    .collect();
+                let since = (next() % 30) as f64;
+                let now = since + (next() % 3) as f64;
+                assert_eq!(spike_bitset(&last, since, now), reference(&last, since, now));
+            }
+        }
     }
 
     #[test]

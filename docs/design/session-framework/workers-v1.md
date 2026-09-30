@@ -426,6 +426,22 @@ composition that declares no rollback policy treats the request as a task failur
 "cannot reset the environment directly": the coordinator applies the policy through the
 section 7 methods.
 
+**Amendment, 2026-09-29 (TASK-01).** The Rust interfaces, as built in `fly-session::task`:
+
+- The inspection argument is an `Inspection`: the observation's typed `inspection` value, plus the
+  bytes of every attachment the task declares (`Task::inspection_attachments`, for example
+  `inspection.memory`). A synthetic task declares none, and its inspection reads as the typed value
+  it always was.
+- `Evaluation.slot_saves` names the `Environment.SaveSlot`s the transition asks for at the boundary
+  it reached. They are applied after every Commit, saves first.
+- `Task::rollback(scope', restored)` is step 3 of a declared rollback policy. It returns the next
+  contexts.
+- `Task::restored(scope', restored, clock)` runs after a group restore installed the ledger. A task
+  whose executor state is transient re-observes the restored world here, and returns the contexts
+  the coordinator holds against the checkpoint's.
+- A task and an executor that are one object (`pokered-macros-v1`) are two handles on one shared
+  state.
+
 ## 5. Admission and audience boundary
 
 The first synthetic implementation has no audience input. Later integration maps permitted
@@ -452,6 +468,13 @@ application are now separate, each admission record carries its interaction id a
 first and refunds the second, and the slice wiring the bridge tests both. This is the
 accepted/applied/aborted distinction the paragraph above asks for, for this one interaction
 kind; paid interactions in general still need the public v2 contract.
+
+**Amendment, 2026-09-29 (TASK-01).** As built, the coordinator's `AdmissionQueue` is the
+admission record: an admitted stimulus carries its interaction id into `preStepStimulations`, and it
+ends `applied` (with its boundary) or `aborted` (the epoch failed before its Prepare committed). The
+legacy composition's rules run on the edge side of the queue. No other interaction kind is admitted.
+The legacy operator reward pulse is refused (legacy-gameboy-v1 section 15, amendment of
+2026-09-29).
 
 ## 6. Health, shutdown and extensions
 

@@ -25,7 +25,7 @@ mod store;
 mod transport;
 
 pub use client::{
-    Artifact, ArtifactFile, ArtifactWriter, Artifacts, CancelState, Client, ClientConfig, Message,
+    Artifact, ArtifactFile, ArtifactWriter, Artifacts, CancelState, Client, ClientConfig, IN_MEMORY_STORE_ID, Message,
     Mode, PendingCall, PublishReceipt, Request, Responder, Retained, RpcResult, Service,
     ServiceConfig, SessionInfo, Subscription, SubscriptionConfig, TopicInfo,
 };

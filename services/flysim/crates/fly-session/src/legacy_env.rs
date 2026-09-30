@@ -854,13 +854,35 @@ impl LegacyGameboyEnvironment {
     /// if there was one.
     async fn observation(
         live: &mut Live,
-        client: &flybus::Client,
+        ctx: &HandlerCtx<'_>,
         audio: Option<Vec<u8>>,
     ) -> DomainResult<(WorldObservation, Vec<(String, flybus::Artifact)>)> {
-        let frame =
-            media::seal_copy(client, FRAME_CONTENT_TYPE.to_owned(), &live.framebuffer).await?;
-        let image = memory_image(&mut live.emulator).map_err(backend_failure)?;
-        let memory = media::seal_copy(client, MEMORY_CONTENT_TYPE.to_owned(), &image).await?;
+        let image = {
+            let _span = crate::profile::span("env.image");
+            memory_image(&mut live.emulator).map_err(backend_failure)?
+        };
+        if let Some(raw) = &audio
+            && raw.len() % AUDIO_CHANNELS as usize != 0
+        {
+            return Err(backend_failure("binjgb returned half a stereo frame"));
+        }
+        let audio_f32 = audio.as_deref().map(audio_f32le);
+        // The three artifacts are independent: they are sealed concurrently, so the boundary
+        // waits for the router's round trips once rather than three times. Over the local lane
+        // each is an in-memory artifact owning its bytes (`HandlerCtx::seal`).
+        let seal_span = crate::profile::span("env.seal");
+        let (frame, memory, samples) = tokio::join!(
+            ctx.seal(FRAME_CONTENT_TYPE, live.framebuffer.to_vec()),
+            ctx.seal(MEMORY_CONTENT_TYPE, image),
+            async {
+                match audio_f32 {
+                    Some(bytes) => ctx.seal(AUDIO_CONTENT_TYPE, bytes).await.map(Some),
+                    None => Ok(None),
+                }
+            }
+        );
+        drop(seal_span);
+        let (frame, memory, samples) = (frame?, memory?, samples?);
         let view = ViewRef {
             view_id: gameboy::VIEW_ID.to_owned(),
             produced_step: live.boundary,
@@ -876,13 +898,8 @@ impl LegacyGameboyEnvironment {
             (MEMORY_ATTACHMENT.to_owned(), memory),
         ];
         let mut chunks = Vec::new();
-        if let Some(raw) = audio {
-            if raw.len() % AUDIO_CHANNELS as usize != 0 {
-                return Err(backend_failure("binjgb returned half a stereo frame"));
-            }
+        if let (Some(raw), Some(samples)) = (audio, samples) {
             let frames = (raw.len() / AUDIO_CHANNELS as usize) as u64;
-            let samples =
-                media::seal_copy(client, AUDIO_CONTENT_TYPE.to_owned(), &audio_f32le(&raw)).await?;
             chunks.push(AudioRef {
                 stream_id: id(AUDIO_STREAM_ID),
                 first_sample: live.audio_next_sample,
@@ -980,7 +997,7 @@ impl LegacyGameboyEnvironment {
             audio_discontinuity: false,
         };
         let (observation, attachments) =
-            LegacyGameboyEnvironment::observation(&mut live, ctx.client, None).await?;
+            LegacyGameboyEnvironment::observation(&mut live, ctx, None).await?;
         self.live = Some(live);
         // The world is stopped when O[0] goes out and cannot free-run while the brain warms up.
         self.status.set_state(WorkerState::Ready);
@@ -998,6 +1015,7 @@ impl LegacyGameboyEnvironment {
     // -- Environment.Advance -----------------------------------------------------------------
 
     async fn advance(&mut self, ctx: &HandlerCtx<'_>) -> DomainResult<HandlerReply> {
+        let _span = crate::profile::span("env.advance.handler");
         let scope = ctx.scope()?.clone();
         let params: AdvanceParams = ctx.params()?;
         let status = self.status.clone();
@@ -1030,6 +1048,7 @@ impl LegacyGameboyEnvironment {
         let applied_from = live.boundary;
 
         // `LegacyFrame::run` and `take_frame`: the joypad, one frame, the frame it drew, its audio.
+        let frame_span = crate::profile::span("env.frame");
         live.buttons = mask;
         live.emulator.set_buttons(mask);
         live.emulator
@@ -1039,6 +1058,7 @@ impl LegacyGameboyEnvironment {
         live.framebuffer
             .copy_from_slice(live.emulator.framebuffer());
         let audio = live.emulator.take_audio_u8();
+        drop(frame_span);
         live.boundary += 1;
         live.world_time = live
             .world_time
@@ -1054,7 +1074,7 @@ impl LegacyGameboyEnvironment {
         status.progress(1);
 
         let (observation, attachments) =
-            LegacyGameboyEnvironment::observation(live, ctx.client, Some(audio)).await?;
+            LegacyGameboyEnvironment::observation(live, ctx, Some(audio)).await?;
         let result = StepResult {
             batch_id: params.batch_id,
             applied_from_step: applied_from,
@@ -1150,7 +1170,7 @@ impl LegacyGameboyEnvironment {
         live.batches.clear();
         live.audio_discontinuity = true;
         let (observation, attachments) =
-            LegacyGameboyEnvironment::observation(live, ctx.client, None).await?;
+            LegacyGameboyEnvironment::observation(live, ctx, None).await?;
         status.set_state(WorkerState::Ready);
         status.set_scope(Some(scope.clone()));
         status.progress(1);
@@ -1415,7 +1435,7 @@ impl LegacyGameboyEnvironment {
             audio_discontinuity: true,
         };
         let (observation, attachments) =
-            LegacyGameboyEnvironment::observation(&mut live, ctx.client, None).await?;
+            LegacyGameboyEnvironment::observation(&mut live, ctx, None).await?;
         self.live = Some(live);
         self.activated.insert(token);
         self.status.set_state(WorkerState::Ready);

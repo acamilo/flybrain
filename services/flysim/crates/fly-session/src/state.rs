@@ -110,6 +110,28 @@ pub fn executor_payload(agent_id: &str) -> String {
 pub const WORLD_PAYLOAD: &str = "world";
 /// The task ledger's payload name.
 pub const TASK_LEDGER_PAYLOAD: &str = "task-ledger";
+/// The prefix of the payloads that carry a task ledger's attachments: bytes beside its typed
+/// value, for a ledger over the 32 KiB `TypedValue` bound (`workers-v1` section 1, "explicit
+/// artifact-backed schema"; `Task::capture_attachments`). `task-ledger-<name>`.
+pub const TASK_ATTACHMENT_PREFIX: &str = "task-ledger-";
+
+/// The payload name of one task ledger attachment.
+pub fn task_attachment_payload(name: &str) -> String {
+    format!("{TASK_ATTACHMENT_PREFIX}{name}")
+}
+
+/// The task ledger's attachments among a checkpoint's payloads, by attachment name.
+pub fn task_attachments(
+    payloads: &std::collections::BTreeMap<String, Vec<u8>>,
+) -> std::collections::BTreeMap<String, Vec<u8>> {
+    payloads
+        .iter()
+        .filter_map(|(name, bytes)| {
+            name.strip_prefix(TASK_ATTACHMENT_PREFIX).map(|n| (n.to_owned(), bytes.clone()))
+        })
+        .collect()
+}
+
 /// The prior world inspection's payload name.
 pub const PRIOR_INSPECTION_PAYLOAD: &str = "prior-inspection";
 /// The coordinator's admission state and event watermarks.

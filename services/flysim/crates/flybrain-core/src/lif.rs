@@ -509,6 +509,18 @@ impl LifNetwork {
     }
 
     /// Run `milliseconds` ticks and return the total spike count.
+    /// The neurons the last CPU tick emitted, when `count` is what that one-tick
+    /// [`LifNetwork::step`] returned: exactly the neurons whose `last_spike_ms` it stamped, in the
+    /// sweep's order. `None` while the GPU backend runs the ticks, whose host copy of the list is
+    /// not kept per tick. A read-only view; it changes nothing a tick computes.
+    pub fn tick_spikes(&self, count: usize) -> Option<&[u32]> {
+        #[cfg(feature = "cuda")]
+        if self.cuda.is_some() {
+            return None;
+        }
+        self.spikes.get(..count)
+    }
+
     pub fn step(&mut self, milliseconds: u64) -> u64 {
         // The GPU backend runs the same ticks in batches and replays the host-side phases; with the
         // feature off this compiles to nothing and the loop below is the whole method.

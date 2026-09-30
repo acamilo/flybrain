@@ -344,6 +344,345 @@ CUT-01 shadow need.
 the executor over `ImageReader::new(&O[k], &cartridge)` in Phase B and over O[k+1] in Phase C,
 retaining O[k] until then. The `Cartridge` comes from `Cartridge::verified(rom, contentDigest)`.
 
+### TASK-01 — The `pokered-macros-v1` task and executor (port slice)
+
+**2026-09-29: built** on `port/task-01` off `port/integration` (main v0.6.5 + AGENT-01 + MEM-01 +
+ENV-01) and awaiting review. It changes no live behaviour: `flysim` is only a library dependency of
+the new crate, nothing in the service calls it, and the compatibility string is unchanged. With it
+the live fly's whole composition -- agent, world, task and executor -- runs on the session
+framework, from a fresh start or from a FLYSIM01 checkpoint.
+
+- **The object** (`fly-legacy-session::task::PokeredTask`). The task and the executor are one
+  object with two faces, `Task` and `ActionExecutor`, which the coordinator holds where it holds
+  any task and executor (legacy-gameboy-v1 section 10). Phase B runs flysim's `MacroLayer::decide`
+  over `ImageReader(O[k], cartridge)` at the agent's brain time. Phase C runs
+  `PokemonRedReward::sample`, `MacroLayer::observe`, the location, the progress and the ratchet's
+  decision over `ImageReader(O[k+1])`. A rollback runs `clear_transient`, `cancel` and `observe`
+  over `ImageReader(O'[k+1])`. These are the legacy engine's own calls in `LegacyFrame`'s order;
+  there is no port of a rule. The cartridge is `Cartridge::verified(rom, contentDigest)`, and O[k] is
+  retained until Phase C has read it.
+- **The coordinator** (fly-session). A task declares the inspection attachments it reads, and the
+  coordinator holds them and hands over their bytes (`task::Inspection`). The executor's clock is the
+  agent's brain time after Prepare. `Evaluation.slot_saves` asks for `Environment.SaveSlot`. A
+  declared rollback policy now runs itself: `Ready(e, k) -> RollingBack(e', k) -> Ready(e', k)`, with
+  `RestoreSlot`, then `Task::rollback`, then `Agent.Rollback` on every agent. Composition setters
+  cover the backend and task config, the media, the decision schema, the world's state format and
+  per-agent model versions. The admission queue (`AdmissionQueue`) is cut into each Prepare's
+  `preStepStimulations` and reports every admission applied or aborted. `Coordinator::import`
+  installs a checkpoint of another format as a session's start. Step details (`StepDetails`) are
+  kept for a parity run.
+- **FLYSIM01 as the start** (`fly-legacy-session::import`, on STATE-02's
+  `legacy_checkpoint::{halves, agent_payload, world_payload}`). The world, agent and task halves
+  go into each participant's own capture format, and the ordinary group restore installs them:
+  stage, validate, activate, `Paused(k)`, resume. The world is replaced by a fresh one first,
+  because ENV-01 stages only on a replacement. The context the agent resumes with is computed
+  from the checkpoint's own memory image, and the coordinator holds the task to it after the
+  install (`Task::restored`). The task ledger is STATE-02's `{reward, ratchet, slotFilled}`.
+- **The store and the boot** (`fly-legacy-session::composition`, on STATE-02's
+  `LegacyCheckpointer`).
+  - `boot` is `Sim::boot`. It restores from the live hot and durable stores in the legacy
+    candidate order, holding each candidate to the legacy gate. Any refusal falls to the next
+    candidate; each attempt runs on a session of its own, because a refused install fences its
+    session. It is a fresh start when the stores are empty. After either, the startup durable
+    save is written and the intervals start.
+  - `advance` keeps the declared boundary order: the slot save (inside the step), the milestone
+    archive on a rank climb, the rollback (deferred by the coordinator until the host has
+    captured), a durable save after a rollback, then the interval saves.
+  - `shutdown_save` is the legacy shutdown's durable save.
+  - The session runtime writes no sugar journal yet: its admission is the coordinator's, and the
+    journal's boot header needs the edge.
+  - `lastEventId` carries the restored file's watermark; the runtime has no feed event log
+    before EDGE-01.
+- **Sugar** (`fly-legacy-session::admission`). flysim's `RateLimiter` and clamp run unchanged,
+  against the last commit's `stimulusRemainingMs` (one commit stale). An admission waits for the
+  next cut.
+- **The operator reward pulse is refused.** See the legacy-gameboy-v1 section 15 amendment.
+
+**Parity** (`fly-legacy-session/tests/session_trace.rs`, rom-env). A whole new-runtime session
+writes its own `FLY_TRACE` line per transition (`fly-legacy-session::trace`). Each line is built
+from what crossed its boundaries: `Agent.Prepare`, `Agent.Commit`'s rates and spike bitset, the
+executor's batch, the view, the image and the boundary actions. It is compared field by field with
+the legacy loop's. The decision is compared as a set, because `gameboy-channels-v1` carries no list
+order. Where the legacy side runs in the test, the ledgers are compared after every boundary as
+well: adapter export, ratchet state, and the executor's scene, bound channels, running macro,
+counts and "nearer". Results: see the TASK-01 run report and the amendment below.
+
+**Amendment, 2026-09-29 (TASK-01 review fix round).** The review blocked on B1 and noted
+N1 to N5. All are fixed here; the dated amendments to legacy-gameboy-v1 section 10 and 15 cover
+B1, N1 and N3.
+
+- **B1: the task ledger is artifact-backed.** On the live fly the adapter ledger is 42-46 KB,
+  past the 32 KiB `TypedValue` bound.
+  - `Task` gains `capture_attachments`, `validate_restore_with` and `install_restore_with`.
+  - The coordinator files those attachments as `task-ledger-<name>` payloads in captures and
+    imports.
+  - A bad ledger is an error, never a panic, so a boot falls to the next candidate.
+  - Boot parity now covers row 64 (42 KB) and the row 65 yard (46 KB).
+- **N1: a sugar admitted before the next commit is an active pulse.**
+- **N3: a restore seeds the palette as `Sim::boot` does.** `tests/palette_seed.rs` shows that the
+  seed is never read.
+- **N4: saves are queued to the writer thread.**
+- **N5: speed.** The profile is below. Changes:
+  - The world seals its three artifacts concurrently.
+  - Cache and caller holds are taken concurrently.
+  - In-process participants use the in-memory transport.
+  - A service session publishes every other boundary (the feed's 30 Hz) and keeps a bounded
+    history.
+  - `State.Capture` is off the loop. The worker shell lets a handler finish its reply outside
+    the endpoint's lock, and takes mutations in arrival order. The legacy agent copies its state
+    under the lock, then encodes, digests and seals it off the lock. The coordinator's
+    `begin_capture` / `finish_capture` let the session step on while the payload is written.
+- **Measured** (`tests/speed.rs`, `tests/speed_ab.rs`):
+  - The brain is the same: the legacy `ticks` phase and the agent's `ticks` span agree within a
+    few percent.
+  - What remains is a fixed per-frame overhead of the process boundary. It is about 3-5 ms on a
+    quiet 8-core build box: roughly 0.7-1 ms per RPC round trip for Prepare, Advance and Commit,
+    plus the world's and the agent's artifact seals and reads.
+  - Against it, the legacy loop spends about 0.7 ms per frame outside the ticks.
+  - The report `claude-task-01` has the per-phase table and what would close the rest.
+
+### PERF-01 — The session runtime's per-frame cost (port slice)
+
+**2026-09-30: built** on `port/perf-01` (off `port/task-01`, with `main` v0.6.7 merged) and
+awaiting review. Goal: cutover must not slow the live stream. TASK-01's fix round left the
+in-process session about 4.7 ms a frame above its brain, against 0.7 ms for everything the legacy
+loop does outside its ticks. No behaviour changes: the parity runs are identical frame by frame,
+in-process and process, and the compatibility string is unchanged.
+
+- **The local lane** (the big one; ipc-v1 section 1 and bus-v1 section 12, amended 2026-09-30).
+  An in-process worker's shell is offered to the coordinator directly (`worker::LocalLane`,
+  `launcher::Via::Local`, `WorkerRef::local`); `rpc::send` takes it for every endpoint method.
+  The request still goes through the shell's admission, deduplication, arrival order and
+  endpoint, and the reply is the same outcome. Handler media over the lane are in-memory
+  artifacts (`flybus::Artifact::in_memory`, `HandlerCtx::seal`): no store file, no seal copy,
+  no retain or open round trip. A bus call or a publication carries a sealed copy
+  (`rpc::promote`), begun while the task and the commits run. Process mode is untouched.
+  `FLY_SESSION_LOCAL_LANE=0` runs in-process over the bus. Every synthetic transport test also
+  runs over the lane.
+- **The spike bitset** is the union of the kernel's per-tick spike lists, gathered while Prepare
+  ticks (`LifNetwork::tick_spikes`), instead of a 139,255-neuron scan in Commit. Same bits,
+  proved by `flybrain-core/tests/tick_spikes.rs` and compared every frame by the parity runs.
+- **The session topic** gets a committed snapshot every 60th boundary in a service session (and
+  at every boundary with events or boundary actions), not every other one. Nothing in the
+  release subscribes; the stream is the legacy feed.
+- Small ones: a single dispatch job is called in place, the shell moves the reply result
+  instead of cloning it, `digest_views` and `media_bytes` as SERVE-01 has them, and profiling
+  spans for the shell, the lane, each handler and the brain's own phase clock.
+- **Tried and dropped**: publishing without waiting for the router (a deferred publish) and any
+  other overlap with Prepare. On the release CPU the sweep owns every core of the cpuset, and
+  work beside the ticks slowed them by up to 30% in one run. Spikes only at the feed rate
+  (an AGENT-01 amendment) was not needed once the bitset cost nothing.
+- **Measured** (`tests/speed_ab.rs` with `FLY_PERF_ARMS`, `FLY_PERF_SERVICE`, `FLY_PERF_WORKERS`;
+  the report `claude-perf-01` has the tables): on the release host's CPU model, pinned to the
+  release cpuset's size, the in-process session's cost outside the brain fell from about 9.3 ms
+  to about 3.5 ms a frame. The legacy loop's is about 1.3 ms. What is left is mostly the per-frame
+  memory image (0.37 ms, 65,536 shim reads), the three domain calls' JSON, digests and cache
+  (about 0.5 ms together) and the task's evaluation, which the legacy loop does too.
+
+### SHADOW-01 — The session runtime beside the live fly (port slice)
+
+**2026-09-29: built** on `port/shadow-01` off `port/task-01`, and awaiting review. It changes no
+live behaviour. flysim gains trace switches that are off unless set, and the compatibility string
+is unchanged. The contract is [legacy-gameboy-v1](legacy-gameboy-v1.md) section 18: the inputs,
+the architecture, what is compared, the declared differences, the window and the verdict CUT-01
+reads.
+
+- **flysim** (`trace.rs`, `frame.rs`). These additions are recording only:
+  - `FLY_TRACE_DIR` writes one trace file per process. A restart truncated the one `FLY_TRACE`
+    path.
+  - `FLY_TRACE_MAX_BYTES` caps a file; the default in directory mode is 4 GiB.
+  - `FLY_TRACE_LEDGERS=<n>` adds `ledgersDigest` every *n* transitions.
+  - `frame::ledgers_string` is now the one definition of the ledger string. The session task's
+    `ledgers_of` calls it.
+- **`fly-legacy-session::shadow`** and the binary `fly-shadow`:
+  - `follow` reads the per-process files. It hands out complete lines only, and a file ends when
+    a newer one exists.
+  - `spool` copies every new store generation as it appears. It keeps a floor and a byte bound,
+    and never writes to a live store.
+  - `checkpoint` exports the shadow's capture of a live save's boundary and compares it with the
+    live file byte for byte, after `host-fields` and `archive-order`.
+  - `verdict` is `fly-shadow-verdict-v1` and the cutover rule (`allows_cutover`,
+    `fly-shadow check`).
+  - The runner boots each segment from the live process's startup save (TASK-01's import). It
+    replays the admissions, runs the transition, and takes the live captures in the live order
+    around a deferred rollback. It compares with `trace::compare_line`, which is now shared with
+    `trace::compare`. It stops on the first divergence and writes `divergence.json` with 30
+    transitions of context.
+- **infra.** `units/flyshadow.service` is report-only and has no `[Install]`. It is not bound to
+  flysim, runs `SCHED_IDLE` and stays stopped on exit status 3. `bin/fly-shadow-run` has the
+  commands `start`, `stop`, `status` and `check`. `05-deploy.sh` converges both and pins the
+  unit to the page and encoder CPUs. `build-flysim.sh` and `package-release.sh` ship
+  `fly-shadow` and `fly-session`. `lint.sh` holds the unit to all of this. The runbook has a
+  "Shadow run (SHADOW-01)" section.
+- **Rehearsal** (`tools/shadow-rehearsal.sh`). It runs the real `flysim` service and the real
+  `fly-shadow` side by side from one checkpoint, with sugar posted to the control API and service
+  restarts. It runs on a build box, never on a host.
+
+**Offline rehearsal** (a build box, `tools/shadow-rehearsal.sh`, FAFB in macros mode). The real
+service ran at real time or unthrottled, with sugar posted every 10 to 20 s and a restart in every
+run. It totalled **4,090 brain seconds (68 brain minutes), 244,327 transitions, 13 processes and
+zero divergence**:
+
+| Run | Start | Brain s | Transitions | What it covered |
+| --- | --- | --- | --- | --- |
+| main | the row 67 Pewter Gym stream checkpoint (rung 10), real time, restarts at 12 and 24 min | 2,161 | 129,086 | 126 sugar, 7 rewards, 4,134 macro events, 484 saves byte-identical, a ledger digest every boundary |
+| reward | row 58 door, adapter ledger thinned (the TASK-01 brain arm, `examples/reward_bearing.rs`) | 601 | 35,894 | the real brain earns `map`, `exploration`, `boundary`, `talk` and `battle` (11 rewards); 138 saves |
+| rollback | FND-01's `rollback` checkpoint | 302 | 18,056 | a ratchet rollback and the durable save after it; a `talk` reward |
+| climb | FND-01's `climb` checkpoint | 303 | 18,069 | a ratchet slot save, and the milestone archive before it compared under `archive-order` |
+| smoke | row 67, unthrottled | 122 | 7,305 | the first run |
+| final | row 67, real time, the final binary, the lag guard on | 601 | 35,917 | the box was contended by other runs, so the live loop fell behind real time 5 times; each time the guard paused the shadow (667 s in all), and all 143 saves were still compared |
+
+The reward run's box was loaded: the shadow ran at 25 frames a second against the live 52 and
+finished 12 minutes behind. Every save was still compared, from the spool.
+
+`tests/shadow.rs` (ROM, the toy connectome in raw mode) runs the real service through a restart
+under a shadow, then plants four differences on copies of that run's trace and spool. Each one
+stops a fresh shadow with the right kind, field and step:
+
+- a work-RAM digest;
+- a ledger digest;
+- a sugar removed, which diverges on the brain at that transition;
+- a live save's `rankSinceMs`.
+
+**Cost.** These figures come from a shared 8-core build box, so they are indicative only. Other
+agents' runs made paired measurements vary by up to 2x.
+
+- *The shadow.* Over the whole main run it used 1.47 cores to follow 52.3 frames a second. The
+  live service used 1.43 cores for 53.5 frames a second. That is about 28 ms and 27 ms of CPU a
+  frame, so the session runtime costs about what the legacy loop does (x1.05).
+- *Wall time a frame.* With 2 sweep threads the mean was 14.7 ms on the quieter box. Replaying the
+  main trace unthrottled gave these means:
+  - in-process with 1, 2 and 3 threads: 23.7, 19.7 and 17.0 ms;
+  - thread mode with 2 threads: 18.5 ms;
+  - process mode with 2 threads: 18.5 ms.
+
+  Every replay was identical again: five more comparisons of 20,000 transitions each.
+- *Memory.* The shadow's resident size was about 130 MB, against the live service's 54 MB.
+- *The live trace* with a ledger digest every frame costs about 1 ms of CPU a frame in the best
+  paired sample, which is within this box's noise; FND-01 measured about 2 ms. The live loop has
+  1.7-1.8x real-time capacity on 3 threads. The trace is about 750 bytes a transition, which is
+  160 MB per live hour.
+
+The resource plan for the release container is in the SHADOW-01 run report and in
+`units/flyshadow.service`:
+
+- `SCHED_IDLE` on the page and encoder CPUs, never flysim's;
+- 2 sweep threads;
+- a back-off whenever the live `fly_lag_seconds` grows;
+- a 3 GB memory ceiling;
+- a ledger digest every 60 transitions.
+
+To keep up, the shadow needs about 1.7 idle cores. With less it runs behind real time: the trace
+is on disk, the spool covers about 15 minutes of hot saves, and the verdict comes later.
+
+**Found on the way.** binjgb's exported state does not carry the audio resampler's phase. An
+emulator imported from a state therefore drifts from a powered-on one in its channel accumulators.
+The drift shows in the exported bytes only (frame and WRAM are identical). Every restart restores
+through an import in both runtimes, so the two agree. A fresh start does not import, and the
+shadow follows one by powering on as well.
+
+**Gates** (a build box with rom-env): `cargo test --workspace --release` with `--no-fail-fast`
+had three failures, each accounted for:
+
+- `flysim` `integration` is the known load-sensitive test. It failed at box load 25 and passes
+  alone.
+- `rom_macros_mode`'s no-PP turn is red on this base. Row 67 fixes it on main.
+- A shadow-test threshold depended on the box's speed. It was fixed, and the test passes at load
+  22.
+
+`clippy --workspace --all-targets -D warnings` is clean. `npm test` passed 688 with 0 failures,
+typecheck is clean, and `infra/tests/lint.sh` passed every check. The compatibility string is
+648 B `8ce67b97...` in raw and macros mode, unchanged.
+
+**Review fix round, 2026-09-29** (APPROVE-WITH-NOTES). The branch was rebased onto port/task-01's
+fix round, `2fc9fd7`: an artifact-backed task ledger, the palette seed, queued saves and bounded
+history. The shadow now bounds its coordinator's history per segment. The fixes:
+
+- *R1.* The verdict hashes `flysim-session`, SERVE-01's service, with the other release binaries.
+  `check` defaults to `--binary flysim-session --current /opt/fly/current`. It requires the
+  verdict's release to be the directory the link resolves to, with every shadowed binary
+  unchanged there.
+- *R2.* Every session-side failure is a divergence:
+  - a session that does not start;
+  - a restore-gate refusal (`tests/shadow.rs` now plants one);
+  - a capture with no agent;
+  - an unrecorded transition;
+  - an unbuildable trace line.
+
+  Skips carry a kind, and only the live side's own kinds allow a cutover.
+- *N1.* The live trace needs the shadow's heartbeat to start and to keep going, and flysim keeps
+  the trace directory under 8 GiB. The runbook's claim is corrected.
+- *N2.* `fly-shadow-run` records a baseline and runs `flyshadow-guard.timer`. The guard stops
+  everything and restarts flysim without the trace on 1 s of lag growth, or when the realtime
+  factor drops below min(0.97, baseline - 0.03). `lint.sh` drives the rule on six cases.
+- *N3.* Both `pass` and the cutover require one live save compared per 600 brain seconds, with at
+  most 10 % unavailable. The cutover also requires a shadow at most 3,600 transitions behind.
+
+**Cost re-measured on the rebased tip.** This was a 12-brain-minute rehearsal on the same box,
+at real time, with a restart and the guard on. It had 43,104 transitions, 197 saves byte-identical
+and zero divergence. The box was contended by other runs again; the guard paused the shadow for
+911 s and it still passed. Unthrottled replays of its trace, all identical, gave these mean
+milliseconds per frame:
+
+| Mode | ms per frame (mean) |
+| --- | --- |
+| in-process, 2 threads | 15.1 |
+| in-process, 3 threads | 13.3 |
+| thread mode, 3 threads | 14.9 |
+| process mode, 2 threads | 15.4 |
+
+Earlier the same 2-thread and 3-thread in-process arms took 19.7 and 17.0 ms. With 3 threads the
+shadow keeps real time with about 20 % to spare.
+
+**Review round 2, 2026-09-30** (APPROVE-WITH-NOTES; R3 and G1 were required before `start`).
+The branch was rebased onto port/task-01 `eaf588d`, and main v0.6.7 was merged in: row 68 and
+adapter `pokered-unique8-v8`. The live shadow will therefore carry the v8 compatibility string.
+The fixtures were already v8 on main.
+
+- *R3.* `allows_cutover` floors the window at `REQUIRED_BRAIN_SECONDS` (10,800). A verdict run with
+  a shorter `--required-brain-seconds` passes as a rehearsal but never passes `check`. There is a
+  test case for this.
+- *G1, the host guard.*
+  - `start` measures a 10-minute baseline of 60 samples before the shadow exists: the median RTF,
+    its spread as 1.4826 x MAD, and the lag growth rate over the most recent half.
+  - The guard trips only on a sustained degradation *against that baseline*: 3 checks in a row in
+    which the last 5 samples of the same process fall below it, in RTF or in lag rate, by more
+    than max(0.05, 4 x spread / sqrt 5).
+  - It stops itself when the shadow is not running. `check` refuses after a trip or with the
+    shadow down.
+  - Tested over two kinds of trace:
+    - *Synthetic*, shaped on the release container: a flat 0.66, 0.77-0.99 and 0.6-1.0 noisy, per
+      second and per sample, and real time with hiccups. There was no false trip in 800 3-hour
+      runs, and every one of 400 degradations tripped (to 0.55-0.75, and 0.66 to 0.58).
+    - *Recorded* from a real flysim, now fixtures: alone (at about 1.0, and at 0.4-1.0 under box
+      load) no trip; with a real idle shadow on other cpus no trip; with a real shadow on the fly's
+      own cpu (0.66 to 0.44-0.60) a trip at check 7.
+  - One recording had a load step inside its baseline, which widened a mean/sd baseline to a
+    0.25 margin. That is why the baseline is robust.
+- *G1, the in-shadow back-off* (`LagJudge`). It pauses the shadow while the live lag grows faster
+  than the baseline rate plus the margin (re-read from `baseline.json`). It lifts itself for
+  10 minutes when a pause did not help, because then the shadow is not the cause. Tests show:
+  - a flat 0.66 fly is never paused;
+  - with no baseline, at most 1 minute in 11 is paused;
+  - a shadow that costs the fly time stays paused about half the time.
+- *N3.* `lagTransitions` is recomputed at every verdict write, over the rest of the current file
+  and every newer one, including while the shadow is backed off.
+
+**2026-09-30: `tests/shadow.rs` "one trace file per process" (0 vs 2) on a build box.** It is not
+a timing, load or segment-handling bug.
+- *Cause.* The failing runs used a `flysim` binary that was not built from the tree under test.
+  `cargo test -p fly-legacy-session` does not build `flysim`'s binary, and the build box's bx
+  target directory was shared by name with other trees. That binary predated `FLY_TRACE_DIR`, so
+  it wrote no trace at all. The failure was reproduced by running such a test binary against its
+  own stale `flysim`.
+- *Fix.* The test now builds the `flysim` binary itself: `cargo build -p flysim --bin flysim`,
+  with the same target directory and profile, which does nothing when the binary is current.
+  This was proved on a target that another tree's `flysim` had populated.
+- *What production could miss, and now cannot.* A live process that runs without a trace is now
+  a `coverage` divergence (above). That covers a process whose consumer check failed, and one
+  whose trace could not be created. In `FLY_TRACE_DIR` mode, a trace-creation failure no longer
+  stops flysim from starting. The test adds such a process, untraced, and the shadow fails.
+
 ### STATE-01 — Coherent all-participant checkpoint/recovery
 
 **Depends on:** SESSION-02, MEDIA-01; validate with fake agents first, then AGENT-01/ENV-01.
@@ -486,6 +825,114 @@ coordinator (TASK-01); this slice ships the pieces and proves them on the worker
   from the legacy loop.
 - *Declared difference, archive order* (sections 4 and 16). A session-runtime milestone archive
   holds the post-capture ratchet and slot. It is excluded from the shadow comparison.
+
+### SERVE-01 — The session runtime as the live service (port slice)
+
+**2026-09-29: built** on `port/serve-01` off `port/task-01` and awaiting review. It makes the
+session runtime a drop-in for the live `flysim` service, so CUT-01 can switch the stream over
+with one command and roll back with one. It changes no live behaviour: the legacy loop's frame,
+feed, checkpoint bytes and compatibility string are unchanged, and nothing runs the new binary
+until `fly-runtime session` is run on a container.
+
+- **One service shell, two runtimes** (`flysim::serve`). `flysim::run` is split: `serve(config,
+  sim)` binds the feed (`:7400`, or the feed bus that `fly-edge` serves), the control API
+  (`:7401`) and the metrics listener (`:9101`), handles SIGTERM/SIGINT/SIGHUP, and runs `sim` on
+  the calling thread with the `Shared` state, the snapshot slot and the command queue. The
+  legacy loop is `serve(config, Sim::boot + Sim::run)`. The pieces of a feed header that come
+  from the fly (`feed_rates`, `feed_learning`, `feed_game`, `feed_milestone`, `feed_sugar`) and
+  the chat admission (`admit_chat`) move out of `Sim` into free functions both runtimes call.
+  The feed codec, the bus publisher, the router, `/status`, `/events`, `/metrics` and the
+  WebSocket framing are therefore one copy of the code whichever runtime is behind them.
+- **The service host** (`fly-legacy-session::service`, binary `flysim-session`). It reads
+  `flysim`'s own `Config` (so `/etc/fly/fly.env`, `FLY_ACCEPT_ADAPTERS` through STATE-02's
+  `RestoreGate`, the macro mode, speed, threads, chat, the store paths) and keeps `Sim`'s order
+  call site for call site: boot by TASK-01's `boot_unsaved` (the legacy candidate order and gate),
+  the boot event, the chat sidecar, the journal's boot header (`runtime: fly-session`), the
+  startup durable save, then per frame the command drain, `Coordinator::step`, the task's macro
+  and reward events, the rank and its milestone archive, the deferred ratchet rollback with its
+  recovery event and durable save, the 30 Hz publish, the hot (5 s) and durable (300 s) wall-clock
+  saves, the event log fsync and flysim's `Pacer`. Saves are queued (`queue_save`, TASK-01) so the
+  encoding and the fsyncs stay off the loop, as the legacy writer thread keeps them.
+- **Where each header field comes from.** The frame is the committed `lcd` view; the audio is
+  each transition's `apu` chunk through the legacy DC blocker (`DcBlocker::process_f32_into`,
+  the same filter on the environment's `v / 255`); the spike bitset is the OR of the commits'
+  `telemetry.spikes` since the last publish, which equals the legacy window exactly; `buttons`
+  is the executor's mask (the checkpoint's after an import, 0 after a rollback, as
+  `LegacyFrame` has it); the game, milestone and macro fields are the task's own adapter,
+  ratchet and macro layer (`PokeredTask::inspect`, `take_feed`). The numbers from inside the
+  network that no session message carries -- the plasticity statistics (`learning.changed`,
+  `learning.synapses`), the decoder's baselines and scores for `/status`, and the rates and pulse
+  at the boundary -- come from one declared extension of the legacy agent,
+  `Legacy.FeedStatus` (capability `legacy-feed-status-v1`): read-only, answered at a committed
+  `Ready(k)`, once per published snapshot, never in a trace. `Coordinator::read_agent_extension`
+  calls it without fencing the epoch; `Coordinator::media_bytes` reads the committed view and
+  audio chunk.
+- **Sugar.** flysim's `RateLimiter` and clamp, over the pulse the network holds: the last commit's
+  `stimulusRemainingMs`, raised by each sugar admitted since (`network.stimulate` is a maximum),
+  so a second request in one drain is refused with the legacy `retryAfterMs`. The admission lands
+  in the next Prepare, which is the frame the legacy drain applies it before, and the journal
+  stamps it with that frame.
+- **Long-running hygiene.** The coordinator kept every transition's trace, every phase change,
+  an audit line per step and every timing sample: about 120 KB/s of heap on the live fly
+  (the first soak's RSS). `Coordinator::trim_records` bounds them at each boundary; the timings
+  are logged once a minute as a `session profile` line and cleared.
+- **Declared differences** (the rest is byte-equal, below): `POST /reward` is always 403
+  (`control.allow_reward` is forced off; the operator pulse has no session-framework
+  counterpart, `legacy-gameboy-v1` section 15); a fresh start publishes no audio for its setup
+  frame (the environment discards O[0]'s); `FLY_TRACE` and `FLY_PROFILE_SECONDS` are the legacy
+  loop's tools; only the Pokémon composition exists (another `FLY_GAME` is refused at start); the
+  toy connectome cannot run macros mode (AGENT-01 refuses a macro channel the dataset does not
+  track, and the toy tracks none).
+- **Infra.** `flysim.service` stays the fly's one unit. `infra/bin/fly-runtime session|legacy|status`
+  switches the binary it runs with one drop-in (`flysim.service.d/10-runtime.conf`), so every
+  consumer that names `flysim.service` -- `fly.target`, `flyedge.service`'s `Requires=`, the
+  watchdog, `fly-loop-recover`'s sudoers-granted restart, `fly-loop-reset`,
+  `fly-reset-to-milestone`, the unstick rule -- works unchanged and the choice survives reboots and
+  deploys. It refuses a release without `flysim-session` or with a different compatibility
+  string, waits for `/healthz` and an advancing frame, and falls back to legacy by itself if the
+  session runtime does not come up. `flysim-session.service` is the standalone unit (flysim's
+  limits and cpuset, `Conflicts=flysim.service`, no `[Install]`) for rehearsals.
+  `build-flysim.sh`/`package-release.sh` ship `flysim-session` and `fly-session`; `05-deploy.sh`
+  installs `fly-runtime`, writes the standalone unit's cpuset drop-in and refuses a release
+  without `flysim-session` while the drop-in is present; tmpfiles creates `/run/fly/session`.
+  The runbook's "Switch the runtime" is the operator's page.
+
+**Proof** (`fly-legacy-session/tests/service_parity.rs`, `journal_replay.rs`, rom-env; the SERVE-01
+run report has the numbers). Both runtimes are started from the same seeded store behind
+flysim's own control router and driven by one script of control requests, each landing before
+the same frame: every running feed header is equal field by field (wall-clock fields excepted)
+and every frame, audio and spike attachment byte for byte; every control response is equal
+(`/stimulate` 202/429 with the same `retryAfterMs`, `/reward` 403, `/chat` 202/422,
+`/checkpoint` the same generation, `/pause`, `/resume`, `/events`, 404s); the event log, the
+journal and the final checkpoint are equal. Toy connectome raw mode, and the real connectome in
+macros mode through a ratchet rollback, each in-process and as processes. A soak of both
+runtimes side by side with the stage's decoder and the bridge's `HttpSimClient`
+(`tools/runtime-soak.ts`), the hot/durable cadence sampled from the stores, and a `SIGKILL`
+whose journal is replayed from the seed in the legacy loop onto the killed process's last hot
+checkpoint.
+
+Results (2026-09-29, the build boxes; the run report has the logs):
+
+| Proof | Result |
+| --- | --- |
+| Toy raw, 120 frames, 19 scripted requests incl. two sugars in one drain | identical, in-process and process |
+| Real connectome, macros, `rollback` checkpoint (ratchet rollback on frame 1), 120 frames | identical, both modes, before and after the TASK-01 fixes |
+| Real connectome, macros, engage checkpoint (ledger thinned), 2400 frames, 46 macro and 2 reward events | identical, both modes |
+| Real connectome, macros, row 64 (a 42 KB adapter ledger, TASK-01 B1), 1200 frames | identical, both modes |
+| Soak, 35 min, both runtimes from the row 67 checkpoint, production configuration | 0 decode or schema errors, no 2 s stall, `/healthz` 100 %, event ids gapless, hot every 5 s and durable at 300 s on both (same intervals) |
+| Soak, 36 min, the session killed -9 at +6 min | back in about 1 s from the hot checkpoint 3.5 s old, 1 `/healthz` 503, the feed client reconnected (533 ms gap), two journal segments |
+| The killed process's journal, 17 sugars, replayed from the seed in the legacy loop | 18,838 frames onto its last hot checkpoint: agent, emulator, frame, adapter, ratchet equal |
+| Feed over the bus (`FLY_FEED_VIA=bus`) with `fly-edge` | 3,050 snapshots through the edge, 0 errors |
+
+Open for CUT-01: **speed.** Unpaced on a shared box the session ran 54-61 fps where the legacy
+loop ran 68-118 (per frame p50: `Agent.Prepare` 7.8 ms, `Environment.Advance` 2.6,
+`Agent.Commit` 1.6, publication 0.4; `Legacy.FeedStatus` 0.9 ms at 30 Hz). The live container
+must be measured (SHADOW-01's cost run) before cutover. **Memory.** After `trim_records` the
+session's RSS still grows about 5-8 MB an hour, tied to the saves (an unpaced run without saves
+is flat); at `MemoryMax=4G` that is weeks, and a restart clears it, but it is not explained yet.
+**Number form.** A checkpoint the session writes carries the adapter ledger's integral numbers
+as `7580031` where the legacy loop writes `7580031.0` (the ledger crossed canonical JSON); equal
+values, and both runtimes read both.
 
 ### PUBLISH-01 — Committed snapshots and observer isolation
 
