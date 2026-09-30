@@ -395,7 +395,17 @@ fn the_shadow_follows_the_real_service_and_catches_every_planted_difference() {
         );
         std::thread::sleep(Duration::from_millis(200));
     }
-    let passed = verdict_of(&out);
+    // The compared count and the status are recomputed on different verdict writes: a loaded box
+    // read the new count with the status still `running` (the v0.7.1 release gate). Wait, bounded,
+    // for the status to settle before asserting it.
+    let settle_by = Instant::now() + Duration::from_secs(120);
+    let passed = loop {
+        let v = verdict_of(&out);
+        if v["status"] != "running" || handle.is_finished() || Instant::now() >= settle_by {
+            break v;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
     eprintln!(
         "shadow after both processes: {}",
         serde_json::to_string_pretty(&passed).unwrap()
