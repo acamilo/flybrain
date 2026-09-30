@@ -378,10 +378,11 @@ impl LocalLane {
     }
 }
 
-/// True for a method the local lane carries: every method the shell admits through its
-/// result cache into the endpoint. `Worker.*` stays on the bus.
+/// True for a method the local lane carries: every method the shell admits into the endpoint
+/// (step mutations, lifecycle and capture, and an endpoint's own read-only extensions such as
+/// SERVE-01's `Legacy.FeedStatus`). The common `Worker.*` methods stay on the bus.
 pub fn local_lane_carries(method: &str) -> bool {
-    matches!(classify_default(method), Some(OpClass::StepMutation | OpClass::Lifecycle))
+    !method.starts_with("Worker.")
 }
 
 /// How the shell answers one request: over the bus, or into a local waiter.

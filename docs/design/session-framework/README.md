@@ -78,7 +78,10 @@ Application / supervisor                 Application presentation
 This diagram is connectivity, not execution order. The step contract defines causal order.
 One router can host several independent sessions and application consumers; a deployment may
 choose one router per application for fault isolation. A router crash affects all its clients,
-so choose that boundary deliberately. In-process mode still exercises routing and ownership.
+so choose that boundary deliberately. In-process mode still exercises routing and ownership,
+unless its participants are offered over the local lane ([session RPCs](ipc-v1.md) section 1,
+amendment 2026-09-30), as the legacy composition's in-process release configuration is; process
+mode always goes through the router.
 
 Defaults: coordinator per session, worker per fly, environment worker per world. Task and
 per-agent executors begin as coordinator-local libraries. An environment helper may own a
