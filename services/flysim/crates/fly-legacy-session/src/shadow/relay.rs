@@ -130,7 +130,7 @@ struct Conn {
     child: Child,
     /// Frames for the writer thread, which owns the pipe; body bytes not yet written; the
     /// writer's error, once it has one.
-    tx: Option<mpsc::Sender<(Value, Vec<u8>)>>,
+    tx: Option<mpsc::Sender<(Value, Arc<Vec<u8>>)>>,
     queued: Arc<AtomicU64>,
     write_error: Arc<Mutex<Option<String>>>,
     frames: mpsc::Receiver<std::io::Result<Frame>>,
@@ -154,6 +154,11 @@ struct Conn {
 impl Conn {
     /// Queues a frame for the writer; never blocks. An error is the writer's (a broken link).
     fn send(&mut self, header: Value, body: Vec<u8>) -> std::io::Result<()> {
+        self.send_shared(header, Arc::new(body))
+    }
+
+    /// [`Conn::send`] of a body the relay also keeps (a save not yet confirmed).
+    fn send_shared(&mut self, header: Value, body: Arc<Vec<u8>>) -> std::io::Result<()> {
         if let Some(e) = self.write_error.lock().unwrap_or_else(|p| p.into_inner()).clone() {
             return Err(std::io::Error::other(e));
         }
@@ -176,7 +181,7 @@ impl Conn {
 
     fn close(mut self) {
         if let Some(tx) = self.tx.take() {
-            let _ = tx.send((json!({"t": "bye"}), Vec::new()));
+            let _ = tx.send((json!({"t": "bye"}), Arc::new(Vec::new())));
         }
         let deadline = Instant::now() + Duration::from_secs(3);
         while Instant::now() < deadline {
@@ -190,6 +195,16 @@ impl Conn {
     }
 }
 
+/// A save read from a live store and not yet confirmed by the box.
+struct PendingSave {
+    store: &'static str,
+    generation: u64,
+    bytes: Arc<Vec<u8>>,
+    /// On the current connection: queued, with the connection's byte total after it (the box has
+    /// it once `received` reaches that).
+    queued_at: Option<u64>,
+}
+
 /// The relay's state across connections.
 struct Relay {
     config: RelayConfig,
@@ -197,8 +212,12 @@ struct Relay {
     run_start_ms: Option<u64>,
     /// Trace files the box has finished with (its shadow deleted them): deleted here too.
     done: BTreeSet<String>,
-    /// Generations sent (or held by the box, or older than the run).
+    /// Generations read (or held by the box, or older than the run).
     sent_gens: BTreeSet<u64>,
+    /// Saves read and not yet confirmed by the box, oldest first, and their bytes: they survive a
+    /// broken connection and are sent again on the next ([`QUEUE_SAVES`] bounds them).
+    pending: VecDeque<PendingSave>,
+    pending_bytes: u64,
     /// Trace bytes and lines sent, for the mean line length.
     trace_bytes: u64,
     trace_lines: u64,
@@ -227,6 +246,8 @@ pub fn run(config: RelayConfig, stop: StopFlag) -> Result<RelayEnd, String> {
         stop,
         done: BTreeSet::new(),
         sent_gens: BTreeSet::new(),
+        pending: VecDeque::new(),
+        pending_bytes: 0,
         trace_bytes: 0,
         trace_lines: 0,
         last_beat: None,
@@ -299,7 +320,7 @@ impl Relay {
             .map_err(|e| (format!("{}: {e}", self.config.command[0]), retry))?;
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
-        let (out_tx, outgoing) = mpsc::channel::<(Value, Vec<u8>)>();
+        let (out_tx, outgoing) = mpsc::channel::<(Value, Arc<Vec<u8>>)>();
         let queued = Arc::new(AtomicU64::new(0));
         let write_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         {
@@ -412,14 +433,22 @@ impl Relay {
             }
         }
         self.absorb_done(&h["done"]);
-        // What the box holds, not what this relay once queued: saves queued on a connection that
-        // broke are sent again while they are still on disk.
-        self.sent_gens = h["gens"]
+        // What the box holds, and what this relay still has pending (sent again on this
+        // connection unless the box has it): a save queued on a connection that broke is not lost.
+        let held: BTreeSet<u64> = h["gens"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(Value::as_u64)
             .collect();
+        self.pending.retain(|p| !held.contains(&p.generation));
+        for p in self.pending.iter_mut() {
+            p.queued_at = None;
+        }
+        self.pending_bytes = self.pending.iter().map(|p| p.bytes.len() as u64).sum();
+        self.sent_gens = held;
+        self.sent_gens
+            .extend(self.pending.iter().map(|p| p.generation));
         Ok(conn)
     }
 
@@ -562,7 +591,7 @@ impl Relay {
                 if self.sent_gens.contains(&generation) {
                     continue;
                 }
-                if conn.queued() >= QUEUE_SAVES {
+                if self.pending_bytes >= QUEUE_SAVES {
                     break;
                 }
                 if let (Some(floor), Some(modified)) = (floor_ms, modified)
@@ -575,9 +604,26 @@ impl Relay {
                 let Ok(bytes) = std::fs::read(&path) else {
                     continue;
                 };
-                conn.send(json!({"t": "ckpt", "store": store, "gen": generation}), bytes)?;
+                self.pending_bytes += bytes.len() as u64;
+                self.pending.push_back(PendingSave {
+                    store,
+                    generation,
+                    bytes: Arc::new(bytes),
+                    queued_at: None,
+                });
                 self.sent_gens.insert(generation);
             }
+        }
+        // Every save not yet queued on this connection, in generation order, before any trace.
+        let mut order: Vec<usize> = (0..self.pending.len())
+            .filter(|i| self.pending[*i].queued_at.is_none())
+            .collect();
+        order.sort_by_key(|i| self.pending[*i].generation);
+        for i in order {
+            let p = &self.pending[i];
+            let header = json!({"t": "ckpt", "store": p.store, "gen": p.generation});
+            conn.send_shared(header, Arc::clone(&p.bytes))?;
+            self.pending[i].queued_at = Some(conn.sent_total);
         }
         // Trace bytes: list, then read each size. A file that cannot be brought up to date now holds
         // back every newer file and the journal.
@@ -667,6 +713,13 @@ impl Relay {
                 {
                     let (at, _) = conn.ticks.pop_front().expect("a tick");
                     conn.caught_up_at = at;
+                }
+                // Saves the box now has.
+                let before = self.pending.len();
+                self.pending
+                    .retain(|p| p.queued_at.is_none_or(|t| t > received));
+                if self.pending.len() != before {
+                    self.pending_bytes = self.pending.iter().map(|p| p.bytes.len() as u64).sum();
                 }
                 conn.acked.clear();
                 for (name, size) in h["traces"].as_object().into_iter().flatten() {
@@ -783,6 +836,7 @@ impl Relay {
             "caughtUpSecondsAgo": conn.map(|c| c.caught_up_at.elapsed().as_secs()),
             "sentBytes": conn.map(|c| c.sent_total),
             "queuedBytes": conn.map(|c| c.queued()),
+            "pendingSaves": self.pending.len(),
             "unsyncedBytes": unsynced_bytes,
             "unsyncedTransitions": unsynced,
             "remoteLagTransitions": self.remote_lag,
