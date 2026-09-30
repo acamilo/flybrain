@@ -241,8 +241,10 @@ lose. A hit reaches the page as a reward event with its own label, `HIT #<specie
 (`... KO` for a knockout; the species is the cartridge's internal index, as `CAUGHT #<species>` is),
 and the event log, `/status` and the checkpoint carry it; it is only left out of
 `game.rewardCounts` and the ticker's per-kind copy, the way the platformer's `started` and `clear`
-are. No feed kind was added. One visible consequence the operator should review on a PNG before
-release: those rows are not folded, so a battle adds one ticker row per hit.
+are. No feed kind was added. The stage rolls the hits up itself (`apps/stage/src/lib/ticker.ts`,
+`hitCopy` in the game config): a reward with no `rewardKind` and that label folds into one
+"damage dealt x<n>" row with the summed value, ` KO` once a hit in it felled a Pokémon, joined by
+each hit within 45 s of the last; a later battle starts a new row (`apps/stage/mockups/row68-ticker-*.png`).
 
 **Learning.** A payout reinforces the recent spike history with `m = tanh(R)` over a 5 s
 eligibility trace ([plasticity](plasticity.md)). Measured on the cartridge from the row 67 state
