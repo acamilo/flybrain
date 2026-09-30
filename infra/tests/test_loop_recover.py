@@ -135,7 +135,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(self.acts, [("reset", 11)])
 
     def test_a_species_owned_recently_is_never_reset_away(self):
-        owned = T0 - recover.HOLD - 600
+        owned = T0 - 1200
         recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "resets": [],
                                            "actedAt": T0 - recover.HOLD - 300, "speciesAt": owned})
         self.assertIn("flysim restarted", self.confirm(T0))
@@ -411,9 +411,9 @@ class ClosedLoopTests(unittest.TestCase):
         self.assertTrue(len(resets) >= 3, acts)
         gaps = [b[0] - a[0] for a, b in zip(resets, resets[1:])]
         self.assertTrue(all(g <= 25 for g in gaps), acts)
-        # the first step is a restart; the catch stays protected for 6 h
+        # the first step is a restart; the catch stays protected for 2 h
         self.assertEqual(acts[0][1], "restart")
-        self.assertTrue(all(a[0] >= 6 - 0.2 for a in resets[:1]), acts)
+        self.assertTrue(all(a[0] >= 2 - 0.2 for a in resets[:1]), acts)
 
     def test_the_held_reset_is_the_rung_12_one_not_a_deeper_rung(self):
         acts = self.simulate({11: self.R11, 12: self.R12, 10: self.R10, 9: self.R10}, 24, species_before=6)
@@ -423,7 +423,7 @@ class ClosedLoopTests(unittest.TestCase):
         clean = dict(self.R12, trap=None)
         acts = self.simulate({11: self.R11, 12: clean, 10: self.R10, 9: self.R10}, 24, species_before=6)
         self.assertEqual([a[1:] for a in acts if a[1] == "reset"], [("reset", 12)], acts)
-        self.assertEqual(len(acts), 3, acts)
+        self.assertEqual(len(acts), 2, acts)
 
     def test_without_a_catch_the_ladder_resets_early(self):
         acts = self.simulate({11: self.R11, 12: self.R12, 10: self.R10, 9: self.R10}, 24)
@@ -437,7 +437,7 @@ class ClosedLoopTests(unittest.TestCase):
         acts = self.simulate({11: clean11, 12: late12, 10: self.R10, 9: self.R10}, 96)
         resets = [a for a in acts if a[1] == "reset"]
         self.assertEqual([a[2] for a in resets], [12, 11], acts)
-        self.assertLessEqual(resets[-1][0], 8, acts)
+        self.assertLessEqual(resets[-1][0], 7, acts)  # 6.83 h with the 2 h protection (was 2.08 h in v0.7.0)
         self.assertLess([a[2] for a in resets].count(12), 2, acts)
 
 

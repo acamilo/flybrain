@@ -23,7 +23,7 @@ a ladder one step per trap that outlives the previous step:
   a new rung, a species owned for the first time, a map entered for the first time, or a trainer
   or badge beaten. The run pays each of these once, so a ring cannot earn them twice. A trap that
   follows real progress is a new trap, and it starts again from a restart.
-- **Protected catches:** a milestone reset never erases a species owned in the last six hours
+- **Protected catches:** a milestone reset never erases a species owned in the last two hours
   (`PROTECT`, from `window.progress.species`). Within that window the step is a restart, spaced by
   the hold like a spent budget, and `history.jsonl` records a `protect` event. A reset turned into a
   restart this way does not climb the ladder: the level keeps its slot and the reset comes, at the
