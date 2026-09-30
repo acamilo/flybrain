@@ -440,6 +440,7 @@ B1, N1 and N3.
     plus the world's and the agent's artifact seals and reads.
   - Against it, the legacy loop spends about 0.7 ms per frame outside the ticks.
   - The report `claude-task-01` has the per-phase table and what would close the rest.
+
 ### SHADOW-01 — The session runtime beside the live fly (port slice)
 
 **2026-09-29: built** on `port/shadow-01` off `port/task-01`, and awaiting review. It changes no
