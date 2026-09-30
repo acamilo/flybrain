@@ -391,6 +391,15 @@ The 'current' symlink has NOT been moved; the running release is untouched."
     # unable to start at all, and one whose session string differs from flysim's would write
     # checkpoints the other runtime refuses. Refused here, before the symlink moves; to deploy
     # such a release anyway, `fly-runtime legacy` first.
+    #
+    # Policy (C2 of the SERVE-01 review), operator decision 2026-09-29: "Session stays, trust gates".
+    # A deploy KEEPS the chosen runtime. It does not drop to legacy and does not re-run
+    # the shadow for the new flysim-session binary; the trust gates before the release (the
+    # parity and service tests, the compat check just below) are what vouch for it. A bad
+    # release is caught afterwards by the persistent fallback: while the drop-in exists,
+    # flysim.service carries OnFailure=fly-runtime-fallback.service with a 3-starts-in-10-minutes
+    # limit, so a session binary that will not stay up puts the fly back on legacy by itself
+    # (`fly-runtime fallback`, /run/fly/runtime-fellback.json), whoever restarted it.
     if ct_exec "$CTID" -- test -f /etc/systemd/system/flysim.service.d/10-runtime.conf; then
         ct_exec "$CTID" -- test -x "${release_path}/flysim-session" \
             || die "05-deploy: REFUSING to deploy release ${version}: flysim.service runs the session runtime (fly-runtime session) and this release has no flysim-session. Run \`fly-runtime legacy\` in the container first, or deploy a release that ships it. The 'current' symlink has NOT been moved."
@@ -734,6 +743,14 @@ ct_exec "$CTID" -- mkdir -p /opt/fly/bin
 for name in fly-watchdog fly-loop-recover fly-loop-reset fly-recap fly-retention fly-reset-to-milestone fly-runtime flypush flystage-launch flycast-launch wait-for-x wait-for-stage wait-for-health; do
     converge_file "$CTID" "$INFRA_DIR/bin/$name" "/opt/fly/bin/$name" 0755 root:root >/dev/null
 done
+
+# A container already on the session runtime keeps it (see the policy note at the compat check
+# above), and its drop-in is rewritten in place from the current template (no restart) so that
+# the OnFailure= fallback and MALLOC_ARENA_MAX reach containers switched before they existed.
+if [ -n "${RELEASE_TARBALL:-}" ] && ct_exec "$CTID" -- test -f /etc/systemd/system/flysim.service.d/10-runtime.conf; then
+    ct_exec "$CTID" -- /opt/fly/bin/fly-runtime session --no-restart \
+        || log "05-deploy: WARNING: could not refresh the session drop-in; it keeps its old content (no OnFailure= fallback until \`fly-runtime session\` is re-run)"
+fi
 
 # The NOPASSWD surface those helpers use (config/fly-sudoers). 02-base installs it at
 # provision time; converging it here too means a release that adds a helper's line

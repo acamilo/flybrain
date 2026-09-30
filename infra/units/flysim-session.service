@@ -17,7 +17,7 @@
 # service: for a rehearsal or a soak on a container whose flysim.service is stopped
 # (`systemctl stop flysim.service && systemctl start flysim-session.service`).
 #
-# Everything below except ExecStart, FLY_SESSION_DIR, Conflicts= and the missing [Install] is
+# Everything below except ExecStart, FLY_SESSION_DIR, MALLOC_ARENA_MAX, Conflicts= and the missing [Install] is
 # flysim.service's, line for line (infra/tests/lint.sh checks it), and so are the limits and the cpuset: 05-deploy.sh writes
 # flysim-session.service.d/cpuset.conf with flysim's set (docs/design/infra.md section 3 and
 # flysim.service's own notes on RAYON_NUM_THREADS, Nice, CPUWeight and AllowedCPUs apply as they
@@ -43,6 +43,9 @@ Environment=FLY_STATE_HOT=/run/fly/state
 Environment=FLY_STATE=/srv/fly/state
 # The session's own router store and worker sockets (tmpfs, fly 0700, config/fly-tmpfiles.conf).
 Environment=FLY_SESSION_DIR=/run/fly/session
+# glibc per-thread arenas fragment under the session's MB-sized capture/encode buffers: without
+# this RSS grows about 5-8 MB/h (SERVE-01 review); with it the growth plateaus. Legacy is unaffected.
+Environment=MALLOC_ARENA_MAX=2
 ExecStart=/opt/fly/current/flysim-session
 Restart=always
 RestartSec=2

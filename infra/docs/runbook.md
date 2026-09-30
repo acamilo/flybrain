@@ -469,13 +469,36 @@ pct exec $CTID -- /opt/fly/bin/fly-runtime legacy     # the one-command rollback
   (`FLY_RUNTIME_HEALTH_TIMEOUT`, 300 s). If the session runtime does not come up healthy, it
   switches back to legacy by itself and exits 1 (`--no-fallback` leaves it to the operator).
   Every switch is logged (`journalctl -t fly-runtime`, `/var/lib/fly/runtime.log`).
+- **The fallback outlives the switch (C1).** While the session runtime is selected, the drop-in
+  also sets `OnFailure=fly-runtime-fallback.service`, `StartLimitBurst=3` and
+  `StartLimitIntervalSec=600`, and `MALLOC_ARENA_MAX=2` (glibc arena fragmentation was the whole
+  of the 5-8 MB/h RSS growth). Three starts of `flysim.service` within ten minutes, from any
+  cause and any caller (a reboot, the watchdog or `fly-loop-recover` restarting it, a deploy, a
+  binary that crashes, hangs before READY or is killed by `WatchdogSec`) make systemd run
+  `fly-runtime fallback`: it writes `/run/fly/runtime-fellback.json` (time, reason, unit result),
+  deletes the drop-in, daemon-reloads and restarts `flysim.service` on the legacy binary, and logs
+  a `fly-runtime` journal line. It is idempotent, and it does nothing if the release has no
+  executable `flysim`. Look with `fly-runtime status` (it prints the reason) or
+  `cat /run/fly/runtime-fellback.json`; the container is then on legacy until an operator runs
+  `fly-runtime session` again, which clears the reason file. Three legitimate restarts in ten
+  minutes count the same as three crashes: after that many, prefer `fly-runtime legacy`, do the
+  work, then switch back.
+- **Interrupted switches roll back.** `fly-runtime` traps INT, TERM and HUP (an ssh that drops
+  mid-switch): an unfinished `session` removes the drop-in again (or restores the one that was
+  there) and restarts `flysim.service` on that state, so a drop-in that never passed its health
+  check is never left behind.
 - **What stays the same.** Everything that names `flysim.service` keeps working unchanged:
   `fly.target`, `flyedge.service`'s `Requires=`, the watchdog, `fly-loop-recover`'s restart and
   its sudoers line, `fly-loop-reset`, `fly-reset-to-milestone` (run with the service stopped, on
   the shared store), the unstick rule's `systemctl restart flysim.service`, `journalctl -u
   flysim`, the cpuset drop-in. The choice survives a reboot and a deploy: `05-deploy.sh`
-  converges unit files but never removes a drop-in, and it refuses a release without
-  `flysim-session` while the drop-in is present (`fly-runtime legacy` first to deploy one).
+  converges unit files but never removes a drop-in (it rewrites it in place from the current
+  template, without a restart), and it refuses a release without `flysim-session` or with a
+  different compatibility string while the drop-in is present (`fly-runtime legacy` first to
+  deploy one). **Policy (C2, operator decision 2026-09-29, "Session stays, trust gates"):** a
+  deploy keeps the chosen runtime on the new release's `flysim-session`, without re-running the
+  shadow for it. The trust gates before the release vouch for the binary, and the persistent
+  fallback above protects a bad one.
 - **What differs, by declaration.** `POST /reward` is always 403 on the session runtime (the
   operator pulse has no session-framework counterpart, `legacy-gameboy-v1` section 15); a
   fresh start publishes no audio for its one setup frame; `FLY_TRACE` and
