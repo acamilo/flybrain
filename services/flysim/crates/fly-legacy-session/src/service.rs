@@ -1272,9 +1272,10 @@ impl SessionHost {
         let macro_mode = self.shared.config.macros.mode;
         let semantic_rewards = self.semantic_rewards;
         let (game, milestone) = self.session.task.inspect(|adapter, ratchet, macros| {
+            let progress = adapter.progress();
             (
-                feed_game(adapter, semantic_rewards, macros, macro_mode, ms),
-                feed_milestone(adapter, rank_since_ms, ms, ratchet.state.attempts),
+                feed_game(adapter, &progress, semantic_rewards, macros, macro_mode, ms),
+                feed_milestone(adapter, &progress, rank_since_ms, ms, ratchet.state.attempts),
             )
         });
 

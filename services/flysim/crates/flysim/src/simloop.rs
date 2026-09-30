@@ -1417,6 +1417,8 @@ impl Sim {
         let stats = self.agent.network.plasticity.statistics();
         let remaining = self.agent.network.reward_remaining();
         let cooldown = self.limiter.cooldown_ms(now_wall_ms());
+        // One read of the adapter per publish: the header's `game` and `milestone` share it.
+        let progress = self.adapter.progress();
 
         let (frame, audio, spikes, spike_count, attachments) = if with_attachments {
             let (bitset, count) =
@@ -1458,6 +1460,7 @@ impl Sim {
             learning: feed_learning(&stats),
             game: feed_game(
                 self.adapter.as_ref(),
+                &progress,
                 self.semantic_rewards,
                 self.macros.as_ref(),
                 self.shared.config.macros.mode,
@@ -1465,6 +1468,7 @@ impl Sim {
             ),
             milestone: feed_milestone(
                 self.adapter.as_ref(),
+                &progress,
                 self.rank_since_ms,
                 ms,
                 self.ratchet.state.attempts,
@@ -1600,12 +1604,12 @@ pub fn feed_learning(stats: &flybrain_core::plasticity::LearningStats) -> FeedLe
 /// The header's `game`: the adapter's progress and the macro layer's scene, palette and macro.
 pub fn feed_game(
     adapter: &dyn GameAdapter,
+    progress: &ProgressSnapshot,
     semantic_rewards: bool,
     macros: Option<&MacroLayer>,
     macro_mode: MacroMode,
     ms: f64,
 ) -> FeedGame {
-    let progress = adapter.progress();
     let mut reward_counts = RewardCounts::default();
     for (kind, count) in &progress.counts {
         if let Some(kind) = RewardKind::from_adapter(kind) {
@@ -1640,11 +1644,11 @@ pub fn feed_game(
 /// §3). `rank_ladder()` is also what the page draws.
 pub fn feed_milestone(
     adapter: &dyn GameAdapter,
+    progress: &ProgressSnapshot,
     rank_since_ms: f64,
     ms: f64,
     attempts: u64,
 ) -> FeedMilestone {
-    let progress = adapter.progress();
     let ladder = adapter.rank_ladder();
     // Which rung the fly is going for, when the adapter knows: see `next_label`.
     let next_rung = adapter.next_rung();
