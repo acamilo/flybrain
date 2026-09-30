@@ -165,6 +165,91 @@ pub struct Agreement {
     pub spikes: u64,
 }
 
+/// The first field two transition lines disagree on, with both values.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Difference {
+    pub field: String,
+    pub legacy: Value,
+    pub session: Value,
+}
+
+impl std::fmt::Display for Difference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}:\n  legacy  {}\n  session {}",
+            self.field, self.legacy, self.session
+        )
+    }
+}
+
+/// One transition, field by field over the union of both lines' keys, the decision as
+/// [`channels`] of the session's bound set for that transition.
+pub fn compare_line(
+    legacy: &Value,
+    session: &Value,
+    bound: &[String],
+) -> Result<(), Box<Difference>> {
+    let (Some(a_map), Some(b_map)) = (legacy.as_object(), session.as_object()) else {
+        return Err(Box::new(Difference {
+            field: "(line)".to_owned(),
+            legacy: legacy.clone(),
+            session: session.clone(),
+        }));
+    };
+    let keys: BTreeSet<&String> = a_map.keys().chain(b_map.keys()).collect();
+    for key in keys {
+        let (x, y) = (&legacy[key.as_str()], &session[key.as_str()]);
+        let same = if key == "decision" {
+            channels(x, bound) == channels(y, bound)
+        } else {
+            x == y
+        };
+        if !same {
+            return Err(Box::new(Difference {
+                field: key.clone(),
+                legacy: x.clone(),
+                session: y.clone(),
+            }));
+        }
+    }
+    Ok(())
+}
+
+impl Agreement {
+    /// Counts one agreed transition line.
+    pub fn count(&mut self, line: &Value) {
+        self.transitions += 1;
+        for admission in line["admissions"].as_array().into_iter().flatten() {
+            match admission["kind"].as_str() {
+                Some("sugar") => self.sugar += 1,
+                Some("reward") => self.reward_pulses += 1,
+                _ => {}
+            }
+        }
+        for reward in line["rewards"].as_array().into_iter().flatten() {
+            self.rewards += 1;
+            if let Some(kind) = reward["kind"].as_str()
+                && !self.reward_kinds.iter().any(|k| k == kind)
+            {
+                self.reward_kinds.push(kind.to_owned());
+            }
+        }
+        self.macro_events += line["macroEvents"].as_array().map_or(0, |v| v.len() as u64);
+        if line["mask"].as_u64().unwrap_or(0) != 0 {
+            self.pressed += 1;
+        }
+        for action in line["boundaryActions"].as_array().into_iter().flatten() {
+            match action["kind"].as_str() {
+                Some("save-slot") => self.saves += 1,
+                Some("rollback") => self.rollbacks += 1,
+                _ => {}
+            }
+        }
+        self.spikes += line["spikeCount"].as_u64().unwrap_or(0);
+    }
+}
+
 /// Every transition identical, field by field; the decision as [`channels`] of the session's bound
 /// set for that transition. The first difference is the error, with both values.
 pub fn compare(
@@ -184,52 +269,9 @@ pub fn compare(
     }
     let mut agreement = Agreement::default();
     for (n, (a, b)) in legacy.iter().zip(session).enumerate() {
-        let (Some(a_map), Some(b_map)) = (a.as_object(), b.as_object()) else {
-            return Err(format!("transition {n}: not an object"));
-        };
-        let keys: BTreeSet<&String> = a_map.keys().chain(b_map.keys()).collect();
-        for key in keys {
-            let (x, y) = (&a[key.as_str()], &b[key.as_str()]);
-            let same = if key == "decision" {
-                channels(x, &bounds[n]) == channels(y, &bounds[n])
-            } else {
-                x == y
-            };
-            if !same {
-                return Err(format!(
-                    "transition {n} (step {}) {key}:\n  legacy  {x}\n  session {y}",
-                    a["step"]
-                ));
-            }
-        }
-        agreement.transitions += 1;
-        for admission in a["admissions"].as_array().into_iter().flatten() {
-            match admission["kind"].as_str() {
-                Some("sugar") => agreement.sugar += 1,
-                Some("reward") => agreement.reward_pulses += 1,
-                _ => {}
-            }
-        }
-        for reward in a["rewards"].as_array().into_iter().flatten() {
-            agreement.rewards += 1;
-            if let Some(kind) = reward["kind"].as_str()
-                && !agreement.reward_kinds.iter().any(|k| k == kind)
-            {
-                agreement.reward_kinds.push(kind.to_owned());
-            }
-        }
-        agreement.macro_events += a["macroEvents"].as_array().map_or(0, |v| v.len() as u64);
-        if a["mask"].as_u64().unwrap_or(0) != 0 {
-            agreement.pressed += 1;
-        }
-        for action in a["boundaryActions"].as_array().into_iter().flatten() {
-            match action["kind"].as_str() {
-                Some("save-slot") => agreement.saves += 1,
-                Some("rollback") => agreement.rollbacks += 1,
-                _ => {}
-            }
-        }
-        agreement.spikes += a["spikeCount"].as_u64().unwrap_or(0);
+        compare_line(a, b, &bounds[n])
+            .map_err(|d| format!("transition {n} (step {}) {d}", a["step"]))?;
+        agreement.count(a);
     }
     Ok(agreement)
 }

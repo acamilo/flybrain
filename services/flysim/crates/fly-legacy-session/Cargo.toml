@@ -16,6 +16,11 @@ path = "src/lib.rs"
 name = "flysim-session"
 path = "src/bin/flysim-session.rs"
 
+# SHADOW-01: the session runtime run beside the live fly (`infra/units/flyshadow.service`).
+[[bin]]
+name = "fly-shadow"
+path = "src/bin/fly-shadow.rs"
+
 [dependencies]
 # The session framework and its legacy workers (AGENT-01, ENV-01).
 fly-session = { path = "../fly-session" }
@@ -28,7 +33,7 @@ flysim = { path = "../flysim" }
 flybrain-gb = { path = "../flybrain-gb" }
 flybrain-core = { path = "../flybrain-core" }
 serde_json = { workspace = true }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "signal"] }
 # The service entry point (SERVE-01), with flysim's own versions of each.
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }

@@ -9,6 +9,8 @@
 //! - [`driver`]: a stub readout for parity runs that must earn rewards.
 //! - [`service`]: the composition as the live service behind flysim's listeners (SERVE-01),
 //!   the `flysim-session` binary.
+//! - [`shadow`]: SHADOW-01, the session runtime following the live fly's trace, the comparator and
+//!   the verdict CUT-01 reads.
 //!
 //! `docs/design/session-framework/legacy-gameboy-v1.md` is the contract, `implementation.md`
 //! TASK-01 the record.
@@ -18,5 +20,6 @@ pub mod composition;
 pub mod driver;
 pub mod import;
 pub mod service;
+pub mod shadow;
 pub mod task;
 pub mod trace;

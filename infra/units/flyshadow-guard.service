@@ -1,0 +1,15 @@
+# infra/units/flyshadow-guard.service — triggered by flyshadow-guard.timer.
+#
+# `fly-shadow-run guard` compares the live fly with the 10-minute baseline `fly-shadow-run start`
+# recorded before it started the shadow: on a sustained degradation of the realtime factor or the
+# lag growth rate against that baseline (3 checks in a row, 5-sample windows), it stops
+# flyshadow.service, removes the trace drop-in and restarts flysim without the trace. The live
+# stream never pays for the shadow. It stops itself when the shadow is not running. Root, because it installs no file but
+# removes one in /etc/systemd and restarts flysim.
+[Unit]
+Description=fly-shadow-run guard: the live-impact check of the shadow run (SHADOW-01)
+ConditionPathExists=/srv/fly/shadow/baseline.json
+
+[Service]
+Type=oneshot
+ExecStart=/opt/fly/bin/fly-shadow-run guard

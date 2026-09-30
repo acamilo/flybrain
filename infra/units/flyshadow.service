@@ -1,0 +1,66 @@
+# infra/units/flyshadow.service — pushed to /etc/systemd/system/flyshadow.service.
+#
+# SHADOW-01 (docs/design/session-framework/legacy-gameboy-v1.md section 18): the
+# session runtime run beside the live fly. REPORT-ONLY: it presses no button,
+# serves no port, and only READS flysim's stores and trace; it writes nothing
+# but /srv/fly/shadow (verdict.json, divergence.json, its spool) and its
+# runtime directory. DISABLED BY DEFAULT: in no target's Wants=/Requires=,
+# not in 07-enable.sh. `fly-shadow-run start` (infra/bin) starts it, turns
+# flysim's trace on and restarts flysim once so the shadow follows a process
+# from its first frame; `fly-shadow-run stop` undoes both.
+#
+# Deliberately NOT bound to flysim (no Requires=/BindsTo=/PartOf=): every
+# flysim restart (the unstick rule, the watchdog, fly-loop-recover, a
+# milestone reset) is a new trace file the shadow follows on its own, so the
+# shadow must outlive them. It stops itself on the first divergence with exit
+# status 3 and a `diverged` verdict; RestartPreventExitStatus keeps it
+# stopped so the verdict stays for the coordinator to read.
+#
+# Resources (the SHADOW-01 report, "resource plan"): a second whole brain,
+# about the live fly's own CPU per frame. It must never take a cycle the live
+# fly, the page or the encoder wants, so it runs SCHED_IDLE (it only gets CPU
+# nobody else is using), off flysim's cpuset (05-deploy.sh writes
+# AllowedCPUs= for it from the page and encoder groups). It pauses for a minute
+# while flysim's lag grows faster than its pre-start baseline rate (and stops
+# pausing when that does not help: then it is not the cause).
+# flyshadow-guard.timer (fly-shadow-run guard) stops it and restarts flysim
+# without the trace on a sustained degradation against that baseline. It is lag-tolerant: the trace and the
+# spool are on disk, so running behind real time only delays the verdict (the
+# 512 MiB spool covers about 15 minutes of lag for hot saves).
+#
+# Its heartbeat (<trace dir>/consumer, every 30 s, removed when it stops) is
+# what keeps flysim tracing: a stopped, diverged or crashed shadow turns the
+# live trace off within a minute of a stale heartbeat, with no root action.
+[Unit]
+Description=flyshadow: the session runtime shadowing the live fly (SHADOW-01, report only)
+After=flysim.service
+# A release that predates SHADOW-01 has no binary; stay cleanly inactive.
+ConditionPathExists=/opt/fly/current/fly-shadow
+
+[Service]
+Type=simple
+User=fly
+# The live service's configuration, read the way flysim reads it: the
+# cartridge, the dataset, the macro mode, the speed. The store paths and the
+# metrics listener are flysim.service's own Environment= lines, repeated.
+EnvironmentFile=/etc/fly/fly.env
+Environment=FLY_STATE_HOT=/run/fly/state
+Environment=FLY_STATE=/srv/fly/state
+Environment=FLY_METRICS_ADDR=0.0.0.0:9101
+# What flysim writes with the shadow's drop-in (fly-shadow-run), and where the
+# verdict goes. The session's sockets and artifacts live on tmpfs.
+Environment=FLY_TRACE_DIR=/srv/fly/shadow/trace
+Environment=FLY_SHADOW_DIR=/srv/fly/shadow
+Environment=FLY_SHADOW_WORK=/run/fly-shadow
+RuntimeDirectory=fly-shadow
+# The shadow agent's sweep threads (the report's measurements).
+Environment=FLY_SHADOW_THREADS=2
+ExecStart=/opt/fly/current/fly-shadow run
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=3
+CPUSchedulingPolicy=idle
+Nice=19
+CPUWeight=1
+IOSchedulingClass=idle
+MemoryMax=3G

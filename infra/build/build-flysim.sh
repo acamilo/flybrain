@@ -86,10 +86,12 @@ log "building in $crate_dir for target-cpu=haswell (the host is E5-2660 v3, Hasw
     # looks for it.
     RUSTFLAGS="-C target-cpu=haswell" cargo build --release --target "$CARGO_TARGET" --bin fly-edge
     # flysim-session (SERVE-01): the live fly on the session runtime, a drop-in for flysim
-    # that `fly-runtime session` points flysim.service at; and fly-session, its worker program
-    # (FLY_SESSION_MODE=process only). Same features as flysim, built every time so a release
-    # can switch runtimes without a rebuild. Both land next to OUT_PATH.
-    RUSTFLAGS="-C target-cpu=haswell" cargo build --release --target "$CARGO_TARGET" --bin flysim-session --bin fly-session "${features_args[@]}"
+    # that `fly-runtime session` points flysim.service at; fly-shadow (SHADOW-01,
+    # infra/units/flyshadow.service): the session runtime shadowing the live fly; and
+    # fly-session, their worker program (FLY_SESSION_MODE=process only). Same features as flysim,
+    # built every time so a release can switch runtimes without a rebuild. All land next to
+    # OUT_PATH, where package-release.sh looks for them.
+    RUSTFLAGS="-C target-cpu=haswell" cargo build --release --target "$CARGO_TARGET" --bin flysim-session --bin fly-shadow --bin fly-session "${features_args[@]}"
 )
 
 built="${crate_dir}/target/${CARGO_TARGET}/release/flysim"
@@ -123,7 +125,7 @@ edge_out="$(dirname "$OUT_PATH")/fly-edge"
 cp "$edge_built" "$edge_out"
 chmod 0755 "$edge_out"
 log "built $edge_out ($(du -h "$edge_out" | cut -f1))"
-for extra in flysim-session fly-session; do
+for extra in flysim-session fly-shadow fly-session; do
     extra_built="${crate_dir}/target/${CARGO_TARGET}/release/${extra}"
     [ -x "$extra_built" ] || die "expected binary not found after build: $extra_built"
     extra_out="$(dirname "$OUT_PATH")/${extra}"

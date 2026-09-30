@@ -510,6 +510,157 @@ if grep -E '^(ALWAYS_ON_UNITS|APP_UNITS)=' "$INFRA_DIR/07-enable.sh" "$INFRA_DIR
 else
     pass "07-enable.sh and verify.sh leave flyedge.service alone"
 fi
+# ---------------------------------------------------------------------------
+# 3b3. The shadow run (SHADOW-01, infra/units/flyshadow.service).
+#
+# Report-only and off by default. What would break it is statically visible: the unit ending up
+# in a target or 07-enable's list; being bound to flysim (every flysim restart would take the
+# shadow with it, and it must follow restarts, not die of them); restarting after a divergence
+# (the verdict must stay); losing its idle scheduling (it must never take a live cycle); or
+# landing on flysim's cpuset.
+# ---------------------------------------------------------------------------
+echo "--- flyshadow.service: off by default, report-only, idle, never bound to flysim ---"
+SHADOW_UNIT="$INFRA_DIR/units/flyshadow.service"
+if [ ! -f "$SHADOW_UNIT" ]; then
+    fail "units/flyshadow.service is missing"
+else
+    grep -qE '^ExecStart=/opt/fly/current/fly-shadow run$' "$SHADOW_UNIT" \
+        && pass "flyshadow.service runs the release's fly-shadow" \
+        || fail "flyshadow.service ExecStart must be /opt/fly/current/fly-shadow run"
+    grep -qE '^ConditionPathExists=/opt/fly/current/fly-shadow$' "$SHADOW_UNIT" \
+        && pass "flyshadow.service stays inactive on a release without fly-shadow" \
+        || fail "flyshadow.service needs ConditionPathExists=/opt/fly/current/fly-shadow"
+    if grep -qE '^(Requires|BindsTo|PartOf|Requisite)=.*flysim' "$SHADOW_UNIT"; then
+        fail "flyshadow.service must not be bound to flysim.service: it follows flysim's restarts"
+    else
+        pass "flyshadow.service outlives flysim restarts (not bound to flysim.service)"
+    fi
+    grep -qE '^RestartPreventExitStatus=3$' "$SHADOW_UNIT" \
+        && pass "flyshadow.service stays stopped after a divergence (exit 3)" \
+        || fail "flyshadow.service needs RestartPreventExitStatus=3 so a diverged verdict stays"
+    grep -qE '^CPUSchedulingPolicy=idle$' "$SHADOW_UNIT" \
+        && pass "flyshadow.service runs SCHED_IDLE" \
+        || fail "flyshadow.service must be CPUSchedulingPolicy=idle: it may only use idle CPU"
+    grep -qE '^\[Install\]' "$SHADOW_UNIT" \
+        && fail "flyshadow.service has an [Install] section; it is started by fly-shadow-run only" \
+        || pass "flyshadow.service has no [Install] section (never enabled)"
+fi
+if target_pulls "$INFRA_DIR/units/fly.target" | grep -qx 'flyshadow.service'; then
+    fail "fly.target pulls flyshadow.service in; it must stay off until fly-shadow-run starts it"
+else
+    pass "fly.target does not pull flyshadow.service in"
+fi
+if grep -E '^(ALWAYS_ON_UNITS|APP_UNITS)=' "$INFRA_DIR/07-enable.sh" "$INFRA_DIR/verify.sh" | grep -q 'flyshadow'; then
+    fail "07-enable.sh or verify.sh lists flyshadow.service as always-on"
+else
+    pass "07-enable.sh and verify.sh leave flyshadow.service alone"
+fi
+for u in flyshadow-guard.timer flyshadow-guard.service; do
+    if [ ! -f "$INFRA_DIR/units/$u" ]; then
+        fail "units/$u is missing"
+    elif grep -qE '^\[Install\]' "$INFRA_DIR/units/$u"; then
+        fail "$u has an [Install] section; fly-shadow-run starts and stops it"
+    else
+        pass "$u is never enabled (started by fly-shadow-run only)"
+    fi
+done
+# The guard's rule, driven for real (python3 is on every container this repo provisions) over
+# RTF traces: synthetic ones shaped on the release CT's own numbers (tests/shadow_guard_traces.py)
+# and ones recorded from a real flysim with and without a shadow (tests/fixtures/shadow-guard/).
+# A fly that was already below real time must never trip it; a genuine degradation must.
+if command -v python3 >/dev/null 2>&1; then
+    g_tmp="$(mktemp -d "${TMPDIR:-/tmp}/fly-lint-guard.XXXXXX")"
+    guard_trace() { # name, dir with baseline.jsonl and checks.jsonl, expect (pass|trip)
+        local out rc=0
+        out="$("$INFRA_DIR/bin/fly-shadow-run" simulate "$2/baseline.jsonl" "$2/checks.jsonl")" || rc=$?
+        if { [ "$3" = pass ] && [ "$rc" = 0 ]; } || { [ "$3" = trip ] && [ "$rc" = 1 ]; }; then
+            pass "fly-shadow-run guard, $1: ${out%% (baseline*}"
+        else
+            fail "fly-shadow-run guard, $1: expected $3, got exit $rc: $out"
+        fi
+    }
+    while read -r name expect; do
+        guard_trace "$name" "$g_tmp/$name" "$expect"
+    done < <(python3 "$INFRA_DIR/tests/shadow_guard_traces.py" "$g_tmp")
+    for d in "$INFRA_DIR"/tests/fixtures/shadow-guard/*/; do
+        [ -f "$d/expect" ] || continue
+        guard_trace "recorded $(basename "$d")" "$d" "$(cat "$d/expect")"
+    done
+    # The guard's lifecycle and `check`'s preconditions (review round 3, G1-a), with a fake systemctl
+    # (`show` answers FAKE_SHADOW_STATE; the timer is active when FAKE_TIMER_ACTIVE=yes), a fake `id`
+    # (root) and a metrics URL nobody listens on (a live guard then reports "not judged" and stays).
+    gl_bin="$g_tmp/lifecycle-bin"; gl_dir="$g_tmp/lifecycle-shadow"
+    mkdir -p "$gl_bin" "$gl_dir"
+    cat > "$gl_bin/systemctl" <<'GLSYSTEMCTL'
+#!/bin/sh
+echo "$*" >> "$FAKE_SYSTEMCTL_LOG"
+case "$1" in
+    show) printf 'ActiveState=%s\nSubState=x\n' "$FAKE_SHADOW_STATE" ;;
+    is-active)
+        case "$3" in
+            flyshadow.service) [ "$FAKE_SHADOW_STATE" = active ]; exit $? ;;
+            flyshadow-guard.timer) [ "$FAKE_TIMER_ACTIVE" = yes ]; exit $? ;;
+            *) exit 3 ;;
+        esac ;;
+esac
+exit 0
+GLSYSTEMCTL
+    cat > "$gl_bin/id" <<'GLID'
+#!/bin/sh
+[ "$1" = -u ] && { echo 0; exit 0; }
+exec /usr/bin/id "$@"
+GLID
+    chmod +x "$gl_bin/systemctl" "$gl_bin/id"
+    gl_run() { # args to fly-shadow-run; env FAKE_SHADOW_STATE, FAKE_TIMER_ACTIVE from the caller
+        : > "$g_tmp/systemctl.log"
+        PATH="$gl_bin:$PATH" FAKE_SYSTEMCTL_LOG="$g_tmp/systemctl.log" FLY_SHADOW_DIR="$gl_dir" \
+            FLY_METRICS_URL=http://127.0.0.1:1 FLY_SHADOW_BIN="$g_tmp/none" \
+            "$INFRA_DIR/bin/fly-shadow-run" "$@" 2>&1
+    }
+    printf '{"rtfMean":0.66,"rtfSd":0.01,"lagRate":0.3,"samples":60,"margin":0.05}\n' > "$gl_dir/baseline.json"
+    printf '{}\n' > "$gl_dir/guard-state.json"
+    for st in activating deactivating; do
+        FAKE_SHADOW_STATE=$st FAKE_TIMER_ACTIVE=yes gl_run guard > "$g_tmp/out" || true
+        if grep -q 'stop flyshadow-guard.timer' "$g_tmp/systemctl.log"; then
+            fail "fly-shadow-run guard stopped its timer while flyshadow was $st (auto-restart): $(cat "$g_tmp/out")"
+        else
+            pass "fly-shadow-run guard keeps running while flyshadow is $st (crash-restart delay)"
+        fi
+    done
+    for st in inactive failed; do
+        FAKE_SHADOW_STATE=$st FAKE_TIMER_ACTIVE=yes gl_run guard > "$g_tmp/out" || true
+        if grep -q 'stop flyshadow-guard.timer' "$g_tmp/systemctl.log"; then
+            pass "fly-shadow-run guard stops its timer when flyshadow is $st"
+        else
+            fail "fly-shadow-run guard kept running with flyshadow $st: $(cat "$g_tmp/out")"
+        fi
+    done
+    gl_check() { # name, expected (refused|passes-gates), then the env
+        local out rc=0
+        out="$(gl_run check)" || rc=$?
+        case "$2:$rc" in
+            refused:1) pass "fly-shadow-run check, $1: ${out%%(*}" ;;
+            passes-gates:2) pass "fly-shadow-run check, $1: past the guard preconditions" ;;
+            *) fail "fly-shadow-run check, $1: expected $2, got exit $rc: $out" ;;
+        esac
+    }
+    FAKE_SHADOW_STATE=active FAKE_TIMER_ACTIVE=yes gl_check "guarded run" passes-gates
+    FAKE_SHADOW_STATE=active FAKE_TIMER_ACTIVE=no gl_check "guard timer not active" refused
+    FAKE_SHADOW_STATE=activating FAKE_TIMER_ACTIVE=yes gl_check "shadow restarting" refused
+    mv "$gl_dir/baseline.json" "$gl_dir/baseline.json.off"
+    FAKE_SHADOW_STATE=active FAKE_TIMER_ACTIVE=yes gl_check "no baseline.json" refused
+    mv "$gl_dir/baseline.json.off" "$gl_dir/baseline.json"
+    echo '{}' > "$gl_dir/guard-tripped.json"
+    FAKE_SHADOW_STATE=active FAKE_TIMER_ACTIVE=yes gl_check "guard tripped" refused
+    rm -rf "$g_tmp"
+else
+    fail "python3 is needed to test fly-shadow-run's guard rule"
+fi
+if grep -qF 'flyshadow) cpus="${page_cpus},${encoder_cpus}" ;;' "$INFRA_DIR/05-deploy.sh"; then
+    pass "05-deploy.sh keeps flyshadow.service off flysim's CPUs"
+else
+    fail "05-deploy.sh must give flyshadow.service the page and encoder CPUs, never flysim's"
+fi
 if grep -qF 'FLY_FEED_VIA_EFFECTIVE="$(feed_via_normalize "${FLY_FEED_VIA:-}")"' "$INFRA_DIR/05-deploy.sh" \
     && grep -qF 'echo "FLY_FEED_VIA=${FLY_FEED_VIA_EFFECTIVE}"' "$INFRA_DIR/05-deploy.sh"; then
     pass "05-deploy.sh validates FLY_FEED_VIA and writes the normalized value"

@@ -519,6 +519,83 @@ pct exec $CTID -- /opt/fly/bin/fly-runtime legacy     # the one-command rollback
   cannot be enabled). It is for a rehearsal or a soak on a container whose `flysim.service` is
   stopped, not for switching the stream.
 
+## Shadow run (SHADOW-01)
+
+The session runtime, run beside the live fly as the gate for the automatic cutover (CUT-01). The
+contract is `docs/design/session-framework/legacy-gameboy-v1.md` section 18. The shadow is
+report-only: it presses no button, serves no port, and only reads flysim's stores and trace. Claim
+the release container in the host log first, as for any host work.
+
+```
+pct exec <ctid> -- /opt/fly/bin/fly-shadow-run start     # baseline, trace on, shadow + guard, one flysim restart
+pct exec <ctid> -- /opt/fly/bin/fly-shadow-run status    # the verdict (and a guard trip) in one screen
+pct exec <ctid> -- /opt/fly/bin/fly-shadow-run check     # CUT-01's hook: exit 0 = cutover allowed
+pct exec <ctid> -- /opt/fly/bin/fly-shadow-run stop --restart-flysim   # shadow, guard and trace off
+```
+
+- **Start** first records the live fly's baseline for 10 minutes, before the shadow exists: sixty
+  10-s means of `fly_realtime_factor` (their mean and spread) and the `fly_lag_seconds` growth
+  rate. It refuses unless flysim ran normally for most of that time. Then it:
+  1. installs `flysim.service.d/shadow-trace.conf` (`FLY_TRACE_DIR=/srv/fly/shadow/trace`,
+     `FLY_TRACE_LEDGERS=60`);
+  2. starts `flyshadow.service` and waits for its heartbeat;
+  3. restarts `flysim.service` once;
+  4. starts `flyshadow-guard.timer`.
+
+  `FLY_SHADOW_BASELINE_SECONDS` shortens the baseline, for tests only. The restart is the same one
+  the unstick rule uses: the rung is kept and the ledgers are cleared. A previous `verdict.json`
+  is kept beside the new one, renamed with its time.
+- **The guard** runs every 60 s, automatically, and judges the live fly against its own baseline,
+  not against real time. A fly that already ran at 0.66 is fine at 0.66. It trips only on a
+  sustained degradation: 3 checks in a row in which the last 5 samples of the same flysim process
+  fall below the baseline, or grow lag faster than it, by more than the margin. The margin is
+  max(0.05, 4 x the baseline spread / sqrt 5). A trip is at the earliest about 7 minutes after a
+  real degradation begins. A tripped guard stops the shadow and the guard, removes the drop-in and
+  restarts flysim without the trace. It records why in `/srv/fly/shadow/guard-tripped.json`, and
+  `status` shows it. A paused fly is not judged, and a restarted one starts its window again.
+  Once the shadow is down for good (`ActiveState` inactive or failed: diverged, stopped, given up),
+  the guard stops itself and changes nothing. While the shadow waits out its 10-s crash-restart delay
+  (`activating`) the guard keeps running. A trip is not a divergence: fix the resources, then `start` again.
+- **While it runs**, every later flysim restart (the unstick rule, the watchdog,
+  `fly-loop-recover`, `fly-reset-to-milestone`) starts a new trace file. The shadow follows it on
+  its own; nothing needs doing. The 3 h window is live *brain* time summed over those processes.
+  Stopping or restarting `flyshadow.service` itself starts the window again.
+- **Pass**: `status` shows `verdict pass` once both of these hold with zero divergence:
+  - 10,800 brain seconds are compared;
+  - at least one live save per 10 brain minutes has been compared byte for byte.
+
+  The shadow keeps following, and the verdict stays `pass` only while nothing diverges. CUT-01
+  runs `check` at the moment it cuts over. `check` also requires all of these:
+  - at least 10,800 brain seconds, whatever window the shadow was started with;
+  - the guard has not tripped, `flyshadow.service` is running, `flyshadow-guard.timer` is active and
+    `baseline.json` exists (a run no guard watched is never cut over);
+  - the verdict is for the release `/opt/fly/current` points to, with `flysim-session` and every
+    other shadowed binary unchanged;
+  - the shadow is caught up (at most about a minute behind);
+  - the verdict's `updatedAt` is neither older than the max age nor more than 60 s in the future
+    (a clock stepped back must not keep an old pass fresh);
+  - no segment was skipped for a reason other than the live side's own.
+- **Divergence**: the shadow stops itself (exit status 3; the unit does not restart it). A failure
+  of the session runtime itself counts: it did not start, the restore gate refused the live save,
+  or a step failed. The shadow leaves `verdict.json` at `diverged` and
+  `/srv/fly/shadow/divergence.json` with the field, both values and the 30 transitions before it.
+  On a checkpoint difference it also leaves both checkpoint files. It removes its heartbeat, so
+  flysim stops tracing within a minute. The live fly is untouched. Run `stop --keep`, pull the
+  files for the review, and do not cut over.
+- **The trace cannot outlive the shadow.** flysim starts no trace without the shadow's fresh
+  heartbeat (`/srv/fly/shadow/trace/consumer`), and stops a running trace within a minute once the
+  heartbeat is more than 10 minutes old. That happens when the shadow crashed, diverged, was
+  stopped, or the guard tripped. flysim keeps the trace directory under 8 GiB, and the shadow
+  deletes every file it has compared.
+- **Resources**: the shadow is a second whole brain, at about the live fly's CPU per frame. It
+  runs `SCHED_IDLE` on the page and encoder CPUs, never on flysim's (05-deploy.sh writes its
+  `cpuset.conf`). It pauses for a minute while flysim's lag grows faster than its baseline rate, and
+  it stops pausing when a pause does not help. Disk: about
+  160 MB of trace per live hour, and a spool of at most 512 MiB.
+- **Stop** stops the unit and the guard, removes the drop-in, and deletes the trace and the spool
+  (`--keep` keeps them). Without `--restart-flysim`, the running flysim stops its current trace
+  within a minute, because its consumer is gone.
+
 ## CPU partition (cpuset)
 
 `05-deploy.sh` derives the in-guest `AllowedCPUs=` drop-ins for every app unit

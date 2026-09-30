@@ -710,10 +710,14 @@ if [ -n "${CPUSET:-}" ]; then
         # it is enabled it serves the page from the page's CPUs, never from flysim's.
         # flysim-session (SERVE-01) is the session runtime's standalone unit: flysim's cores.
         # (`fly-runtime session` runs it AS flysim.service, which already has them.)
-        for u in flysim xvfb flystage flystage-web flycast pulse mediamtx flyedge flysim-session; do
+        # flyshadow (SHADOW-01) is off by default too; when started it gets every CPU that is not
+        # flysim's, at SCHED_IDLE (its unit), so it only ever uses what the page and the encoder
+        # leave idle and never a cycle of the live fly's.
+        for u in flysim xvfb flystage flystage-web flycast pulse mediamtx flyedge flysim-session flyshadow; do
             case "$u" in
                 flysim|flysim-session) cpus="$sim_cpus" ;;
                 flycast) cpus="$encoder_cpus" ;;
+                flyshadow) cpus="${page_cpus},${encoder_cpus}" ;;
                 *)       cpus="$page_cpus" ;;
             esac
             {
@@ -741,7 +745,7 @@ fi
 # ---------------------------------------------------------------------------
 log "05-deploy: converging bin/ helpers to /opt/fly/bin"
 ct_exec "$CTID" -- mkdir -p /opt/fly/bin
-for name in fly-watchdog fly-loop-recover fly-loop-reset fly-recap fly-retention fly-reset-to-milestone fly-runtime flypush flystage-launch flycast-launch wait-for-x wait-for-stage wait-for-health; do
+for name in fly-watchdog fly-loop-recover fly-loop-reset fly-recap fly-retention fly-reset-to-milestone fly-runtime fly-shadow-run flypush flystage-launch flycast-launch wait-for-x wait-for-stage wait-for-health; do
     converge_file "$CTID" "$INFRA_DIR/bin/$name" "/opt/fly/bin/$name" 0755 root:root >/dev/null
 done
 
