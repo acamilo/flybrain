@@ -592,6 +592,9 @@ pct exec <ctid> -- /opt/fly/bin/fly-shadow-run stop --restart-flysim   # shadow,
   `cpuset.conf`). It pauses for a minute while flysim's lag grows faster than its baseline rate, and
   it stops pausing when a pause does not help. Disk: about
   160 MB of trace per live hour, and a spool of at most 512 MiB.
+- **Start** refuses, and starts nothing, unless `flyshadow.service.d/cpuset.conf` exists and the
+  unit's `AllowedCPUs` (`systemctl show`) is disjoint from flysim.service's (05-deploy skips every
+  cpuset drop-in when the CT conf and CPUSET disagree).
 - **Stop** stops the unit and the guard, removes the drop-in, and deletes the trace and the spool
   (`--keep` keeps them). Without `--restart-flysim`, the running flysim stops its current trace
   within a minute, because its consumer is gone.
@@ -614,8 +617,7 @@ pct exec $CTID -- sh -c '/opt/fly/bin/fly-shadow-run check && /opt/fly/bin/fly-r
 # 4. Watch the probation (30 minutes after the switch):
 pct exec $CTID -- /opt/fly/bin/fly-runtime-probation status
 pct exec $CTID -- /opt/fly/bin/fly-runtime status
-# 5. Pass, or automatic fallback (below). Then stop the shadow:
-pct exec $CTID -- /opt/fly/bin/fly-shadow-run stop --restart-flysim
+# 5. Pass, or automatic fallback (below). Nothing to stop: step 3 already stopped the shadow.
 # Manual rollback, any time (cancels the probation too):
 pct exec $CTID -- /opt/fly/bin/fly-runtime legacy
 ```
@@ -624,9 +626,12 @@ pct exec $CTID -- /opt/fly/bin/fly-runtime legacy
   up (Shadow run above). `session` then does what "Switch the runtime" describes (compatibility
   check, drop-in, restart, health wait) and, once flysim is healthy on the session runtime, starts
   the probation. `session` returns 0 at that point: the probation is judged later, by the timer.
-  Stop the shadow only after the probation has passed (step 5): its trace costs the live fly, and
-  the session runtime is being measured. Until then `fly-shadow-run stop --restart-flysim` would
-  restart flysim inside the probation, which only restarts the warm-up.
+  `session` also stops the shadow and its guard (`fly-shadow-run stop`, never
+  `--restart-flysim`) as soon as flysim is healthy on the session runtime, before the probation
+  starts. A guard left running would judge the session runtime against the legacy baseline and
+  restart flysim on a trip (a second start inside the 600 s start-limit window, and a reset
+  warm-up), and the session writes no trace, so the shadow has nothing to follow. If you stop the
+  shadow by hand at any time during the probation, do it without `--restart-flysim`.
 - **The probation** (`infra/bin/fly-runtime-probation`, `fly-runtime-probation.timer` every 60 s,
   root). Each tick takes one sample of flysim's `/metrics` (`fly_realtime_factor` averaged over 10
   one-second reads, `fly_lag_seconds`, `fly_uptime_seconds`; the same sampling as the shadow

@@ -69,6 +69,9 @@
 # (05-deploy's refresh of the drop-in) and `--no-probation` (rehearsals) start none. If the
 # probation cannot be started, `session` falls back: an unguarded cutover is not allowed.
 #
+# `session` also stops a running shadow and its guard (fly-shadow-run stop, no flysim restart) once
+# flysim is healthy on the session runtime, so the procedure cannot be done wrong (review N1).
+#
 # Every switch is logged to the journal (tag fly-runtime) and appended to ${RUNTIME_LOG}.
 set -euo pipefail
 
@@ -90,6 +93,7 @@ FALLBACK_UNIT=fly-runtime-fallback.service
 SESSION_BIN="${FLY_RELEASE_DIR}/flysim-session"
 LEGACY_BIN="${FLY_RELEASE_DIR}/flysim"
 SESSION_DIR=/run/fly/session
+SHADOW_RUN_BIN="${FLY_SHADOW_RUN_BIN:-$(dirname "$(readlink -f "$0")")/fly-shadow-run}"
 PROBATION_BIN="${FLY_PROBATION_BIN:-$(dirname "$(readlink -f "$0")")/fly-runtime-probation}"
 
 log() { echo "fly-runtime: $*" >&2; }
@@ -100,6 +104,20 @@ probation() {
     "$PROBATION_BIN" "$@" || log "fly-runtime-probation $1 failed"
 }
 die() { log "$*"; exit 1; }
+
+# CUT-01 (review N1): once flysim runs the session runtime the shadow and its guard are over. The
+# guard would judge the session against the legacy baseline and restart flysim on a trip; the
+# session writes no trace. Stops both WITHOUT restarting flysim. Best effort, never fails the switch.
+stop_shadow() {
+    if systemctl is-active --quiet flyshadow.service 2>/dev/null \
+        || systemctl is-active --quiet flyshadow-guard.timer 2>/dev/null; then
+        if [ -x "$SHADOW_RUN_BIN" ] && "$SHADOW_RUN_BIN" stop; then
+            log "the shadow and its guard are stopped (flysim.service not restarted)"
+        else
+            log "WARNING: could not stop the shadow; run: fly-shadow-run stop (never with --restart-flysim)"
+        fi
+    fi
+}
 
 usage() {
     echo "usage: fly-runtime status | session [--no-restart] [--no-fallback] [--no-probation] | legacy [--no-restart] | fallback [reason]" >&2
@@ -384,6 +402,7 @@ if [ "$command" = session ]; then
         # check above too): only report success if the session drop-in is still what runs.
         if [ -f "$DROPIN" ] && [ ! -f "$FELLBACK_FILE" ]; then
             switching=0
+            stop_shadow
             if [ "$probe" -eq 1 ]; then
                 if [ ! -x "$PROBATION_BIN" ] || ! "$PROBATION_BIN" start; then
                     log "the speed probation could not be started; an unguarded cutover is not allowed"

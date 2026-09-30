@@ -200,10 +200,46 @@ elif mode == "simulate":
     print("no trip over %d checks (baseline %s)" % (n, json.dumps(base)))
 '
 
+# The shadow must never share a CPU with the live fly (review N2): refuse unless the unit's cpuset
+# drop-in exists (05-deploy skips every cpuset drop-in when the CT conf and CPUSET disagree) and its
+# AllowedCPUs is non-empty and disjoint from flysim.service's.
+check_cpuset() {
+    local dropin="${FLY_SHADOW_CPUSET_DROPIN:-/etc/systemd/system/flyshadow.service.d/cpuset.conf}"
+    [ -f "$dropin" ] || die "$dropin is missing: flyshadow would run on every CPU, including flysim's. Run 05-deploy with CPUSET set; nothing started"
+    local shadow_cpus sim_cpus
+    shadow_cpus="$(systemctl show -p AllowedCPUs --value flyshadow.service 2>/dev/null || true)"
+    sim_cpus="$(systemctl show -p AllowedCPUs --value flysim.service 2>/dev/null || true)"
+    [ -n "$shadow_cpus" ] || die "flyshadow.service has an empty AllowedCPUs; nothing started"
+    [ -n "$sim_cpus" ] || die "flysim.service has an empty AllowedCPUs, so the shadow cannot be kept off it; nothing started"
+    local overlap rc=0
+    overlap="$(python3 -c '
+import sys
+def cpus(t):
+    out = set()
+    for part in t.replace(",", " ").split():
+        a, _, b = part.partition("-")
+        out.update(range(int(a), int(b or a) + 1))
+    return out
+try:
+    both = cpus(sys.argv[1]) & cpus(sys.argv[2])
+except ValueError:
+    sys.exit(2)
+if both:
+    print(",".join(str(c) for c in sorted(both)))
+    sys.exit(1)
+' "$shadow_cpus" "$sim_cpus" 2>/dev/null)" || rc=$?
+    case "$rc" in
+        0) ;;
+        1) die "flyshadow.service AllowedCPUs ($shadow_cpus) overlaps flysim.service's ($sim_cpus) on CPU $overlap; nothing started" ;;
+        *) die "cannot parse AllowedCPUs (flyshadow '$shadow_cpus', flysim '$sim_cpus'); nothing started" ;;
+    esac
+}
+
 start() {
     need_root
     [ -x "$BIN" ] || die "$BIN is missing: this release predates SHADOW-01"
     systemctl is-active --quiet flyshadow.service && die "flyshadow.service is already running"
+    check_cpuset
     install -d -o fly -g fly -m 0755 "$SHADOW_DIR" "$SHADOW_DIR/trace"
     # A previous run's verdict is kept beside, never read as this run's.
     if [ -f "$SHADOW_DIR/verdict.json" ]; then

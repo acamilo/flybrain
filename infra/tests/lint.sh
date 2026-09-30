@@ -656,6 +656,61 @@ GLID
 else
     fail "python3 is needed to test fly-shadow-run's guard rule"
 fi
+# N2: `start` refuses, starting nothing, unless the cpuset drop-in exists and is disjoint from flysim's.
+cs_tmp="$(mktemp -d "${TMPDIR:-/tmp}/fly-lint-cpuset.XXXXXX")"
+mkdir -p "$cs_tmp/bin" "$cs_tmp/shadow"
+cat > "$cs_tmp/bin/systemctl" <<'CSSTUB'
+#!/bin/sh
+echo "$*" >> "$CS_DIR/systemctl.log"
+case "$1" in
+    is-active) exit 3 ;;
+    show) case "$5" in
+              flyshadow.service) echo "$CS_SHADOW_CPUS" ;;
+              flysim.service) echo "$CS_SIM_CPUS" ;;
+          esac ;;
+esac
+exit 0
+CSSTUB
+printf '#!/bin/sh\n[ "$1" = -u ] && { echo 0; exit 0; }\nexec /usr/bin/id "$@"\n' > "$cs_tmp/bin/id"
+printf '#!/bin/sh\nexit 0\n' > "$cs_tmp/fly-shadow"
+printf '#!/bin/sh\necho "stub install reached"\nexit 1\n' > "$cs_tmp/bin/install"
+chmod +x "$cs_tmp/bin/install" "$cs_tmp/bin/systemctl" "$cs_tmp/bin/id" "$cs_tmp/fly-shadow"
+cs_start() { # name, expect (refuse|proceed), shadow cpus, sim cpus, drop-in (yes|no)
+    local rc=0 out
+    : > "$cs_tmp/systemctl.log"
+    rm -f "$cs_tmp/dropin.conf"
+    [ "$5" = yes ] && : > "$cs_tmp/dropin.conf"
+    out="$(PATH="$cs_tmp/bin:$PATH" CS_DIR="$cs_tmp" CS_SHADOW_CPUS="$3" CS_SIM_CPUS="$4" \
+        FLY_SHADOW_DIR="$cs_tmp/shadow" FLY_SHADOW_BIN="$cs_tmp/fly-shadow" \
+        FLY_SHADOW_CPUSET_DROPIN="$cs_tmp/dropin.conf" FLY_SHADOW_BASELINE_SECONDS=1 \
+        FLY_METRICS_URL=http://127.0.0.1:1 "$INFRA_DIR/bin/fly-shadow-run" start 2>&1)" || rc=$?
+    case "$2" in
+        refuse)
+            if [ "$rc" -ne 0 ] && ! grep -qE '^(start|restart|daemon-reload)' "$cs_tmp/systemctl.log" \
+                && [ ! -d "$cs_tmp/shadow/trace" ] && echo "$out" | grep -q 'nothing started'; then
+                pass "fly-shadow-run start refuses, $1"
+            else
+                fail "fly-shadow-run start must refuse and start nothing, $1 (rc=$rc): $out"
+            fi ;;
+        proceed)
+            # past the cpuset check it goes on to install -d (stubbed to stop there)
+            if echo "$out" | grep -q 'stub install reached'; then
+                pass "fly-shadow-run start proceeds, $1"
+            else
+                fail "fly-shadow-run start must pass the cpuset check, $1 (rc=$rc): $out"
+            fi ;;
+    esac
+}
+if command -v python3 >/dev/null 2>&1; then
+    cs_start "no cpuset drop-in" refuse "0-7" "1,3,5,7" no
+    cs_start "AllowedCPUs overlapping flysim's" refuse "0 2 3" "1 3 5 7" yes
+    cs_start "AllowedCPUs empty" refuse "" "1 3 5 7" yes
+    cs_start "AllowedCPUs disjoint (ranges)" proceed "0 2 4 6" "1 3 5 7" yes
+    cs_start "AllowedCPUs disjoint (range syntax)" proceed "0-2" "3-7" yes
+else
+    fail "python3 is needed to test fly-shadow-run's cpuset check"
+fi
+rm -rf "$cs_tmp"
 if grep -qF 'flyshadow) cpus="${page_cpus},${encoder_cpus}" ;;' "$INFRA_DIR/05-deploy.sh"; then
     pass "05-deploy.sh keeps flyshadow.service off flysim's CPUs"
 else
@@ -766,6 +821,13 @@ mkdir -p "$rt_dir/bin" "$rt_dir/release" "$rt_dir/systemd"
 cat > "$rt_dir/bin/systemctl" <<'RTSTUB'
 #!/usr/bin/env bash
 echo "$*" >> "$RT_DIR/systemctl.log"
+if [ "$1" = is-active ]; then
+    case "$3" in flyshadow.service|flyshadow-guard.timer) [ "${RT_SHADOW_ACTIVE:-0}" = 1 ]; exit $? ;; esac
+fi
+RTSTUB
+cat > "$rt_dir/release/fly-shadow-run" <<'RTSTUB'
+#!/usr/bin/env bash
+echo "$*" >> "$RT_DIR/shadow-run.log"
 RTSTUB
 cat > "$rt_dir/bin/id" <<'RTSTUB'
 #!/usr/bin/env bash
@@ -795,6 +857,7 @@ fly_runtime() {
         FLY_ENV_FILE="$rt_dir/fly.env" FLY_SYSTEMD_DIR="$rt_dir/systemd" \
         FLY_RUNTIME_LOG="$rt_dir/runtime.log" FLY_RUNTIME_HEALTH_TIMEOUT=4 \
         FLY_RUNTIME_FELLBACK="$rt_dir/run/runtime-fellback.json" FLY_RUNTIME_LOCK="$rt_dir/run/runtime.lock" \
+        FLY_SHADOW_RUN_BIN="$rt_dir/release/fly-shadow-run" \
         FLY_PROBATION_DIR="$rt_dir/probation" FLY_PROBATION_RESULT="$rt_dir/run/runtime-probation.json" \
         "$@" bash "$INFRA_DIR/bin/fly-runtime" "${RT_ARGS[@]}" >/dev/null 2>&1
 }
@@ -814,6 +877,24 @@ if fly_runtime && [ -f "$rt_dropin" ] \
 else
     fail "fly-runtime session: drop-in/restart/health wrong ($(cat "$rt_dropin" 2>/dev/null | tr '\n' ' '))"
 fi
+# N1: a running shadow and guard are stopped by `session`, without restarting flysim; none running: untouched.
+[ ! -e "$rt_dir/shadow-run.log" ] \
+    && pass "fly-runtime session leaves fly-shadow-run alone when no shadow is running" \
+    || fail "fly-runtime session called fly-shadow-run with no shadow running"
+RT_ARGS=(legacy); fly_runtime || true
+RT_ARGS=(session)
+rm -f "$rt_dir/shadow-run.log"
+if fly_runtime RT_SHADOW_ACTIVE=1 && [ "$(cat "$rt_dir/shadow-run.log" 2>/dev/null)" = stop ]; then
+    pass "fly-runtime session stops the running shadow and guard (fly-shadow-run stop, no --restart-flysim)"
+else
+    fail "fly-runtime session must run exactly 'fly-shadow-run stop' when a shadow is running ($(cat "$rt_dir/shadow-run.log" 2>/dev/null))"
+fi
+rm -f "$rt_dir/shadow-run.log"
+RT_ARGS=(session --no-restart)
+fly_runtime RT_SHADOW_ACTIVE=1 || true
+[ ! -e "$rt_dir/shadow-run.log" ] \
+    && pass "fly-runtime session --no-restart (deploy refresh) does not touch the shadow" \
+    || fail "fly-runtime session --no-restart must not stop the shadow"
 RT_ARGS=(legacy)
 if fly_runtime && [ ! -f "$rt_dropin" ]; then
     pass "fly-runtime legacy: the drop-in is gone, flysim.service restarted"
