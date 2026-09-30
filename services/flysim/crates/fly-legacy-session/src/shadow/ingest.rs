@@ -356,9 +356,11 @@ fn status_loop(out: &Output, ledger: &Mutex<Ledger>, stop: &AtomicBool, config: 
             continue;
         }
         last = Instant::now();
-        let traces = trace_sizes(&layout.trace);
-        let (received, done, run_id) = {
+        let (traces, received, done, run_id) = {
             let mut l = ledger.lock().unwrap_or_else(|p| p.into_inner());
+            // Listed under the lock: a file `apply_trace` creates (under the same lock) between a
+            // listing and this point would otherwise look removed, and be marked finished.
+            let traces = trace_sizes(&layout.trace);
             let gone: Vec<String> = l
                 .created
                 .iter()
@@ -372,7 +374,7 @@ fn status_loop(out: &Output, ledger: &Mutex<Ledger>, stop: &AtomicBool, config: 
                 }
                 l.save(&layout.ledger);
             }
-            (l.received, l.done.clone(), l.run_id.clone())
+            (traces, l.received, l.done.clone(), l.run_id.clone())
         };
         let (alive, why, verdict, status) = shadow_state(&layout, &run_id, config.alive_within);
         let mut result = send(

@@ -64,7 +64,9 @@
 # guard, `check`, CUT-01. The relay keeps flysim's heartbeat fresh only while the box's shadow of
 # THIS run (FLY_SHADOW_RUN_ID, the start's Unix ms) is alive and the box has everything that was on
 # this disk a minute ago, so a dead box, shadow or network stops the trace like a dead local shadow.
-# `check` in remote mode also needs /srv/fly/shadow/relay.json healthy and less than a minute old.
+# `check` in remote mode also needs /srv/fly/shadow/relay.json healthy, less than a minute old, of
+# this run (the drop-in's id, which the verdict must carry too), without coverageLost (flysim
+# stopped its trace for want of a consumer) and with a trace file written in the last 90 s.
 #
 # Files (all owned by fly):
 #   /srv/fly/shadow/trace/trace-<ms>-<pid>.jsonl   flysim's per-process trace (4 GiB each, 8 in all)
@@ -325,7 +327,7 @@ CPUSchedulingPolicy=other
 Nice=5
 CPUWeight=50
 IOSchedulingClass=best-effort
-MemoryMax=512M
+MemoryMax=1G
 EOF
         log "remote shadow, run $run_id: flyshadow.service relays to the build box in $REMOTE_ENV"
     else
@@ -494,36 +496,64 @@ check() {
         exit 1
     fi
     # Remote (SHADOW-02): the relay must be healthy now (connected, the box's shadow of this run
-    # alive, the sync caught up), not just have relayed a pass lately.
-    if [ -f "$REMOTE_DROPIN" ]; then
-        local why rc=0
-        why="$(python3 - "$SHADOW_DIR/relay.json" <<'PY'
+    # alive, the sync caught up), not just have relayed a pass lately; it must not have lost
+    # coverage (flysim stopped its trace for want of a consumer: review B1); the live trace must be
+    # being written; and the relay's, the verdict's and this run's drop-in's run ids must be one.
+    # A verdict that carries a run id is a remote run's: it never stands for a local shadow.
+    local why rc=0 run_id=""
+    [ -f "$REMOTE_DROPIN" ] && run_id="$(sed -n 's/^Environment=FLY_SHADOW_RUN_ID=//p' "$REMOTE_DROPIN" | tail -n 1)"
+    why="$(python3 - "$SHADOW_DIR/relay.json" "$SHADOW_DIR/verdict.json" "$([ -f "$REMOTE_DROPIN" ] && echo remote || echo local)" "$run_id" <<'PY'
 import datetime, json, sys
+relay_path, verdict_path, mode, run_id = sys.argv[1:5]
+def refuse(msg):
+    print(msg); sys.exit(1)
 try:
-    r = json.load(open(sys.argv[1]))
+    v = json.load(open(verdict_path))
+except Exception:
+    v = {}
+if mode == "local":
+    if v.get("runId") is not None:
+        refuse("the verdict is a remote run's (run %s) but this run is local: no remote drop-in" % v.get("runId"))
+    sys.exit(0)
+if not run_id:
+    refuse("the remote drop-in names no FLY_SHADOW_RUN_ID")
+try:
+    r = json.load(open(relay_path))
     t = datetime.datetime.fromisoformat(r["updatedAt"].replace("Z", "+00:00"))
 except Exception as e:
-    print("no readable relay.json (%s)" % e); sys.exit(1)
+    refuse("no readable relay.json (%s)" % e)
+# updatedAt is the container's own clock (the relay writes it here), so skew between the two hosts
+# does not reach this check; the verdict's own age check does (see the runbook: run NTP on both).
 age = (datetime.datetime.now(datetime.timezone.utc) - t).total_seconds()
 if not -60 <= age <= 60:
-    print("relay.json is %.0f s old" % age); sys.exit(1)
+    refuse("relay.json is %.0f s old" % age)
+if r.get("runId") != run_id:
+    refuse("relay.json is for run %s, this run is %s" % (r.get("runId"), run_id))
+if v.get("runId") != run_id:
+    refuse("the verdict is for run %s, this run is %s" % (v.get("runId"), run_id))
+if r.get("coverageLost"):
+    refuse("coverage of the live fly was lost (%s): its trace stopped for want of a consumer and the rest of that process is uncompared" % json.dumps(r["coverageLost"]))
 if not r.get("healthy"):
-    print("the relay is not healthy (connected %s, box shadow alive %s %s)" % (r.get("connected"), r.get("remoteAlive"), r.get("remoteWhy") or "")); sys.exit(1)
+    refuse("the relay is not healthy (connected %s, box shadow alive %s %s)" % (r.get("connected"), r.get("remoteAlive"), r.get("remoteWhy") or ""))
+ta = r.get("traceAgeSeconds")
+if ta is None:
+    refuse("no live trace file of this run")
+if ta > 90:
+    refuse("the live trace has not been written for %d s while the shadow claims to follow it (flysim paused, or its trace stopped)" % ta)
 PY
 )" || rc=$?
-        if [ "$rc" != 0 ]; then
-            echo "cutover refused: remote shadow: $why"
-            exit 1
-        fi
+    if [ "$rc" != 0 ]; then
+        echo "cutover refused: remote shadow: $why"
+        exit 1
     fi
     [ -x "$BIN" ] || die "$BIN is missing"
     # The live service's configuration, for its compatibility string.
     set -a
     # shellcheck disable=SC1091
-    . /etc/fly/fly.env
+    . "${FLY_ENV_FILE:-/etc/fly/fly.env}"
     set +a
     # The release CUT-01 switches into and the binary it switches to: SERVE-01's service there.
-    "$BIN" check --verdict "$SHADOW_DIR/verdict.json" --current /opt/fly/current \
+    "$BIN" check --verdict "$SHADOW_DIR/verdict.json" --current "${FLY_CURRENT_DIR:-/opt/fly/current}" \
         --binary flysim-session "$@"
 }
 

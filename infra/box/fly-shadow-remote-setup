@@ -3,7 +3,7 @@
 # Run as root ON THE BOX (never on the release container, never on the host), by the coordinator.
 # Idempotent: re-run it for every release the container runs.
 #
-#   fly-shadow-remote-setup RELEASE_TARBALL ROM_FILE RELAY_PUBKEY [--from ADDRS] [--cpus LIST] [--threads N]
+#   fly-shadow-remote-setup RELEASE_TARBALL ROM_FILE RELAY_PUBKEY --from ADDRS [--cpus LIST] [--threads N]
 #
 #   RELEASE_TARBALL  the exact flybrain-<version>.tar.gz deployed to the release container. It is
 #                    installed at the SAME path, /opt/fly/releases/<version>, MANIFEST-verified,
@@ -13,29 +13,32 @@
 #   ROM_FILE         the cartridge; its SHA-256 must be the container's ROM_SHA256.
 #   RELAY_PUBKEY     the public half of the relay's key (the private half lives only on the
 #                    release container, /etc/fly/shadow-remote/id_ed25519, owned by fly).
-#   --from ADDRS     restricts the key to the container's address (authorized_keys from=).
+#   --from ADDRS     REQUIRED: restricts the key to the container's address (authorized_keys from=).
 #   --cpus LIST      AllowedCPUs for the shadow, a drop-in: its own cores, never shared with the
 #                    live fly's NUMA node.
 #   --threads N      the shadow's sweep threads (default 4; one per core in --cpus). It must run
 #                    clearly faster than real time: see the runbook's "Which box".
 #
 # What it sets up:
-#   - user flyshadow, home /srv/fly-shadow-remote (the mirror; 0750);
-#   - /srv/fly-shadow-remote/.ssh/authorized_keys, ROOT-owned (the user cannot change it), with one
-#     line: restrict,command="/opt/fly/current/fly-shadow ingest --root /srv/fly-shadow-remote"
-#     [,from="..."] <key>. restrict turns off forwarding, agent, X11 and the pty; the forced command
+#   - user flyshadow, the mirror /srv/fly-shadow-remote (flyshadow's; 0750) and, apart from it, the
+#     user's home /srv/fly-shadow-remote-home, ROOT-owned with a root-owned .ssh: flyshadow can
+#     neither change nor rename the key file (in a home it owned, it could rename .ssh);
+#   - /srv/fly-shadow-remote-home/.ssh/authorized_keys, ROOT-owned, with one
+#     line: restrict,command="/opt/fly/current/fly-shadow ingest --root /srv/fly-shadow-remote",from="..." <key>. restrict turns off forwarding, agent, X11 and the pty; the forced command
 #     ignores what the client asks for; the ingest writes nothing outside the mirror;
 #   - /etc/fly/fly-shadow-remote.env: FLY_ROM, FLY_DATASET (this box's paths);
 #   - flyshadow-remote.service and flyshadow-remote.path (enabled; the service starts at the first
 #     run id the relay brings).
-# Nothing here knows or stores the release container's address; the relay dials out to the box.
+# A re-run never follows a symlink under the mirror (flyshadow owns it and could plant one): it
+# refuses if any of the mirror's paths is a symlink, and leaves an existing directory as it is.
+# The release container's address is only in authorized_keys (from=); the relay dials out to the box.
 set -euo pipefail
 
 die() { echo "fly-shadow-remote-setup: $*" >&2; exit 2; }
 log() { echo "fly-shadow-remote-setup: $*"; }
 
 [ "$(id -u)" = 0 ] || die "run as root on the build box"
-[ $# -ge 3 ] || die "usage: fly-shadow-remote-setup RELEASE_TARBALL ROM_FILE RELAY_PUBKEY [--from ADDRS] [--cpus LIST] [--threads N]"
+[ $# -ge 3 ] || die "usage: fly-shadow-remote-setup RELEASE_TARBALL ROM_FILE RELAY_PUBKEY --from ADDRS [--cpus LIST] [--threads N]"
 tarball="$1"; rom="$2"; pubkey="$3"; shift 3
 from=""; cpus=""; threads=4
 while [ $# -gt 0 ]; do
@@ -48,6 +51,8 @@ while [ $# -gt 0 ]; do
 done
 here="$(cd "$(dirname "$0")" && pwd)"
 ROOT=/srv/fly-shadow-remote
+HOME_DIR=/srv/fly-shadow-remote-home
+[ -n "$from" ] || die "--from is required: the relay key must be restricted to the container's address"
 [ -f "$tarball" ] || die "no tarball $tarball"
 [ -f "$rom" ] || die "no ROM $rom"
 [ -f "$pubkey" ] || die "no public key $pubkey"
@@ -76,16 +81,39 @@ fi
 ln -sfn "$release" /opt/fly/current.tmp && mv -T /opt/fly/current.tmp /opt/fly/current
 log "/opt/fly/current -> $release"
 
-# The user and the mirror.
-id flyshadow >/dev/null 2>&1 || useradd --system --home-dir "$ROOT" --shell /bin/sh --user-group flyshadow
-install -d -o flyshadow -g flyshadow -m 0750 "$ROOT"
-for d in trace hot durable out; do install -d -o flyshadow -g flyshadow -m 0750 "$ROOT/$d"; done
-install -d -o root -g root -m 0755 "$ROOT/.ssh"
-line="restrict,command=\"/opt/fly/current/fly-shadow ingest --root $ROOT\""
-[ -n "$from" ] && line="$line,from=\"$from\""
-printf '%s %s\n' "$line" "$key" > "$ROOT/.ssh/authorized_keys.new"
-chown root:root "$ROOT/.ssh/authorized_keys.new"; chmod 0644 "$ROOT/.ssh/authorized_keys.new"
-mv -f "$ROOT/.ssh/authorized_keys.new" "$ROOT/.ssh/authorized_keys"
+# The user, the mirror and the user's home. The home and its .ssh are root's; the mirror is
+# flyshadow's, so nothing in it is trusted: no symlink is followed there, as root.
+[ -L "$ROOT" ] && die "$ROOT is a symlink: refusing to follow it"
+[ -L "$HOME_DIR" ] && die "$HOME_DIR is a symlink: refusing to follow it"
+if id flyshadow >/dev/null 2>&1; then
+    [ "$(getent passwd flyshadow | cut -d: -f6)" = "$HOME_DIR" ] || usermod --home "$HOME_DIR" flyshadow
+else
+    useradd --system --home-dir "$HOME_DIR" --no-create-home --shell /bin/sh --user-group flyshadow
+fi
+if [ -e "$ROOT" ]; then
+    [ -d "$ROOT" ] || die "$ROOT is not a directory"
+else
+    mkdir -m 0750 "$ROOT"
+    chown -h flyshadow:flyshadow "$ROOT"
+fi
+for d in trace hot durable out; do
+    [ -L "$ROOT/$d" ] && die "$ROOT/$d is a symlink: refusing to follow it"
+    if [ -e "$ROOT/$d" ]; then
+        [ -d "$ROOT/$d" ] || die "$ROOT/$d is not a directory"
+    else
+        mkdir -m 0750 "$ROOT/$d"
+        chown -h flyshadow:flyshadow "$ROOT/$d"
+    fi
+done
+# An earlier version of this script kept .ssh in the mirror, where flyshadow could rename it.
+if [ -e "$ROOT/.ssh" ] || [ -L "$ROOT/.ssh" ]; then rm -rf "$ROOT/.ssh"; fi
+if [ -L "$HOME_DIR/.ssh" ]; then rm -f "$HOME_DIR/.ssh"; fi
+install -d -o root -g root -m 0755 "$HOME_DIR"
+install -d -o root -g root -m 0755 "$HOME_DIR/.ssh"
+line="restrict,command=\"/opt/fly/current/fly-shadow ingest --root $ROOT\",from=\"$from\""
+printf '%s %s\n' "$line" "$key" > "$HOME_DIR/.ssh/authorized_keys.new"
+chown root:root "$HOME_DIR/.ssh/authorized_keys.new"; chmod 0644 "$HOME_DIR/.ssh/authorized_keys.new"
+mv -f "$HOME_DIR/.ssh/authorized_keys.new" "$HOME_DIR/.ssh/authorized_keys"
 log "authorized_keys: the relay key may run only the ingest"
 
 # The cartridge and this box's paths.

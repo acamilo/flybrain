@@ -1,5 +1,5 @@
 # infra/box/flyshadow-remote.service — installed on a BUILD BOX, never on the release container,
-# by infra/bin/fly-shadow-remote-setup (SHADOW-02).
+# by infra/box/fly-shadow-remote-setup (SHADOW-02).
 #
 # The shadow run (SHADOW-01, legacy-gameboy-v1 section 18) moved off the release container: there it
 # cost the live fly real time (2026-09-30: RTF 0.999 -> 0.93-0.98 with the shadow SCHED_IDLE on the

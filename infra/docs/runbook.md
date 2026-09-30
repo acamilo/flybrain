@@ -587,6 +587,13 @@ pct exec <ctid> -- /opt/fly/bin/fly-shadow-run stop --restart-flysim   # shadow,
   - the verdict is for the release `/opt/fly/current` points to, with `flysim-session` and every
     other shadowed binary unchanged;
   - the shadow is caught up (at most about a minute behind);
+  - remote: `relay.json` is this run's (its `runId`, the verdict's and the drop-in's are one), has
+    no `coverageLost`, and its `traceAgeSeconds` (the newest live trace file's age) is at most 90 s:
+    a trace that is not being written while the shadow claims to follow refuses the check (a paused
+    flysim refuses too, until it runs);
+  - remote, the two hosts' clocks agree: the verdict's `updatedAt` is the box's clock and the check
+    bounds its age to within 60 s, so clock skew between the container and the box makes `check`
+    refuse (safe, not silent). Run NTP on both;
   - the verdict's `updatedAt` is neither older than the max age nor more than 60 s in the future
     (a clock stepped back must not keep an old pass fresh);
   - no segment was skipped for a reason other than the live side's own.
@@ -606,8 +613,16 @@ pct exec <ctid> -- /opt/fly/bin/fly-shadow-run stop --restart-flysim   # shadow,
   healthy: a dead box, a dead box shadow, a broken link or a sync more than a minute behind all stop
   it, and flysim then stops its trace as for a dead local shadow. A trace that stops that way while
   the shadow follows it is a `coverage` divergence: that process can no longer be compared. A
-  network blip shorter than the 10 minutes costs nothing: the relay resumes where the box's copy
-  ends.
+  network blip shorter than the 10 minutes costs nothing for the trace: the relay resumes where
+  the box's copy ends. The hot saves queued in the relay (400 MiB, about 12 minutes) cover the same
+  window; beyond it a save may be missed, which the unavailable-checkpoint allowance absorbs.
+  **A stop that did happen is never forgotten** (review B1): after an outage of more than 10 minutes
+  flysim stops its trace (`no-consumer`) and runs on untraced. When the link heals the box is alive
+  and, counted in trace lines, soon caught up, long before its shadow reaches that stop. The relay
+  therefore scans the trace bytes it forwards for the stop and sets `coverageLost` in
+  `/srv/fly/shadow/relay.json`; it reports itself not healthy (no heartbeat) and `check` refuses
+  until the box's shadow reaches the stop and diverges (`coverage`), or restarts (a new window,
+  which treats the stop as history). Catching up never clears it.
 - **Resources**: the shadow is a second whole brain, at about the live fly's CPU per frame.
   Remote, it runs on the box's own cores at normal priority (`flyshadow-remote.service`), and the
   container pays the relay (about 0.5 % of a core, measured; about 2.1 GB an hour over the network:
@@ -646,8 +661,9 @@ on the build box can reach the release container: the container dials out.
    `infra/box/` and the public key there, then
    `infra/box/fly-shadow-remote-setup flybrain-<version>.tar.gz <rom> id_ed25519.pub --from <container address> --cpus <its cores> --threads <one per core>`.
    It installs the release at the same `/opt/fly/releases/<version>` path (MANIFEST-verified,
-   root-owned), a `flyshadow` user whose home is the mirror `/srv/fly-shadow-remote`, a
-   root-owned `authorized_keys` whose only line is
+   root-owned), a `flyshadow` user whose home is a root-owned `/srv/fly-shadow-remote-home` (so the
+   user cannot rename `.ssh`; the mirror `/srv/fly-shadow-remote` is the user's and is never
+   followed through a symlink on a re-run), a root-owned `authorized_keys` whose only line is
    `restrict,command="/opt/fly/current/fly-shadow ingest --root /srv/fly-shadow-remote",from="…" <key>`,
    `/etc/fly/fly-shadow-remote.env` (the box's `FLY_ROM`, `FLY_DATASET`), and
    `flyshadow-remote.service` + `.path` (enabled). Put the box's host key into
@@ -659,7 +675,11 @@ on the build box can reach the release container: the container dials out.
    `FLY_SHADOW_REMOTE_KNOWN_HOSTS=/etc/fly/shadow-remote/known_hosts`
    (and `FLY_SHADOW_REMOTE_PORT` if the box's sshd is not on 22). `fly-shadow-run start` finds
    it and runs in remote mode.
-4. `fly-shadow-run start` as above. The ingest refuses a relay whose release directory or binaries
+4. `fly-shadow-run start` as above. **Then watch the live fly's realtime factor by hand for the
+   first hour** (`fly_realtime_factor` on the metrics endpoint): stop the shadow if its 30-minute
+   median is below 0.99. The guard's floor is a 5 % margin on the baseline and cannot see the
+   trace's cost (about 1.3 ms a frame, 2 to 3 %); on the rehearsal it tripped only by chance,
+   after an hour. The ingest refuses a relay whose release directory or binaries
    differ from the box's (another release on the container: re-run step 2 with its tarball);
    `journalctl -u flyshadow` on the container shows it.
 

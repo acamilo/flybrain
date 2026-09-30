@@ -39,6 +39,19 @@
 //! catch-up and age bounds therefore cover the sync as well as the shadow. `relay.json` beside it
 //! says whether the relay is healthy. A diverged verdict brings `divergence.json` and its
 //! checkpoint files back, and then the relay exits with status 3, as a diverged local shadow does.
+//! The box may send at most three divergence files, and only after a diverged verdict of this run
+//! ([`DivergenceFiles`]): a faulty box cannot fill the container's disk.
+//!
+//! **Coverage lost.** A trace that flysim stopped for want of a consumer (`"reason":"no-consumer"`,
+//! after ten minutes without a heartbeat) leaves the live fly running untraced, and the box's
+//! catch-up bound counts trace *lines*, so a box that has not yet reached that line looks caught up
+//! once the link is back. The relay therefore scans the trace bytes it forwards for that marker;
+//! on finding it, it sets `coverageLost` in `relay.json` (sticky, also across a relay restart of the
+//! same run) and reports itself unhealthy, which stops the heartbeat and makes `check` refuse. It
+//! clears only when the box's shadow starts a new window (a new `startedAt`: a restarted shadow
+//! takes that stop as history, as the `trace-cap` skip), and it is never cleared by the shadow
+//! catching up. `relay.json` also carries `traceAgeSeconds`, the age of the newest trace file, which
+//! `check` bounds.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
@@ -119,8 +132,17 @@ pub enum RelayEnd {
     Diverged,
 }
 
-/// Saves are read and queued for the box while less than this is waiting to be written.
-pub const QUEUE_SAVES: u64 = 256 << 20;
+/// Saves are read and queued for the box while less than this is waiting to be written. Hot saves
+/// come at about [`SAVE_BYTES_PER_SECOND`], and flysim keeps the trace on for ten minutes of a
+/// missing heartbeat, so this holds twelve minutes: a stall shorter than that loses no save the
+/// shadow needs. The relay unit's `MemoryMax` (`fly-shadow-run`) leaves room for it.
+pub const QUEUE_SAVES: u64 = 400 << 20;
+
+/// What the live stores produce, measured (256 MiB is about 8 minutes).
+pub const SAVE_BYTES_PER_SECOND: u64 = 560_000;
+
+/// How long flysim keeps tracing without a heartbeat (`FLY_TRACE_CONSUMER_STALE_SECONDS`).
+pub const STALE_WINDOW_SECONDS: u64 = 600;
 
 /// Trace bytes (and the journal) are queued only while less than this is waiting.
 pub const QUEUE_TRACE: u64 = 16 << 20;
@@ -226,6 +248,75 @@ struct Relay {
     diverged_at: Option<Instant>,
     have_divergence: bool,
     remote_lag: u64,
+    /// Divergence files taken from the box ([`DivergenceFiles`]).
+    files: DivergenceFiles,
+    /// The trace (and the box shadow's window) at which a no-consumer stop was forwarded.
+    coverage_lost: Option<CoverageLost>,
+    /// The `startedAt` of the latest relayed verdict: the box shadow's window.
+    window: Option<String>,
+    /// The end of the last scanned byte of each trace file and its tail, so a marker split between
+    /// two chunks is still found.
+    scan_tail: BTreeMap<String, (u64, Vec<u8>)>,
+}
+
+/// Coverage of the live fly was lost: flysim stopped its trace for want of a consumer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CoverageLost {
+    trace: String,
+    /// The box shadow's window when it was seen; `None` when no verdict had arrived (never clears).
+    window: Option<String>,
+    at: String,
+}
+
+/// The marker flysim writes when it stops a trace for want of a consumer.
+const NO_CONSUMER_MARKER: &[u8] = b"\"reason\":\"no-consumer\"";
+
+/// Whether `bytes` hold a whole `{"truncated":true,"reason":"no-consumer"}` line.
+fn has_no_consumer_marker(bytes: &[u8]) -> bool {
+    let mut from = 0;
+    while let Some(i) = bytes[from..]
+        .windows(NO_CONSUMER_MARKER.len())
+        .position(|w| w == NO_CONSUMER_MARKER)
+    {
+        let at = from + i;
+        let start = bytes[..at].iter().rposition(|b| *b == b'\n').map_or(0, |n| n + 1);
+        let end = bytes[at..].iter().position(|b| *b == b'\n').map_or(bytes.len(), |n| at + n);
+        if bytes[start..end].windows(16).any(|w| w == b"\"truncated\":true") {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
+}
+
+/// The divergence files the relay takes from the box: only after a diverged verdict of this run,
+/// at most three (`divergence.json` and one checkpoint of each side), each of bounded size.
+#[derive(Default)]
+pub struct DivergenceFiles {
+    names: BTreeSet<String>,
+}
+
+impl DivergenceFiles {
+    pub const MAX_FILES: usize = 3;
+    pub const MAX_JSON: usize = 4 << 20;
+    pub const MAX_CHECKPOINT: usize = 16 << 20;
+
+    /// Whether a file of this name and size may be written now.
+    pub fn admit(&mut self, name: &str, len: usize, diverged: bool) -> bool {
+        if !diverged || !remote::is_divergence_file(name) {
+            return false;
+        }
+        let cap = if name == "divergence.json" {
+            Self::MAX_JSON
+        } else {
+            Self::MAX_CHECKPOINT
+        };
+        if len > cap || (!self.names.contains(name) && self.names.len() >= Self::MAX_FILES) {
+            return false;
+        }
+        self.names.insert(name.to_owned());
+        true
+    }
 }
 
 fn log(message: impl std::fmt::Display) {
@@ -255,7 +346,12 @@ pub fn run(config: RelayConfig, stop: StopFlag) -> Result<RelayEnd, String> {
         diverged_at: None,
         have_divergence: false,
         remote_lag: 0,
+        files: DivergenceFiles::default(),
+        coverage_lost: None,
+        window: None,
+        scan_tail: BTreeMap::new(),
     };
+    relay.load_coverage_lost();
     let heartbeat = relay.config.trace_dir.join(flysim::trace::CONSUMER_FILE);
     let ended = relay.run_loop();
     let _ = std::fs::remove_file(&heartbeat);
@@ -543,7 +639,57 @@ impl Relay {
         let alive = conn.last_status.as_ref().is_some_and(|(at, alive, _)| {
             *alive && at.elapsed() <= self.config.alive_within
         });
-        alive && conn.caught_up_at.elapsed() <= self.config.stall && self.diverged_at.is_none()
+        alive
+            && conn.caught_up_at.elapsed() <= self.config.stall
+            && self.diverged_at.is_none()
+            && self.coverage_lost.is_none()
+    }
+
+    /// A previous relay of this run may have seen the stop: keep it (sticky).
+    fn load_coverage_lost(&mut self) {
+        let Ok(bytes) = std::fs::read(self.config.out_dir.join("relay.json")) else {
+            return;
+        };
+        let Ok(v) = serde_json::from_slice::<Value>(&bytes) else {
+            return;
+        };
+        if v["runId"].as_str() != Some(self.config.run_id.as_str()) {
+            return;
+        }
+        let lost = &v["coverageLost"];
+        if let Some(trace) = lost["trace"].as_str() {
+            self.coverage_lost = Some(CoverageLost {
+                trace: trace.to_owned(),
+                window: lost["window"].as_str().map(str::to_owned),
+                at: lost["at"].as_str().unwrap_or("").to_owned(),
+            });
+            self.window = lost["window"].as_str().map(str::to_owned);
+        }
+    }
+
+    /// Looks for flysim's no-consumer stop in trace bytes about to be sent.
+    fn scan_trace(&mut self, name: &str, offset: u64, chunk: &[u8]) {
+        let mut buf = match self.scan_tail.remove(name) {
+            Some((end, tail)) if end == offset => tail,
+            _ => Vec::new(),
+        };
+        buf.extend_from_slice(chunk);
+        if self.coverage_lost.is_none() && has_no_consumer_marker(&buf) {
+            log(format!(
+                "{name}: flysim stopped its trace for want of a consumer; coverage of the live fly \
+                 is lost for this window"
+            ));
+            self.coverage_lost = Some(CoverageLost {
+                trace: name.to_owned(),
+                window: self.window.clone(),
+                at: verdict::now_iso(),
+            });
+            // Say so at the next tick, not in up to five seconds.
+            self.last_relay_json = Instant::now() - Duration::from_secs(60);
+        }
+        let keep = buf.len().saturating_sub(256);
+        self.scan_tail
+            .insert(name.to_owned(), (offset + chunk.len() as u64, buf.split_off(keep)));
     }
 
     /// One tick's sends: saves, then trace bytes, then the journal read first.
@@ -671,6 +817,7 @@ impl Relay {
                 file.read_exact(&mut chunk)?;
                 self.trace_bytes += chunk.len() as u64;
                 self.trace_lines += chunk.iter().filter(|b| **b == b'\n').count() as u64;
+                self.scan_trace(&name, offset, &chunk);
                 conn.send(json!({"t": "trace", "name": name, "offset": offset}), chunk)?;
                 offset += want as u64;
                 conn.sent.insert(name.clone(), offset);
@@ -751,7 +898,15 @@ impl Relay {
             "verdict" => self.relay_verdict(conn, &frame.body),
             "file" => {
                 let name = h["name"].as_str().unwrap_or("");
-                if remote::is_divergence_file(name) {
+                if !self
+                    .files
+                    .admit(name, frame.body.len(), self.diverged_at.is_some())
+                {
+                    log(format!(
+                        "refused a file {name:?} ({} bytes) from the box",
+                        frame.body.len()
+                    ));
+                } else {
                     let path = self.config.out_dir.join(name);
                     remote::atomic_write(&path, &frame.body)
                         .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -794,6 +949,25 @@ impl Relay {
         (bytes, bytes.div_ceil(mean))
     }
 
+    /// Seconds since the newest trace file of this run was written (`None`: there is none).
+    fn trace_age_seconds(&self) -> Option<u64> {
+        follow::trace_files(&self.config.trace_dir)
+            .unwrap_or_default()
+            .iter()
+            .filter(|path| {
+                !matches!((super::trace_start_ms(path), self.run_start_ms),
+                          (Some(start), Some(run)) if start < run)
+            })
+            .filter_map(|path| std::fs::metadata(path).ok()?.modified().ok())
+            .max()
+            .map(|t| {
+                std::time::SystemTime::now()
+                    .duration_since(t)
+                    .unwrap_or_default()
+                    .as_secs()
+            })
+    }
+
     /// Writes the box's verdict here, when it is this run's, with the sync's backlog added.
     fn relay_verdict(&mut self, conn: &Conn, bytes: &[u8]) {
         let Ok(mut v) = serde_json::from_slice::<Value>(bytes) else {
@@ -813,6 +987,16 @@ impl Relay {
             "unsyncedBytes": unsynced_bytes,
             "unsyncedTransitions": unsynced,
         });
+        // A new shadow window takes an earlier stop as history (the `trace-cap` skip).
+        let window = v["startedAt"].as_str().map(str::to_owned);
+        if let (Some(lost), Some(now)) = (&self.coverage_lost, &window)
+            && lost.window.as_ref().is_some_and(|w| w != now)
+        {
+            log("the box's shadow started a new window: the earlier trace stop is history");
+            self.coverage_lost = None;
+            self.last_relay_json = Instant::now() - Duration::from_secs(60);
+        }
+        self.window = window;
         if v["status"] == "diverged" && self.diverged_at.is_none() {
             self.diverged_at = Some(Instant::now());
         }
@@ -825,12 +1009,17 @@ impl Relay {
     fn write_relay_json(&mut self, conn: Option<&Conn>, healthy: bool) {
         self.last_relay_json = Instant::now();
         let (unsynced_bytes, unsynced) = self.unsynced(conn);
+        let coverage_lost = self.coverage_lost.as_ref().map(|c| {
+            json!({"trace": c.trace, "window": c.window, "at": c.at})
+        });
         let value = json!({
             "format": "fly-shadow-relay-v1",
             "updatedAt": verdict::now_iso(),
             "runId": self.config.run_id,
             "connected": conn.is_some(),
             "healthy": healthy,
+            "coverageLost": coverage_lost,
+            "traceAgeSeconds": self.trace_age_seconds(),
             "remoteAlive": conn.and_then(|c| c.last_status.as_ref()).map(|(_, alive, _)| *alive),
             "remoteWhy": conn.and_then(|c| c.last_status.as_ref()).map(|(_, _, why)| why.clone()),
             "caughtUpSecondsAgo": conn.map(|c| c.caught_up_at.elapsed().as_secs()),
@@ -892,4 +1081,54 @@ pub fn ssh_command(
     // Ignored by the box: its authorized_keys forces `fly-shadow ingest`.
     argv.push("fly-shadow-ingest".to_owned());
     argv
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_no_consumer_stop_is_found_and_nothing_else_is() {
+        assert!(has_no_consumer_marker(
+            b"{\"a\":1}\n{\"reason\":\"no-consumer\",\"truncated\":true}\n"
+        ));
+        assert!(has_no_consumer_marker(
+            b"{\"truncated\":true,\"reason\":\"no-consumer\"}"
+        ));
+        // The byte cap is an allowed skip (`trace-cap`), not a lost consumer.
+        assert!(!has_no_consumer_marker(
+            b"{\"reason\":\"byte-cap\",\"truncated\":true}\n"
+        ));
+        // Not a marker line.
+        assert!(!has_no_consumer_marker(b"{\"note\":{\"reason\":\"no-consumer\"}}\n"));
+        assert!(!has_no_consumer_marker(b""));
+    }
+
+    #[test]
+    fn divergence_files_come_only_after_a_diverged_verdict_and_are_bounded() {
+        let mut files = DivergenceFiles::default();
+        assert!(!files.admit("divergence.json", 10, false), "not diverged yet");
+        assert!(!files.admit("../evil", 10, true));
+        assert!(!files.admit("divergence.json", DivergenceFiles::MAX_JSON + 1, true));
+        assert!(files.admit("divergence.json", 10, true));
+        assert!(files.admit("divergence.json", 10, true), "the same file again");
+        assert!(files.admit("divergence-live-g1.checkpoint", 1 << 20, true));
+        assert!(!files.admit(
+            "divergence-shadow-g1.checkpoint",
+            DivergenceFiles::MAX_CHECKPOINT + 1,
+            true
+        ));
+        assert!(files.admit("divergence-shadow-g1.checkpoint", 1 << 20, true));
+        assert!(
+            !files.admit("divergence-shadow-g2.checkpoint", 1, true),
+            "a fourth file"
+        );
+    }
+
+    #[test]
+    fn the_saves_queue_holds_the_whole_stale_window() {
+        // Review N5: a stall of up to the trace's ten-minute stale window must not lose the saves
+        // the shadow needs (with a margin of a fifth).
+        const { assert!(QUEUE_SAVES >= STALE_WINDOW_SECONDS * SAVE_BYTES_PER_SECOND * 6 / 5) };
+    }
 }

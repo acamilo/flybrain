@@ -736,20 +736,24 @@ rs_start "a remote file without its key" "FLY_SHADOW_REMOTE=user@box
 FLY_SHADOW_REMOTE_KEY=$cs_tmp/missing-key
 FLY_SHADOW_REMOTE_KNOWN_HOSTS=$cs_tmp/missing-known"
 rm -rf "$cs_tmp"
-# SHADOW-02: `check` in remote mode also needs the relay healthy now (relay.json under a minute old).
+# SHADOW-02: `check` in remote mode also needs the relay healthy now (relay.json under a minute
+# old), of this run (the drop-in's id, the verdict's too), without coverageLost (review B1: flysim
+# stopped its trace for want of a consumer) and with a live trace written in the last 90 s.
 if command -v python3 >/dev/null 2>&1; then
     rc_tmp="$(mktemp -d "${TMPDIR:-/tmp}/fly-lint-relay.XXXXXX")"
     mkdir -p "$rc_tmp/bin" "$rc_tmp/shadow" "$rc_tmp/flyshadow.d"
     printf '#!/bin/sh\ncase "$1" in is-active) exit 0 ;; esac\nexit 0\n' > "$rc_tmp/bin/systemctl"
     chmod +x "$rc_tmp/bin/systemctl"
-    : > "$rc_tmp/flyshadow.d/remote.conf"
+    printf '[Service]\nEnvironment=FLY_SHADOW_RUN_ID=1790000000000\n' > "$rc_tmp/flyshadow.d/remote.conf"
     printf '{"rtfMean":1,"rtfSd":0,"lagRate":0,"samples":60,"margin":0.05}\n' > "$rc_tmp/shadow/baseline.json"
-    rc_check() { # name, expect (refused|passes-gates), relay.json (or none)
-        local rc=0 out
+    rc_check() { # name, expect (refused|passes-gates), relay.json (or none), verdict.json (default: this run's), [local]
+        local rc=0 out dropin_dir="$rc_tmp/flyshadow.d"
         rm -f "$rc_tmp/shadow/relay.json"
         [ "$3" = none ] || printf '%s\n' "$3" > "$rc_tmp/shadow/relay.json"
+        printf '%s\n' "${4:-{\"runId\":\"1790000000000\",\"status\":\"running\"\}}" > "$rc_tmp/shadow/verdict.json"
+        [ "${5:-}" = local ] && dropin_dir="$rc_tmp/none.d"
         out="$(PATH="$rc_tmp/bin:$PATH" FLY_SHADOW_DIR="$rc_tmp/shadow" FLY_SHADOW_BIN="$rc_tmp/none" \
-            FLY_SHADOW_REMOTE_DROPIN_DIR="$rc_tmp/flyshadow.d" "$INFRA_DIR/bin/fly-shadow-run" check 2>&1)" || rc=$?
+            FLY_SHADOW_REMOTE_DROPIN_DIR="$dropin_dir" "$INFRA_DIR/bin/fly-shadow-run" check 2>&1)" || rc=$?
         case "$2:$rc" in
             refused:1) pass "fly-shadow-run check (remote), $1: ${out#cutover refused: }" ;;
             passes-gates:2) pass "fly-shadow-run check (remote), $1: past the relay precondition" ;;
@@ -758,10 +762,20 @@ if command -v python3 >/dev/null 2>&1; then
     }
     now="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
     old="$(date -u -d '-5 min' +%Y-%m-%dT%H:%M:%S.000Z)"
+    good="\"updatedAt\":\"$now\",\"runId\":\"1790000000000\",\"healthy\":true,\"coverageLost\":null,\"traceAgeSeconds\":12"
     rc_check "no relay.json" refused none
-    rc_check "relay not healthy" refused "{\"updatedAt\":\"$now\",\"healthy\":false,\"connected\":true,\"remoteAlive\":false,\"remoteWhy\":\"the shadow has no heartbeat\"}"
-    rc_check "relay.json 5 minutes old" refused "{\"updatedAt\":\"$old\",\"healthy\":true}"
-    rc_check "relay healthy and current" passes-gates "{\"updatedAt\":\"$now\",\"healthy\":true}"
+    rc_check "relay not healthy" refused "{\"updatedAt\":\"$now\",\"runId\":\"1790000000000\",\"healthy\":false,\"connected\":true,\"remoteAlive\":false,\"remoteWhy\":\"the shadow has no heartbeat\"}"
+    rc_check "relay.json 5 minutes old" refused "{\"updatedAt\":\"$old\",\"runId\":\"1790000000000\",\"healthy\":true,\"traceAgeSeconds\":1}"
+    rc_check "relay healthy, run, trace current" passes-gates "{$good}"
+    # B1: healthy and caught up, but the live trace ended in a no-consumer stop the shadow has not reached.
+    rc_check "coverage lost while the relay reports healthy (B1)" refused "{\"updatedAt\":\"$now\",\"runId\":\"1790000000000\",\"healthy\":true,\"coverageLost\":{\"trace\":\"trace-1790000005000-4242.jsonl\",\"window\":\"w1\"},\"traceAgeSeconds\":12}"
+    rc_check "live trace not written for 5 minutes" refused "{\"updatedAt\":\"$now\",\"runId\":\"1790000000000\",\"healthy\":true,\"coverageLost\":null,\"traceAgeSeconds\":300}"
+    rc_check "no live trace file" refused "{\"updatedAt\":\"$now\",\"runId\":\"1790000000000\",\"healthy\":true,\"coverageLost\":null,\"traceAgeSeconds\":null}"
+    rc_check "relay.json of another run" refused "{\"updatedAt\":\"$now\",\"runId\":\"1789999999999\",\"healthy\":true,\"coverageLost\":null,\"traceAgeSeconds\":12}"
+    rc_check "verdict of another run" refused "{$good}" "{\"runId\":\"1789999999999\",\"status\":\"pass\"}"
+    rc_check "a local run's verdict (no run id) in remote mode" refused "{$good}" "{\"runId\":null,\"status\":\"pass\"}"
+    rc_check "a remote verdict without a remote drop-in" refused "{$good}" "{\"runId\":\"1790000000000\",\"status\":\"pass\"}" local
+    rc_check "a local verdict and no drop-in" passes-gates none "{\"runId\":null,\"status\":\"pass\"}" local
     rm -rf "$rc_tmp"
 fi
 # SHADOW-02: the build box's units live outside infra/units (05-deploy converges every unit there
@@ -785,6 +799,25 @@ else
         && pass "flyshadow-remote.path starts the shadow on a new run id" \
         || fail "flyshadow-remote.path must watch /srv/fly-shadow-remote/run-id"
 fi
+SETUP="$INFRA_DIR/box/fly-shadow-remote-setup"
+bash -n "$SETUP" && pass "fly-shadow-remote-setup parses" || fail "fly-shadow-remote-setup does not parse"
+# Review N3: the key file is outside anything flyshadow owns; no symlink is followed as root; --from is required.
+grep -qE '^HOME_DIR=/srv/fly-shadow-remote-home$' "$SETUP" \
+    && grep -qF 'install -d -o root -g root -m 0755 "$HOME_DIR/.ssh"' "$SETUP" \
+    && grep -qF 'authorized_keys.new' "$SETUP" && ! grep -qF '"$ROOT/.ssh/authorized_keys' "$SETUP" \
+    && pass "fly-shadow-remote-setup keeps authorized_keys in a root-owned home, not in the flyshadow-owned mirror" \
+    || fail "fly-shadow-remote-setup must put .ssh in a root-owned home (HOME_DIR), not in the mirror"
+if grep -nE '^[[:space:]]*(install -d|chown|chmod)[^#]*"\$ROOT' "$SETUP" | grep -v -- 'chown -h' | grep -q .; then
+    fail "fly-shadow-remote-setup must not install -d / chown / chmod under the flyshadow-owned mirror (it follows symlinks as root)"
+else
+    pass "fly-shadow-remote-setup never chowns or chmods under the mirror without -h, nor installs into it"
+fi
+grep -qF '[ -L "$ROOT/$d" ] && die' "$SETUP" \
+    && pass "fly-shadow-remote-setup refuses a symlink in the mirror on a re-run" \
+    || fail "fly-shadow-remote-setup must refuse a symlink under the mirror"
+grep -qF '[ -n "$from" ] || die "--from is required' "$SETUP" \
+    && pass "fly-shadow-remote-setup requires --from" \
+    || fail "fly-shadow-remote-setup must require --from"
 grep -qF 'restrict,command=\"/opt/fly/current/fly-shadow ingest --root $ROOT\"' "$INFRA_DIR/box/fly-shadow-remote-setup" \
     && pass "fly-shadow-remote-setup limits the relay key to the ingest (restrict, forced command)" \
     || fail "fly-shadow-remote-setup must write restrict,command=\"/opt/fly/current/fly-shadow ingest --root \$ROOT\""
