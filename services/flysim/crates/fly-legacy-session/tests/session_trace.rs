@@ -525,6 +525,18 @@ async fn run_booted(
 async fn fafb_boot_run_save_restore() {
     let Some(rom_path) = rom_path() else { return };
     let Some(dataset) = fafb() else { return };
+    // The live fly's checkpoints predate `pokered-unique8-v8` (row 68, v0.6.7), and a boot takes
+    // an older adapter's file only when the operator asks for its migration, as the v0.6.7
+    // deploy does. Both runtimes read the same list, so the comparison is unchanged.
+    if std::env::var_os("FLY_ACCEPT_ADAPTERS").is_none() {
+        // SAFETY: set before any runtime or thread of this test reads the environment.
+        unsafe {
+            std::env::set_var(
+                "FLY_ACCEPT_ADAPTERS",
+                flybrain_gb::pokemon_red::MIGRATES_FROM.join(","),
+            );
+        }
+    }
     // The rollback file (a ratchet rollback on the first boundary), and the live fly's largest
     // task ledgers: row 64 (42 KB) and the row 65 yard (46 KB), past the 32 KiB TypedValue bound
     // (TASK-01 review B1). `FLY_TASK01_BOOT_SOURCES` picks others (`name=path,...`).
