@@ -534,3 +534,114 @@ pub fn prune_saves(layout: &Layout, keep: u64) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A writer the test can read back.
+    #[derive(Clone, Default)]
+    struct Shared(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Shared {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn frames(out: &Shared) -> Vec<Frame> {
+        let bytes = out.0.lock().unwrap().clone();
+        let mut input = std::io::Cursor::new(bytes);
+        std::iter::from_fn(|| remote::read_frame(&mut input).unwrap()).collect()
+    }
+
+    fn config(root: &Path) -> IngestConfig {
+        let mut c = IngestConfig::new(
+            root.to_owned(),
+            "/opt/fly/releases/v1".to_owned(),
+            [("fly-shadow".to_owned(), "a".repeat(64))].into(),
+        );
+        c.status_every = Duration::from_secs(3600);
+        c
+    }
+
+    fn wire(frames: &[(Value, &[u8])]) -> std::io::Cursor<Vec<u8>> {
+        let mut bytes = Vec::new();
+        for (header, body) in frames {
+            remote::write_frame(&mut bytes, header.clone(), body).unwrap();
+        }
+        std::io::Cursor::new(bytes)
+    }
+
+    fn hello(release: &str) -> Value {
+        json!({"t": "hello", "protocol": remote::PROTOCOL, "runId": "1790000000000",
+               "release": release, "binaries": {"fly-shadow": "a".repeat(64)},
+               "env": {"FLY_MACRO_MODE": "macros", "FLY_ROM": "/elsewhere", "FLY_GAME": "a b"}})
+    }
+
+    #[test]
+    fn another_release_is_refused_before_anything_is_written() {
+        let root = tempfile::tempdir().unwrap();
+        let out = Shared::default();
+        let input = wire(&[(hello("/opt/fly/releases/v2"), b"")]);
+        let err = serve(input, Box::new(out.clone()), config(root.path())).unwrap_err();
+        assert!(err.contains("same path"), "{err}");
+        let got = frames(&out);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].kind(), "error");
+        assert!(!root.path().join("run-id").exists());
+    }
+
+    #[test]
+    fn a_run_is_mirrored_by_name_and_offset_only() {
+        let root = tempfile::tempdir().unwrap();
+        let layout = Layout::of(root.path());
+        std::fs::create_dir_all(&layout.hot).unwrap();
+        // The previous run's leftovers go when a new run says hello.
+        std::fs::write(layout.hot.join("7.checkpoint"), b"old").unwrap();
+        let name = "trace-1790000000001-42.jsonl";
+        let out = Shared::default();
+        let input = wire(&[
+            (hello("/opt/fly/releases/v1"), b""),
+            (json!({"t": "trace", "name": name, "offset": 0}), b""),
+            (json!({"t": "trace", "name": name, "offset": 0}), b"{\"a\":1}\n"),
+            // A chunk at the wrong offset is not appended: the relay is asked to resend.
+            (json!({"t": "trace", "name": name, "offset": 99}), b"x"),
+            (json!({"t": "ckpt", "store": "hot", "gen": 12}), b"FLYSIM01"),
+            (json!({"t": "journal", "name": "sugar-journal.jsonl"}), b"{}\n"),
+            (json!({"t": "bye"}), b""),
+        ]);
+        serve(input, Box::new(out.clone()), config(root.path())).unwrap();
+        assert_eq!(std::fs::read(layout.trace.join(name)).unwrap(), b"{\"a\":1}\n");
+        assert_eq!(std::fs::read(layout.hot.join("12.checkpoint")).unwrap(), b"FLYSIM01");
+        assert!(!layout.hot.join("7.checkpoint").exists());
+        assert_eq!(
+            std::fs::read_to_string(&layout.run_id).unwrap(),
+            "1790000000000\n"
+        );
+        // Only the forwarded, plain settings reach the box's env file.
+        assert_eq!(
+            std::fs::read_to_string(&layout.live_env).unwrap(),
+            "FLY_MACRO_MODE=macros\n"
+        );
+        let got = frames(&out);
+        assert_eq!(got[0].kind(), "state");
+        assert!(got.iter().any(|f| f.kind() == "resync" && f.header["size"] == 8));
+        // A path in a name is refused outright.
+        let input = wire(&[
+            (hello("/opt/fly/releases/v1"), b""),
+            (json!({"t": "trace", "name": "../x.jsonl", "offset": 0}), b"x"),
+        ]);
+        assert!(serve(input, Box::new(Shared::default()), config(root.path())).is_err());
+        assert!(!root.path().join("x.jsonl").exists());
+        // The same run reconnecting keeps the mirror.
+        let input = wire(&[(hello("/opt/fly/releases/v1"), b"")]);
+        let out = Shared::default();
+        serve(input, Box::new(out.clone()), config(root.path())).unwrap();
+        assert_eq!(frames(&out)[0].header["traces"][name], 8);
+    }
+}
