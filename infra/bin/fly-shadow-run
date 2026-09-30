@@ -549,7 +549,7 @@ PY
     [ -x "$BIN" ] || die "$BIN is missing"
     # The live service's configuration, for its compatibility string.
     set -a
-    # shellcheck disable=SC1091
+    # shellcheck disable=SC1090,SC1091
     . "${FLY_ENV_FILE:-/etc/fly/fly.env}"
     set +a
     # The release CUT-01 switches into and the binary it switches to: SERVE-01's service there.
