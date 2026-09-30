@@ -159,7 +159,7 @@ class RecoveryTests(unittest.TestCase):
         self.confirm(T0)
         self.assertEqual(self.acts, [("restart", None)])
 
-    def test_a_held_reset_does_not_climb_and_the_marker_expires(self):
+    def test_a_protected_reset_does_not_climb_but_the_archive_just_used_does(self):
         # protected: the restart keeps the level's slot, so the reset comes at the same rung later
         owned = T0 - 600
         recover.write_json(recover.STATE, {"level": 1, "bestRank": 12, "resets": [], "actedAt": 0,
@@ -167,11 +167,11 @@ class RecoveryTests(unittest.TestCase):
         self.confirm(T0)
         self.assertEqual(self.acts, [("restart", None)])
         self.assertEqual(recover.load(recover.STATE, {}).get("level"), 1)
-        # the archive just restored: same, and the marker is forgotten after AGAIN
+        # the archive just restored: a restart that climbs, and the marker is forgotten after AGAIN
         self.acts.clear()
         reset_at = T0 - recover.HOLD - 100
-        recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "resets": [reset_at], "actedAt": reset_at,
-                                           "lastReset": 11, "lastResetAt": reset_at})
+        recover.write_json(recover.STATE, {"level": 1, "bestRank": 12, "resets": [reset_at], "actedAt": reset_at,
+                                           "lastReset": 12, "lastResetAt": reset_at})
         self.confirm(T0 + 1000)
         self.assertEqual(self.acts, [("restart", None)])
         self.assertEqual(recover.load(recover.STATE, {}).get("level"), 2)
@@ -428,6 +428,17 @@ class ClosedLoopTests(unittest.TestCase):
     def test_without_a_catch_the_ladder_resets_early(self):
         acts = self.simulate({11: self.R11, 12: self.R12, 10: self.R10, 9: self.R10}, 24)
         self.assertLessEqual(next(a[0] for a in acts if a[1] == "reset"), 1, acts)
+
+    def test_a_trap_only_the_rung_below_escapes_is_reached_promptly(self):
+        # review r2 N1: the rung-12 replay re-earns progress, then traps; only rung 11 escapes.
+        # v0.7.0 reset to 11 at 2.08 h; holding the level on the archive just used took 24.75 h.
+        late12 = dict(events=[(30, "area"), (40, "pokedex")], trap=60, rank_after=[], start_rank=12)
+        clean11 = dict(self.R11, trap=None)
+        acts = self.simulate({11: clean11, 12: late12, 10: self.R10, 9: self.R10}, 96)
+        resets = [a for a in acts if a[1] == "reset"]
+        self.assertEqual([a[2] for a in resets], [12, 11], acts)
+        self.assertLessEqual(resets[-1][0], 8, acts)
+        self.assertLess([a[2] for a in resets].count(12), 2, acts)
 
 
 class WrapperTests(unittest.TestCase):

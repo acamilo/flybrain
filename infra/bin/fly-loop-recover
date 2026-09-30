@@ -291,11 +291,10 @@ def run(now=None, sleep=time.sleep, clock=None):
     resets_left = MAX_RESETS - len(state["resets"])
     action, target = plan(level, rank, state.get("bestRank", 0), resets_left, state.get("lastReset"))
     protected = action == "reset" and now - state.get("speciesAt", -PROTECT) < PROTECT
-    # A reset turned into a restart (protected catch, or the archive just restored) does not climb:
-    # the level keeps its slot for when the window ends, so it never drops a rung deeper (row 70).
-    held_reset = protected or (level and resets_left and action == "restart" and rank is not None
-                               and (rank if level == 1 else max(state.get("bestRank", 0), rank) - 1)
-                               == state.get("lastReset"))
+    # Only a catch-protected reset is held (the level keeps its slot, so it never drops a rung deeper
+    # while the window lasts, row 70). A step skipped because it would restore the archive just used
+    # does climb, so the ladder reaches the rung below promptly.
+    held_reset = protected
     if protected:
         action, target = "restart", None
     if action == "restart" and level and now - acted < HOLD:

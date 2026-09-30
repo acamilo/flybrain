@@ -30,7 +30,7 @@ a ladder one step per trap that outlives the previous step:
   same rung, once the window ends. Evolution also counts as a species owned.
 - **No archive twice in a row:** a reset never restores the same archive as the last reset,
   until a new best rung is reached or twelve hours have passed (`AGAIN`; a trap no restart clears
-  is reset again in bounded time, no later than before this rule). Such a step does not climb. A restore is deterministic, so the same archive replays the
+  is reset again in bounded time, no later than before this rule). Such a step does climb, so the rung below is reached promptly. A restore is deterministic, so the same archive replays the
   same run into the same trap. Row 70's second reset to rung 11 matched the first one event for
   event: the same Zubat caught, the same trap an hour later, and the catch erased. That step is
   a restart instead.
