@@ -953,3 +953,17 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   segment only). The stage folds a battle's hits into one ticker row ("damage dealt x3 KO").
   Survey: v8 beat the trainer from 2 of 3 starts (v7 0 of 3); move choice did not measurably shift
   within two hours. Review: APPROVE-WITH-NOTES.
+- 2026-09-30 (v0.7.0, the port): the flybus session runtime ships beside the legacy loop, installed
+  and not selected. AGENT-01 (the brain as a worker), MEM-01 (the macros read a 64 KiB memory image
+  with the same engine), ENV-01 (the Game Boy as a worker), STATE-02 (one checkpoint store for
+  both runtimes, FLYSIM01 of record), TASK-01 (the macros in the coordinator), PERF-01 (an
+  in-process local lane: the session costs ~1.3x legacy per frame, down from 2.45x), SERVE-01
+  (`flysim-session` serves the same feed/control/metrics contracts; `fly-runtime session|legacy`
+  swaps the binary behind flysim.service; a crash loop falls back to legacy by itself), SHADOW-01
+  (`fly-shadow` replays the live fly's trace through the session runtime and compares every
+  transition, ledger and save byte; a baseline-relative guard stops it if the live fly suffers),
+  CUT-01 (the switch is a 30-minute speed probation: a median realtime factor under 0.97 falls back
+  with reason "speed"). Deploying changes nothing live: legacy's output is byte-identical to
+  v0.6.7. Cutover is `fly-shadow-run check && fly-runtime session` after three hours of zero
+  divergence; rollback is `fly-runtime legacy`. Every slice and the release candidate were
+  independently reviewed (APPROVE-WITH-NOTES).
