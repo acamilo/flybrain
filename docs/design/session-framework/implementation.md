@@ -441,6 +441,44 @@ B1, N1 and N3.
   - Against it, the legacy loop spends about 0.7 ms per frame outside the ticks.
   - The report `claude-task-01` has the per-phase table and what would close the rest.
 
+### PERF-01 — The session runtime's per-frame cost (port slice)
+
+**2026-09-30: built** on `port/perf-01` (off `port/task-01`, with `main` v0.6.7 merged) and
+awaiting review. Goal: cutover must not slow the live stream. TASK-01's fix round left the
+in-process session about 4.7 ms a frame above its brain, against 0.7 ms for everything the legacy
+loop does outside its ticks. No behaviour changes: the parity runs are identical frame by frame,
+in-process and process, and the compatibility string is unchanged.
+
+- **The local lane** (the big one; ipc-v1 section 1 and bus-v1 section 12, amended 2026-09-30).
+  An in-process worker's shell is offered to the coordinator directly (`worker::LocalLane`,
+  `launcher::Via::Local`, `WorkerRef::local`); `rpc::send` takes it for every endpoint method.
+  The request still goes through the shell's admission, deduplication, arrival order and
+  endpoint, and the reply is the same outcome. Handler media over the lane are in-memory
+  artifacts (`flybus::Artifact::in_memory`, `HandlerCtx::seal`): no store file, no seal copy,
+  no retain or open round trip. A bus call or a publication carries a sealed copy
+  (`rpc::promote`), begun while the task and the commits run. Process mode is untouched.
+  `FLY_SESSION_LOCAL_LANE=0` runs in-process over the bus. Every synthetic transport test also
+  runs over the lane.
+- **The spike bitset** is the union of the kernel's per-tick spike lists, gathered while Prepare
+  ticks (`LifNetwork::tick_spikes`), instead of a 139,255-neuron scan in Commit. Same bits,
+  proved by `flybrain-core/tests/tick_spikes.rs` and compared every frame by the parity runs.
+- **The session topic** gets a committed snapshot every 60th boundary in a service session (and
+  at every boundary with events or boundary actions), not every other one. Nothing in the
+  release subscribes; the stream is the legacy feed.
+- Small ones: a single dispatch job is called in place, the shell moves the reply result
+  instead of cloning it, `digest_views` and `media_bytes` as SERVE-01 has them, and profiling
+  spans for the shell, the lane, each handler and the brain's own phase clock.
+- **Tried and dropped**: publishing without waiting for the router (a deferred publish) and any
+  other overlap with Prepare. On the release CPU the sweep owns every core of the cpuset, and
+  work beside the ticks slowed them by up to 30% in one run. Spikes only at the feed rate
+  (an AGENT-01 amendment) was not needed once the bitset cost nothing.
+- **Measured** (`tests/speed_ab.rs` with `FLY_PERF_ARMS`, `FLY_PERF_SERVICE`, `FLY_PERF_WORKERS`;
+  the report `claude-perf-01` has the tables): on the release host's CPU model, pinned to the
+  release cpuset's size, the in-process session's cost outside the brain fell from about 9.3 ms
+  to about 3.5 ms a frame. The legacy loop's is about 1.3 ms. What is left is mostly the per-frame
+  memory image (0.37 ms, 65,536 shim reads), the three domain calls' JSON, digests and cache
+  (about 0.5 ms together) and the task's evaluation, which the legacy loop does too.
+
 ### STATE-01 — Coherent all-participant checkpoint/recovery
 
 **Depends on:** SESSION-02, MEDIA-01; validate with fake agents first, then AGENT-01/ENV-01.
