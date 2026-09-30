@@ -943,3 +943,13 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   checkpoint: v8 beat the trainer in 2 of 3 (one run also won the Boulder Badge), v7 in 0 of 3, but
   the move choice did not shift more under v8 than v7 (BUBBLE ~15% -> ~20% in both): no learned
   preference is shown inside two hours (`infra/docs/macros-traps.md` row 68).
+- 2026-09-30 (v0.6.7, the operator's call, reward catalog): the fly is paid for damage its own
+  attacks deal. Row 67 found the live fly losing the Pewter Gym's Jr. Trainer on repeat with TAIL
+  WHIP while BUBBLE was on the pad; the operator chose a reward over a pad rule. HP removed on the
+  fly's own turn (hWhoseTurn 0, not Struggle; poison/burn/Leech Seed/recoil/enemy moves never pay;
+  healed HP not re-paid) pays 0.20 per whole enemy mon, +0.05 for knocking out a trainer's mon,
+  capped at 0.50 per battle (a trainer beaten); wild battles diminish 1, 1/2, 1/3 per
+  map/species/level. Adapter pokered-unique8-v8, migrating v7 (compat differs in the adapter
+  segment only). The stage folds a battle's hits into one ticker row ("damage dealt x3 KO").
+  Survey: v8 beat the trainer from 2 of 3 starts (v7 0 of 3); move choice did not measurably shift
+  within two hours. Review: APPROVE-WITH-NOTES.
