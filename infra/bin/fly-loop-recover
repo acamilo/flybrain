@@ -3,8 +3,11 @@
 
 Ladder (infra/docs/loop-recovery.md): restart flysim, then reset to the current rung's
 milestone, then to the rung below. It climbs one step per confirmed trap that outlives
-the previous step, and starts over once the fly reaches a new best rung or has been
-quiet for QUIET seconds. A router model can delay a step, never deny it.
+the previous step, and starts over once the fly reaches a new best rung, makes lasting
+progress after the last step, or has been quiet for QUIET seconds. A milestone reset
+never erases a species owned within PROTECT seconds, and never repeats the last reset's
+archive (a restore replays it exactly); either is a restart instead. A router model can
+delay a step, never deny it.
 """
 import json
 import os
@@ -29,6 +32,7 @@ QUIET = 6 * 3600     # this long without a suspected report starts the ladder ov
 HOLD = 3 * 3600      # restart-only spacing while the reset budget is spent
 DAY = 24 * 3600
 MAX_RESETS = 2       # milestone resets per DAY
+PROTECT = 6 * 3600   # a species owned this recently is not reset away (row 70)
 VETO_LIMIT = 3       # model vetoes of one step before it goes ahead anyway
 MODEL_BUDGET = 90    # seconds across all models in one decision
 VERIFY_TIMEOUT = 240
@@ -142,16 +146,19 @@ def rungs():
     return sorted(found)
 
 
-def plan(level, rank, best, resets_left):
+def plan(level, rank, best, resets_left, last_reset=None):
     """(action, target rung) for a ladder level; a spent budget or no restorable archive is a restart.
 
     Level 1 resets to the current rung's archive; level 2 and beyond to the rung below the best,
-    and never lower, so repeated days of a trap cannot walk the run down the ladder.
+    and never lower, so repeated days of a trap cannot walk the run down the ladder. The archive
+    the last reset restored is not restored again (`last_reset`, cleared by a new best rung): a
+    restore is deterministic, so the same archive replays the same run into the same trap (row 70:
+    the second reset to rung 11 matched the first event for event).
     """
     if level == 0 or not resets_left or rank is None:
         return "restart", None
     target = rank if level == 1 else max(best, rank) - 1
-    if target > rank or target not in restorable_rungs():
+    if target > rank or target == last_reset or target not in restorable_rungs():
         return "restart", None
     return "reset", target
 
@@ -226,6 +233,7 @@ def run(now=None, sleep=time.sleep, clock=None):
         if level:
             log({"at": now, "event": "ladder-reset", "why": "new best rung", "rank": rank})
         state.update(bestRank=rank, level=0)
+        state.pop("lastReset", None)
         level = 0
     last = state.get("lastSuspectedAt")
     if level and last and now - last > QUIET:
@@ -234,6 +242,19 @@ def run(now=None, sleep=time.sleep, clock=None):
     state["resets"] = [at for at in state.get("resets", []) if now - at < DAY]
 
     at = report.get("at")
+    # Row 70: lasting progress in the probe's window (a new rung, a species owned, a map entered,
+    # a trainer or badge beaten; the watchdog's window.progress). The ladder climbs for a trap that
+    # OUTLIVES its last step; one that follows real progress after that step is a new trap and
+    # starts again from a restart. A species owned is also kept from a milestone reset for PROTECT.
+    progress = (report.get("window") or {}).get("progress") or {}
+    if type(at) is int and 0 <= now - at <= 600 and type(progress) is dict:
+        if type(progress.get("lasting")) is int and progress["lasting"] > 0:
+            state["progressAt"] = max(at, state.get("progressAt", 0))
+        if type(progress.get("species")) is int and progress["species"] > 0:
+            state["speciesAt"] = max(at, state.get("speciesAt", 0))
+    if level and state.get("progressAt", 0) > state.get("actedAt", 0) + SETTLE:
+        log({"at": now, "event": "ladder-reset", "why": "progress since the last step", "rank": rank})
+        state["level"] = level = 0
     # The last probe that saw progress (new places, or a higher rung than the last probe), kept across
     # restarts and reboots so the stream's STUCK time counts the whole trap, not the last streak.
     delta = (report.get("places") or {}).get("delta")
@@ -265,10 +286,18 @@ def run(now=None, sleep=time.sleep, clock=None):
         return "waiting for next probe"
 
     resets_left = MAX_RESETS - len(state["resets"])
-    action, target = plan(level, rank, state.get("bestRank", 0), resets_left)
+    action, target = plan(level, rank, state.get("bestRank", 0), resets_left, state.get("lastReset"))
+    protected = action == "reset" and now - state.get("speciesAt", -PROTECT) < PROTECT
+    if protected:
+        action, target = "restart", None
     if action == "restart" and level and now - acted < HOLD:
         write_json(STATE, state)
-        return "holding: reset budget spent, next restart after the hold"
+        if protected:
+            return "holding: a species owned within the protection window, next restart after the hold"
+        return "holding: no reset to take, next restart after the hold"
+    if protected:
+        log({"at": now, "event": "protect", "why": "a species owned within the protection window",
+             "speciesAt": state["speciesAt"], "rank": rank})
 
     stuck, model = verdict(report)
     if stuck is False and state.get("vetoes", 0) < VETO_LIMIT:
@@ -294,6 +323,7 @@ def run(now=None, sleep=time.sleep, clock=None):
     state.pop("observedAt", None)
     if action == "reset":
         state["resets"].append(started)
+        state["lastReset"] = target
     write_json(STATE, state)
     notice(base, "acting", started)
     ok = act(action, target)

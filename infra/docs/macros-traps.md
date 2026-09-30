@@ -3629,3 +3629,54 @@ ROM tests on the build box (rom-env sourced):
 The stub reaches row 70 by itself. From the live rung-12 archive (Mt. Moon's mouth, one ball),
 three uniform-stub seeds each catch a Zubat within 4,000 frames and meet the same Lass. There
 Wartortle faints at f27,361, f34,656 and f35,284.
+
+### The watchdog and the ladder: every act was on a real trap
+
+The day's six acts, replayed probe by probe through check 10 and the ladder from the live logs
+(open loop; uniqueLocations proxied from the tile rewards). The base replay reproduces the live
+history: restarts at 05:55, 08:55 and 11:55, and resets to rung 11 at 16:50 and 18:49 (live:
+16:54 and 18:50).
+
+| live act | window | what the fly was doing |
+| --- | --- | --- |
+| restarts 05:57, 08:58, 11:59 (map 59) | `unwon-battles`, 05:50 to 13:50 | Row 67 again, against a Lass on Mt. Moon 1F. `MOVE 2` (TAIL WHIP) on six turns in seven, BUBBLE doing 5 to 8 to her Oddish, 34 to 48 moves per window, no battle won, whiteout and back. Beaten after the 11:59 restart (13:54, then the other 1F trainers, B2F's and the Super Nerd) |
+| reset to 11, 16:54 (map 61, B2F) | `unrewarded`, 15:05 to 16:50 | A wild encounter every ~20 s, `RUN` every time (220), `GO FRONTIER`/`GO WARP` between them, and no new tile or reward for 1 h 50 min. The battles were ending and the fly was moving between them, but on ground it had already covered. Mechanism not established: no checkpoint from before 16:54 survives (row 64/65 territory, B2F's far side) |
+| reset to 11, 18:50 (map 59) | `dominant`/`sequence`, 17:59 on | Row 70's list: `NEXT` alone for 58 brain minutes |
+
+So check 10 read no cave as a trap. Healthy cave windows (17:04 to 17:54: Route 3 and Mt. Moon
+battles won, a catch, new areas) peaked at 94% `NEXT`, and the tile gate kept them clear. Two
+suggested relaxations are **not** supported by the evidence:
+
+- "Battles ending and the fly moving between them": the 16:54 window was exactly that for
+  1 h 50 min, with nothing new.
+- Counting the damage reward's KO as a win: the Lass ring had 45 KOs of her first Pokémon in
+  eight hours and never won.
+
+The watchdog's flags are unchanged. Every replayed log (rows 58, 60 to 64, 67, 70) flags on the
+same probes with the same reasons, base and branch.
+
+What went wrong was the ladder. It stayed at level 3 to 4 from the morning's ring through a
+rung-11 reset and a full, rewarded climb back to Mt. Moon. The 18:50 reset then restored the
+same rung-11 archive as the 16:54 one. A restore is deterministic: the replay after it matched
+the one before event for event (1,138 of 1,138, same `brainMs`). So the reset erased the catch
+and walked back into the same list about an hour later. It also could not have helped: row 70's
+trap is in the game state, not the ledgers, so neither a restart nor a replay clears it.
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 70b | the ladder never started over after real progress. A trap after a reset and a rewarded climb back was treated as the old trap outliving its step | a reset, then progress, then any trap | `test_progress_after_the_last_step_starts_the_ladder_over`, `test_progress_while_a_step_settles_does_not_start_the_ladder_over` | **fixed**: `window.progress` in loop.json (report only; `lint.sh` check 10 case 9). Lasting progress more than `SETTLE` after the step returns the ladder to level 0 |
+| 70c | a reset restored the same archive as the last reset, which replays deterministically into the same trap | level 2 and above, where every step targets the rung below the best | `test_the_last_resets_archive_is_not_restored_again`, `test_a_reset_records_its_archive_and_a_new_best_rung_forgets_it` | **fixed**: that step is a restart |
+| 70d | a reset erased a catch made an hour earlier | any reset after a catch | `test_a_species_owned_recently_is_never_reset_away`, `test_a_probe_that_owns_a_species_starts_the_protection` | **fixed**: within six hours of a species owned, a reset is a restart (held three hours apart) |
+| 70e | the B2F wander: `RUN` from every encounter, walks on covered ground, nothing new for 1 h 50 min | Mt. Moon B2F after the Super Nerd | -- | **left, named**: no checkpoint survived. The next occurrence should be pulled before any reset |
+
+Ladder replay of the day (the same logs and the same start state, base against branch):
+
+- **Base**: restarts at 01:30, 05:55, 08:55, 11:55 and 15:10; resets to 11 at 16:50 and 18:49.
+- **Branch**: restarts at 01:30, 05:55, 07:15, 10:30, 13:30 and 15:10; a reset to 12 (the
+  current rung, not 11) at 16:50; a restart at 18:04.
+  - 07:15: AREA 60 at 06:48 started the ladder over.
+  - 18:04: the climb after 16:50 started the ladder over.
+  - After 18:04, no reset. The Zubat was owned at 17:46 and rung 12 was the last reset's
+    archive, so the branch holds to restarts three hours apart.
+
+The replay is open loop: the log after 16:50 is what the base's reset produced.

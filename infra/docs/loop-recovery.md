@@ -17,8 +17,20 @@ a ladder one step per trap that outlives the previous step:
 - **Budget:** at most two milestone resets per 24 hours. With the budget spent the step is a
   restart, at most every three hours, until a reset is free again. The same three-hour spacing applies
   when a reset level finds no restorable rung and restarts instead.
-- **Starting over:** the ladder returns to level 0 when the fly reaches a new best rung, or after
-  six hours with no suspected report.
+- **Starting over:** the ladder returns to level 0 when the fly reaches a new best rung, after
+  six hours with no suspected report, or when a probe's window shows lasting progress more than
+  20 minutes after the last step (row 70). Lasting progress is the watchdog's `window.progress`:
+  a new rung, a species owned for the first time, a map entered for the first time, or a trainer
+  or badge beaten. The run pays each of these once, so a ring cannot earn them twice. A trap that
+  follows real progress is a new trap, and it starts again from a restart.
+- **Protected catches:** a milestone reset never erases a species owned in the last six hours
+  (`PROTECT`, from `window.progress.species`). Within that window the step is a restart, spaced by
+  the hold like a spent budget, and `history.jsonl` records a `protect` event.
+- **No archive twice in a row:** a reset never restores the same archive as the last reset,
+  until a new best rung is reached. A restore is deterministic, so the same archive replays the
+  same run into the same trap. Row 70's second reset to rung 11 matched the first one event for
+  event: the same Zubat caught, the same trap an hour later, and the catch erased. That step is
+  a restart instead.
 
 A milestone step only uses an archive the running build can restore. `fly-loop-reset --list`
 compares each archive's compatibility string with `flysim --print-compatibility` and accepts an

@@ -117,6 +117,55 @@ class RecoveryTests(unittest.TestCase):
         self.confirm(T0, rank=13)
         self.assertEqual(self.acts, [("restart", None)])
 
+    # Row 70: the rung-11 reset replayed the run exactly (1,138 of 1,138 events), caught the Zubat
+    # again and walked into the same trap; the next step reset to rung 11 again and erased the catch.
+    def test_progress_after_the_last_step_starts_the_ladder_over(self):
+        recover.write_json(recover.STATE, {"level": 4, "bestRank": 12, "resets": [], "actedAt": T0 - 7200})
+        # an area and a species inside the windows of probes well after the step
+        self.tick(T0 - 3000, suspected=0, window={"progress": {"lasting": 2, "species": 0}})
+        self.assertIn("flysim restarted", self.confirm(T0))
+        self.assertEqual(self.acts, [("restart", None)])
+        history = [json.loads(line) for line in recover.HISTORY.read_text().splitlines()]
+        self.assertIn("progress since the last step", [event.get("why") for event in history])
+
+    def test_progress_while_a_step_settles_does_not_start_the_ladder_over(self):
+        recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "resets": [], "actedAt": T0 - 1500})
+        self.tick(T0 - 1400, suspected=0, window={"progress": {"lasting": 3, "species": 0}})
+        self.confirm(T0)
+        self.assertEqual(self.acts, [("reset", 11)])
+
+    def test_a_species_owned_recently_is_never_reset_away(self):
+        owned = T0 - recover.HOLD - 600
+        recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "resets": [],
+                                           "actedAt": T0 - recover.HOLD - 300, "speciesAt": owned})
+        self.assertIn("flysim restarted", self.confirm(T0))
+        self.assertEqual(self.acts, [("restart", None)])
+        history = [json.loads(line) for line in recover.HISTORY.read_text().splitlines()]
+        self.assertIn("protect", [event.get("event") for event in history])
+        # the hold still spaces the restarts, and says why
+        self.assertIn("protection window", self.confirm(T0 + 300 + recover.SETTLE + 10))
+        # the protection lasts PROTECT from the species; then the ladder resets as before
+        self.assertIn("reset to rung 11", self.tick(owned + recover.PROTECT + 60))
+
+    def test_a_probe_that_owns_a_species_starts_the_protection(self):
+        self.tick(T0, suspected=0, window={"progress": {"lasting": 1, "species": 1}})
+        self.assertEqual(recover.load(recover.STATE, {}).get("speciesAt"), T0)
+        self.assertEqual(recover.load(recover.STATE, {}).get("progressAt"), T0)
+
+    def test_the_last_resets_archive_is_not_restored_again(self):
+        acted = T0 - recover.HOLD - 100
+        recover.write_json(recover.STATE, {"level": 3, "bestRank": 12, "resets": [acted],
+                                           "actedAt": acted, "lastReset": 11})
+        self.confirm(T0)
+        self.assertEqual(self.acts, [("restart", None)])
+
+    def test_a_reset_records_its_archive_and_a_new_best_rung_forgets_it(self):
+        recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "resets": [], "actedAt": 0})
+        self.confirm(T0)
+        self.assertEqual(recover.load(recover.STATE, {}).get("lastReset"), 11)
+        self.tick(T0 + 300 + recover.SETTLE + 10, suspected=0, rank=13)
+        self.assertNotIn("lastReset", recover.load(recover.STATE, {}))
+
     def test_quiet_hours_start_the_ladder_over(self):
         recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "actedAt": 0,
                                            "lastSuspectedAt": T0 - recover.QUIET - 1})
