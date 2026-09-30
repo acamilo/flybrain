@@ -235,6 +235,70 @@ struct Trace {
     payouts_by_kind: BTreeMap<&'static str, (u64, f64)>,
     move_starts: (u64, u64),
     wall_seconds: f64,
+    row66: Row66,
+    row69: Row69,
+}
+
+/// Row 69's tally: frames the throw's pad was up, and every naming screen -- how long, the fly's
+/// own presses on it, the name, and what ended it.
+#[derive(Default)]
+struct Row69 {
+    throw_pad_frames: u64,
+    keyboard_frames: u64,
+    keyboard_presses: u64,
+    /// The keyboard up now: brain ms it opened, frames, presses, longest, name, CONFIRM started.
+    open: Option<(f64, u64, u64, u8, String, bool)>,
+    keyboards: Vec<String>,
+    previous_mask: u32,
+    /// A, B and START going down on the keyboard, over the run.
+    keys: BTreeMap<&'static str, u64>,
+}
+
+/// `wStringBuffer` (`CalcStringLength`'s operand on the cartridge), in Red's charmap.
+fn row69_name(gb: &mut flybrain_gb::Emulator) -> String {
+    use flybrain_gb::MemoryReader;
+    (0..11u16)
+        .map(|index| gb.read8(0xcf4b + index))
+        .take_while(|byte| *byte != 0x50)
+        .map(|byte| match byte {
+            0x80..=0x99 => char::from(b'A' + (byte - 0x80)),
+            0xa0..=0xb9 => char::from(b'a' + (byte - 0xa0)),
+            0x7f => ' ',
+            _ => '?',
+        })
+        .collect()
+}
+
+/// Row 66's shop/ball/catch tally: pad frames, starts and outcomes of the watched buttons, and
+/// the cartridge beside them.
+#[derive(Default)]
+struct Row66 {
+    /// channel -> [free frames on the pad, starts, done, other outcomes]
+    tally: BTreeMap<&'static str, [u64; 4]>,
+    free_frames: u64,
+    counts: BTreeMap<&'static str, u64>,
+    log: Vec<String>,
+    last: Option<(u32, u32, u32, u32, u8)>,
+    was_wild: bool,
+}
+
+const ROW66_WATCH: [&str; 8] = [
+    "GO SHOP", "TALK", "CONFIRM", "BUY BALL", "BUY POTION", "LEAVE", "THROW BALL", "GO HEAL",
+];
+
+fn row66_read(gb: &mut flybrain_gb::Emulator) -> (u32, u32, u32, u32, u8) {
+    use flybrain_gb::MemoryReader;
+    use flybrain_gb::pokemon_red::symbols::ram;
+    let balls: u32 = flybrain_gb::pokemon_red::state::bag(gb)
+        .iter()
+        .filter(|item| (0x01..=0x04).contains(&item.id))
+        .map(|item| u32::from(item.count))
+        .sum();
+    let money = flybrain_gb::pokemon_red::state::money(gb);
+    let mons = u32::from(gb.read8(ram::wPartyCount)) + u32::from(gb.read8(0xda80));
+    let owned: u32 = (0..19u16).map(|i| gb.read8(ram::wPokedexOwned + i).count_ones()).sum();
+    let map = flybrain_gb::pokemon_red::state::player(gb).map_or(0xff, |player| player.map);
+    (balls, money, mons, owned, map)
 }
 
 /// Which sub-state of a battle this frame is, or `None` when no battle is running.
@@ -330,6 +394,23 @@ impl FrameObserver for Hunt {
             .then(|| flybrain_gb::pokemon_red::state::player(parts.emulator).map(|p| p.map))
             .flatten();
         self.battle_sub = battle_sub_state(parts.emulator);
+        if let Some(layer) = parts.macros.as_deref()
+            && layer.running().is_none()
+        {
+            let names: Vec<String> = layer.feed_palette().into_iter().map(|slot| slot.name).collect();
+            if names == ["THROW BALL"] || names == ["ITEM", "THROW BALL"] {
+                self.trace.row69.throw_pad_frames += 1;
+            }
+            if !names.is_empty() {
+                let row = &mut self.trace.row66;
+                row.free_frames += 1;
+                for watch in ROW66_WATCH {
+                    if names.iter().any(|name| name == watch) {
+                        row.tally.entry(watch).or_default()[0] += 1;
+                    }
+                }
+            }
+        }
         if let Some(sub) = self.battle_sub {
             *self.trace.battle_frames.entry(sub).or_insert(0) += 1;
             let pad = self.trace.battle_pads.entry(sub).or_default();
@@ -343,7 +424,66 @@ impl FrameObserver for Hunt {
         let ms = parts.agent.network.ms;
         let location = frame.location;
         let trace = &mut self.trace;
+        {
+            let naming = flybrain_gb::pokemon_red::state::naming_screen(parts.emulator);
+            let row = &mut trace.row69;
+            match (naming, row.open.take()) {
+                (Some(naming), open) => {
+                    let (since, frames, presses, longest, _, confirm) =
+                        open.unwrap_or((ms, 0, 0, 0, String::new(), false));
+                    // A press is a button going down while no macro runs: each of the eight bits
+                    // on its own edge, since the D-pad group is almost always holding one.
+                    let press = if executed.events.is_empty() {
+                        (executed.mask & !row.previous_mask).count_ones()
+                    } else {
+                        0
+                    };
+                    let letters = executed.mask & !row.previous_mask;
+                    for (bit, name) in [(0x10u32, "A"), (0x20, "B"), (0x40, "START")] {
+                        if executed.events.is_empty() && letters & bit != 0 {
+                            *row.keys.entry(name).or_default() += 1;
+                        }
+                    }
+                    let confirm = confirm || executed.events.iter().any(|event| event.name == "CONFIRM");
+                    row.keyboard_frames += 1;
+                    row.keyboard_presses += u64::from(press);
+                    row.open = Some((
+                        since,
+                        frames + 1,
+                        presses + u64::from(press),
+                        longest.max(naming.length),
+                        row69_name(parts.emulator),
+                        confirm,
+                    ));
+                }
+                (None, Some((since, frames, presses, longest, name, confirm))) => {
+                    row.keyboards.push(format!(
+                        "{:.2} min: {frames} frames ({:.1} brain s), {presses} presses, longest {longest}, \
+                         name {name:?}, ended by {}",
+                        (since - trace.began_ms) / MINUTE_MS,
+                        (ms - since) / 1000.0,
+                        if confirm { "CONFIRM (the bound)" } else { "the fly (ED or START)" }
+                    ));
+                }
+                (None, None) => {}
+            }
+            row.previous_mask = executed.mask;
+        }
         for event in &executed.events {
+            if std::env::var("FLY_TRAP_LOG_MACROS").is_ok_and(|value| value == "1") {
+                let pad: Vec<String> = parts.macros.as_deref().map(|layer| layer.feed_palette().into_iter().map(|slot| slot.name).collect()).unwrap_or_default();
+                println!(
+                    "macro {:8.2}s {:?} {} {} pad {pad:?}",
+                    (ms - trace.began_ms) / 1000.0,
+                    location,
+                    event.name,
+                    event.outcome.map_or("start", |outcome| outcome.as_str())
+                );
+            }
+            if let Some(watch) = ROW66_WATCH.iter().find(|watch| **watch == event.name) {
+                let key = match event.outcome { None => 1, Some(o) if o.as_str() == "done" => 2, Some(_) => 3 };
+                trace.row66.tally.entry(watch).or_default()[key] += 1;
+            }
             match event.outcome {
                 None => {
                     trace.starts.push((ms, event.name));
@@ -564,6 +704,8 @@ fn run(
             payouts_by_kind: BTreeMap::new(),
             move_starts: (0, 0),
             wall_seconds: 0.0,
+            row66: Row66::default(),
+            row69: Row69::default(),
             seeded: seeded_note,
             refusals: BTreeMap::new(),
             refusal_run: (None, 0),
@@ -640,6 +782,32 @@ fn run(
             );
         }
 
+        {
+            use flybrain_gb::MemoryReader;
+            let minute = (ms - began_ms) / MINUTE_MS;
+            let now = row66_read(parts.emulator);
+            let wild = parts.emulator.read8(flybrain_gb::pokemon_red::symbols::ram::wIsInBattle) == 1;
+            let row = &mut hunt.trace.row66;
+            if wild && !row.was_wild {
+                *row.counts.entry(if now.0 > 0 { "wild battles with a ball" } else { "wild battles, no ball" }).or_default() += 1;
+            }
+            row.was_wild = wild;
+            if let Some(last) = row.last {
+                if now.0 > last.0 { *row.counts.entry("balls gained").or_default() += u64::from(now.0 - last.0); row.log.push(format!("{minute:.2} min balls {} -> {} (map {:#04x})", last.0, now.0, now.4)); }
+                if now.0 < last.0 { *row.counts.entry("balls spent").or_default() += u64::from(last.0 - now.0); row.log.push(format!("{minute:.2} min balls {} -> {} (map {:#04x})", last.0, now.0, now.4)); }
+                if now.1 < last.1 && [0x2a, 0x38].contains(&now.4) { row.log.push(format!("{minute:.2} min money {} -> {} in mart {:#04x}", last.1, now.1, now.4)); }
+                if now.2 > last.2 && now.2 <= 26 { *row.counts.entry("mons gained (party+box)").or_default() += u64::from(now.2 - last.2); row.log.push(format!("{minute:.2} min party+box {} -> {}", last.2, now.2)); }
+                if now.3 > last.3 { *row.counts.entry("pokedex owned +").or_default() += u64::from(now.3 - last.3); row.log.push(format!("{minute:.2} min pokedex owned {} -> {}", last.3, now.3)); }
+                if now.4 != last.4 && [0x2a, 0x38, 0x43].contains(&now.4) {
+                    *row.counts.entry("mart entries").or_default() += 1;
+                    let parcel = flybrain_gb::pokemon_red::state::bag(parts.emulator).iter().any(|item| item.id == 0x46);
+                    row.log.push(format!("{minute:.2} min entered mart {:#04x} (money {}, balls {}, parcel {parcel})", now.4, now.1, now.0));
+                }
+            } else {
+                row.log.push(format!("start: balls {} money {} party+box {} owned {} map {:#04x}", now.0, now.1, now.2, now.3, now.4));
+            }
+            row.last = Some(now);
+        }
         let location = frame.location;
         if let Some((map, x, y)) = location {
             hunt.trace.steps.push((ms, map, x, y));
@@ -1000,6 +1168,37 @@ fn main() {
         trace.ended_in.0, trace.ended_in.1, trace.ended_why
     );
     walk_report(&trace);
+    {
+        let row = &trace.row66;
+        println!("\n## Row 66: shop, balls, catches\n\n{} free frames with a pad\n", row.free_frames);
+        println!("| button | frames on the pad | starts | done | other |\n| --- | ---: | ---: | ---: | ---: |");
+        for watch in ROW66_WATCH {
+            let [a, b, c, d] = row.tally.get(watch).copied().unwrap_or_default();
+            println!("| {watch} | {a} | {b} | {c} | {d} |");
+        }
+        println!("\n- counts: {:?}", row.counts);
+        if let Some(last) = row.last { println!("- end: balls {} money {} party+box {} owned {} map {:#04x}", last.0, last.1, last.2, last.3, last.4); }
+        for line in row.log.iter().take(150) { println!("- {line}"); }
+    }
+    {
+        let row = &trace.row69;
+        println!(
+            "\n## Row 69: the throw's pad and the keyboard\n\n- free frames with the throw's pad \
+             (THROW BALL alone, or with ITEM): {}\n- keyboard frames {}, the fly's own button presses \
+             on it {} (of them {:?})",
+            row.throw_pad_frames, row.keyboard_frames, row.keyboard_presses, row.keys
+        );
+        for line in &row.keyboards {
+            println!("- keyboard at {line}");
+        }
+        if let Some((since, frames, presses, longest, name, _)) = &row.open {
+            println!(
+                "- keyboard still up at the end: opened {:.2} min, {frames} frames, {presses} presses, \
+                 longest {longest}, name {name:?}",
+                (since - trace.began_ms) / MINUTE_MS
+            );
+        }
+    }
     for (rank, label, ms) in &trace.rungs {
         println!("- rung {rank} {label} at {:.2} brain minutes", ms / MINUTE_MS);
     }

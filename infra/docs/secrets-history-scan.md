@@ -49,7 +49,7 @@ a credential. Full list:
 
 | # | shape matched | path | commits (first → last touching) | verdict |
 | --- | --- | --- | --- | --- |
-| 1 | `pass show "$PASS_KEY"` shell pipelines, 4 blobs | `infra/06-secrets.sh` | `0d1a762` → `69816e6` | **False positive.** The script's whole job is to pipe `pass show` into `systemd-creds` on the container; the value never lands in a file and never in git. `PASS_KEY` holds a pass *entry name* (`twitch/fly-pokemon-key`), not a secret. |
+| 1 | `pass show "$PASS_KEY"` shell pipelines, 4 blobs | `infra/06-secrets.sh` | `0d1a762` → `69816e6` | **False positive.** The script's whole job is to pipe `pass show` into `systemd-creds` on the container; the value never lands in a file and never in git. `PASS_KEY` holds a pass *entry name* (`twitch/<channel>-key`), not a secret. |
 | 2 | `pass show … \| head -c8` in a verify helper, 6 blobs | `infra/verify.sh` | `0d1a762` → `57276d4` | **False positive.** Reads the first 8 bytes of the stored key to compare a prefix against what the container holds. The prefix is computed at run time and printed nowhere that is committed. |
 | 3 | `accessToken:` / `refreshToken:` struct fields, 3 blobs | `services/bridge/src/auth.ts` | `d9f00b6` → `48cd40a` | **False positive.** Twurple `AccessToken` field names in code (`accessToken: token.accessToken`). No literal values. |
 | 4 | `accessToken:` / `refreshToken:` struct fields, 1 blob | `services/bridge/tools/authorize.mts` | `77f5892` | **False positive.** Same: the interactive authorize tool writes the token it just fetched to a path outside the repo. |

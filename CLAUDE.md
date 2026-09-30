@@ -32,6 +32,8 @@ Read `docs/architecture-tour.md` first. Then `docs/stream-mvp-plan.md` for decis
   LAN addresses, container ids, host paths, account ids, channel names, people's names, `pass`
   entry names or forge URLs. Say "the host", "the release container", "the dev container", "the
   channel", "the operator"; put the real values in the operator's infra repo. Real values belong
-  in an env file outside the checkout — see `infra/env/README.md`. `infra/tests/lint.sh` refuses
-  the patterns; the rules live in the operator's infra repo and
-  `infra/tests/de-pii-allow.txt` the few legitimate mentions.
+  in an env file outside the checkout — see `infra/env/README.md`. `tools/pii-scan.sh` refuses
+  the patterns (run by `infra/tests/lint.sh`, `infra/build/tag-release.sh` and the pre-push hook
+  from `tools/install-hooks.sh`); the proper nouns it looks for live in the operator's private
+  pattern list (`$FLY_PII_PATTERNS`), never here, and `infra/tests/de-pii-allow.txt` lists the few
+  legitimate mentions. Run `tools/install-hooks.sh` once per clone.

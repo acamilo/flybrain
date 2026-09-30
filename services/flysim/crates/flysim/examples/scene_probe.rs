@@ -1743,6 +1743,7 @@ fn offers_survey(
     layer: &mut flysim::macros::MacroLayer,
     decoder: &mut PopulationDecoder,
     hold_ms: f64,
+    checkpoint: &flysim::store::Checkpoint,
 ) {
     use flybrain_gb::pokemon_red::macros::cartridge::MacroState;
     use flybrain_gb::pokemon_red::macros::geography::{self, Amenity};
@@ -1764,6 +1765,9 @@ fn offers_survey(
         let hp: Vec<String> =
             party.mons.iter().map(|mon| format!("{}/{} {:?}", mon.hp, mon.max_hp, mon.status)).collect();
         let bag: Vec<(u8, u8)> = state::bag(gb).iter().map(|item| (item.id, item.count)).collect();
+        let owned: u32 = (0..19u16).map(|i| gb.read8(ram::wPokedexOwned + i).count_ones()).sum();
+        let species: Vec<u8> = party.mons.iter().map(|mon| mon.species).collect();
+        let row66 = format!("- row66: party count {} species {species:?}, box count {}, pokedex owned {owned}", gb.read8(ram::wPartyCount), gb.read8(0xda80));
         let money = state::money(gb);
         let last = blackout(gb);
         let player = state::player(gb);
@@ -1775,6 +1779,7 @@ fn offers_survey(
         println!("- party {hp:?}; needs rest {}", palette::party_needs_rest(st));
         println!("- money {money}, bag {bag:?}");
         println!("- wLastBlackoutMap ($d719) = {last:#04x}");
+        println!("{row66}");
         let centers: Vec<(String, bool)> =
             CENTERS.iter().map(|map| (format!("{map:#04x}"), st.map_visited(*map))).collect();
         let marts: Vec<(String, bool)> =
@@ -1820,6 +1825,10 @@ fn offers_survey(
     let mut was_full = true;
     let mut counts: BTreeMap<&str, u64> = BTreeMap::new();
     let mut maps_seen: BTreeMap<u8, u64> = BTreeMap::new();
+    let owned_now = |gb: &mut Emulator| -> u32 { (0..19u16).map(|i| gb.read8(ram::wPokedexOwned + i).count_ones()).sum() };
+    let mut last_owned = owned_now(gb);
+    let mut last_mons = u32::from(gb.read8(ram::wPartyCount)) + u32::from(gb.read8(0xda80));
+    let mut was_wild = false;
     for frame in 0..budget {
         let bound = layer.bound_channels();
         if *ms >= next_pick && !bound.is_empty() && layer.running().is_none() {
@@ -1882,6 +1891,15 @@ fn offers_survey(
             }
         }
         let executed = legacy.execute(Some(layer), &active, 0, *ms, gb, adapter);
+        if let (Some(from), Some(to)) = (std::env::var("FLY_PROBE_SCREEN_FROM").ok().and_then(|v| v.parse::<usize>().ok()), std::env::var("FLY_PROBE_SCREEN_TO").ok().and_then(|v| v.parse::<usize>().ok()))
+            && frame >= from && frame <= to && (frame - from) % env_usize("FLY_PROBE_SCREEN_EVERY", 100) == 0
+        {
+            let battle = state::battle(gb).map(|battle| format!("{:?}", battle.menu));
+            println!("  screen f{frame} mask {:#04x} scene {} pad {names:?} running {:?} battle-menu {battle:?} text {:?} prompt {} wIsInBattle {} boxes {:?} listid {:#04x} itemlist {:02x?} shop {:?} stock {:?}", executed.mask, layer.scene_name(), layer.running(), state::text_box(gb), state::yes_no_prompt(gb), gb.read8(ram::wIsInBattle), state::drawn_boxes(gb), gb.read8(ram::wListMenuID), (0..6u16).map(|i| gb.read8(ram::wItemList + i)).collect::<Vec<u8>>(), state::shop(gb).map(|s| s.screen), state::shop_stock(gb));
+            for line in screen_text(gb) {
+                println!("      | {line}");
+            }
+        }
         // `FLY_PROBE_TRACE_MACRO=BUY BALL` prints every frame of that macro's first three runs:
         // the mask, the scene, the counter's screen, the cursor and the wallet.
         if let Some(want) = trace_macro.as_deref()
@@ -1953,6 +1971,23 @@ fn offers_survey(
         }
         was_wiped = wiped;
         was_full = full;
+        let owned = owned_now(gb);
+        if owned > last_owned {
+            *counts.entry("row66 pokedex owned +").or_default() += u64::from(owned - last_owned);
+            log.push(format!("f{frame} pokedex owned {last_owned} -> {owned}"));
+        }
+        last_owned = owned;
+        let mons = u32::from(gb.read8(ram::wPartyCount)) + u32::from(gb.read8(0xda80));
+        if mons > last_mons && mons <= 26 {
+            *counts.entry("row66 mons gained (party+box)").or_default() += u64::from(mons - last_mons);
+            log.push(format!("f{frame} party+box {last_mons} -> {mons}"));
+        }
+        if mons <= 26 { last_mons = mons; }
+        let wild = gb.read8(ram::wIsInBattle) == 1;
+        if wild && !was_wild {
+            *counts.entry(if balls(gb) > 0 { "row66 wild battles with a ball" } else { "row66 wild battles, no ball" }).or_default() += 1;
+        }
+        was_wild = wild;
         let now_balls = balls(gb);
         if now_balls > last_balls {
             *counts.entry("balls bought").or_default() += u64::from(now_balls - last_balls);
@@ -1974,8 +2009,22 @@ fn offers_survey(
             last_blackout = now_blackout;
         }
         if map != last_map {
+            // Row 66: `FLY_PROBE_SAVE_MART=<map>` with `FLY_PROBE_SAVE` writes the first frame the fly
+            // walks into that mart with the money for a ball, no ball and no parcel.
+            if let (Some(want), Some(path)) = (std::env::var("FLY_PROBE_SAVE_MART").ok().and_then(|v| u8::from_str_radix(v.trim_start_matches("0x"), 16).ok()), std::env::var_os("FLY_PROBE_SAVE"))
+                && map == Some(want)
+                && money >= 200
+                && frame >= env_usize("FLY_PROBE_SAVE_AFTER", 0)
+                && balls(gb) == 0
+                && !state::bag(gb).iter().any(|item| item.id == 0x46)
+                && !std::path::Path::new(&path).exists()
+            {
+                let bytes = save_state(checkpoint, gb, adapter, frame, &path);
+                log.push(format!("f{frame} saved {bytes} bytes to {}", std::path::Path::new(&path).display()));
+            }
             if map.is_some_and(|map| CENTERS.contains(&map) || MARTS.contains(&map)) {
-                log.push(format!("f{frame} entered {map:?} (party full {full}, money {money})"));
+                let parcel = state::bag(gb).iter().any(|item| item.id == 0x46);
+                log.push(format!("f{frame} entered {map:?} (party full {full}, money {money}, balls {}, parcel {parcel})", balls(gb)));
             }
             last_map = map;
         }
@@ -2152,7 +2201,7 @@ fn main() {
 
     // Row 62's offer survey: which shop, centre and ball buttons are dealt, frame by frame.
     if std::env::var("FLY_PROBE_CATCH").is_ok_and(|value| value == "offers") {
-        offers_survey(&mut gb, &mut adapter, &mut ms, &mut layer, &mut decoder, hold_ms);
+        offers_survey(&mut gb, &mut adapter, &mut ms, &mut layer, &mut decoder, hold_ms, &checkpoint);
         return;
     }
 

@@ -1,4 +1,4 @@
-//! The `pokered-unique8-v7` reward catalog.
+//! The `pokered-unique8-v8` reward catalog.
 //!
 //! A direct port of the prototype's `src/reward/catalog.ts`, including the
 //! declaration order, which is the order `counts` and `last` serialize in.
@@ -23,6 +23,7 @@ pub mod kind {
     pub const CATCH: &str = "catch";
     pub const TALK: &str = "talk";
     pub const ITEM: &str = "item";
+    pub const DAMAGE: &str = "damage";
 }
 
 /// What a `catch` of a species this run has already caught pays.
@@ -46,7 +47,7 @@ pub struct RewardRule {
     pub stimulation_ms: u32,
 }
 
-pub const REWARDS: [RewardRule; 11] = [
+pub const REWARDS: [RewardRule; 12] = [
     RewardRule {
         kind: kind::MILESTONE,
         label: "Story",
@@ -150,6 +151,22 @@ pub const REWARDS: [RewardRule; 11] = [
         trigger: "Item ball or hidden item picked up; once per item",
         value: 0.15,
         stimulation_ms: 120,
+    },
+    // The operator's decision of 2026-09-29: pay the fly for the HP its own attack removes from
+    // the Pokémon it is fighting, so the move that deals damage is worth more than the one that
+    // does not (row 67: TAIL WHIP 155, BUBBLE 23, TACKLE 0, 29 battles lost). Appended for the
+    // same reason as every rule since `boundary`.
+    //
+    // The value is what one whole enemy Pokémon's max HP pays, paid in proportion as it goes;
+    // `damage::KO_BONUS` adds 0.05 when the fly's hit knocks out a trainer's Pokémon, and
+    // `damage::BATTLE_CAP` holds a battle to the 0.50 the `trainer` rule pays for winning one.
+    // A wild battle is scaled 1, 1/2, 1/3 per (map, species, level) like the wild-KO rule.
+    RewardRule {
+        kind: kind::DAMAGE,
+        label: "Damage",
+        trigger: "HP the fly's own attack removed in battle, 0.20 per whole Pokémon; +0.05 a trainer's Pokémon knocked out; max 0.50 a battle; wild 1, 1/2, 1/3 per map/species/level",
+        value: 0.20,
+        stimulation_ms: 80,
     },
 ];
 
@@ -260,6 +277,9 @@ mod tests {
         assert_eq!(rule(kind::TALK).unwrap().stimulation_ms, 100);
         assert_eq!(rule(kind::ITEM).unwrap().value, 0.15);
         assert_eq!(rule(kind::ITEM).unwrap().stimulation_ms, 120);
+        // Nor this: the operator's damage rule, `pokered-unique8-v8`.
+        assert_eq!(rule(kind::DAMAGE).unwrap().value, 0.20);
+        assert_eq!(rule(kind::DAMAGE).unwrap().stimulation_ms, 80);
         assert!(rule("blackout").is_none(), "the catalog has no penalties");
         assert!(REWARDS.iter().all(|rule| rule.value > 0.0));
     }
@@ -281,9 +301,10 @@ mod tests {
                 kind::CATCH,
                 kind::TALK,
                 kind::ITEM,
+                kind::DAMAGE,
             ]
         );
-        assert_eq!(index(kind::ITEM), Some(REWARDS.len() - 1));
+        assert_eq!(index(kind::DAMAGE), Some(REWARDS.len() - 1));
     }
 
     #[test]

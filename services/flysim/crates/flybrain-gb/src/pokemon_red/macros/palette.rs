@@ -17,7 +17,8 @@ use crate::adapter::PlaceKind;
 
 use super::geography::{self, Amenity};
 use super::path::{self, Exit, Way};
-use super::state::{BattleMenu, Facing, Mon, Move, Scene, ShopScreen, Status};
+use super::state::{BattleKind, BattleMenu, Facing, Mon, Move, Naming, Scene, ShopScreen, Status};
+use crate::emulator::buttons;
 
 /// Slots in one palette: **one per macro type**, so a cell never moves.
 ///
@@ -447,6 +448,24 @@ impl Palette {
                 slots[usize::from(kind.slot())] = Some(MacroSpec::of(kind));
             }
         }
+        // Row 69, the operator's "throw on low HP only": with `THROW BALL` on this pad and the
+        // wild Pokémon's HP where a ball's HP factor is already at its best, the ball is the only
+        // answer on the attack side ([`throw_only`], [`WITHHELD_FOR_THE_THROW`]).
+        if slots[usize::from(MacroKind::ThrowBall.slot())].is_some() && throw_only(state) {
+            for kind in WITHHELD_FOR_THE_THROW {
+                slots[usize::from(kind.slot())] = None;
+            }
+        }
+        Self { scene, slots }
+    }
+
+    /// The naming screen's pad (row 69, `docs/design/macros.md` 12.32): [`naming_set`] with the
+    /// session's clock, which [`Palette::for_scene`] does not have.
+    pub fn for_naming(scene: Scene, naming: Naming, elapsed_ms: f64) -> Self {
+        let mut slots: [Option<MacroSpec>; SLOTS] = [None; SLOTS];
+        for kind in naming_set(naming, elapsed_ms) {
+            slots[usize::from(kind.slot())] = Some(MacroSpec::of(kind));
+        }
         Self { scene, slots }
     }
 
@@ -492,8 +511,14 @@ pub fn scene_set(scene: Scene, state: &mut dyn MacroState) -> Vec<MacroKind> {
         // 47 minutes, 189 of them on map `0x02` with no box on screen at all. So the pad is
         // empty there and the fly waits, which is the doctrine's own answer for a scene with
         // nothing sensible to press -- and the cartridge gives the buttons back by itself.
+        // The naming screen (row 69) is an `Unknown` with a pad of its own: the fly's raw
+        // buttons, and `CONFIRM` alone once the name is full or the bound has run
+        // ([`naming_set`]). Asked here with no clock, so only the full name ends it;
+        // [`Palette::for_naming`] is the same rule with the session's clock.
         Scene::Unknown => {
-            if state.text_open() {
+            if let Some(naming) = state.naming() {
+                naming_set(naming, 0.0)
+            } else if state.text_open() {
                 vec![Next, Back]
             } else {
                 Vec::new()
@@ -528,6 +553,11 @@ pub fn scene_set(scene: Scene, state: &mut dyn MacroState) -> Vec<MacroKind> {
             }
             if inside_center(state) {
                 set.push(Heal);
+            }
+            // Row 66: the mart's `HEAL`. One button from the floor that walks to the clerk,
+            // opens the counter and buys one ball ([`floor_ball_goals`]).
+            if inside_mart(state) {
+                set.push(BuyBall);
             }
             set.extend([GoShop, GoHeal, GoItem, GoNpc, GoFrontier, Talk]);
             set
@@ -606,6 +636,113 @@ pub fn scene_set(scene: Scene, state: &mut dyn MacroState) -> Vec<MacroKind> {
     }
 }
 
+/// How long the fly spells a name before `CONFIRM` is the only button, in brain milliseconds
+/// (row 69).
+///
+/// The operator's bound: "the stream can't sit on the keyboard forever". A minute is room for the
+/// ten letters a Pokémon's name holds at the readout's own pace -- `a` fires at most every 480 ms
+/// and a direction is held 800 ms -- several times over, and short enough to be one beat of the
+/// stream rather than a stall.
+pub const NAMING_BOUND_MS: f64 = 60_000.0;
+
+/// The fly's own buttons on the naming screen (row 69): the D-pad moves over the keyboard, `A`
+/// types the letter under the cursor (or ED, which hands the name back, or the case switch), `B`
+/// deletes the last letter, `START` hands the name back. `SELECT` (the case switch as a button)
+/// is not the operator's list and is left off.
+pub const NAMING_RAW: u8 = buttons::UP
+    | buttons::DOWN
+    | buttons::LEFT
+    | buttons::RIGHT
+    | buttons::A
+    | buttons::B
+    | buttons::START;
+
+/// The naming screen's macro buttons (row 69): **none** while the fly is spelling, so the pad is
+/// its raw buttons ([`NAMING_RAW`]); `CONFIRM` alone once the name is full or [`NAMING_BOUND_MS`]
+/// has run since the screen opened, and then the raw buttons are off.
+///
+/// Why not `CONFIRM` beside the raw buttons from the start: the macro group decides every 800 ms
+/// among the bound buttons and a group of one always has a winner, so a lone `CONFIRM` would hand
+/// back an empty name within a second of the keyboard appearing. The fly can end the name itself
+/// all along -- ED is a key on the keyboard and `START` is one of its buttons -- and the bound is
+/// the only thing that ends it for it. A name handed back empty is the species' own name: that is
+/// the cartridge (`AskName.declinedNickname`), not this.
+pub fn naming_set(naming: Naming, elapsed_ms: f64) -> Vec<MacroKind> {
+    if naming.full() || elapsed_ms >= NAMING_BOUND_MS {
+        vec![MacroKind::Confirm]
+    } else {
+        Vec::new()
+    }
+}
+
+/// The raw buttons the naming screen lets through for this pad (row 69): [`NAMING_RAW`] while the
+/// pad has no macro button on it, nothing once it has.
+pub fn naming_raw(palette: &Palette) -> u8 {
+    if palette.bound() == 0 { NAMING_RAW } else { 0 }
+}
+
+/// What `THROW BALL` takes off the pad beside it when it is the throw's turn (row 69): every move,
+/// `SWITCH`, `RUN`, and the bag's `BACK`.
+///
+/// The operator's decision is that the ball is the only *attack-side* answer, and the moves are
+/// that side. Of the rest, what stays is `ITEM`: it is only ever dealt for a Pokémon that is out,
+/// under half its HP, with a Potion the cartridge would take (section 13.1, row 63), so it is the
+/// one non-attack need that keeps the thrower standing while it throws. What goes:
+///
+/// - `SWITCH`'s reason is a healthier *fighter*, and there is nothing left to fight for;
+/// - `RUN` is bound on the fly's own Pokémon losing, and the enemy is at the weakest it will be:
+///   fleeing forfeits the catch the pad exists for, and a whiteout is the cartridge's own end;
+/// - `BACK` in the bag leads to the top-level menu, whose pad is the same ball.
+pub const WITHHELD_FOR_THE_THROW: [MacroKind; 7] = [
+    MacroKind::Move1,
+    MacroKind::Move2,
+    MacroKind::Move3,
+    MacroKind::Move4,
+    MacroKind::Switch,
+    MacroKind::Run,
+    MacroKind::Back,
+];
+
+/// Whether it is the throw's turn (row 69): a wild battle whose Pokémon has HP left, at or under
+/// the HP where the ball the fly would throw has its best odds.
+///
+/// **"Low" is the cartridge's own number** (`ItemUseBall`, `engine/items/item_effects.asm`). The
+/// HP half of Red's catch test is `W = (MaxHP * 255 / BallFactor) / max(HP / 4, 1)`, floored at
+/// each step, with a `BallFactor` of 8 for a Great Ball and 12 for every other; the ball holds
+/// when a second random byte is at most `W`, so at `W >= 255` it always holds and HP no longer
+/// matters. For a Poké Ball that is HP at about a third of its maximum -- 7 of a Weedle's 20 --
+/// and for a Great Ball about a half. Lower HP buys nothing more; what is left is the catch rate
+/// and the status, which the fly's own presses cannot change. So "low" is exactly where the
+/// throw stops getting better. The ball is the one [`throw_slot`] would throw; a Master Ball skips
+/// the test in the cartridge and is read with a factor of 12 here, which only waits a little.
+///
+/// Everything else `THROW BALL` needs is its own precondition ([`throw_slot`]): a wild battle, a
+/// ball, room in the party, a species the party does not hold. With no ball left, or a species
+/// already caught, the button is off the pad and so is this, and the ordinary pad is back.
+pub fn throw_only(state: &mut dyn MacroState) -> bool {
+    let Some(battle) = state.battle() else { return false };
+    if battle.kind != BattleKind::Wild {
+        return false;
+    }
+    let Some(enemy) = battle.enemy else { return false };
+    let Some(index) = throw_slot(state) else { return false };
+    let Some(ball) = state.bag().get(usize::from(index)).map(|stack| stack.id) else {
+        return false;
+    };
+    ball_holds_on_hp(enemy.hp, enemy.max_hp, ball)
+}
+
+/// `ItemUseBall`'s HP test, whole: whether `W` reaches 255 for `ball` at this HP (row 69).
+pub fn ball_holds_on_hp(hp: u16, max_hp: u16, ball: u8) -> bool {
+    if hp == 0 || max_hp == 0 || hp > max_hp {
+        return false;
+    }
+    let factor: u32 = if ball == item::GREAT_BALL { 8 } else { 12 };
+    // `srl b / rr a` twice and only `a` kept: the low byte of HP / 4, and 1 for a quotient of 0.
+    let quarter = u32::from((hp >> 2) as u8).max(1);
+    (u32::from(max_hp) * 255 / factor) / quarter >= 255
+}
+
 /// Section 3's preconditions, one arm each.
 pub fn precondition(kind: MacroKind, state: &mut dyn MacroState) -> bool {
     match kind {
@@ -670,8 +807,8 @@ pub fn precondition(kind: MacroKind, state: &mut dyn MacroState) -> bool {
             move_slot_bound(state, kind)
         }
         // Section 14's addition (the operator: "throw pokeball should be a macro"). A wild battle, a ball
-        // in the bag, and room in the party. No catch-rate and no HP knowledge: when to throw is
-        // the fly's.
+        // in the bag, and room in the party. No catch-rate and no HP knowledge here: the enemy's
+        // HP decides only what else is on the pad beside it (row 69, [`throw_only`]).
         MacroKind::ThrowBall => throw_slot(state).is_some(),
         MacroKind::Switch => healthiest_other(state).is_some(),
         // ...and a Potion the cartridge would take (row 63): `ItemUseMedicine` answers "It won't
@@ -692,7 +829,12 @@ pub fn precondition(kind: MacroKind, state: &mut dyn MacroState) -> bool {
         | MacroKind::BuyBall
         | MacroKind::BuyAntidote
         | MacroKind::BuyRepel => match kind.purchase() {
-            Some((id, cost)) => affordable(state, id, cost),
+            Some((id, cost)) => {
+                affordable(state, id, cost)
+                    || (kind == MacroKind::BuyBall
+                        && state.scene() == Scene::Overworld
+                        && !floor_ball_goals(state).is_empty())
+            }
             // Unreachable while [`MacroKind::purchase`] covers the four arms above, and a `false`
             // rather than a panic if it ever stops: an unpriced purchase is a button off the pad.
             None => false,
@@ -999,7 +1141,9 @@ pub fn amenity_goals(state: &mut dyn MacroState, kind: Amenity) -> Vec<Aim> {
         // reached and talked ledgers answer "is this job done", and for a service the answer is
         // the party or the bag, not the ledger: a nurse reached an hour ago with a party that has
         // since been beaten is a job to do again.
-        if service_needed(state, kind) {
+        // ...unless this counter is the one the fly has just walked to and walked away from
+        // ([`counter_walked_away`], row 66): then the ledgers answer, as they do for any person.
+        if service_needed(state, kind) && !state.counter_walked_to(here) {
             return service_aims(state, kind);
         }
         return counter_aims(state, counter_sprite(kind));
@@ -1039,6 +1183,36 @@ pub fn heal_goals(state: &mut dyn MacroState) -> Vec<Aim> {
     // which is where `GO HEAL` leaves the fly, and for ten brain minutes after `GO HEAL` had
     // reached her. Only the blocked window is kept: a counter no walk can reach is still that.
     person_aims(state, poke_sprite::NURSE, Ledgers::BlockedOnly, true)
+}
+
+/// `BUY BALL`'s walk from the floor of a mart: the tiles the clerk can be talked to from (row 66).
+///
+/// The operator's decision on row 66: buying a ball is one macro, modelled on `HEAL` -- walk to
+/// the clerk, talk, open BUY, take the first row, answer the price box, done when the wallet says
+/// it is paid. Measured with the connectome before it: `GO SHOP` walked the fly to the Viridian
+/// clerk again and again and the fly never once chose `TALK` there, so the four choices in a row
+/// that a purchase took (`TALK`, the greeting, `CONFIRM`, `BUY BALL`) never happened. The fly
+/// still has to choose this button; it is only on the pad while it can work:
+///
+/// - in a mart whose first stock row is a Poké Ball ([`geography::BALL_FIRST_MARTS`]);
+/// - while [`service_needed`] holds for the mart: no ball in the bag, the money for one, and no
+///   Oak's parcel (the Viridian clerk's text table while it is carried sells nothing) -- and in
+///   Viridian not before Oak has the parcel at all ([`MacroState::parcel_delivered`]);
+/// - with the clerk reachable: the blocked window is kept, the talked and reached ledgers are not
+///   (a counter is a service), and the tile already facing him is a goal (no walk at all).
+///
+/// Empty anywhere else, which is the other half of the precondition.
+pub fn floor_ball_goals(state: &mut dyn MacroState) -> Vec<Aim> {
+    let Some(here) = state.player().map(|player| player.map) else { return Vec::new() };
+    if !geography::BALL_FIRST_MARTS.contains(&here) || !service_needed(state, Amenity::Mart) {
+        return Vec::new();
+    }
+    // Before the parcel is even in the bag the Viridian counter is the parcel's too: the clerk's
+    // script hands it over on the fly's first visit, and sells nothing until Oak has it.
+    if here == super::super::maps::VIRIDIAN_MART && !state.parcel_delivered() {
+        return Vec::new();
+    }
+    person_aims(state, poke_sprite::CLERK, Ledgers::BlockedOnly, true)
 }
 
 /// Whether the building of `kind` has something to do for the fly right now: the party needs the
@@ -1095,7 +1269,32 @@ pub fn amenity_wanted(state: &mut dyn MacroState, kind: Amenity) -> Option<u8> {
         return None;
     }
     let area = area_here(state)?;
-    amenity_in_reach(state, area, kind)
+    let map = amenity_in_reach(state, area, kind)?;
+    if counter_walked_away(state, map) {
+        return None;
+    }
+    Some(map)
+}
+
+/// Whether the fly has just stood at the counter of the building on `map`, facing it, and is now
+/// outside that building: what takes the service walk toward it off the pad for the reached window
+/// (row 66).
+///
+/// **A counter the fly walked away from is not walked back to at once.** Row 62 made a service
+/// dealt again whenever the cartridge says it is needed, whatever the ledgers say, and that is a
+/// ring by construction when the fly does not use the counter: live on v0.6.5 from the rung-8
+/// archive, `GO SHOP` 33 times in 35 minutes, each one a walk in from the street and up to the
+/// Viridian clerk, then `GO OUT` or `GO OBJECTIVE` back out of the door without a `TALK`, and
+/// outside `GO SHOP` on the pad again because the bag still had no ball. Reproduced from a
+/// post-parcel checkpoint of the Viridian mart with the connectome: three laps in eighteen brain
+/// seconds. It is section 12.1's ledger doing what it does for every other walk -- a target
+/// arrived at and faced is not re-walked for the window -- applied to the one walk row 62 took it
+/// away from. The fly standing at the counter still has `TALK` (its precondition reads the
+/// service, not this), the nurse's `HEAL` still walks from anywhere in the centre, and when the
+/// window closes the counter is a service again.
+fn counter_walked_away(state: &mut dyn MacroState, map: u8) -> bool {
+    let here = state.player().map(|player| player.map);
+    here != Some(map) && state.counter_walked_to(map)
 }
 
 /// `area`'s building of `kind`, when the route to it from the piece of ground the fly stands on

@@ -28,16 +28,19 @@ use super::executor::{
 };
 use super::palette::{
     MacroId, MacroKind, Palette, SLOTS, amenity_goals, amenity_wanted, answer_key, errand, facing_nurse,
+    floor_ball_goals,
     healthiest_other, heal_goals, inside_center, nurse_prompt, rested_nurse, service_needed,
     listing, losing, move_slot_bound, objective_goals, party_needs_rest, party_rested,
     poke_sprite, precondition, throw_slot, untalked_objects, untalked_people, ways,
+    NAMING_BOUND_MS, NAMING_RAW, WITHHELD_FOR_THE_THROW, ball_holds_on_hp, naming_raw, naming_set,
+    throw_only,
 };
 use super::path::{self, Exit, Way};
 use super::super::maps;
 use super::plan;
 use super::state::{
     Battle, BattleKind, BattleMenu, Connections, Cursor, EnemyMon, Facing, GameState, MapSize,
-    Mon, Move, Npc, Party, Pc, Player, Scene, Shop, ShopScreen, Sign, StartMenu, Status, TextBox,
+    Mon, Move, Naming, Npc, Party, Pc, Player, Scene, Shop, ShopScreen, Sign, StartMenu, Status, TextBox,
     Walkable, Warp,
 };
 
@@ -181,6 +184,13 @@ struct World {
     /// A frame at which the cartridge heals the party, which is what a Pokémon Center does while
     /// its text box is open (`docs/design/macros.md` section 13).
     heal_at: Option<u32>,
+    /// Oak has not been given the parcel yet (row 66); false in every fixture unless set.
+    parcel_undelivered: bool,
+    /// The naming screen, while it is up (row 69). A START press on it hands the name back and
+    /// closes it, as `DisplayNamingScreen.pressedStart` does.
+    naming: Option<Naming>,
+    /// A keyboard that never closes, for the bound on `CONFIRM`'s own wait.
+    glue_naming: bool,
     /// Whether a text box is drawn on a scene that is not [`Scene::Dialog`]
     /// ([`MacroState::text_open`]).
     ///
@@ -302,6 +312,9 @@ impl World {
             refused_items: BTreeSet::new(),
             switch: None,
             heal_at: None,
+            parcel_undelivered: false,
+            naming: None,
+            glue_naming: false,
             box_open: false,
             prompt: false,
             price_after: None,
@@ -529,6 +542,10 @@ impl World {
     }
 
     fn on_pulse(&mut self, mask: u8) {
+        // The keyboard hands the name back on START and closes (row 69), unless glued.
+        if mask == buttons::START && self.naming.is_some() && !self.glue_naming {
+            self.naming = None;
+        }
         if self.scene == Scene::Overworld {
             if mask == buttons::START {
                 self.start_to_open = self.start_to_open.saturating_sub(1);
@@ -873,6 +890,18 @@ impl MacroState for World {
 
     fn reached(&mut self, target: TargetKey) -> bool {
         self.targets.reached(self.map, target)
+    }
+
+    fn counter_walked_to(&mut self, map: u8) -> bool {
+        self.targets.reached(map, TargetKey::Counter)
+    }
+
+    fn parcel_delivered(&mut self) -> bool {
+        !self.parcel_undelivered
+    }
+
+    fn naming(&mut self) -> Option<Naming> {
+        self.naming
     }
 
     fn refused_here(&mut self, slot: u8) -> bool {
@@ -4879,8 +4908,8 @@ fn the_last_resort_prefers_the_exit_toward_the_objective() {
 /// Section 14's `THROW BALL` (the operator: "throw pokeball should be a macro").
 ///
 /// The precondition is three facts and no judgement: a wild battle, a ball in the bag, and room in
-/// the party. When to throw is the fly's -- there is no catch-rate and no enemy-HP knowledge here,
-/// and there is none anywhere in this crate.
+/// the party. There is no catch-rate and no enemy-HP knowledge in this precondition; since row 69
+/// the enemy's HP decides only what else is dealt beside the ball (`palette::throw_only`).
 #[test]
 fn throw_ball_needs_a_wild_battle_a_ball_and_room_in_the_party() {
     let mut world = World::battle();
@@ -5806,6 +5835,108 @@ fn go_shop_comes_back_while_the_bag_has_no_ball_and_the_money_covers_one() {
 }
 
 #[test]
+fn a_counter_the_fly_walked_away_from_is_not_walked_back_to_for_the_window() {
+    // Row 66. Live on v0.6.5 from the rung-8 archive: `GO SHOP` 33 times in 35 minutes, in from
+    // the street to the Viridian clerk and back out of the door without a `TALK`, and `GO SHOP` on
+    // the street's pad again because the bag still had no ball -- row 62's "dealt again while
+    // needed", with no window at all.
+    let mut world = viridian();
+    world.areas.insert((Amenity::Mart, maps::VIRIDIAN_CITY));
+    world.seen_maps.insert(maps::VIRIDIAN_MART);
+    assert!(on_the_pad(&mut world, MacroKind::GoShop), "no ball, and the money for one");
+
+    // A `GO SHOP` has just stood the fly at that counter; it walked back out.
+    world.targets.record_reached(maps::VIRIDIAN_MART, TargetKey::Counter);
+    assert!(!on_the_pad(&mut world, MacroKind::GoShop), "not straight back in: {:?}", pad_of(&mut world));
+    assert_eq!(amenity_wanted(&mut world, Amenity::Mart), None);
+
+    // The window closes and the counter is a service again.
+    world.targets.clock(BLOCKED_MINUTES_DEFAULT * 60_000.0 + 1.0);
+    assert!(on_the_pad(&mut world, MacroKind::GoShop), "after the window");
+
+    // Inside, inside the window: no walk back to the counter, and at the counter its press.
+    let mut mart = World::mart();
+    mart.targets.record_reached(mart.map, TargetKey::Counter);
+    mart.targets.record_reached(mart.map, TargetKey::Thing(TalkTarget::Sprite(1)));
+    assert!(service_needed(&mut mart, Amenity::Mart));
+    assert!(!on_the_pad(&mut mart, MacroKind::GoShop), "{:?}", pad_of(&mut mart));
+    mart.player = Tile::new(2, 5);
+    mart.facing = Facing::Left;
+    assert!(on_the_pad(&mut mart, MacroKind::Talk), "the counter still opens where the fly stands");
+
+    // Only the counter: another person reached in the building is not the counter.
+    let mut mart = World::mart();
+    mart.targets.record_reached(mart.map, TargetKey::Thing(TalkTarget::Sprite(1)));
+    assert!(on_the_pad(&mut mart, MacroKind::GoShop), "row 62's rule stands without a counter visit");
+}
+
+#[test]
+fn buy_ball_is_offered_from_a_marts_floor_only_while_a_ball_can_be_bought() {
+    // Row 66, the operator's decision: buying a ball is one button, modelled on `HEAL`.
+    let mut mart = World::mart();
+    assert_eq!(mart.scene, Scene::Overworld);
+    assert!(on_the_pad(&mut mart, MacroKind::BuyBall), "no ball, 3000, the clerk: {:?}", pad_of(&mut mart));
+    assert!(!floor_ball_goals(&mut mart).is_empty());
+
+    // Facing the clerk already: still offered, with no walk (the tile he is faced from is a goal).
+    mart.player = Tile::new(2, 5);
+    mart.facing = Facing::Left;
+    assert!(on_the_pad(&mut mart, MacroKind::BuyBall), "at the counter");
+    mart.player = Tile::new(3, 6);
+
+    // A ball in the bag: nothing to buy it for.
+    mart.bag = vec![(item::POKE_BALL, 1)];
+    assert!(!on_the_pad(&mut mart, MacroKind::BuyBall), "a ball already");
+    mart.bag = vec![(item::GREAT_BALL, 1)];
+    assert!(!on_the_pad(&mut mart, MacroKind::BuyBall), "any ball counts");
+    mart.bag = Vec::new();
+
+    // Under a ball's price.
+    mart.money = price::POKE_BALL - 1;
+    assert!(!on_the_pad(&mut mart, MacroKind::BuyBall), "199");
+    mart.money = price::POKE_BALL;
+    assert!(on_the_pad(&mut mart, MacroKind::BuyBall), "200");
+
+    // Oak's parcel: the Viridian clerk's text table is the parcel's and he sells nothing.
+    mart.bag = vec![(item::OAKS_PARCEL, 1)];
+    assert!(!on_the_pad(&mut mart, MacroKind::BuyBall), "carrying the parcel");
+    mart.bag = Vec::new();
+    // ...or before the clerk has even handed it over: nothing to buy until Oak has it.
+    mart.parcel_undelivered = true;
+    assert!(!on_the_pad(&mut mart, MacroKind::BuyBall), "before the parcel");
+    mart.parcel_undelivered = false;
+
+    // The talked and reached ledgers do not retire a counter; the blocked window does.
+    mart.talked.insert(TalkTarget::Sprite(1));
+    mart.targets.record_reached(mart.map, TargetKey::Thing(TalkTarget::Sprite(1)));
+    mart.targets.record_reached(mart.map, TargetKey::Counter);
+    assert!(on_the_pad(&mut mart, MacroKind::BuyBall), "talked, reached, walked away: still a service");
+    mart.targets.record_blocked(mart.map, TargetKey::Thing(TalkTarget::Sprite(1)));
+    assert!(!on_the_pad(&mut mart, MacroKind::BuyBall), "a clerk no walk reaches");
+
+    // Only in a mart whose first row is a ball, and never outside one.
+    let mut pewter = World::mart();
+    pewter.map = maps::PEWTER_MART;
+    assert!(on_the_pad(&mut pewter, MacroKind::BuyBall), "Pewter's first row is a ball");
+    let mut street = viridian();
+    street.money = 3_000;
+    assert!(!on_the_pad(&mut street, MacroKind::BuyBall), "not from the street");
+    let mut elsewhere = World::mart();
+    elsewhere.map = maps::OAKS_LAB;
+    assert!(floor_ball_goals(&mut elsewhere).is_empty(), "not a mart");
+
+    // The open counter keeps its own rule: the greeting is no screen a purchase starts from.
+    let mut counter = World::mart();
+    counter.scene = Scene::Shop;
+    counter.list = List::Shop(ShopScreen::Talking);
+    counter.stock = vec![item::POKE_BALL];
+    assert!(!precondition(MacroKind::BuyBall, &mut counter), "the clerk is still talking");
+    counter.list = List::Shop(ShopScreen::BuySellQuit);
+    counter.cursor_max = 2;
+    assert!(precondition(MacroKind::BuyBall, &mut counter), "BUY / SELL / QUIT");
+}
+
+#[test]
 fn heal_is_dealt_facing_the_nurse_and_after_go_heal_has_reached_her() {
     // Row 62. `HEAL`'s goals were `counter_aims`, which drops the tile the fly already faces her
     // from and retires a nurse `GO HEAL` has reached for ten brain minutes: so `HEAL` was off the
@@ -6273,4 +6404,214 @@ fn a_same_map_teleport_is_somewhere_the_way_out_took_the_fly() {
     dead.warps = world.warps.clone();
     dead.duds = world.duds.clone();
     assert_eq!(run(&mut dead, MacroKind::GoWarp), Ok(MacroAbort::Blocked));
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Row 69 (the operator, 2026-09-29): "throw on low HP only" and "let the fly name it".
+// ---------------------------------------------------------------------------------------------
+
+fn pad_kinds(world: &mut World) -> Vec<MacroKind> {
+    let scene = world.scene();
+    plan::plan_for(scene, world).slots.iter().flatten().map(|spec| spec.kind).collect()
+}
+
+/// `ItemUseBall`'s HP half, number for number (`engine/items/item_effects.asm`):
+/// `W = (MaxHP * 255 / BallFactor) / max(HP / 4, 1)`, the ball holds on HP when `W >= 255`.
+#[test]
+fn row69_low_is_where_the_balls_hp_factor_is_at_its_best() {
+    // A Weedle's 20: 20 * 255 / 12 = 425; HP 7 -> 425 / 1 = 425, HP 8 -> 425 / 2 = 212.
+    assert!(ball_holds_on_hp(7, 20, item::POKE_BALL));
+    assert!(!ball_holds_on_hp(8, 20, item::POKE_BALL));
+    assert!(ball_holds_on_hp(1, 20, item::POKE_BALL));
+    // A Great Ball's factor is 8: 20 * 255 / 8 = 637; HP 11 -> 637 / 2 = 318, HP 12 -> 212.
+    assert!(ball_holds_on_hp(11, 20, item::GREAT_BALL));
+    assert!(!ball_holds_on_hp(12, 20, item::GREAT_BALL));
+    // Every other ball reads with 12, as the cartridge's does.
+    assert!(!ball_holds_on_hp(8, 20, item::ULTRA_BALL));
+    // A third, near enough, at any size: 120 * 255 / 12 = 2550; HP 40 -> 2550 / 10 = 255.
+    assert!(ball_holds_on_hp(40, 120, item::POKE_BALL));
+    assert!(!ball_holds_on_hp(44, 120, item::POKE_BALL));
+    // Fainted, full, or nothing read: never.
+    assert!(!ball_holds_on_hp(0, 20, item::POKE_BALL));
+    assert!(!ball_holds_on_hp(20, 20, item::POKE_BALL));
+    assert!(!ball_holds_on_hp(5, 0, item::POKE_BALL));
+}
+
+/// The throw's turn: a wild battle, a ball `THROW BALL` would throw, an enemy at low HP. Then the
+/// ball is the only attack-side button; above it the pad is the ordinary one.
+#[test]
+fn row69_at_low_hp_in_a_wild_battle_the_ball_is_the_only_attack() {
+    let mut world = World::battle();
+    world.mons.truncate(1);
+    world.mons[0].hp = 20;
+    world.bag = vec![(item::POKE_BALL, 2)];
+    world.enemy = Some(EnemyMon { species: 0x70, level: 6, hp: 20, max_hp: 20 });
+
+    // Full HP: the ordinary pad, moves and the ball side by side.
+    assert!(!throw_only(&mut world));
+    let pad = pad_kinds(&mut world);
+    assert!(pad.contains(&MacroKind::Move1) && pad.contains(&MacroKind::ThrowBall), "{pad:?}");
+
+    // Low HP: the ball alone.
+    world.enemy = Some(EnemyMon { species: 0x70, level: 6, hp: 7, max_hp: 20 });
+    assert!(throw_only(&mut world));
+    assert_eq!(pad_kinds(&mut world), vec![MacroKind::ThrowBall]);
+    for kind in WITHHELD_FOR_THE_THROW {
+        assert!(!on_the_pad(&mut world, kind), "{} withheld", kind.name());
+    }
+}
+
+/// `ITEM` stays beside the ball: a hurt Pokémon out with a Potion the cartridge would take is the
+/// one non-attack need kept. `SWITCH` and `RUN` go.
+#[test]
+fn row69_the_throws_pad_keeps_a_potion_for_a_hurt_thrower_and_nothing_else() {
+    let mut world = World::battle();
+    // The Pokémon out is at 4 of 20 with a healthy reserve: SWITCH, RUN (losing) and ITEM are all
+    // dealt on the ordinary pad.
+    world.bag = vec![(item::POTION, 1), (item::POKE_BALL, 1)];
+    world.enemy = Some(EnemyMon { species: 0x70, level: 6, hp: 20, max_hp: 20 });
+    let ordinary = pad_kinds(&mut world);
+    assert!(ordinary.contains(&MacroKind::Switch), "{ordinary:?}");
+    assert!(ordinary.contains(&MacroKind::Item), "{ordinary:?}");
+
+    world.enemy = Some(EnemyMon { species: 0x70, level: 6, hp: 3, max_hp: 20 });
+    let pad = pad_kinds(&mut world);
+    assert_eq!(pad, vec![MacroKind::Item, MacroKind::ThrowBall]);
+}
+
+/// Every way out of the rule returns the ordinary pad: a trainer's Pokémon, no ball left, a
+/// species the party holds, a full party, a fainted enemy, nothing read.
+#[test]
+fn row69_the_ordinary_pad_comes_back_whenever_the_ball_cannot_be_thrown() {
+    let low = Some(EnemyMon { species: 0x70, level: 6, hp: 2, max_hp: 20 });
+    let base = || {
+        let mut world = World::battle();
+        world.mons.truncate(1);
+        world.mons[0].hp = 20;
+        world.bag = vec![(item::POKE_BALL, 1)];
+        world.enemy = low;
+        world
+    };
+    let mut world = base();
+    assert_eq!(pad_kinds(&mut world), vec![MacroKind::ThrowBall]);
+
+    let mut trainer = base();
+    trainer.battle = Some((BattleKind::Trainer, true, false));
+    assert!(!throw_only(&mut trainer));
+    assert!(on_the_pad(&mut trainer, MacroKind::Move1), "a trainer's battle is never the throw's");
+
+    let mut spent = base();
+    spent.bag = vec![(item::POKE_BALL, 0)];
+    assert!(!throw_only(&mut spent));
+    assert!(on_the_pad(&mut spent, MacroKind::Move1), "no ball, the moves are back");
+
+    let mut owned = base();
+    owned.mons[0].species = 0x70;
+    assert!(!throw_only(&mut owned));
+    assert!(on_the_pad(&mut owned, MacroKind::Move1), "a species already caught");
+
+    let mut full = base();
+    full.mons = (0..6).map(|slot| mon(slot, 20, 20, &[(33, 30)])).collect();
+    full.active = Some(0);
+    assert!(!throw_only(&mut full));
+
+    let mut fainted = base();
+    fainted.enemy = Some(EnemyMon { species: 0x70, level: 6, hp: 0, max_hp: 20 });
+    assert!(!throw_only(&mut fainted));
+
+    let mut unread = base();
+    unread.enemy = None;
+    assert!(!throw_only(&mut unread), "HP the seam cannot read is not low");
+    assert!(on_the_pad(&mut unread, MacroKind::Move1));
+}
+
+/// In the bag, the throw's pad is the ball (and a Potion for a hurt thrower); `BACK` would lead to
+/// the menu whose pad is the same ball.
+#[test]
+fn row69_in_the_bag_at_low_hp_back_is_withheld() {
+    let mut world = World::battle();
+    world.mons.truncate(1);
+    world.mons[0].hp = 20;
+    world.bag = vec![(item::POKE_BALL, 1)];
+    world.enemy = Some(EnemyMon { species: 0x70, level: 6, hp: 20, max_hp: 20 });
+    world.list = List::BattleBag;
+    world.cursor_max = 1;
+    world.grid = false;
+    assert!(on_the_pad(&mut world, MacroKind::Back));
+    world.enemy = Some(EnemyMon { species: 0x70, level: 6, hp: 5, max_hp: 20 });
+    assert_eq!(pad_kinds(&mut world), vec![MacroKind::ThrowBall]);
+}
+
+/// A failed throw is an ordinary turn: the pad between turns is `NEXT` and the next own turn is
+/// the throw's again while a ball is left. Nothing here keeps a count.
+#[test]
+fn row69_between_turns_the_pad_is_next_whatever_the_hp() {
+    let mut world = World::battle();
+    world.bag = vec![(item::POKE_BALL, 1)];
+    world.enemy = Some(EnemyMon { species: 0x70, level: 6, hp: 2, max_hp: 20 });
+    world.scene = Scene::Battle { own_turn: false, forced_switch: false };
+    world.list = List::None;
+    assert_eq!(pad_kinds(&mut world), vec![MacroKind::Next]);
+}
+
+fn keyboard(length: u8, capacity: u8) -> Naming {
+    Naming { length, capacity, submitted: false }
+}
+
+/// The naming screen's pad: nothing bound while the fly spells (its raw buttons are the pad),
+/// `CONFIRM` alone once the name is full or the bound has run.
+#[test]
+fn row69_the_keyboard_is_the_flys_own_buttons_until_the_name_is_full_or_the_bound_runs() {
+    assert!(naming_set(keyboard(0, 10), 0.0).is_empty());
+    assert!(naming_set(keyboard(9, 10), NAMING_BOUND_MS - 1.0).is_empty());
+    assert_eq!(naming_set(keyboard(10, 10), 0.0), vec![MacroKind::Confirm], "full");
+    assert_eq!(naming_set(keyboard(7, 7), 0.0), vec![MacroKind::Confirm], "a player's seven");
+    assert_eq!(naming_set(keyboard(3, 10), NAMING_BOUND_MS), vec![MacroKind::Confirm], "bound");
+
+    let spelling = Palette::for_naming(Scene::Unknown, keyboard(2, 10), 1_000.0);
+    assert_eq!(spelling.bound(), 0);
+    assert_eq!(naming_raw(&spelling), NAMING_RAW);
+    assert_eq!(
+        NAMING_RAW,
+        buttons::UP | buttons::DOWN | buttons::LEFT | buttons::RIGHT | buttons::A | buttons::B
+            | buttons::START,
+        "the D-pad, A, B and START; not SELECT"
+    );
+    let ending = Palette::for_naming(Scene::Unknown, keyboard(2, 10), NAMING_BOUND_MS);
+    assert_eq!(ending.bound(), 1);
+    assert_eq!(naming_raw(&ending), 0, "once CONFIRM is dealt the raw buttons are off");
+
+    // The dealer without a clock: the same screen reads as the fly's own buttons, and the plain
+    // `Unknown` pad (`NEXT`, `BACK`) is not dealt on it.
+    let mut world = World::room();
+    world.scene = Scene::Unknown;
+    world.box_open = true;
+    assert_eq!(pad_kinds(&mut world), vec![MacroKind::Next, MacroKind::Back]);
+    world.naming = Some(keyboard(1, 10));
+    assert!(pad_kinds(&mut world).is_empty());
+    world.naming = Some(keyboard(10, 10));
+    assert_eq!(pad_kinds(&mut world), vec![MacroKind::Confirm]);
+}
+
+/// `CONFIRM` on the keyboard hands the name back with START and is done when the screen is gone.
+#[test]
+fn row69_confirm_on_the_keyboard_presses_start_until_it_closes() {
+    let mut world = World::room();
+    world.scene = Scene::Unknown;
+    world.naming = Some(keyboard(10, 10));
+    assert_eq!(run(&mut world, MacroKind::Confirm).unwrap(), MacroAbort::Done);
+    assert!(world.naming.is_none());
+    assert!(world.pulses.contains(&buttons::START), "{:?}", world.pulses);
+    assert!(!world.pulses.contains(&buttons::A), "not the A that types a letter");
+}
+
+/// And a keyboard that never closes is `blocked`, not a macro that holds the pad for ever.
+#[test]
+fn row69_confirm_on_a_keyboard_that_does_not_close_is_blocked() {
+    let mut world = World::room();
+    world.scene = Scene::Unknown;
+    world.naming = Some(keyboard(10, 10));
+    world.glue_naming = true;
+    assert_eq!(run(&mut world, MacroKind::Confirm).unwrap(), MacroAbort::Blocked);
 }

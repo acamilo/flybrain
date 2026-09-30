@@ -31,6 +31,9 @@ mapfile -t SHELL_SCRIPTS < <(
         # nothing else ever exercises it before it runs as root, at boot,
         # against /etc/pve.
         find "$INFRA_DIR/host" -name '*.sh' -type f
+        # the privacy guard lives in tools/ because the pre-push hook and
+        # tag-release run it too.
+        find "$INFRA_DIR/../tools" -maxdepth 1 -name '*.sh' -type f
     } | sort -u
 )
 
@@ -1240,10 +1243,52 @@ LPCAT
         fail "check 10: a rewarded busy window gave suspected=$(lp_metric fly_loop_suspected) rewards=$(lp_metric fly_loop_rewards)"
     fi
 
+    # (8) Row 67: the Pewter Gym, one trainer lost on repeat. MOVE 2 six turns in
+    # seven, a whiteout, the walk back and the guide's YES/NO -- six names,
+    # every macro done, and one stray tile reward in the window, so neither the
+    # sequence, dominance nor unrewarded rule fires. No battle is won: two probes
+    # flag as unwon-battles; the same window with one wild win in it does not.
+    lp_reset
+    lp_cycle 25 "GO OBJECTIVE" "TALK" "NO" "NEXT" "NEXT" "NEXT" "MOVE 2" "NEXT" \
+        "MOVE 2" "NEXT" "MOVE 3" "NEXT" | lp_outcomes "$lp_fixture/events.jsonl" "done"
+    printf '{"id":999997,"wallMs":1758000999997,"brainMs":100000,"kind":"reward","label":"AREA 54: 24 UNIQUE LOCATIONS","value":0.05,"rewardKind":"explore"}\n' \
+        >> "$lp_fixture/events.jsonl"
+    lp_status "$lp_fixture/status.json" 2311
+    lp_pass
+    lp_pass
+    lp_first="$(lp_metric fly_loop_suspected)"
+    lp_pass
+    if [ "$lp_first" = "0" ] && [ "$(lp_metric fly_loop_suspected)" = "1" ] \
+       && [ "$(lp_metric fly_loop_rewards)" = "1" ] \
+       && [ "$(lp_metric fly_loop_fights)" = "75" ] \
+       && [ "$(lp_metric fly_loop_wins)" = "0" ] \
+       && grep -q 'loop suspected (unwon-battles): 75 moves chosen in battle and no battle won' "$lp_fixture/journal.log"; then
+        pass "check 10: battles lost on repeat, a stray tile reward in the window, no win over two probes flag as unwon-battles"
+    else
+        fail "check 10: the row-67 log gave first=${lp_first} then suspected=$(lp_metric fly_loop_suspected) rewards=$(lp_metric fly_loop_rewards) fights=$(lp_metric fly_loop_fights) wins=$(lp_metric fly_loop_wins), journal: $(cat "$lp_fixture/journal.log")"
+    fi
+    if lp_report="$(jq -e -r '[.reason, (.window.fights|tostring), (.window.wins|tostring), .action] | join(" ")' "$lp_fixture/run/loop.json" 2>/dev/null)" \
+       && [ "$lp_report" = "unwon-battles 75 0 none" ]; then
+        pass "check 10: loop.json carries the moves chosen and the battles won in the window"
+    else
+        fail "check 10: loop.json read back as '${lp_report:-UNREADABLE}' — expected 'unwon-battles 75 0 none'"
+    fi
+    lp_reset
+    printf '{"id":999998,"wallMs":1758000999998,"brainMs":150000,"kind":"reward","label":"BEAT PEWTER GYM TRAINER 1","value":0.5,"rewardKind":"trainer"}\n' \
+        >> "$lp_fixture/events.jsonl"
+    lp_pass
+    lp_pass
+    lp_pass
+    if [ "$(lp_metric fly_loop_suspected)" = "0" ] && [ "$(lp_metric fly_loop_wins)" = "1" ]; then
+        pass "check 10: the same battles with one of them won do not flag"
+    else
+        fail "check 10: a won battle gave suspected=$(lp_metric fly_loop_suspected) wins=$(lp_metric fly_loop_wins)"
+    fi
+
     # The ethos, asserted rather than reviewed: over every case above, check 10
     # restarted nothing. It reports; a human or a review agent decides.
     if [ ! -s "$lp_fixture/systemctl.log" ]; then
-        pass "check 10: never acts — no unit was restarted across any of the eight cases"
+        pass "check 10: never acts — no unit was restarted across any of the cases"
     else
         fail "check 10 ACTED, which it must never do: $(cat "$lp_fixture/systemctl.log")"
     fi
@@ -1386,16 +1431,13 @@ fi
 # forge URLs. The rules, and the keep/move/redact verdict behind every file
 # that was touched, live in the operator's infra repo.
 #
-# Two things about the patterns below are deliberate:
-#
-#   * Each proper noun is spelled with ONE bracketed character — `sp[i]cy`,
-#     `chonk[e]rs`, `Al[e]x`. The regex still matches the real string exactly,
-#     but the literal token does not appear in this file, so the guard does not
-#     itself become the last copy of what it refuses. Do not "tidy" the
-#     brackets away.
-#   * `operator-name` is the only case-SENSITIVE pattern. Capitalised `Al[e]x` in
-#     prose is the operator; lowercase quoted `"al[e]x"` is a chat-username
-#     fixture all through the tests, which the sprint explicitly leaves alone.
+# The scan is tools/pii-scan.sh. It carries only GENERIC shapes (addresses,
+# container ids, host paths, e-mail, credential shapes); the proper nouns are
+# loaded at run time from the operator's private pattern list
+# ($FLY_PII_PATTERNS), so the guard is not itself a list of what it refuses.
+# Here a missing private list is a NOTE (public CI has none, by design);
+# infra/build/tag-release.sh and the pre-push hook (tools/install-hooks.sh)
+# fail closed instead.
 #
 # Legitimate mentions are listed in infra/tests/de-pii-allow.txt, one
 # `path pattern-name  # reason` per line. Add to it only with a reason; the
@@ -1406,81 +1448,29 @@ echo "--- de-PII guard ---"
 REPO_ROOT="$(cd "$INFRA_DIR/.." && pwd)"
 DEPII_ALLOW="$INFRA_DIR/tests/de-pii-allow.txt"
 
-DEPII_NAMES=(); DEPII_FLAGS=(); DEPII_RES=()
-depii() { DEPII_NAMES+=("$1"); DEPII_FLAGS+=("$2"); DEPII_RES+=("$3"); }
-
-#      name               grep flags   regex (one bracketed char per proper noun)
-depii host-proxmox        '-i'  'sp[i]cy'
-depii host-backup         '-i'  'chonk[e]rs'
-depii host-llm            '-i'  '\bsl[o]th\b'
-depii operator-name       ''    '\bAl[e]x\b|al[e]x_camilo|al[e]x\.camilo|al[e]x-(copy|ui)-taste'
-depii lan-address         '-i'  '192\.168\.[0-9]{1,3}\.[0-9]{1,3}|\b2600:[0-9a-f]'
-depii container-id        '-i'  '\b(ct|vm)[ _-]?[12][0-9][0-9]\b|\bpct +[a-z-]+ +[0-9]{2,4}\b|subvol-[12][0-9][0-9]-disk|/lxc/[12][0-9][0-9]\.conf'
-depii host-root-path      ''    '/ro[o]t/'
-depii home-path           ''    '/ho[m]e/[a-z]'
-depii twitch-account      '-i'  '15412[6]9693|aflyplayspok[e]mon'
-depii claim-log-name      ''    'AGENTS[_]LOG'
-depii forge-name          '-i'  'forg[e]jo|git[e]a'
-depii infra-repo-name     '-i'  'trik[i]lli'
-depii mac-address         ''    '\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b'
-depii email-address       ''    '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}'
-depii pass-entry-path     ''    '\bpass +(show|insert) +[A-Za-z0-9._-]+/'
-
-# depii_allowed PATH PATTERN_NAME — true when de-pii-allow.txt excuses this
-# pair. A path entry may end in `/` (directory prefix) or `*` (glob).
-depii_allowed() {
-    local path="$1" name="$2" a_path a_name rest
-    [ -f "$DEPII_ALLOW" ] || return 1
-    while read -r a_path a_name rest; do
-        case "$a_path" in ''|'#'*) continue ;; esac
-        [ "$a_name" = "$name" ] || [ "$a_name" = '*' ] || continue
-        case "$a_path" in
-            */) case "$path" in "$a_path"*) return 0 ;; esac ;;
-            *\**) # shellcheck disable=SC2254
-                  case "$path" in $a_path) return 0 ;; esac ;;
-            *)    [ "$path" = "$a_path" ] && return 0 ;;
-        esac
-    done < "$DEPII_ALLOW"
-    return 1
-}
-
-# The tree, minus what the sprint deliberately excludes: the connectome data
-# (neuron ids and column CSVs, no house strings), the npm lockfile, and
-# .local/ (untracked anyway). Prefer `git grep` — it honours .gitignore and is
-# an order of magnitude faster — and fall back to grep -r for a checkout that
-# is not a git repo (a release tarball unpacked on the host).
-depii_scan() {
-    local flags="$1" re="$2"
-    if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
-        # shellcheck disable=SC2086
-        git -C "$REPO_ROOT" grep -nI $flags -E -e "$re" -- \
-            . ':!data' ':!package-lock.json' 2>/dev/null || true
-    else
-        # shellcheck disable=SC2086
-        grep -rnI $flags -E -e "$re" "$REPO_ROOT" \
-            --exclude-dir=data --exclude-dir=.git --exclude-dir=node_modules \
-            --exclude-dir=.local --exclude-dir=target --exclude=package-lock.json \
-            2>/dev/null | sed "s|^${REPO_ROOT}/||" || true
-    fi
-}
-
+DEPII_OUT="$("$REPO_ROOT/tools/pii-scan.sh" --allow "$DEPII_ALLOW" --tree 2>&1)" && DEPII_RC=0 || DEPII_RC=$?
 DEPII_HITS=0
-for i in "${!DEPII_NAMES[@]}"; do
-    name="${DEPII_NAMES[$i]}"
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        hit_path="${line%%:*}"
-        depii_allowed "$hit_path" "$name" && continue
-        fail "de-PII: ${name}: ${line}"
-        DEPII_HITS=$((DEPII_HITS + 1))
-    done < <(depii_scan "${DEPII_FLAGS[$i]}" "${DEPII_RES[$i]}")
-done
+while IFS= read -r line; do
+    case "$line" in
+        "pii-scan: NOTE:"*) echo "$line" ;;
+        "pii-scan: clean"*|"pii-scan: "*" finding(s) "*|"") ;;
+        "pii-scan: "*) fail "de-PII: ${line#pii-scan: }"; DEPII_HITS=$((DEPII_HITS + 1)) ;;
+    esac
+done <<<"$DEPII_OUT"
 
-if [ "$DEPII_HITS" -eq 0 ]; then
-    pass "de-PII guard: no identifying strings outside tests/de-pii-allow.txt (${#DEPII_NAMES[@]} patterns)"
-else
+if [ "$DEPII_RC" -eq 0 ] && [ "$DEPII_HITS" -eq 0 ]; then
+    pass "de-PII guard: $(printf '%s\n' "$DEPII_OUT" | grep -o 'clean.*' | tail -1)"
+elif [ "$DEPII_HITS" -gt 0 ]; then
     echo "       ^ redact these (rules in the operator's infra repo), or, if the" >&2
     echo "         mention is genuinely legitimate, add it to infra/tests/de-pii-allow.txt with a reason." >&2
+else
+    fail "de-PII guard: tools/pii-scan.sh exited ${DEPII_RC}: ${DEPII_OUT}"
+fi
+
+if "$INFRA_DIR/tests/pii-scan-test.sh" >/dev/null 2>&1; then
+    pass "pii-scan tests: tree, range, commit message, value needles, allowlist, fail-closed, pre-push hook"
+else
+    fail "pii-scan tests failed; run infra/tests/pii-scan-test.sh"
 fi
 
 echo "--- loop recovery tests ---"

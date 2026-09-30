@@ -282,7 +282,7 @@ pct exec $CTID -- /opt/fly/bin/fly-reset-to-milestone $N
 #    (a) the running release already wrote that checkpoint -> nothing to deploy, skip to 5.
 #    (b) the new build bumps the ADAPTER VERSION and nothing else -> name the checkpoint's
 #        adapter so the gate and flysim both migrate instead of refusing:
-FLY_ACCEPT_ADAPTERS=pokered-unique8-v6 infra/05-deploy.sh <release-env> <release-tarball>
+FLY_ACCEPT_ADAPTERS=pokered-unique8-v7 infra/05-deploy.sh <release-env> <release-tarball>
 #    The gate logs "the adapter version is the only difference, and it is named; the run is KEPT
 #    and migrated", and writes FLY_ACCEPT_ADAPTERS into /etc/fly/fly.env so flysim applies the
 #    same rule at restore. Anything else about the string differing is still a refusal.
@@ -622,13 +622,17 @@ pct exec <ctid> -- cat /run/fly/wd/loop.json | jq .
 | `fly_loop_blocked` | macros that ended `blocked` or `timeout` in the window |
 | `fly_loop_done` | macros that ended `done` in the window |
 | `fly_loop_rewards` | reward events in the window |
+| `fly_loop_fights` | `MOVE n` decisions (a move chosen in a battle) in the window |
+| `fly_loop_wins` | battle-won reward events (`wildwin`, `trainer`, `badge`) in the window |
 
 The flag needs **both** halves: at most 3 distinct macro names with the block repeating 20+
 times, one macro at 95%+ of the window's decisions, 90%+ of 20+ decisions ending refused,
 blocked or timed out (`stalled`), or decisions with no `done` among them on two probes in a row
 (`zero-progress`), or 100+ decisions with no reward event among them on two probes in a row
 (`unrewarded`, row 58: `GO OBJECTIVE` in and `GO OUT` out of one door, diluted by eight other
-names, every macro `done`) — **and** no growth in the exploration count. A decision is a `start` or a
+names, every macro `done`), or 24+ `MOVE n` decisions and no battle won on two probes in a row
+(`unwon-battles`, row 67: one Pewter Gym trainer lost thirty times, whiteout and back, with a
+stray tile reward now and then keeping `unrewarded` quiet) — **and** no growth in the exploration count. A decision is a `start` or a
 `refused`: a refused press starts nothing, which is why counting starts alone read row 57's
 pad (`GO ROUTE refused` ~740 times in ten brain minutes, `macros-traps.md`) as one start and
 one name. A

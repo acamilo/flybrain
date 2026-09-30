@@ -916,3 +916,40 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   approved copy and STUCK from the last progress, flybridge refreshes expired tokens on load (and
   redacts Twitch errors), a release deploy refuses an empty GAME_TITLE. Reviews: row 62 r2, 63,
   64, 65 APPROVE-WITH-NOTES.
+- 2026-09-29 (v0.6.6, loop review + port foundation): the fly shops, throws and names what it
+  catches. Row 66: a counter walked away from is not walked back to for the ledger window (the
+  GO SHOP/GO OUT re-entry ring: 31 to 0), BUY BALL is one walk-talk-buy button like HEAL (the
+  operator's call; offered in a mart that sells balls, with no ball and 200 in the wallet), and a
+  closed battle bag is not the pad (post-catch presses typed the nickname). Row 67: the live fly
+  lost the Pewter Gym's Jr. Trainer 29 times in a row choosing TAIL WHIP (the pad offered every
+  move); a report-only `unwon-battles` watchdog reason lets the recovery ladder act 45 minutes
+  sooner, and the no-PP ROM test is fixed (Struggle is the cartridge's answer). Row 69 (the
+  operator's calls): in a wild battle at the catch formula's low-HP threshold with a ball in the
+  bag, THROW BALL is the only attack-side button; the naming screen takes the fly's own buttons
+  ("AAAAAAAAAA" before), bounded by CONFIRM after a full name or 60 brain seconds. Port
+  foundation merged, dormant on the stream: AGENT-01, MEM-01, ENV-01, STATE-02 (the checkpoint
+  store is now the shared `flysim-store` crate; FLYSIM01 gains an optional `reinforcements`
+  field, downgrade-safe both ways). A PII guard scans lint, tag-release and pushes. Reviews: all
+  APPROVE-WITH-NOTES.
+
+- 2026-09-29 (unreleased, the operator's decision, row 68): the fly is paid for the HP its own
+  attack removes in battle, the catalog's answer to row 67 (the Pewter Gym's Jr. Trainer lost on
+  repeat with TAIL WHIP six turns in seven). New kind `damage`: 0.20 per whole enemy Pokémon, in
+  proportion, +0.05 when it knocks out a trainer's Pokémon, at most 0.50 a battle; a wild battle at
+  1, 1/2, 1/3 per map/species/level. Only a drop on the fly's own turn (`hWhoseTurn` 0) by a move it
+  chose (not Struggle); a heal is never paid twice; no feed counter (a hit is not a "wild win").
+  Adapter `pokered-unique8-v8`; a deploy with FLY_ACCEPT_ADAPTERS=pokered-unique8-v7 migrates the
+  run (v6 still migrates when named). Survey, 3 starts x 120 brain minutes from the row 67
+  checkpoint: v8 beat the trainer in 2 of 3 (one run also won the Boulder Badge), v7 in 0 of 3, but
+  the move choice did not shift more under v8 than v7 (BUBBLE ~15% -> ~20% in both): no learned
+  preference is shown inside two hours (`infra/docs/macros-traps.md` row 68).
+- 2026-09-30 (v0.6.7, the operator's call, reward catalog): the fly is paid for damage its own
+  attacks deal. Row 67 found the live fly losing the Pewter Gym's Jr. Trainer on repeat with TAIL
+  WHIP while BUBBLE was on the pad; the operator chose a reward over a pad rule. HP removed on the
+  fly's own turn (hWhoseTurn 0, not Struggle; poison/burn/Leech Seed/recoil/enemy moves never pay;
+  healed HP not re-paid) pays 0.20 per whole enemy mon, +0.05 for knocking out a trainer's mon,
+  capped at 0.50 per battle (a trainer beaten); wild battles diminish 1, 1/2, 1/3 per
+  map/species/level. Adapter pokered-unique8-v8, migrating v7 (compat differs in the adapter
+  segment only). The stage folds a battle's hits into one ticker row ("damage dealt x3 KO").
+  Survey: v8 beat the trainer from 2 of 3 starts (v7 0 of 3); move choice did not measurably shift
+  within two hours. Review: APPROVE-WITH-NOTES.

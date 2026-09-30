@@ -33,7 +33,7 @@ use super::macros::geography::Amenity;
 use super::mapgrid::{self, MapGrids};
 use super::macros::state::{
     BagItem, Battle, BattleKind, BattleMenu, Connections, Cursor, EnemyMon, Facing, GameState,
-    MapGrid, MapSize, Mon, Move, Npc, Party, Pc, Player, Scene, Shop, ShopScreen, Sign, StartMenu,
+    MapGrid, MapSize, Mon, Move, Naming, Npc, Party, Pc, Player, Scene, Shop, ShopScreen, Sign, StartMenu,
     Status, TextBox, Walkable, Warp,
 };
 use super::symbols::ram;
@@ -49,6 +49,17 @@ pub mod poke {
     /// `_Joypad`'s `ldh a, [hJoyLast]` on the cartridge, and pinned by the ROM-gated test that
     /// reads it back from there (row 63, `docs/design/macros.md` 12.27).
     pub const H_JOY_LAST: u16 = 0xffb1;
+
+    /// `ram/hram.asm`: `hWhoseTurn`, "0 on player's turn, 1 on enemy's turn". Counted from the
+    /// `hJoyLast` anchor above through the declarations that follow it (each `UNION` at its
+    /// largest member) to `$FFF3`; the section's remaining nine bytes then end at `$FFFE`, the
+    /// last byte of HRAM, which is the check that the count is right. It is the classic
+    /// `H_WHOSETURN`. The battle engine writes it before each side acts (`MainInBattleLoop`,
+    /// `ExecutePlayerMove`), and `HandlePoisonBurnLeechSeed` reads it to pick whose HP to cut, so
+    /// the enemy's poison, burn and Leech Seed ticks all land while it reads 1. Read by the damage
+    /// reward (`docs/rewards-learning.md`) and pinned on the cartridge by
+    /// `tests/rom_damage.rs`, which reads 0 on the frame BUBBLE lands.
+    pub const H_WHOSE_TURN: u16 = 0xfff3;
 
     pub mod pad {
         pub const A: u8 = 1 << 0;
@@ -119,10 +130,38 @@ pub mod poke {
     /// four tall, then writes a horizontal run over its top-left corner and a `┘` over (10, 12).
     /// Values rather than symbols, like `YES_NO_BOX`: this is a figure on screen, not a byte.
     pub const MOVE_LIST_BOX: (u16, u16, u16, u16) = (4, 12, 19, 17);
+    /// The bag's own box in a battle (row 66): `DisplayListMenuID` draws a `TextBoxBorder` at
+    /// (4, 2), nine rows by fourteen, so its corners are (4, 2) and (19, 12). Surveyed on the
+    /// cartridge: whole on every frame the list is up, gone on the frame it closes.
+    pub const ITEM_LIST_BOX: (u16, u16, u16, u16) = (4, 2, 19, 12);
     pub const MOVE_LIST_JOIN: u16 = 10;
     /// Where `MoveSelectionMenu` parks the shared cursor: row 12, column 5.
     pub const MOVE_LIST_CURSOR_Y: u8 = 12;
     pub const MOVE_LIST_CURSOR_X: u8 = 5;
+
+    /// The naming screen (row 69, `engine/menus/naming_screen.asm`).
+    ///
+    /// `wNamingScreenNameLength` and `wNamingScreenSubmitName` are two consecutive bytes in a
+    /// `UNION` of `ram/wram.asm` and are not in the reviewed address list, so they are pinned the
+    /// way `H_JOY_LAST` is: read from the operands of the cartridge's own instructions and checked
+    /// by the ROM-gated test. `PrintNicknameAndUnderscores` opens `call CalcStringLength / ld a, c
+    /// / ld [wNamingScreenNameLength], a / hlcoord 10, 2`, whose store is `$CEE9`, and
+    /// `DisplayNamingScreen.pressedStart` is `ld a, 1 / ld [wNamingScreenSubmitName], a / ret`,
+    /// whose store is `$CEEA`, the next byte.
+    pub const NAMING_LENGTH: u16 = 0xcee9;
+    pub const NAMING_SUBMIT: u16 = 0xceea;
+    /// `DisplayNamingScreen`'s box: `TextBoxBorder` at (0, 4), nine rows by eighteen, so its
+    /// corners are (0, 4) and (19, 14). The keyboard is inside it.
+    pub const NAMING_BOX: (u16, u16, u16, u16) = (0, 4, 19, 14);
+    /// Where the underscores under the name start (`hlcoord 10, 3`), and their two tiles: `$76`
+    /// for an empty place and `$77` for the raised one under the next letter.
+    pub const NAMING_UNDERSCORES: (u16, u16) = (10, 3);
+    pub const NAMING_UNDERSCORE: u8 = 0x76;
+    pub const NAMING_UNDERSCORE_RAISED: u8 = 0x77;
+    /// The keyboard's menu: `wTopMenuItemY` 3, `wMaxMenuItem` 7 and every key watched (`$ff`),
+    /// written once by `DisplayNamingScreen` and by nothing else in the game in that combination.
+    pub const NAMING_TOP_Y: u8 = 3;
+    pub const NAMING_MAX_ITEM: u8 = 7;
 
     /// `constants/ram_constants.asm`: `wMiscFlags` bit 3.
     pub const BIT_USING_GENERIC_PC: u8 = 1 << 3;
@@ -257,6 +296,10 @@ pub mod poke {
         pub const ROW_BYTES: u16 = 6;
         /// `constants/move_constants.asm`: `NUM_ATTACKS`, `STRUGGLE` (`$a5`) the last.
         pub const LAST_MOVE: u8 = 0xa5;
+        /// The same constant under its own name: the move the cartridge executes for a
+        /// Pokémon whose moves have no PP left (`ExecutePlayerMove`'s caller, `MoveSelectionMenu`'s
+        /// "has no moves left!"). The damage reward does not pay for it: the fly did not choose it.
+        pub const STRUGGLE: u8 = 0xa5;
 
         /// `constants/move_effect_constants.asm`: the stat-stage effects, each run in stage
         /// order ATTACK, DEFENSE, SPEED, SPECIAL, ACCURACY, EVASION.
@@ -631,12 +674,19 @@ pub fn battle(memory: &mut dyn MemoryReader) -> Option<Battle> {
         BattleMenu::Moves { cursor: slot, count }
     } else if party_list(memory) {
         BattleMenu::Party { cursor: cursor.current }
-    } else if read(memory, ram::wListMenuID) == poke::ITEM_LIST_MENU {
+    } else if read(memory, ram::wListMenuID) == poke::ITEM_LIST_MENU && item_list_drawn(memory) {
         // The bag, opened from the battle menu's ITEM entry. `DisplayListMenuID` keeps its
         // position in the same shared cursor every other menu uses, and the entry count is the
         // bag's own, so the scripts that reach into it (`ITEM`, `THROW BALL`) navigate by reading
         // rather than by counting presses -- which is what section 4 requires of them and what
         // they could not do while this read as no list at all.
+        //
+        // **And only while its box is on screen** (row 66), row 50's rule for the move list:
+        // `wListMenuID` is written when the list opens and never cleared, so after a ball was
+        // thrown every frame to the end of the battle -- "All right! WEEDLE was caught!", the
+        // Pokédex page, the nickname offer and the naming screen -- read as an open bag, the pad
+        // was `BACK` and `THROW BALL`, and the ball's A presses typed the nickname: 6,900 frames
+        // from the catch to the end of the battle, under a `THROW BALL` that threw nothing.
         let count = bag(memory).len().min(usize::from(poke::BAG_CAPACITY));
         BattleMenu::Bag { cursor: cursor.current, count: u8::try_from(count).unwrap_or(0) }
     } else {
@@ -1033,6 +1083,49 @@ pub fn yes_no_prompt(memory: &mut dyn MemoryReader) -> bool {
     two_option_box_drawn(memory, cursor.top_x, cursor.top_y)
 }
 
+/// The naming screen, when it is up (row 69, `docs/design/macros.md` 12.32).
+///
+/// Red has no "the keyboard is open" byte, so this is the construction `yes_no_prompt` makes: the
+/// menu bytes `DisplayNamingScreen` writes (`wTopMenuItemY` 3, `wMaxMenuItem` 7, every key
+/// watched), **and** the figure it draws -- the keyboard's whole `TextBoxBorder` at (0, 4)-(19, 14)
+/// and the underscores under the name at (10, 3). Both halves, because the menu bytes are not
+/// cleared when the screen closes.
+///
+/// The capacity is the underscores counted on screen (seven or ten), and the length is
+/// `wNamingScreenNameLength`, which `PrintNicknameAndUnderscores` writes after every key that
+/// changes the name.
+pub fn naming_screen(memory: &mut dyn MemoryReader) -> Option<Naming> {
+    let cursor = cursor(memory);
+    if cursor.top_y != poke::NAMING_TOP_Y
+        || cursor.max != poke::NAMING_MAX_ITEM
+        || cursor.watched_keys != 0xff
+    {
+        return None;
+    }
+    let (left, top, right, bottom) = poke::NAMING_BOX;
+    if !border_drawn(memory, left, top, right, bottom) {
+        return None;
+    }
+    let (x, y) = poke::NAMING_UNDERSCORES;
+    let capacity = (x..poke::SCREEN_WIDTH)
+        .take_while(|column| {
+            matches!(
+                screen_tile(memory, *column, y),
+                poke::NAMING_UNDERSCORE | poke::NAMING_UNDERSCORE_RAISED
+            )
+        })
+        .count();
+    // `PLAYER_NAME_LENGTH - 1` or `NAME_LENGTH - 1`: nothing else is the keyboard.
+    if capacity != 7 && capacity != 10 {
+        return None;
+    }
+    Some(Naming {
+        length: read(memory, poke::NAMING_LENGTH),
+        capacity: capacity as u8,
+        submitted: read(memory, poke::NAMING_SUBMIT) != 0,
+    })
+}
+
 /// Whether `DisplayTwoOptionMenu`'s own box is drawn around the cursor the game parked in it.
 ///
 /// One fact about the routine rather than about any one script (row 56): the cursor goes in the
@@ -1063,6 +1156,12 @@ fn two_option_box_drawn(memory: &mut dyn MemoryReader, cursor_x: u8, cursor_y: u
         ((left + 2)..poke::SCREEN_WIDTH)
             .any(|right| border_drawn(memory, left, top, right, bottom))
     })
+}
+
+/// Whether the battle bag's list box is whole on screen ([`poke::ITEM_LIST_BOX`], row 66).
+fn item_list_drawn(memory: &mut dyn MemoryReader) -> bool {
+    let (left, top, right, bottom) = poke::ITEM_LIST_BOX;
+    border_drawn(memory, left, top, right, bottom)
 }
 
 /// Whether `MoveSelectionMenu`'s own box is the figure on screen (`infra/docs/macros-traps.md`,
@@ -2315,6 +2414,22 @@ impl MacroState for PokeState<'_> {
     fn reached(&mut self, target: TargetKey) -> bool {
         let Some(map) = player(self.memory).map(|player| player.map) else { return false };
         self.targets.reached(map, target)
+    }
+
+    /// Whether the counter of the building on `map` was walked to inside the window (row 66).
+    fn counter_walked_to(&mut self, map: u8) -> bool {
+        self.targets.reached(map, TargetKey::Counter)
+    }
+
+    /// `EVENT_OAK_GOT_PARCEL`, bit 56 of `wEventFlags`.
+    fn parcel_delivered(&mut self) -> bool {
+        let bit = super::symbols::events::EVENT_OAK_GOT_PARCEL;
+        read(self.memory, ram::wEventFlags + (bit >> 3)) & (1 << (bit & 7)) != 0
+    }
+
+    /// The naming screen (row 69), [`naming_screen`].
+    fn naming(&mut self) -> Option<super::macros::state::Naming> {
+        naming_screen(self.memory)
     }
 
     /// Where the ladder's next unreached rung is (`GO OBJECTIVE`).

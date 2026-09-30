@@ -30,7 +30,7 @@ pub const PROTOTYPE_PLASTICITY_VERSION: &str = "fly-kc-mbon-rstdp-v2";
 pub struct Compatibility<'a> {
     /// `kernelVersion(config)` from the neural library.
     pub neural_kernel_version: &'a str,
-    /// The adapter's version string, e.g. `pokered-unique8-v7`.
+    /// The adapter's version string, e.g. `pokered-unique8-v8`.
     pub adapter: &'a str,
     /// The dataset's seven SHA-256 digests joined with `:`.
     pub dataset_fingerprint: &'a str,
@@ -78,7 +78,7 @@ const ADAPTER_SEGMENT: usize = 1;
 /// The environment variable that opts a deploy into the adapter migration.
 ///
 /// Read by flysim at restore and by `infra/05-deploy.sh`'s compatibility gate. Comma- or
-/// whitespace-separated adapter ids, e.g. `FLY_ACCEPT_ADAPTERS=pokered-unique8-v6`.
+/// whitespace-separated adapter ids, e.g. `FLY_ACCEPT_ADAPTERS=pokered-unique8-v7`.
 pub const ACCEPT_ADAPTERS_ENV: &str = "FLY_ACCEPT_ADAPTERS";
 
 /// What a build may do with a checkpoint whose compatibility string is not its own.
@@ -180,7 +180,7 @@ mod tests {
         assert_eq!(
             fixture().prototype_string(),
             concat!(
-                "lif-1ms-f64-v2/pokered-unique8-v7/aa:bb:cc:dd:ee:ff:00/",
+                "lif-1ms-f64-v2/pokered-unique8-v8/aa:bb:cc:dd:ee:ff:00/",
                 "fly-kc-mbon-rstdp-v2/",
                 "binjgb:c60e138da5a795ebb55e56b11b7e90024e41112c/",
                 "pokered:0cd19d3b877b7dc66d12c7050bed9a7f38154d4b",
@@ -194,8 +194,41 @@ mod tests {
 
     #[test]
     fn an_identical_string_restores_without_any_opt_in() {
-        let current = with_adapter("pokered-unique8-v7");
+        let current = with_adapter("pokered-unique8-v8");
         assert_eq!(decide(&current, &current, &[], &[]), RestoreDecision::Exact);
+    }
+
+    #[test]
+    fn a_v7_checkpoint_restores_under_v8_only_with_the_opt_in_and_v6_still_does() {
+        let new = with_adapter("pokered-unique8-v8");
+        let migrates = crate::pokemon_red::MIGRATES_FROM;
+        for from in ["pokered-unique8-v7", "pokered-unique8-v6"] {
+            let old = with_adapter(from);
+            assert!(matches!(decide(&old, &new, migrates, &[]), RestoreDecision::Refuse(_)));
+            assert_eq!(
+                decide(&old, &new, migrates, &accepted_adapters(Some(from))),
+                RestoreDecision::MigrateAdapter { from: from.to_string() }
+            );
+        }
+        // Naming v7 does not wave a v6 checkpoint through, nor v5 at all.
+        assert!(matches!(
+            decide(
+                &with_adapter("pokered-unique8-v6"),
+                &new,
+                migrates,
+                &accepted_adapters(Some("pokered-unique8-v7"))
+            ),
+            RestoreDecision::Refuse(_)
+        ));
+        assert!(matches!(
+            decide(
+                &with_adapter("pokered-unique8-v5"),
+                &new,
+                migrates,
+                &accepted_adapters(Some("pokered-unique8-v5"))
+            ),
+            RestoreDecision::Refuse(_)
+        ));
     }
 
     #[test]

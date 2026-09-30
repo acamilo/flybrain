@@ -244,7 +244,7 @@ The unit itself lives in `infra/`, not here (W4 in `docs/stream-mvp-plan.md`). W
 provide:
 
 - `LoadCredentialEncrypted=twitch-client-id:...` and `...twitch-client-secret:...`, sourced from
-  `pass` (`twitch/fly-pokemon-client-{id,secret}`), giving `$CREDENTIALS_DIRECTORY` the two files
+  `pass` (`twitch/<app>-client-{id,secret}`), giving `$CREDENTIALS_DIRECTORY` the two files
   `src/config.ts` reads.
 - A writable, persistent directory for `TOKENS_FILE`, `REDEMPTION_STATE_FILE` and
   `NOTICE_STATE_FILE` (default `/var/lib/flybridge/`), owned by the service user.

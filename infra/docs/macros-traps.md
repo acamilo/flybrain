@@ -3370,3 +3370,225 @@ gives these results:
 - **65b to 65d**: out, but seed 3 then stands outside the front door with an empty pad for the rest
   of the window (65e).
 - **branch**: all six leave with no empty pad, and three win the Cascade Badge.
+
+## 2026-09-29, row 66: shop, Poké Balls and catching from the rung-8 restart
+
+### What was found
+
+The operator restarted the live run from the rung-8 archive (VIRIDIAN CITY) on v0.6.5 to watch
+shopping and catching. In the first 35 minutes: `GO SHOP` done 33, `TALK` 5, `BUY BALL` never
+dealt, `THROW BALL` 0, no catch. The sequences after `GO SHOP` were `GO SHOP`, `GO OUT`, `GO SHOP`,
+`GO OUT` (`docs/design/macros.md` 12.30).
+
+### Reproduction
+
+- `survey-rank8-row66-viridian-mart.checkpoint` (`FLY_ROW66_MART_CHECKPOINT`, not committed) was
+  saved by the offers survey (`FLY_PROBE_SAVE_MART=2a`, `FLY_PROBE_SAVE_AFTER=3000`) from
+  `survey-rank7-row62` on the frame the fly walked into the Viridian mart after delivering the
+  parcel: 793 in the wallet, no ball.
+- The connectome from it (`trap_hunt`, `FLY_TRAP_LOG_MACROS=1`): `GO SHOP` from the door to the
+  clerk, `GO OBJECTIVE` out of the door, `GO SHOP` from the street. Three laps in 18 brain seconds.
+  `TALK` was on the pad at the counter every time and was never chosen.
+- A catch on the stub survey (`FLY_PROBE_SCREEN_*` dumps): from "All right! WEEDLE was caught!"
+  to the end of the battle, 6,900 frames under a pad of `BACK` and `THROW BALL`. `THROW BALL`'s A
+  said YES to the nickname and typed AAAAAAAAAA.
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 66 | row 62's service walk is dealt again whenever the service is needed, with no window, so a fly that walks away from the counter is walked straight back | the Viridian mart after the parcel, no ball, money for one | `a_counter_the_fly_walked_away_from_is_not_walked_back_to_for_the_window`, `row66_a_counter_walked_away_from_is_not_walked_back_to_by_go_shop` | **fixed**: a completed `GO SHOP` / `GO HEAL` facing the counter records `TargetKey::Counter` on the building's map. The service walk toward it is withheld for the reached window |
+| 66b | a purchase took four choices in a row at the counter (`TALK`, the greeting, `CONFIRM`, `BUY BALL`). The connectome never chose `TALK` there | any mart | `buy_ball_is_offered_from_a_marts_floor_only_while_a_ball_can_be_bought`, `row66_buy_ball_from_the_marts_floor_rings_up_a_ball` | **operator decision, built**: `BUY BALL` is also one button from the mart's floor, like `HEAL`. It walks to the clerk, talks, opens BUY, buys the first row and is done when paid. It is offered only in Viridian (after Oak has the parcel), Pewter and Cerulean, with no ball, 200 in the wallet, no parcel, and the clerk not blocked |
+| 66c | `wListMenuID` outlives the battle bag, so every frame after a throw read as an open bag | a catch (the Pokédex page, the nickname, the naming screen) and the text after any throw or potion | `row66_after_a_catch_the_pad_is_not_the_bag_and_the_battle_ends`, the state unit test | **fixed**: the bag is the bag only while its box (4, 2)-(19, 12) is drawn |
+| 66d | after a catch, `NEXT` says YES to the nickname offer and names the Pokémon with A's | every catch | -- | **left, named**: offering the box's two answers in a battle is a pad change for the operator |
+| 66e | the connectome did not choose `THROW BALL` in any wild battle with a ball (35 decisions over seven battles, three runs) | Viridian Forest with a ball bought by 66b | -- | **left, the fly's**: dealt as designed (12.9). Whether to make throwing likelier is the operator's |
+| 66f | whiteouts halve the wallet: 3,175 to 793 to 396 to 0 on one stub run before Pewter | early fights lost | -- | **left**: the cartridge's rule. It is why the restart rung matters |
+| 66g | `rom_catch`'s `BALL` is the button's tag (`MB·BALL`), not its channel, so the lean sets a rate nobody reads | the test's drive | -- | **left, documented**: that drive is the one that catches from `FLY_CATCH_CHECKPOINT`. Both tests now retry from idle offsets, because one ball misses about two throws in three |
+
+### Before and after
+
+ROM tests (rom-env sourced):
+
+| test | v0.6.5 | branch |
+| --- | --- | --- |
+| `row66_a_counter_walked_away_from_is_not_walked_back_to_by_go_shop` (10,000 frames, the drive declines the counter) | 31 street `GO SHOP`s, 31 walks back in. **Fails** | 0 and 0. Passes |
+| `row66_buy_ball_from_the_marts_floor_rings_up_a_ball` | `BUY BALL` never dealt on the floor, no ball. **Fails** | dealt, started, done. One ball, 793 to 593, at f491. Passes |
+| `row66_after_a_catch_the_pad_is_not_the_bag_and_the_battle_ends` | `THROW BALL` dealt on 666 frames after the catch, pad `BACK`/`THROW BALL`. **Fails** | 0, pad `NEXT`, battle over 1,463 frames after the catch. Passes |
+
+With the connectome (`trap_hunt`, one sweep thread). `FLY_TRAP_SEED` seeds only the palette, and
+three seeds from one checkpoint were byte-identical. So the runs vary the starting state: three
+post-parcel Viridian mart entrances saved from stub seeds 1, 3 and 5, and the Pewter gym
+(`survey-rank11-row59`, 1,606 in the wallet). A decision is a macro start whose pad held the
+button.
+
+| run | brain min | counter `TALK` dealt / chosen | floor `BUY BALL` dealt / chosen / done | balls bought | `THROW BALL` dealt / chosen |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| base, Viridian mart (s1 entrance) | 5 | 4 / 0 | -- | 0 | 0 / 0 |
+| branch, Viridian mart (s1 entrance) | 5 | 1 / 0 | 2 / 0 / 0 | 0 | 0 / 0 |
+| branch, Viridian mart (s3 entrance) | 5 | 3 / 0 | 3 / 1 / 1 | 1 (431 to 231) | 4 / 0 |
+| branch, Viridian mart (s5 entrance) | 5 | 3 / 0 | 4 / 1 / 1 | 1 (1,587 to 1,387) | 16 / 0 |
+| branch, Pewter gym, then the Pewter mart | 10 | 1 / 0 | 4 / 1 / 1 | 1 (1,606 to 1,406) | 15 / 0 |
+
+`TALK` at a counter: 0 of 12 decisions on either arm. The floor `BUY BALL`: chosen 3 of 13, and
+done (paid) all 3 times. The ring: 4 mart entries in 16 brain seconds on base, one visit on the
+branch.
+
+## 2026-09-29, row 67: the Pewter Gym trainer, lost on repeat
+
+### What was live
+
+v0.6.5, macros mode, reset to rung 8 at 12:16Z and back at PEWTER CITY by 13:40. The fly
+entered the Pewter Gym (map 54) at 13:41, talked to the guide (#3) and to the Jr. Trainer
+(#2). For the next hour and a half the pad read `battle` most of the time.
+Per 3,000 events: `NEXT` 1,332, `MOVE 2` 83, `MOVE 3` 13, `MOVE 1` 0, `GO OBJECTIVE` 30, `NO` 17,
+`GO FRONTIER` 13, `TALK` 7. There was no battle-won reward, only two tile rewards on map 54. Check
+10 stayed clear.
+
+### Reproduction (the pulled checkpoint, hot generation 230739)
+
+- The checkpoint is on the walk back, not in a battle: Pewter City (18, 13), `wIsInBattle` 0,
+  `wLastBlackoutMap` `$02`, money 0, no badge, `EVENT_BEAT_PEWTER_GYM_TRAINER_0` clear. The party
+  is one Squirtle L11, 34/34: TACKLE 35/35, TAIL WHIP 30/30, BUBBLE 30/30.
+- The opponent is `wTrainerClass` `$05` (Jr. Trainer♂) #1, `wEnemyPartyCount` 2: Diglett L11 and
+  Sandshrew L11, both Ground (`wEnemyMonType1` `$04`).
+- Driven with the real palette and the live readout's measured favourite (TAIL WHIP 87%, else
+  BUBBLE), the cycle is the live one. `GO OBJECTIVE` into the gym, then `TALK` and the guide's
+  YES/NO. Then the trainer's challenge starts the battle. The own-turn pad is `MOVE 1, MOVE 2, MOVE 3`
+  on every turn, and each turn resolves in about 530 frames. Squirtle falls 34 → 29 → 24 → 19
+  → 11 → 6 → 0 while Diglett's DEFENSE falls to -6. Then `wIsInBattle` `$ff`, `wBattleResult` 1,
+  the whiteout to Pewter (13, 26) with PP back to 30, and the walk back. One battle takes about
+  4,500 frames.
+- Live, per battle (29 battles, from the event log): TAIL WHIP 155, BUBBLE 23, TACKLE 0, and 5 to 8
+  moves each. Where TAIL WHIP ran out of effect before the faint, 12.23 withheld it and the fly
+  pressed BUBBLE (`22222233`).
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 67 | a readout that favours TAIL WHIP loses every battle against a trainer it could beat; the whiteout heals the party, so PP never runs out and the ring never ends | the Pewter Gym's Jr. Trainer, Squirtle alone | `row67_the_gym_trainer_is_beaten_from_what_the_pad_deals` | **left, the fly's**: the pad offers every move with PP and an effect on every own-turn frame (0 missing in 932) and a uniform choice wins. Options for the operator below |
+| 67b | check 10 did not flag: a stray tile reward (a new gym tile on a walk back) every ~20 minutes reset `unrewarded`, and battles are not a sequence of four names | a whiteout ring with a walk in it | `lint.sh` check 10 case 8 | **fixed**: `unwon-battles` (24+ `MOVE n`, no `wildwin`/`trainer`/`badge` reward, two probes, no new ground) |
+| 67c | the no-PP ROM test asserted "more than one button" on a trainer battle whose only honest button is `MOVE 1` (12.8's backstop); it was red on main and skipped without `FLY_NOPP_CHECKPOINT` | the no-PP checkpoint | `macros_mode_ends_a_turn_with_no_move_left_on_the_cartridge` | **fixed (test)**: at least one button, and the battle ends (Struggle, 1,487 frames) |
+
+### The options, measured
+
+From the live checkpoint, 60,000 frames per arm (16.7 brain minutes), real palette. The driver
+is harness choice, not the fly's:
+
+| arm | trainer battles (L lost, W won) | trainer beaten | Brock beaten |
+| --- | --- | --- | --- |
+| live favourite (TAIL WHIP 87%), seed 1 | LLLLLLLLL | no | no |
+| live favourite, seed 2 | LLLLLLLL | no | no |
+| uniform over the pad, seeds 1 / 2 / 3 | LLW / LLLLW / LLLW | f32,940 / f46,293 / f41,030 | seed 1 |
+| BUBBLE whenever dealt | W | f12,234 | yes |
+| TACKLE whenever dealt | LLLLLW | f59,253 | no |
+| live favourite, stat-down move withheld once the target's stage is -1 or lower, seeds 1 / 2 | W / W | f9,165 / f9,304 | yes / yes |
+| the same at -2, seeds 1 / 2 | LW / LW | f17,053 / f19,033 | yes / yes |
+| the same at -3, seed 1 | LLLLLW | f54,551 | no |
+
+- **Withhold a move with no effect on this target** (12.23's rule): it already applies, and TAIL
+  WHIP has an effect until -6. The fly faints at about that turn, so the rule changes nothing here.
+- **Withhold a stat-lowering move once it has done something**: the -1 arm wins the first battle
+  on both seeds and then beats Brock. It is a pad rule about which move is good, not about what
+  the cartridge refuses, so it is a doctrine change for the operator. It would also hide GROWL,
+  SAND-ATTACK and similar moves after one use in every battle.
+- **Reward damage dealt**: this is a reward-catalog change, out of scope for loop review, and it
+  cannot be measured without the brain. Nothing in the current catalog separates BUBBLE from
+  TAIL WHIP until a battle is won, and none is.
+- **Watchdog detection plus the recovery ladder**: shipped (67b). Replayed probe by probe on the
+  live log with uniqueLocations proxied from the tile rewards, base check 10 first flags at 14:46
+  (`unrewarded`). The branch flags `unwon-battles` at 14:01, 14:16, 14:21, 14:36 and 14:41; a
+  tile reward at 14:06 and 14:26 clears one probe each. The healthy windows before the gym
+  (13 to 46 `MOVE n`, 1 to 4 wins each) are not flagged. The ladder's restart does not change the
+  readout, and a reset to PEWTER CITY replays the same gym. Only the reset to the rung below adds
+  forest battles, and whether that is enough was not measured.
+
+## 2026-09-29, row 69: throw on low HP only, and the fly names its catch
+
+### What was asked
+
+Two operator decisions after row 66 (`docs/design/macros.md` 12.32). Row 66 measured the connectome
+choosing `THROW BALL` 0 times in 35 decisions with a ball in the bag (66e), and every catch named
+`AAAAAAAAAA`: `NEXT` answered the nickname offer YES and its A presses typed on the keyboard (66d).
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 69 | at low HP the ball sat beside four moves, `SWITCH` and `RUN`, and the fly never chose it (66e) | a wild battle with a ball, the enemy at a third of its HP | `row69_at_low_hp_in_a_wild_battle_the_ball_is_the_only_attack` and four more unit tests, `row69_at_low_hp_a_wild_battles_pad_is_the_ball` (`FLY_ROW69_CHECKPOINT`) | **operator decision, built**: with `THROW BALL` dealt and `ItemUseBall`'s HP factor saturated (`W >= 255`), the moves, `SWITCH`, `RUN` and the bag's `BACK` are withheld; `ITEM` stays for a hurt thrower |
+| 69b | the keyboard read as the battle's between-turns frame, so `NEXT` typed the name (66d) | every catch | `row69_after_a_catch_the_keyboard_is_the_flys_own_buttons_and_it_ends`, `the_naming_screen_is_its_menu_and_its_box_and_its_underscores` | **operator decision, built**: the keyboard reads `Unknown` and its pad is the fly's own D-pad, A, B and START |
+| 69c | a keyboard nobody ends is a stall: B never leaves it and A stops typing at ten letters | a fly that does not press ED or START | `row69_a_fly_that_types_nothing_is_ended_by_the_bound`, `row69_confirm_on_the_keyboard_presses_start_until_it_closes` | **fixed**: once the name is full or sixty brain seconds have run, `CONFIRM` alone, which presses START until the keyboard closes (`blocked` after 160 frames) |
+| 69d | row 66's `unknown_pads_with_no_box` counted the bound's `CONFIRM` on the keyboard, which is drawn without the text font | the rung-10 Pewter gym drive, which buys a ball and catches | `the_fly_reaches_the_pewter_gym_from_the_rung_ten_checkpoint` | **fixed in the test**: the keyboard is a drawn screen |
+| 69e | the catch checkpoint's lead one-shots every forest Pokémon, so no wild HP is ever low there | `FLY_CATCH_CHECKPOINT` | -- | **left, named**: the low-HP ROM test uses a rung-9 Route 2 checkpoint (rung-9 A below: a Bulbasaur at 5/30, one ball) as `FLY_ROW69_CHECKPOINT` |
+
+### Before and after
+
+ROM tests (rom-env sourced, the build box), a69a258 against the branch:
+
+| test | a69a258 | branch |
+| --- | --- | --- |
+| `row69_at_low_hp_a_wild_battles_pad_is_the_ball` | 664 low-HP frames with the ball dealt, pad `MOVE 1`, `MOVE 2`, `MOVE 3`, `THROW BALL`. **Fails** | 58 frames, pad `THROW BALL` alone, thrown. Passes |
+| `row69_after_a_catch_the_keyboard_is_the_flys_own_buttons_and_it_ends` | keyboard 511 frames, 11 `NEXT` starts, 0 raw frames, name `AAAAAAAAAA`. **Fails** | keyboard 1,516 frames, no macro, 1,516 frames of the fly's buttons, 7 letters at most, name `RIJ?`, closed by the fly (ED). Passes |
+| `row69_a_fly_that_types_nothing_is_ended_by_the_bound` | `NEXT` types ten A's and ED. **Fails** | nothing typed; `CONFIRM` dealt once at the bound, span 3,587 frames, name empty (the species' own). Passes |
+| `row66_after_a_catch_the_pad_is_not_the_bag_and_the_battle_ends` | passes | passes (battle over 2,468 frames after the catch) |
+
+With the connectome (`trap_hunt`, one sweep thread, 15 brain minutes, macro log). The runs vary the
+starting state, as row 66's did: four rung-9 checkpoints with one ball each.
+
+| checkpoint (lead, balls) | arm | wild battles with a ball | `THROW BALL` dealt frames / chosen | the throw's pad (frames) | catches | keyboard | rung, tiles, windows flagged |
+| --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| rung-9 A, Route 2 (Bulbasaur 5/30, 1) | a69a258 | 5 | 414 / 0 | -- | 0 | -- | 10, 520, 40 |
+| | branch | 2 | 96 / 1, at low HP from the pad `THROW BALL` alone | 32 | 1 | 16.8 brain s, A 32, B 30, longest 1, name empty (the species'), ended by the fly (ED) | 10, 482, 51 |
+| rung-9 B, Route 2 (Wartortle 9/70, 1) | a69a258 | 1 | 32 / 1, at full HP on the first frame | 0 | 1 | `NEXT` | 9, 300, 46 |
+| | branch | 1 | 32 / 1, the same throw | 0 | 1 | 28.1 brain s, A 55, B 52, longest 1, name empty, ended by the fly (ED) | 9, 236, 43 |
+| rung-9 C, the forest (`FLY_CATCH_CHECKPOINT`, Wartortle 18/70, 1) | both, identical | 1 | 32 / 1, at full HP, missed | 0 | 0 | -- | 9, 278, 18 |
+| rung-9 D, the forest (the no-PP state, Bulbasaur 6/34, 1) | both, identical | 2 | 282 / 0 | 0 (never low with the ball dealt) | 0 | -- | 9, 285, 21 |
+
+- **Throws and catches.** Three balls thrown in four runs on the branch, two catches; on a69a258
+  two thrown and one catch. The one run where they differ is the one whose wild HP passed a third
+  with the ball dealt: the fly threw from the throw's pad at once and caught. Two of the throws
+  were the fly's own choice from the ordinary pad on a battle's first frame, on both arms.
+- **Names.** Both keyboards were ended by the fly's own A on ED, in 17 and 28 brain seconds, well
+  inside the bound. The brain's A and B fire at nearly the same rate there, so each letter it typed
+  it deleted again and both names came out empty, which the cartridge turns into the species'
+  name. That is the fly's spelling, kept as it is.
+- **Stalls.** None from this row. Every run ends its battles; no keyboard reached the bound. The
+  flagged windows are `NEXT` runs through battle text on both arms (and on the branch's rung-9 A run
+  five `GO ROUTE, GO HEAL` windows, row 62's tug, 65h). The branch's rung-9 B run covers fewer tiles
+  after the keyboard because its frames after the catch differ from a69a258's (the keyboard took
+  28 brain seconds instead of `NEXT`'s few), not because anything waited: 635 macros started, 633
+  done, one refusal and one timeout, against 803, 802, one and one.
+
+## 2026-09-29, row 68: the damage reward, the catalog's answer to row 67
+
+Row 67 (the Pewter Gym's Jr. Trainer lost on repeat, TAIL WHIP 155 / BUBBLE 23 / TACKLE 0) is a
+readout choice, not a pad fault. The operator chose a catalog change over a pad rule: `damage`,
+adapter `pokered-unique8-v8` (`docs/rewards-learning.md`, "Damage rewards"). It pays for the HP the
+fly's own attack removes; it does not touch the pad.
+
+### The survey
+
+The real brain, macros mode, from the row 67 checkpoint, 120 brain minutes per arm, `v7` (main)
+against `v8` (the rule), on the stream's own frame (`LegacyFrame`). The palette seed turned out not
+to diversify a run (seeds 1, 2 and 3 were identical per arm), so the three pairs are three starts:
+the checkpoint as it is, and the checkpoint with the game run 7 and 19 frames ahead of the brain.
+Each pair is identical until the first damage payout.
+
+| start | arm | trainer battles | won | BUBBLE share, first 40 / last 40 min | damage paid | rung |
+| --- | --- | ---: | ---: | --- | ---: | --- |
+| +0 | v7 | 68 | 0 | 14% / 17% | -- | 10 |
+| +0 | v8 | 58 | 3 (Jr. Trainer at 101 min, Brock at 107, a Route 3 trainer at 112) | 15% / 20% | 6.01 | **11, BOULDER BADGE** |
+| +7 | v7 | 65 | 0 | 16% / 21% | -- | 10 |
+| +7 | v8 | 67 | 0 | 14% / 14% | 3.41 | 10 |
+| +19 | v7 | 60 | 0 | 15% / 24% | -- | 10 |
+| +19 | v8 | 59 | 1 (Jr. Trainer at 119.6 min) | 16% / 22% | 6.74 | 10 |
+
+TACKLE stayed at 0 to 2 choices a run in every arm.
+
+**What it shows.** The rule fires where it should: every `v8` arm was paid for BUBBLE's hits and
+nothing for TAIL WHIP's, 3.4 to 6.7 over two hours, capped per battle. `v8` beat the trainer in 2
+of 3 starts and `v7` in 0 of 3 (and the live run 0 of 29). **What it does not show** is the
+mechanism the rule is for: the move choice did not move more under `v8` than under `v7`. BUBBLE
+drifted from about 15% to about 20% in both arms, and TAIL WHIP stayed near 80% everywhere. So
+inside two brain hours the wins are not explained by a learned preference; a paid hit also changes
+the brain's activity (the PAM stimulation) and the trajectory, and three starts cannot tell a small
+real effect from luck. Learning is too slow to show in this window, or not happening, and the
+survey cannot say which.
+
+**Status: shipped as the operator decided, not a fix.** The trap is still possible under it: one of
+three `v8` starts never won. Row 67's watchdog check 10 (`unwon-battles`, on its branch) is the
+detector, and the pad rule the operator declined is the lever that still exists.
