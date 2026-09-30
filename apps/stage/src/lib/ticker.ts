@@ -68,6 +68,9 @@ export const DEFAULT_TICKER_OPTIONS = {
  */
 const HIDDEN_KINDS: ReadonlySet<FeedEventKind> = new Set<FeedEventKind>(['checkpoint', 'viewer']);
 
+/** The adapter's hit label: `HIT #<species> FOR <n> HP` with ` KO` when the hit felled a trainer's Pokémon. */
+const HIT_LABEL = /^HIT #\d+ FOR \d+ HP( KO)?$/;
+
 export class TickerQueue {
   private readonly visibleRows: number;
   private readonly minDwellMs: number;
@@ -77,6 +80,8 @@ export class TickerQueue {
   private visible: TickerItem[] = [];
   private pending: TickerItem[] = [];
   private lastPromotionMs = Number.NEGATIVE_INFINITY;
+  /** Feed time of the last hit folded into each hit row, by the row. */
+  private readonly lastHitMs = new WeakMap<TickerItem, number>();
   /** Bumped whenever the visible list changes, so the store can push to React on change only. */
   private revision = 0;
 
@@ -106,10 +111,11 @@ export class TickerQueue {
   push(event: FeedEvent, nowMs: number): boolean {
     if (HIDDEN_KINDS.has(event.kind)) return false;
 
-    const tier = this.tierOf(event);
-    const label = this.labelOf(event);
+    const hit = this.hitOf(event);
+    const tier = hit ? this.hitTier(hit.ko) : this.tierOf(event);
+    const label = hit ? `${this.game.hitCopy?.label ?? event.label}${hit.ko ? ' KO' : ''}` : this.labelOf(event);
 
-    const folded = this.fold(event, nowMs);
+    const folded = hit ? this.foldHit(event, hit.ko, nowMs) : this.fold(event, nowMs);
     if (folded) return true;
 
     const item: TickerItem = {
@@ -124,6 +130,8 @@ export class TickerQueue {
       ...(event.value === undefined ? {} : { amount: event.value }),
       ...(event.by === undefined ? {} : { by: event.by }),
     };
+
+    if (hit) this.lastHitMs.set(item, nowMs);
 
     if (tier === 'moment') {
       // Jump the gate: the badge is the reason anyone is watching.
@@ -170,6 +178,42 @@ export class TickerQueue {
       item.count += 1;
       if (event.value !== undefined) item.amount = (item.amount ?? 0) + event.value;
       item.label = copy.collapsedNoun ? `${item.count} ${copy.collapsedNoun}` : copy.label;
+      this.revision += 1;
+      return true;
+    }
+    return false;
+  }
+
+  /** Is this a hit the game rolls up? Only a reward with no `rewardKind` and the adapter's own label. */
+  private hitOf(event: FeedEvent): { ko: boolean } | null {
+    if (!this.game.hitCopy || event.kind !== 'reward' || event.rewardKind) return null;
+    const match = HIT_LABEL.exec(event.label);
+    return match ? { ko: match[1] !== undefined } : null;
+  }
+
+  private hitTier(ko: boolean): TickerTier {
+    const copy = this.game.hitCopy;
+    return copy ? (ko ? copy.koTier : copy.tier) : 'quiet';
+  }
+
+  /**
+   * Fold a hit into the battle's row: the newest hit row whose last hit is within `gapMs`. The
+   * window slides with each hit (unlike `fold`'s, which is from creation) because a battle has
+   * no fixed length; a row that has left the panel is not resurrected, the next hit starts one.
+   * The row shows the summed reward, a `x<n>` count and a KO once any hit in it felled a Pokémon.
+   */
+  private foldHit(event: FeedEvent, ko: boolean, nowMs: number): boolean {
+    const copy = this.game.hitCopy;
+    if (!copy) return false;
+    for (const item of [...this.visible, ...this.pending]) {
+      const last = this.lastHitMs.get(item);
+      if (last === undefined || nowMs - last > copy.gapMs) continue;
+      item.count += 1;
+      if (event.value !== undefined) item.amount = (item.amount ?? 0) + event.value;
+      const knocked = ko || item.label.endsWith(' KO');
+      item.label = `${copy.label} x${item.count}${knocked ? ' KO' : ''}`;
+      if (knocked) item.tier = copy.koTier;
+      this.lastHitMs.set(item, nowMs);
       this.revision += 1;
       return true;
     }

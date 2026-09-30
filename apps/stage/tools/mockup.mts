@@ -93,6 +93,31 @@ const CHAT_WRAP: { by: string; text: string; bot?: boolean }[] = [
   },
 ];
 
+/**
+ * The ticker in a battle (row 68): the fly's hits arrive as `HIT #<species> FOR <n> HP` rewards and
+ * fold into one "damage dealt" row. Injected by hand through `window.__stage.ticker`, seven feed
+ * seconds apart, because no fixture holds a battle recorded on adapter v8.
+ */
+const TICKER_SHOTS: { name: string; events: { label: string; value: number }[] }[] = [
+  {
+    name: 'row68-ticker-hits',
+    events: [
+      { label: 'HIT #59 FOR 10 HP', value: 0.07 },
+      { label: 'HIT #59 FOR 9 HP', value: 0.06 },
+      { label: 'HIT #59 FOR 4 HP', value: 0.03 },
+      { label: 'HIT #59 FOR 4 HP', value: 0.03 },
+    ],
+  },
+  {
+    name: 'row68-ticker-ko',
+    events: [
+      { label: 'HIT #59 FOR 10 HP', value: 0.07 },
+      { label: 'HIT #59 FOR 9 HP', value: 0.06 },
+      { label: 'HIT #59 FOR 12 HP KO', value: 0.13 },
+    ],
+  },
+];
+
 const STILLS: { name: string; fixture: string; t: number; tab?: Tab; chat?: typeof CHAT_WRAP }[] = [
   { name: 'steady-t1-senses', fixture: 'steady', t: 95, tab: 'senses' },
   { name: 'steady-t1-connectome', fixture: 'steady', t: 95, tab: 'connectome' },
@@ -292,6 +317,18 @@ async function main(): Promise<void> {
       written.push(path);
       const state = await page.evaluate(() => window.__stage?.motion() ?? null);
       console.log(`  ${path}  (${String(state?.moment)} ${String(state?.momentPhase)}, ${String(state?.particles)} particles, tab ${String(state?.tab)})`);
+    }
+
+    for (const shot of TICKER_SHOTS) {
+      if (!wanted(shot.name)) continue;
+      await page.goto(url(baseUrl, { fixture: 'steady', t: 95, tab: 'senses' }));
+      await settle(page);
+      const rows = await page.evaluate((events) => window.__stage?.ticker(events) ?? [], shot.events);
+      await page.waitForTimeout(500);
+      const path = resolve(outDir, `${shot.name}.png`);
+      await page.screenshot({ path, clip: FRAME });
+      written.push(path);
+      console.log(`  ${path}  (${rows.join(' | ')})`);
     }
 
     for (const shot of RECOVERY_SHOTS) {

@@ -147,3 +147,41 @@ test('the platformer config paces the same way with different copy', async () =>
   queue.push(reward('explore'), 100);
   assert.equal(queue.items()[0]?.label, '2 new ground');
 });
+
+function hit(hp: number, value: number, ko = false): FeedEvent {
+  return event('reward', `HIT #59 FOR ${hp} HP${ko ? ' KO' : ''}`, { value });
+}
+
+test('a battle\'s hits fold into one damage row that sums and counts', () => {
+  const queue = new TickerQueue(pokemonRed, { minDwellMs: 0 });
+  queue.push(hit(10, 0.06), 0);
+  queue.push(hit(9, 0.05), 7_000);
+  queue.push(hit(4, 0.03), 15_000);
+  assert.equal(queue.items().length, 1);
+  const row = queue.items()[0];
+  assert.equal(row?.label, 'damage dealt x3');
+  assert.equal(row?.count, 3);
+  assert.ok(Math.abs((row?.amount ?? 0) - 0.14) < 1e-9);
+  assert.equal(row?.tier, 'quiet');
+});
+
+test('a KO marks the row and raises its tier; the window slides, then a new battle is a new row', () => {
+  const queue = new TickerQueue(pokemonRed, { minDwellMs: 0 });
+  queue.push(hit(10, 0.06), 0);
+  queue.push(hit(5, 0.08, true), 30_000);
+  assert.equal(queue.items()[0]?.label, 'damage dealt x2 KO');
+  assert.equal(queue.items()[0]?.tier, 'notable');
+  queue.push(hit(3, 0.02), 70_000);
+  assert.equal(queue.items().length, 1, 'still inside 45 s of the last hit');
+  queue.push(hit(3, 0.02), 200_000);
+  assert.equal(queue.items().length, 2, 'a later battle gets its own row');
+  assert.equal(queue.items()[0]?.label, 'damage dealt');
+});
+
+test('a hit is not confused with other rewards, and a lone KO says so', () => {
+  const queue = new TickerQueue(pokemonRed, { minDwellMs: 0 });
+  queue.push(hit(31, 0.25, true), 0);
+  assert.equal(queue.items()[0]?.label, 'damage dealt KO');
+  queue.push(event('reward', 'NEW MAP', { value: 0.1 }), 10);
+  assert.equal(queue.items().length, 2, 'an unrelated no-kind reward keeps its own row');
+});

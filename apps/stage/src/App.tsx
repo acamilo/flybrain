@@ -699,6 +699,24 @@ export function App() {
         return useStage.getState().chat.length;
       },
       /**
+       * Feed reward events into the ticker by hand, `stepMs` of feed time apart, for the ticker
+       * mockups (a battle's hits, a KO), and settle the dwell gate five seconds after the last.
+       * The events go through the same `TickerQueue.push` a snapshot's do.
+       */
+      ticker: (events, stepMs = 7000) => {
+        let at = hot.lastSnapshotMs;
+        for (const [index, item] of events.entries()) {
+          at = hot.lastSnapshotMs + index * stepMs;
+          ingest.queue().push(
+            { id: 900_000 + index, wallMs: 0, brainMs: 0, kind: 'reward', label: item.label, value: item.value },
+            at,
+          );
+        }
+        at += 5000;
+        ingest.commit(at, true);
+        return useStage.getState().ticker.map((row) => `${row.label} ${String(row.amount ?? '')}`);
+      },
+      /**
        * Put a notice on the recovery splash by hand, the same way `fire` drives a moment: for the
        * splash mockups and e2e assertions. The raw object goes through the same validation as a
        * polled file, the poller stops so it cannot overwrite it, and `nowS` pins the splash's clock
@@ -790,6 +808,8 @@ declare global {
       fire: (type: MomentType, label?: string, detail?: string) => number | null;
       /** Replace the held feed's chat ring by hand; returns how many lines the panel accepted. */
       chat: (lines: readonly { by: string; text: string; bot?: boolean }[]) => number;
+      /** Push reward events into the ticker by hand; returns the rows shown. */
+      ticker: (events: readonly { label: string; value: number }[], stepMs?: number) => string[];
       /** Show a recovery notice by hand (validated like a polled one); null clears it. */
       recovery: (notice: unknown, nowS?: number) => RecoveryView | null;
       fly: () => {
