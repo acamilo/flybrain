@@ -931,3 +931,15 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   store is now the shared `flysim-store` crate; FLYSIM01 gains an optional `reinforcements`
   field, downgrade-safe both ways). A PII guard scans lint, tag-release and pushes. Reviews: all
   APPROVE-WITH-NOTES.
+
+- 2026-09-29 (unreleased, the operator's decision, row 68): the fly is paid for the HP its own
+  attack removes in battle, the catalog's answer to row 67 (the Pewter Gym's Jr. Trainer lost on
+  repeat with TAIL WHIP six turns in seven). New kind `damage`: 0.20 per whole enemy Pokémon, in
+  proportion, +0.05 when it knocks out a trainer's Pokémon, at most 0.50 a battle; a wild battle at
+  1, 1/2, 1/3 per map/species/level. Only a drop on the fly's own turn (`hWhoseTurn` 0) by a move it
+  chose (not Struggle); a heal is never paid twice; no feed counter (a hit is not a "wild win").
+  Adapter `pokered-unique8-v8`; a deploy with FLY_ACCEPT_ADAPTERS=pokered-unique8-v7 migrates the
+  run (v6 still migrates when named). Survey, 3 starts x 120 brain minutes from the row 67
+  checkpoint: v8 beat the trainer in 2 of 3 (one run also won the Boulder Badge), v7 in 0 of 3, but
+  the move choice did not shift more under v8 than v7 (BUBBLE ~15% -> ~20% in both): no learned
+  preference is shown inside two hours (`infra/docs/macros-traps.md` row 68).
