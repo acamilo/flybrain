@@ -523,3 +523,14 @@ this same section forbids to reject one.
 longer passes a `budget` into `bus.call` and shows the deadline at the caller instead, because
 section 5's wire contract for `rpc.call` has no budget field and section 2 is self-labelled
 illustrative.
+
+**2026-09-30, PERF-01 (SDK only; no wire change, `contractDigest` unchanged).** The Rust client
+gains *in-memory artifacts*: `Artifact::in_memory(contentType, bytes)` is an immutable buffer in
+the caller's address space with an ordinary `ArtifactRef` whose `storeId` is `in-memory` (no
+router issues that id) and whose digest is null; `Artifact::to_memory` reads a sealed handle into
+one under the same reference. They read, clone and retain without a router, and no router ever
+learns of them: the SDK refuses one as an attachment of `rpc.call`, `rpc.reply` or `publish`
+before anything is sent (`INVALID_ENVELOPE`, not dispatched). They exist for participants of one
+process that hand each other buffers directly ([session RPCs](ipc-v1.md) section 1, amendment of
+the same date); section 8's ownership rules apply to every artifact a router stores, which these
+never are.

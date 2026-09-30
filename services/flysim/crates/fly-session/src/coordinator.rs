@@ -322,6 +322,10 @@ pub struct Coordinator {
     /// published and never attached to an agent's sensory input.
     audio: BTreeMap<String, flybus::Artifact>,
     pending_audio: BTreeMap<String, flybus::Artifact>,
+    /// Sealed copies of in-memory media being made for this boundary's publication, by the
+    /// in-memory artifact's id (PERF-01): begun as soon as `Environment.Advance` answers, so the
+    /// store round trips overlap the task's evaluation and the commits.
+    promoting: BTreeMap<String, tokio::task::JoinHandle<DomainResult<flybus::Artifact>>>,
     /// One chunk sequence per declared audio stream, for this epoch.
     timelines: AudioTimelines,
     /// The attachment names this session's native media travels under. The composition
@@ -367,6 +371,9 @@ pub struct Coordinator {
     commit_attachments: Vec<String>,
     /// Record [`StepDetails`] for every transition (a parity run).
     record_details: bool,
+    /// Digest every view into the step details (on with them by default; a service that reads
+    /// the details only for the commit attachments turns it off).
+    digest_views: bool,
     last_details: Option<StepDetails>,
     /// Audience admissions: queued by the edge, cut into the next Prepare.
     admissions: AdmissionQueue,
@@ -464,6 +471,7 @@ impl Coordinator {
             pending_views: BTreeMap::new(),
             audio: BTreeMap::new(),
             pending_audio: BTreeMap::new(),
+            promoting: BTreeMap::new(),
             timelines: AudioTimelines::default(),
             media_names: vec![
                 media::view_attachment(crate::environment::VIEW_ID),
@@ -495,6 +503,7 @@ impl Coordinator {
             environment_capabilities: Vec::new(),
             commit_attachments: Vec::new(),
             record_details: false,
+            digest_views: true,
             last_details: None,
             admissions: AdmissionQueue::default(),
             in_flight_admissions: Vec::new(),
@@ -592,6 +601,20 @@ impl Coordinator {
             .chain(self.audio.iter())
             .map(|(name, artifact)| (name.clone(), artifact.reference().clone()))
             .collect()
+    }
+
+    /// The bytes of one media handle this committed boundary holds, by attachment name (the
+    /// view or an audio chunk), or `None` when the boundary holds no such handle. (The same
+    /// method as SERVE-01's service host reads the step's audio with.)
+    pub async fn media_bytes(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
+        let Some(artifact) = self.views.get(name).or_else(|| self.audio.get(name)) else {
+            return Ok(None);
+        };
+        artifact
+            .read_all()
+            .await
+            .map(Some)
+            .map_err(|e| format!("reading {name}: {}", e.message))
     }
 
     /// Where each declared audio stream's next chunk may start.
@@ -831,6 +854,13 @@ impl Coordinator {
     /// Record [`StepDetails`] for every transition, for a parity run to read.
     pub fn record_details(&mut self, on: bool) {
         self.record_details = on;
+    }
+
+    /// Whether recorded step details carry each view's SHA-256 (`StepDetails::view_digests`):
+    /// on by default; SERVE-01's service host reads the details for the commit attachments only
+    /// and turns it off, which saves hashing every frame.
+    pub fn digest_views(&mut self, on: bool) {
+        self.digest_views = on;
     }
 
     /// The details of the last completed transition, when they are recorded.
@@ -2228,6 +2258,34 @@ impl Coordinator {
                     });
                 }
             }
+            // One job has nothing to run beside it: it is called in place, not spawned.
+            DispatchOrder::Concurrent if jobs.len() == 1 => {
+                let job = jobs.into_iter().next().expect("one job");
+                let started = Instant::now();
+                let outcome = call_owned(
+                    self.bus.clone(),
+                    job.worker.clone(),
+                    job.method,
+                    job.scope.clone(),
+                    job.params.clone(),
+                    job.attachments.clone(),
+                    job.request_id.clone(),
+                    job.want.clone(),
+                    deadline,
+                )
+                .await;
+                out.push(JobResult {
+                    agent_id: job.agent_id,
+                    outcome,
+                    scope: job.scope,
+                    worker: job.worker,
+                    method: job.method,
+                    request_id: job.request_id,
+                    params: job.params,
+                    attachments: job.attachments,
+                    elapsed: started.elapsed(),
+                });
+            }
             DispatchOrder::Concurrent => {
                 let mut tasks = Vec::new();
                 for job in jobs {
@@ -2358,6 +2416,9 @@ impl Coordinator {
         let span = crate::profile::span("coord.advance");
         let step_result = self.advance(k, &batch_id, &controls).await?;
         drop(span);
+        if self.snapshot_every <= 1 || (k + 1).is_multiple_of(self.snapshot_every) {
+            self.begin_promotions();
+        }
         let span = crate::profile::span("coord.observe");
 
         // ---- Phase C: observe and evaluate the task once
@@ -2494,7 +2555,7 @@ impl Coordinator {
         self.admissions
             .commit(applied.clone(), AdmissionEnd::Applied { boundary: k + 1 }, &pulses);
 
-        let view_digests = if self.record_details {
+        let view_digests = if self.record_details && self.digest_views {
             self.view_digests(&step_result.observation).await?
         } else {
             Vec::new()
@@ -2563,6 +2624,7 @@ impl Coordinator {
             slot.prepared = None;
             slot.prepare_request = None;
         }
+        let publish_span = crate::profile::span("coord.publish");
         self.publish_events(k + 1, &evaluation.events).await?;
         // Every boundary with events or boundary actions is published; otherwise every
         // `snapshot_every`-th (1 unless the composition thins it, as the legacy feed publishes at
@@ -2574,6 +2636,7 @@ impl Coordinator {
         {
             self.publish_snapshot(k + 1, &decisions, &controls, &event_ids).await?;
         }
+        drop(publish_span);
 
         // A rollback request was applied above and is not an episode end; only a terminal one
         // pauses the session for the episode policy.
@@ -2611,6 +2674,41 @@ impl Coordinator {
             }
         }
         Ok(reports)
+    }
+
+    /// Starts sealing a bus copy of every in-memory medium the boundary just produced, for its
+    /// publication ([`Coordinator::publication_handle`]).
+    fn begin_promotions(&mut self) {
+        for (_, stale) in std::mem::take(&mut self.promoting) {
+            stale.abort();
+        }
+        for artifact in self.pending_views.values().chain(self.pending_audio.values()) {
+            if artifact.is_in_memory() {
+                let (bus, artifact) = (self.bus.clone(), artifact.clone());
+                let id = artifact.reference().artifact_id.clone();
+                self.promoting.insert(
+                    id,
+                    tokio::spawn(async move { crate::rpc::promote(&bus, &artifact).await }),
+                );
+            }
+        }
+    }
+
+    /// The handle a publication attaches for `artifact`: the handle itself when it is sealed in
+    /// the router's store, else the sealed copy begun at the Advance, or one made now.
+    async fn publication_handle(
+        &mut self,
+        artifact: &flybus::Artifact,
+    ) -> DomainResult<flybus::Artifact> {
+        if !artifact.is_in_memory() {
+            return Ok(artifact.clone());
+        }
+        match self.promoting.remove(&artifact.reference().artifact_id) {
+            Some(task) => task.await.map_err(|e| {
+                DomainError::new(ErrorCode::Internal, e.to_string(), MutationCertainty::None)
+            })?,
+            None => crate::rpc::promote(&self.bus, artifact).await,
+        }
     }
 
     fn batch_id(&self, k: u64) -> Id {
@@ -2903,6 +3001,7 @@ impl Coordinator {
         controls: &[PortControl],
     ) -> Outcome<StepResult> {
         let scope = self.scope(k);
+        let build_span = crate::profile::span("coord.advance.build");
         let params = AdvanceParams {
             batch_id: batch_id.clone(),
             controls: controls.to_vec(),
@@ -2911,6 +3010,7 @@ impl Coordinator {
             Value::Object(m) => m,
             _ => Map::new(),
         };
+        drop(build_span);
         let worker = self.environment.clone();
         let request_id = self.serials.next(&worker.service);
         self.last_advance_request = Some(request_id.clone());
@@ -3031,10 +3131,12 @@ impl Coordinator {
             }
         };
 
+        let parse_span = crate::profile::span("coord.advance.parse");
         let result: StepResult = match reply.parse() {
             Ok(result) => result,
             Err(e) => return Err(self.fail_now(e, "advance")),
         };
+        drop(parse_span);
         self.blame(None);
         let mut artifacts = reply.artifacts;
         self.pending_inspection = self.take_inspection(&mut artifacts);
@@ -3365,7 +3467,7 @@ impl Coordinator {
         }
 
         // Step 5: every reply in hand. The session is at Ready(e', k).
-        let view_digests = if self.record_details {
+        let view_digests = if self.record_details && self.digest_views {
             let mut out = Vec::new();
             for view in &restored.sensory_views {
                 let name = media::view_attachment(&view.view_id);
@@ -4157,6 +4259,33 @@ impl Coordinator {
                     ));
                 }
             }
+        }
+        // In-memory media (the local lane) cross the router as sealed copies: the snapshot names
+        // the copies it attaches (the PERF-01 amendment).
+        let mut snapshot = snapshot;
+        for (_, artifact) in attachments.iter_mut() {
+            if !artifact.is_in_memory() {
+                continue;
+            }
+            let copy = match self.publication_handle(artifact).await {
+                Ok(copy) => copy,
+                Err(e) => return Err(self.fail_now(e, "publish")),
+            };
+            let (old, new) = (artifact.reference().clone(), copy.reference().clone());
+            for view in &mut snapshot.views {
+                if view.pixels == old {
+                    view.pixels = new.clone();
+                }
+            }
+            for chunk in &mut snapshot.audio {
+                if chunk.samples == old {
+                    chunk.samples = new.clone();
+                }
+            }
+            *artifact = copy;
+        }
+        for (_, unused) in std::mem::take(&mut self.promoting) {
+            unused.abort();
         }
         if self.injections.substituted_published_handle && self.injections.at_step + 1 == boundary {
             // The same attachment name and the same bytes, a different object. Only the
@@ -5994,6 +6123,14 @@ mod admission_race_tests {
         };
         let stop = AtomicBool::new(false);
         let torn = AtomicBool::new(false);
+        // The hammer must never find the queue's empty initial state (no pulse, nothing
+        // pending), which is a legitimate admission, not a torn commit: on a loaded box it
+        // can run before the first iteration below sets the state up (PERF-01 saw it once).
+        {
+            let mut state = queue.lock();
+            state.in_flight = vec![in_flight.clone()];
+            state.set_remaining(&agent, Some(0.0));
+        }
         std::thread::scope(|scope| {
             scope.spawn(|| {
                 while !stop.load(Ordering::Relaxed) {

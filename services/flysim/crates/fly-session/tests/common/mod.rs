@@ -29,6 +29,15 @@ macro_rules! both_transports {
                 }
             )*
         }
+        // PERF-01: in memory, in-process participants over their local lane.
+        mod local_lane {
+            $(
+                #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+                async fn $name() {
+                    super::$name($crate::common::via_local()).await
+                }
+            )*
+        }
     };
 }
 
@@ -38,6 +47,10 @@ pub fn via_memory() -> Via {
 
 pub fn via_unix() -> Via {
     Via::Unix
+}
+
+pub fn via_local() -> Via {
+    Via::Local
 }
 
 /// A started session plus the temporary directory its store lives in.

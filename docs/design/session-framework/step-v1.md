@@ -12,6 +12,14 @@ ordering. Its frame order is this document's transaction order (legacy-gameboy-v
 maps it step by step), so the amendments below add capabilities to the protocol and change
 none of its ordering rules.
 
+**Amendment, 2026-09-30 (PERF-01).** In-process participants MAY be called over the local lane of
+[session RPC](ipc-v1.md) section 1 (amendment of the same date) instead of through the router:
+the arrows below are then direct calls into the same worker shell, carrying the same requests and
+replies. No ordering rule changes. Measured on the release container's CPU and cpuset, work that
+overlaps the brain's ticks slows them (the sweep owns every core of the cpuset), so the
+coordinator overlaps nothing with Prepare: a boundary's publication copies are made while the
+world, the task and the commits run, and the snapshot is published before the next Prepare.
+
 ## 1. Committed boundary
 
 At `Ready(epoch, k)`:

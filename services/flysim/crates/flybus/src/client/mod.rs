@@ -14,7 +14,7 @@ use tokio::sync::oneshot;
 
 use handles::attachment_list;
 pub use handles::{
-    Artifact, ArtifactFile, ArtifactWriter, CancelState, Message, PendingCall, Request, Responder,
+    IN_MEMORY_STORE_ID, Artifact, ArtifactFile, ArtifactWriter, CancelState, Message, PendingCall, Request, Responder,
     RpcResult, Service, Subscription,
 };
 use reactor::{CallSlot, ClientConn, Extra, Hook, OutCommand, Shared};
@@ -361,7 +361,7 @@ impl Client {
         payload: Map<String, Value>,
         attachments: &[(&str, &Artifact)],
     ) -> Result<PendingCall, BusError> {
-        let (atts, keep) = attachment_list(attachments);
+        let (atts, keep) = attachment_list(attachments)?;
         let (tx, rx) = oneshot::channel();
         let (reply_tx, reply_rx) = oneshot::channel();
         let shared = self.shared();
@@ -522,7 +522,7 @@ impl Client {
         payload: Map<String, Value>,
         attachments: &[(&str, &Artifact)],
     ) -> Result<PublishReceipt, BusError> {
-        let (atts, keep) = attachment_list(attachments);
+        let (atts, keep) = attachment_list(attachments)?;
         let mut body = Map::new();
         body.insert("topic".into(), topic.into());
         body.insert("payload".into(), Value::Object(payload));

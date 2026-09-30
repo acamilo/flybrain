@@ -17,6 +17,37 @@ ownership. This document owns Scope, model-related scalar types, worker capabili
 domain operation deduplication and errors. Domain request identity is independent of the bus
 callId: a safe retry has a new transport callId but the original domain requestId/body.
 
+**Amendment, 2026-09-30 (PERF-01; operator-approved slice).** One exception to "every session/worker
+RPC is a Flybus call", for participants that share the coordinator's process. The release
+container runs the legacy composition in-process, and there the bus path cost about 4.7 ms a
+frame above the brain (three round trips through the router and four or five sealed store files
+a frame), against 0.7 ms for everything the legacy loop does outside its ticks.
+
+- **The local lane.** A launcher MAY offer an in-process worker's shell to the coordinator
+  directly (`fly-session` `worker::LocalLane`, `launcher::Via::Local`). Endpoint methods --
+  step mutations, lifecycle/capture and an endpoint's own read-only extensions -- then go to
+  that shell without a bus message. `Worker.*` stays on the bus, where the supervisor asks.
+- **Same domain semantics.** The request is the same `SessionRpcRequest`, and it goes through
+  the same shell code as a bus request: section 5's classification, canonical body digest,
+  result cache and conflict/IN_PROGRESS/RESULT_EXPIRED rules, the arrival-order lock, and the
+  endpoint. The reply is the same `SessionRpcOutcome`, checked by the coordinator for worker,
+  incarnation, scope and request id exactly as a bus reply is. Section 6's deadline and
+  resolution procedure are unchanged: a lane send is the "bus call", and a worker that stopped
+  before answering is a lost connection (mutation unknown).
+- **Artifacts.** Over the lane, a handler's reply media are *in-memory artifacts* (bus-v1
+  section 12, 2026-09-30): immutable buffers in the process with a normal `ArtifactRef`
+  (`storeId` `in-memory`, no digest), no store file and no router owner. The rule of section 3
+  holds as written: every `ArtifactRef` in a payload is backed by a live handle the message
+  carries. An in-memory artifact never crosses a router: a bus call or a publication that needs
+  one carries a sealed copy (the coordinator makes it), and the snapshot names the copy.
+  A sealed handle a handler returns over the lane reaches the caller in memory under the same
+  reference.
+- **Scope.** Only `ExecutionMode::InProcess`. A thread or process participant is always reached
+  over the bus, so process mode keeps exercising routing and ownership, and the bus path stays
+  the reference: `FLY_SESSION_LOCAL_LANE=0` runs an in-process session over it. Every synthetic
+  transport test also runs over the lane (`tests/common` `local_lane` module), and the legacy
+  parity runs in-process (lane) and process (bus).
+
 ## 2. Common domain types
 
 ```ts

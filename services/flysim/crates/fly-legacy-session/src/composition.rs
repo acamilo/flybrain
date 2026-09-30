@@ -41,8 +41,14 @@ fn grants(f: impl FnOnce(&mut Grants)) -> Grants {
 /// The transitions a service session keeps in memory for diagnosis (about a minute at 60 Hz).
 const HISTORY: usize = 4096;
 
-/// Every other boundary's snapshot: the legacy feed's `snapshot_hz` (30 Hz) at 60 Hz.
-const SNAPSHOT_EVERY: u64 = 2;
+/// A service session's committed-snapshot cadence on the session topic: once a second of frames
+/// (every 60th boundary), plus every boundary with task events or boundary actions, which the
+/// coordinator always publishes. The live presentation is the legacy feed (`docs/feed-protocol.md`,
+/// 30 Hz, built by the service host from the committed boundary), not this topic, which nothing
+/// in the release subscribes to; each snapshot attaches a sealed copy of the frame and the audio
+/// chunk, so publishing it every other frame cost about 0.7 ms a frame on the release CPU
+/// (PERF-01; was 2).
+const SNAPSHOT_EVERY: u64 = 60;
 
 const COORDINATOR_CLIENT: &str = "coordinator";
 const ENV_CLIENT: &str = "legacy-world";
@@ -62,6 +68,14 @@ pub struct LegacyConfig {
     pub agent_threads: usize,
     /// Record the step details and the task records (a parity run).
     pub record: bool,
+}
+
+/// `FLY_SESSION_LOCAL_LANE=0` keeps in-process participants on the bus: a measurement knob,
+/// so the local lane can be compared with the bus path in one build. On by default.
+pub const LOCAL_LANE_ENV: &str = "FLY_SESSION_LOCAL_LANE";
+
+fn local_lane_enabled() -> bool {
+    std::env::var(LOCAL_LANE_ENV).map_or(true, |v| v != "0")
 }
 
 /// The macro channels and the macro group's hold for a mode: the decoder preset flysim builds.
@@ -311,8 +325,10 @@ impl LegacySession {
             router,
             config.mode,
             // In-process participants reach the router in memory: no socket between two tasks
-            // of one process (a separate process always uses the socket).
-            Via::Memory,
+            // of one process (a separate process always uses the socket). They are called over
+            // the local lane: the same worker shell, no bus message and no store file per
+            // artifact (PERF-01, `workers-v1` amendment).
+            if local_lane_enabled() { Via::Local } else { Via::Memory },
             &store_root,
             &sockets,
             budget,

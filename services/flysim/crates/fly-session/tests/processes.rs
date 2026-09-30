@@ -905,6 +905,7 @@ async fn an_old_worker_reply_after_a_restart_is_rejected_on_stale_epoch_or_incar
         bus_incarnation: restarted.service_incarnation.clone(),
         worker_id: fly_b(),
         domain_incarnation: old.domain_incarnation.clone(),
+        local: None,
     };
     assert_ne!(old.domain_incarnation, Some(restarted.incarnation_id.clone()));
     let err = within("status", f.harness.coordinator.status(&stale))

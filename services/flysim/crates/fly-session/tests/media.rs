@@ -136,7 +136,21 @@ async fn one_shared_image_reaches_both_agents_through_owned_attachments(via: Via
         "one snapshot carries the whole multi-agent session"
     );
     let last = a.last().expect("an entry per boundary");
-    assert_eq!(published.view.pixels.artifact_id, last.artifact_id);
+    if via == Via::Local {
+        // Over the local lane the agents' handle is in memory, in no router's store, so
+        // publication carries a sealed copy of the same bytes (the PERF-01 amendment).
+        assert_ne!(published.view.pixels.artifact_id, last.artifact_id);
+        let held = f
+            .harness
+            .coordinator
+            .media_bytes(&fly_session::media::view_attachment(&published.view.view_id))
+            .await
+            .unwrap()
+            .expect("the boundary's frame");
+        assert_eq!(published.artifact.read_all().await.unwrap(), held, "the same bytes");
+    } else {
+        assert_eq!(published.view.pixels.artifact_id, last.artifact_id);
+    }
     assert_eq!(published.view.produced_step, last.produced_step);
     let bytes = published.artifact.read_all().await.expect("the published frame");
     assert_eq!(bytes.len() as u64, VIEW_WIDTH * VIEW_HEIGHT * 4);
@@ -395,12 +409,20 @@ async fn one_audio_chunk_per_boundary_with_an_exact_sample_budget(via: Via) {
 
     let published = frame_at(&mut spectator, STEPS).await;
     let (published_chunk, artifact) = published.audio.first().expect("the published chunk");
-    assert_eq!(published_chunk.samples, chunk.samples);
-    assert_eq!(
-        artifact.reference().artifact_id,
-        chunk.samples.artifact_id,
-        "the same owned handle is published, not a copy"
-    );
+    if via == Via::Local {
+        // A sealed copy of the in-memory chunk (the PERF-01 amendment): same bytes, same
+        // position, another artifact.
+        assert_eq!(published_chunk.first_sample, chunk.first_sample);
+        assert_eq!(published_chunk.samples.byte_length, chunk.samples.byte_length);
+        assert_ne!(artifact.reference().artifact_id, chunk.samples.artifact_id);
+    } else {
+        assert_eq!(published_chunk.samples, chunk.samples);
+        assert_eq!(
+            artifact.reference().artifact_id,
+            chunk.samples.artifact_id,
+            "the same owned handle is published, not a copy"
+        );
+    }
     let bytes = artifact.read_all().await.expect("the published chunk");
     assert_eq!(bytes.len() as u64, per_step * CHANNELS * 4);
     require_finite_samples(&bytes).expect("native samples are finite f32");

@@ -600,7 +600,9 @@ impl Task for TaskFace {
                 ));
             }
         }
+        let span = fly_session::profile::span("task.image");
         let image = inner.image_of(new)?;
+        drop(span);
         let ms = inner.ms;
         let k1 = scope.step + 1;
         inner.evaluations += 1;
@@ -608,6 +610,7 @@ impl Task for TaskFace {
 
         // `LegacyFrame::evaluate`: rewards from the frame just produced, then the scene, then the
         // location (the agent's, from the context), then the rank.
+        let span = fly_session::profile::span("task.sample");
         let cartridge = inner.cartridge.clone();
         let rewards = {
             let Inner {
@@ -621,7 +624,11 @@ impl Task for TaskFace {
             };
             adapter.sample(&mut reader, ms)
         };
+        drop(span);
+        let span = fly_session::profile::span("task.observe");
         let abandoned = inner.observe(&image, ms);
+        drop(span);
+        let span = fly_session::profile::span("task.ratchet");
         let progress = inner.adapter.progress();
 
         // `LegacyFrame::boundary`, the decision half: the ratchet captures on a safe frame above
@@ -646,6 +653,8 @@ impl Task for TaskFace {
             },
         );
 
+        drop(span);
+        let span = fly_session::profile::span("task.outcome");
         let mut outcome = AgentOutcome::default();
         let mut events = Vec::new();
         for (n, event) in rewards.iter().enumerate() {
@@ -695,8 +704,11 @@ impl Task for TaskFace {
             record.rank = progress.rank;
             record.saved = saved;
         }
+        drop(span);
+        let span = fly_session::profile::span("task.contexts");
         let next_contexts = inner.contexts();
         let progress_value = inner.progress_value();
+        drop(span);
         inner.current = Some((new.boundary, image));
         if !recover {
             inner.close();

@@ -37,17 +37,25 @@ impl Drop for OwnerGuard {
 
 pub(crate) fn attachment_list(
     list: &[(&str, &Artifact)],
-) -> (Vec<Attachment>, Vec<Arc<OwnerGuard>>) {
-    let atts = list
-        .iter()
-        .map(|(name, a)| Attachment {
+) -> Result<(Vec<Attachment>, Vec<Arc<OwnerGuard>>), BusError> {
+    let mut atts = Vec::with_capacity(list.len());
+    let mut keep = Vec::with_capacity(list.len());
+    for (name, a) in list {
+        let Holder::Bus(owner) = &a.holder else {
+            // An in-memory artifact is not in any router's store, so no message may name it.
+            return Err(BusError::invalid(format!(
+                "attachment {name:?} is an in-memory artifact; seal a copy into the store first"
+            ))
+            .with_dispatch(Dispatch::NotDispatched));
+        };
+        atts.push(Attachment {
             name: (*name).to_owned(),
             reference: a.reference.as_ref().clone(),
-            owner_id: a.owner.id.clone(),
-        })
-        .collect();
-    let keep = list.iter().map(|(_, a)| a.owner.clone()).collect();
-    (atts, keep)
+            owner_id: owner.id.clone(),
+        });
+        keep.push(owner.clone());
+    }
+    Ok((atts, keep))
 }
 
 fn find(
@@ -59,7 +67,7 @@ fn find(
         .find(|(n, _)| n == name)
         .map(|(_, r)| Artifact {
             reference: Arc::new(r.clone()),
-            owner: guard.clone(),
+            holder: Holder::Bus(guard.clone()),
         })
         .ok_or_else(|| BusError::invalid(format!("no attachment named {name:?}")))
 }
@@ -69,43 +77,129 @@ fn find(
 
 /// A read-only, cloneable handle on an immutable artifact. While any clone (or a file opened
 /// from it) lives, the owner it came from keeps the bytes alive.
+///
+/// An artifact is either sealed in a router's store (every handle the bus hands out) or an
+/// **in-memory** artifact ([`Artifact::in_memory`]): an immutable buffer in this address space
+/// that no router knows about. The second kind is for participants that share one process and
+/// hand each other buffers directly, without a bus message (PERF-01's in-process local lane);
+/// it reads, clones and retains like any other handle, and it is refused as a bus attachment,
+/// so it can never be named by a message a router would have to resolve.
 #[derive(Clone)]
 pub struct Artifact {
     pub(crate) reference: Arc<ArtifactRef>,
-    pub(crate) owner: Arc<OwnerGuard>,
+    pub(crate) holder: Holder,
 }
+
+/// What keeps an artifact's bytes alive.
+#[derive(Clone)]
+pub(crate) enum Holder {
+    /// A router-side owner: a delivery or an explicit hold.
+    Bus(Arc<OwnerGuard>),
+    /// The bytes themselves.
+    Memory(Arc<[u8]>),
+}
+
+/// The store id every in-memory artifact reference carries. No router issues it: a router's
+/// store ids are `store-<tag>`.
+pub const IN_MEMORY_STORE_ID: &str = "in-memory";
 
 impl std::fmt::Debug for Artifact {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Artifact")
             .field("reference", &self.reference)
-            .field("owner", &self.owner.id)
+            .field("owner", &self.owner_id())
             .finish()
     }
 }
 
 impl Artifact {
+    /// An immutable in-memory artifact holding `bytes`, with no digest. Nothing is copied.
+    pub fn in_memory(content_type: &str, bytes: impl Into<Arc<[u8]>>) -> Artifact {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SERIAL: AtomicU64 = AtomicU64::new(0);
+        let bytes: Arc<[u8]> = bytes.into();
+        let serial = SERIAL.fetch_add(1, Ordering::Relaxed) + 1;
+        Artifact {
+            reference: Arc::new(ArtifactRef {
+                store_id: IN_MEMORY_STORE_ID.to_owned(),
+                artifact_id: format!("m-{serial}"),
+                generation: GENERATION,
+                byte_length: bytes.len() as u64,
+                content_type: content_type.to_owned(),
+                digest: None,
+            }),
+            holder: Holder::Memory(bytes),
+        }
+    }
+
     pub fn reference(&self) -> &ArtifactRef {
         &self.reference
     }
 
+    /// The same artifact as an in-memory handle with the **same reference**: a sealed one is
+    /// read once, an in-memory one is returned as it is. For a caller in the owner's process
+    /// that must keep the bytes without holding the owner's connection (a handle is only valid
+    /// as an attachment on the connection that owns it).
+    pub async fn to_memory(&self) -> Result<Artifact, BusError> {
+        if self.is_in_memory() {
+            return Ok(self.clone());
+        }
+        let bytes = self.read_all().await?;
+        if bytes.len() as u64 != self.reference.byte_length {
+            return Err(BusError::new(
+                ErrorCode::ArtifactMismatch,
+                "sealed bytes disagree with the reference's length",
+            ));
+        }
+        Ok(Artifact {
+            reference: self.reference.clone(),
+            holder: Holder::Memory(bytes.into()),
+        })
+    }
+
+    /// True for an [`Artifact::in_memory`] handle.
+    pub fn is_in_memory(&self) -> bool {
+        matches!(self.holder, Holder::Memory(_))
+    }
+
+    /// The bytes of an in-memory artifact, without a copy; `None` for a sealed one.
+    pub fn memory(&self) -> Option<&Arc<[u8]>> {
+        match &self.holder {
+            Holder::Memory(bytes) => Some(bytes),
+            Holder::Bus(_) => None,
+        }
+    }
+
     /// The router-side owner this handle rides on: a delivery id or an explicit hold id.
+    /// An in-memory artifact has none and reports its store id.
     pub fn owner_id(&self) -> &str {
-        &self.owner.id
+        match &self.holder {
+            Holder::Bus(owner) => &owner.id,
+            Holder::Memory(_) => IN_MEMORY_STORE_ID,
+        }
     }
 
     /// Opens the sealed bytes read-only. The file keeps this handle (and so its owner) alive.
     pub async fn open(&self) -> Result<ArtifactFile, BusError> {
+        let owner = match &self.holder {
+            Holder::Bus(owner) => owner,
+            Holder::Memory(bytes) => {
+                return Ok(ArtifactFile {
+                    file: Backing::Memory(io::Cursor::new(bytes.clone())),
+                    _artifact: self.clone(),
+                });
+            }
+        };
         let mut body = Map::new();
         body.insert("ref".into(), self.reference.to_json());
-        body.insert("ownerId".into(), self.owner.id.clone().into());
-        let shared = &self.owner.conn.shared;
+        body.insert("ownerId".into(), owner.id.clone().into());
+        let shared = &owner.conn.shared;
         let reply = shared
             .command(
                 "artifact.open",
                 body,
                 Vec::new(),
-                vec![self.owner.clone()],
+                vec![owner.clone()],
                 Hook::None,
             )
             .await?;
@@ -130,13 +224,16 @@ impl Artifact {
             ));
         }
         Ok(ArtifactFile {
-            file,
+            file: Backing::File(file),
             _artifact: self.clone(),
         })
     }
 
-    /// Reads the whole artifact (on the blocking pool).
+    /// Reads the whole artifact (on the blocking pool; an in-memory one is copied in place).
     pub async fn read_all(&self) -> Result<Vec<u8>, BusError> {
+        if let Holder::Memory(bytes) = &self.holder {
+            return Ok(bytes.to_vec());
+        }
         let mut file = self.open().await?;
         tokio::task::spawn_blocking(move || {
             let mut out = Vec::with_capacity(file.len() as usize);
@@ -148,24 +245,29 @@ impl Artifact {
     }
 
     /// Creates an independent explicit hold, so the bytes outlive this handle's delivery.
+    /// An in-memory artifact's hold is another handle on the same bytes.
     pub async fn retain(&self) -> Result<Artifact, BusError> {
+        let owner = match &self.holder {
+            Holder::Bus(owner) => owner,
+            Holder::Memory(_) => return Ok(self.clone()),
+        };
         let mut body = Map::new();
         body.insert("ref".into(), self.reference.to_json());
-        body.insert("ownerId".into(), self.owner.id.clone().into());
-        let shared = &self.owner.conn.shared;
+        body.insert("ownerId".into(), owner.id.clone().into());
+        let shared = &owner.conn.shared;
         let reply = shared
             .command(
                 "artifact.retain",
                 body,
                 Vec::new(),
-                vec![self.owner.clone()],
+                vec![owner.clone()],
                 Hook::Owner,
             )
             .await?;
         match reply.extra {
             Extra::Owner(owner) => Ok(Artifact {
                 reference: self.reference.clone(),
-                owner,
+                holder: Holder::Bus(owner),
             }),
             _ => Err(BusError::lost("retain reply without an owner")),
         }
@@ -174,8 +276,13 @@ impl Artifact {
 
 /// An open, read-only sealed file. Holds its [`Artifact`].
 pub struct ArtifactFile {
-    file: File,
+    file: Backing,
     _artifact: Artifact,
+}
+
+enum Backing {
+    File(File),
+    Memory(io::Cursor<Arc<[u8]>>),
 }
 
 impl ArtifactFile {
@@ -194,13 +301,19 @@ impl ArtifactFile {
 
 impl Read for ArtifactFile {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.file.read(buf)
+        match &mut self.file {
+            Backing::File(file) => file.read(buf),
+            Backing::Memory(cursor) => cursor.read(buf),
+        }
     }
 }
 
 impl Seek for ArtifactFile {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        self.file.seek(pos)
+        match &mut self.file {
+            Backing::File(file) => file.seek(pos),
+            Backing::Memory(cursor) => cursor.seek(pos),
+        }
     }
 }
 
@@ -251,7 +364,7 @@ impl ArtifactWriter {
         let reference = ArtifactRef::from_json(Fields::of(&reply.value, "reply").value("ref")?)?;
         Ok(Artifact {
             reference: Arc::new(reference),
-            owner: self.owner.clone(),
+            holder: Holder::Bus(self.owner.clone()),
         })
     }
 }
@@ -401,7 +514,7 @@ impl Responder {
         outcome: Map<String, Value>,
         attachments: &[(&str, &Artifact)],
     ) -> Result<bool, BusError> {
-        let (atts, keep) = attachment_list(attachments);
+        let (atts, keep) = attachment_list(attachments)?;
         let mut body = Map::new();
         body.insert("callId".into(), self.call_id.clone().into());
         body.insert(

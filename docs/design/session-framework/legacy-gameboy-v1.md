@@ -415,6 +415,31 @@ interface LegacyGameboyComposition {
   for publication, traces and descriptor revisions, not a restore gate. This matches today's
   behaviour, where a decoder change does not refuse a checkpoint.
 
+**Amendment, 2026-09-30 (PERF-01): the in-process release configuration.** Nothing in the
+declaration, the digest or the compatibility string changes; these are execution choices of the
+composition as `fly-legacy-session` builds it, recorded here because the shadow compares the
+behaviour they must not change.
+
+- *In-process participants are called over the local lane* ([session RPCs](ipc-v1.md) section 1,
+  2026-09-30): the frame, the memory image, the audio chunk and the spike bitset are in-memory
+  artifacts, handed over without a store file. Process mode is unchanged and still goes through
+  the router. `FLY_SESSION_LOCAL_LANE=0` puts an in-process session back on the bus.
+- *`telemetry.spikes` is unchanged*: one bitset per transition, bit `i` set when neuron `i`
+  spiked in `[transition start, brain time)`, the legacy layout. The agent now builds it as the
+  union of the kernel's per-tick spike lists while Prepare ticks (`LifNetwork::tick_spikes`)
+  instead of scanning 139,255 last-spike times in Commit; the two are equal by construction and
+  by test, and the parity runs compare the bitset every frame. The AGENT-01 alternative -- attach
+  it only at the feed rate -- was not needed and was not made.
+- *Committed snapshots on the session topic*: a service session publishes every 60th boundary and
+  every boundary with task events or boundary actions (it was every other boundary). The live
+  presentation is the legacy feed, which the service host builds from the committed boundary at
+  30 Hz; nothing in the release subscribes to the session topic, and each publication seals a
+  store copy of the frame and the audio chunk. Every publication is still of a committed
+  boundary and still attaches the media it names (publishing-v1 section 3).
+- *Nothing runs beside the brain's ticks.* On the release CPU with the sweep owning every core of
+  the flysim cpuset, work overlapping Prepare (a publication left in flight, for instance) slowed
+  the ticks by up to a third, so the coordinator finishes each boundary before the next Prepare.
+
 ## 13. Machine-readable parts
 
 | Where | What |
