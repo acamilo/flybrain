@@ -536,6 +536,336 @@ else
     pass "flysim.service leaves FLY_FEED_VIA to fly.env"
 fi
 
+# ---------------------------------------------------------------------------
+# 3b3. The session runtime (SERVE-01): flysim-session, its standalone unit and
+# the fly-runtime switch CUT-01 calls.
+#
+# flysim.service stays the fly's one unit name; `fly-runtime session` points it at
+# flysim-session with a drop-in, `fly-runtime legacy` removes it. What would break
+# that: the standalone unit drifting from flysim.service (limits, env, ports),
+# becoming enable-able or pulled in beside flysim, the drop-in naming another
+# binary or session dir, the release not shipping the binary, the deploy
+# forgetting it. fly-runtime itself is driven for real against stubs.
+# ---------------------------------------------------------------------------
+echo "--- the session runtime: flysim-session.service and fly-runtime ---"
+SESSION_UNIT="$INFRA_DIR/units/flysim-session.service"
+if [ ! -f "$SESSION_UNIT" ]; then
+    fail "units/flysim-session.service is missing"
+else
+    grep -qE '^ExecStart=/opt/fly/current/flysim-session$' "$SESSION_UNIT" \
+        && pass "flysim-session.service runs the release's flysim-session" \
+        || fail "flysim-session.service ExecStart must be /opt/fly/current/flysim-session"
+    grep -qE '^Conflicts=flysim\.service$' "$SESSION_UNIT" \
+        && pass "flysim-session.service Conflicts=flysim.service (same ports, same stores)" \
+        || fail "flysim-session.service must Conflict with flysim.service"
+    if grep -qE '^\[Install\]' "$SESSION_UNIT"; then
+        fail "flysim-session.service has an [Install] section; it must not be enable-able beside flysim"
+    else
+        pass "flysim-session.service cannot be enabled (no [Install])"
+    fi
+    # The [Service] section, comments and blank lines dropped: flysim.service's, line for
+    # line, but for ExecStart and the one variable of its own.
+    service_lines() {
+        awk '/^\[/{sec=$0; next} sec=="[Service]" && !/^[[:space:]]*(#|$)/' "$1" \
+            | grep -vE '^(ExecStart=|Environment=FLY_SESSION_DIR=|Environment=MALLOC_ARENA_MAX=)' || true
+    }
+    if [ "$(service_lines "$INFRA_DIR/units/flysim.service")" = "$(service_lines "$SESSION_UNIT")" ]; then
+        pass "flysim-session.service [Service] is flysim.service's but for ExecStart and FLY_SESSION_DIR"
+    else
+        fail "flysim-session.service [Service] drifted from flysim.service: $(diff <(service_lines "$INFRA_DIR/units/flysim.service") <(service_lines "$SESSION_UNIT") | tr '\n' ' ')"
+    fi
+    grep -qx 'Environment=MALLOC_ARENA_MAX=2' "$SESSION_UNIT" \
+        && ! grep -q 'MALLOC_ARENA_MAX' "$INFRA_DIR/units/flysim.service" \
+        && pass "flysim-session.service sets MALLOC_ARENA_MAX=2; legacy flysim.service is untouched" \
+        || fail "flysim-session.service must set MALLOC_ARENA_MAX=2 (and flysim.service must not)"
+    grep -qE '^Environment=FLY_SESSION_DIR=/run/fly/session$' "$SESSION_UNIT" \
+        && pass "flysim-session.service keeps its session dir on /run/fly/session" \
+        || fail "flysim-session.service must set FLY_SESSION_DIR=/run/fly/session"
+fi
+if target_pulls "$INFRA_DIR/units/fly.target" | grep -qx 'flysim-session.service'; then
+    fail "fly.target pulls flysim-session.service in beside flysim.service"
+else
+    pass "fly.target does not pull flysim-session.service in"
+fi
+if grep -E '^(ALWAYS_ON_UNITS|APP_UNITS)=' "$INFRA_DIR/07-enable.sh" "$INFRA_DIR/verify.sh" | grep -q 'flysim-session'; then
+    fail "07-enable.sh or verify.sh lists flysim-session.service"
+else
+    pass "07-enable.sh and verify.sh leave flysim-session.service alone"
+fi
+grep -qE '^d /run/fly/session +0700 fly +fly' "$INFRA_DIR/config/fly-tmpfiles.conf" \
+    && pass "tmpfiles creates /run/fly/session 0700 fly" \
+    || fail "config/fly-tmpfiles.conf must create /run/fly/session 0700 fly fly"
+grep -qE 'for name in .*\bfly-runtime\b.*; do$' "$INFRA_DIR/05-deploy.sh" \
+    && pass "05-deploy.sh installs fly-runtime" \
+    || fail "05-deploy.sh must converge bin/fly-runtime to /opt/fly/bin"
+grep -qE '^[[:space:]]*for u in flysim .*\bflysim-session\b.*; do$' "$INFRA_DIR/05-deploy.sh" \
+    && pass "05-deploy.sh writes flysim-session.service's cpuset drop-in" \
+    || fail "05-deploy.sh cpuset loop must include flysim-session (flysim's cores)"
+grep -qF 'flysim.service.d/10-runtime.conf' "$INFRA_DIR/05-deploy.sh" \
+    && grep -qF '"${release_path}/flysim-session"' "$INFRA_DIR/05-deploy.sh" \
+    && pass "05-deploy.sh refuses a release without flysim-session while the session runtime runs" \
+    || fail "05-deploy.sh must refuse a release without flysim-session while 10-runtime.conf is present"
+grep -qE -- '--bin flysim-session' "$INFRA_DIR/build/build-flysim.sh" \
+    && grep -qE 'for extra in flysim-session fly-session' "$INFRA_DIR/build/package-release.sh" \
+    && pass "build-flysim.sh builds flysim-session and package-release.sh ships it" \
+    || fail "build-flysim.sh must build flysim-session (and fly-session) and package-release.sh ship them"
+
+rt_dir="$(mktemp -d "${TMPDIR:-/tmp}/fly-lint-runtime.XXXXXX")"
+mkdir -p "$rt_dir/bin" "$rt_dir/release" "$rt_dir/systemd"
+cat > "$rt_dir/bin/systemctl" <<'RTSTUB'
+#!/usr/bin/env bash
+echo "$*" >> "$RT_DIR/systemctl.log"
+RTSTUB
+cat > "$rt_dir/bin/id" <<'RTSTUB'
+#!/usr/bin/env bash
+echo 0
+RTSTUB
+cat > "$rt_dir/bin/logger" <<'RTSTUB'
+#!/usr/bin/env bash
+true
+RTSTUB
+cat > "$rt_dir/bin/curl" <<'RTSTUB'
+#!/usr/bin/env bash
+# /healthz answers per RT_HEALTHY; /status reports a frame that advances per call.
+url="${*: -1}"
+[ "${RT_HEALTHY:-1}" = 1 ] || exit 22
+case "$url" in
+    */status) n=$(( $(cat "$RT_DIR/frame" 2>/dev/null || echo 100) + 1 )); echo "$n" > "$RT_DIR/frame"
+              echo "{\"status\":\"running\",\"frame\":$n}" ;;
+esac
+RTSTUB
+for b in flysim flysim-session; do
+    printf '#!/usr/bin/env bash\necho "${RT_COMPAT_%s:-same}"\n' "$(echo "$b" | tr 'a-z-' 'A-Z_')" > "$rt_dir/release/$b"
+done
+chmod +x "$rt_dir"/bin/* "$rt_dir"/release/*
+echo 'FLY_GAME=pokemon-red' > "$rt_dir/fly.env"
+fly_runtime() {
+    env RT_DIR="$rt_dir" PATH="$rt_dir/bin:$PATH" FLY_RELEASE_DIR="$rt_dir/release" \
+        FLY_ENV_FILE="$rt_dir/fly.env" FLY_SYSTEMD_DIR="$rt_dir/systemd" \
+        FLY_RUNTIME_LOG="$rt_dir/runtime.log" FLY_RUNTIME_HEALTH_TIMEOUT=4 \
+        FLY_RUNTIME_FELLBACK="$rt_dir/run/runtime-fellback.json" FLY_RUNTIME_LOCK="$rt_dir/run/runtime.lock" \
+        "$@" bash "$INFRA_DIR/bin/fly-runtime" "${RT_ARGS[@]}" >/dev/null 2>&1
+}
+rt_dropin="$rt_dir/systemd/flysim.service.d/10-runtime.conf"
+RT_ARGS=(status)
+[ "$(env RT_DIR="$rt_dir" PATH="$rt_dir/bin:$PATH" FLY_SYSTEMD_DIR="$rt_dir/systemd" bash "$INFRA_DIR/bin/fly-runtime" status 2>/dev/null | head -n1)" = legacy ] \
+    && pass "fly-runtime status: legacy with no drop-in" \
+    || fail "fly-runtime status must say legacy with no drop-in"
+RT_ARGS=(session)
+if fly_runtime && [ -f "$rt_dropin" ] \
+    && grep -qx "ExecStart=$rt_dir/release/flysim-session" "$rt_dropin" \
+    && grep -qx 'ExecStart=' "$rt_dropin" \
+    && grep -qx 'Environment=FLY_SESSION_DIR=/run/fly/session' "$rt_dropin" \
+    && grep -qx 'restart --no-block flysim.service' "$rt_dir/systemctl.log" \
+    && [ "$(env RT_DIR="$rt_dir" PATH="$rt_dir/bin:$PATH" FLY_SYSTEMD_DIR="$rt_dir/systemd" bash "$INFRA_DIR/bin/fly-runtime" status 2>/dev/null | head -n1)" = session ]; then
+    pass "fly-runtime session: the drop-in names flysim-session and /run/fly/session, flysim.service restarted, healthy"
+else
+    fail "fly-runtime session: drop-in/restart/health wrong ($(cat "$rt_dropin" 2>/dev/null | tr '\n' ' '))"
+fi
+RT_ARGS=(legacy)
+if fly_runtime && [ ! -f "$rt_dropin" ]; then
+    pass "fly-runtime legacy: the drop-in is gone, flysim.service restarted"
+else
+    fail "fly-runtime legacy must remove the drop-in and succeed"
+fi
+RT_ARGS=(session)
+if ! fly_runtime RT_COMPAT_FLYSIM_SESSION=other && [ ! -f "$rt_dropin" ]; then
+    pass "fly-runtime session refuses when the two compatibility strings differ"
+else
+    fail "fly-runtime session must refuse differing compatibility strings and write nothing"
+fi
+if ! fly_runtime RT_HEALTHY=0 && [ ! -f "$rt_dropin" ] && grep -q 'automatic fallback' "$rt_dir/runtime.log"; then
+    pass "fly-runtime session falls back to legacy by itself when the session runtime is not healthy"
+else
+    fail "fly-runtime session must fall back to legacy (drop-in removed, logged) when unhealthy"
+fi
+# --- the persistent fallback (C1), the signal traps, the deploy policy (C2) ---
+FALLBACK_UNIT="$INFRA_DIR/units/fly-runtime-fallback.service"
+rt_fellback="$rt_dir/run/runtime-fellback.json"
+rt_ncalls() { grep -c "$1" "$rt_dir/systemctl.log" || true; }
+RT_ARGS=(session)
+fly_runtime || fail "fly-runtime session (healthy) failed before the fallback tests"
+if grep -qx 'OnFailure=fly-runtime-fallback.service' "$rt_dropin" \
+    && grep -qx 'StartLimitBurst=3' "$rt_dropin" \
+    && grep -qx 'StartLimitIntervalSec=600' "$rt_dropin" \
+    && grep -qx 'RestartMode=direct' "$rt_dropin" \
+    && grep -qx 'Environment=MALLOC_ARENA_MAX=2' "$rt_dropin" \
+    && [ -f "$FALLBACK_UNIT" ] \
+    && grep -qE '^ExecStart=/opt/fly/bin/fly-runtime fallback$' "$FALLBACK_UNIT" \
+    && grep -qx 'Type=oneshot' "$FALLBACK_UNIT" \
+    && ! grep -q '^\[Install\]' "$FALLBACK_UNIT"; then
+    pass "session drop-in: OnFailure= fallback unit, 3 starts in 600 s, RestartMode=direct (else OnFailure= fires on every crash), MALLOC_ARENA_MAX=2; the unit runs 'fly-runtime fallback'"
+else
+    fail "session drop-in/fallback unit wrong ($(tr '\n' ' ' < "$rt_dropin"))"
+fi
+# Drive it the way systemd would: 3 failed starts of flysim.service reach the burst, systemd
+# then starts the OnFailure= unit, i.e. runs its ExecStart (path mapped to the script under test).
+sim_onfailure() {
+    local burst unit cmd
+    burst="$(sed -n 's/^StartLimitBurst=//p' "$rt_dropin")"
+    unit="$(sed -n 's/^OnFailure=//p' "$rt_dropin")"
+    [ "$unit" = fly-runtime-fallback.service ] || return 1
+    cmd="$(sed -n 's/^ExecStart=//p' "$FALLBACK_UNIT")"
+    cmd="${cmd/\/opt\/fly\/bin\/fly-runtime/bash $INFRA_DIR/bin/fly-runtime}"
+    local failures=0
+    while [ "$failures" -lt "$burst" ]; do failures=$((failures + 1)); done
+    [ "$failures" -eq 3 ] || return 1
+    # shellcheck disable=SC2086
+    env RT_DIR="$rt_dir" PATH="$rt_dir/bin:$PATH" FLY_RELEASE_DIR="$rt_dir/release" \
+        FLY_ENV_FILE="$rt_dir/fly.env" FLY_SYSTEMD_DIR="$rt_dir/systemd" \
+        FLY_RUNTIME_LOG="$rt_dir/runtime.log" FLY_RUNTIME_FELLBACK="$rt_fellback" \
+        FLY_RUNTIME_LOCK="$rt_dir/run/runtime.lock" $cmd >/dev/null 2>&1
+}
+restarts_before="$(rt_ncalls 'restart --no-block flysim.service')"
+if sim_onfailure && [ ! -f "$rt_dropin" ] \
+    && [ "$(rt_ncalls 'restart --no-block flysim.service')" -eq $((restarts_before + 1)) ] \
+    && grep -q '"from":"session","to":"legacy"' "$rt_fellback" \
+    && grep -q '"reason":"flysim.service failed on the session runtime' "$rt_fellback" \
+    && grep -q 'automatic fallback' "$rt_dir/runtime.log" \
+    && [ "$(env RT_DIR="$rt_dir" PATH="$rt_dir/bin:$PATH" FLY_SYSTEMD_DIR="$rt_dir/systemd" bash "$INFRA_DIR/bin/fly-runtime" status 2>/dev/null | head -n1)" = legacy ]; then
+    pass "session fails 3x: OnFailure fallback removes the drop-in, starts legacy, writes the reason file and the journal line"
+else
+    fail "OnFailure fallback: drop-in/restart/reason file wrong ($(cat "$rt_fellback" 2>/dev/null))"
+fi
+# Idempotent: a second run (a stale OnFailure, a race with the script's own fallback) does nothing.
+restarts_before="$(rt_ncalls 'restart --no-block flysim.service')"
+cp "$rt_fellback" "$rt_dir/fellback.first"
+RT_ARGS=(fallback)
+if fly_runtime && [ "$(rt_ncalls 'restart --no-block flysim.service')" -eq "$restarts_before" ] \
+    && cmp -s "$rt_fellback" "$rt_dir/fellback.first"; then
+    pass "fly-runtime fallback is idempotent once legacy is selected"
+else
+    fail "a second fly-runtime fallback must be a no-op"
+fi
+# Never neither: no executable legacy binary -> keep the session drop-in.
+RT_ARGS=(session)
+fly_runtime || fail "could not re-select the session runtime for the no-legacy test"
+mv "$rt_dir/release/flysim" "$rt_dir/flysim.away"
+RT_ARGS=(fallback)
+if ! fly_runtime && [ -f "$rt_dropin" ]; then
+    pass "fly-runtime fallback keeps the session drop-in when there is no legacy binary to fall back to"
+else
+    fail "fly-runtime fallback removed the drop-in with no legacy binary"
+fi
+mv "$rt_dir/flysim.away" "$rt_dir/release/flysim"
+# A successful `session` clears the reason file.
+RT_ARGS=(fallback)
+fly_runtime || true
+[ -f "$rt_fellback" ] || fail "test setup: the fallback left no reason file"
+RT_ARGS=(session)
+if fly_runtime && [ ! -f "$rt_fellback" ]; then
+    pass "fly-runtime session clears the previous fallback reason"
+else
+    fail "fly-runtime session must remove ${rt_fellback##*/} on success"
+fi
+# A deploy keeps the drop-in (C2): 05-deploy never removes it, refreshes it in place without a
+# restart, and documents the policy; the refresh keeps the drop-in and restarts nothing.
+if grep -n '10-runtime.conf' "$INFRA_DIR/05-deploy.sh" | grep -Eq '\brm\b'; then
+    fail "05-deploy.sh removes 10-runtime.conf; a deploy must keep the chosen runtime"
+elif grep -qF 'Session stays, trust gates' "$INFRA_DIR/05-deploy.sh" \
+    && grep -qF 'fly-runtime session --no-restart' "$INFRA_DIR/05-deploy.sh" \
+    && grep -qF 'Session stays, trust gates' "$INFRA_DIR/docs/runbook.md"; then
+    pass "05-deploy.sh keeps the drop-in, refreshes it without a restart, and states the policy (runbook too)"
+else
+    fail "05-deploy.sh / runbook.md must state 'Session stays, trust gates' and refresh via fly-runtime session --no-restart"
+fi
+restarts_before="$(rt_ncalls '^restart ')"
+printf 'stale\n' > "$rt_dropin"
+RT_ARGS=(session --no-restart)
+if fly_runtime && [ -f "$rt_dropin" ] \
+    && grep -qx 'OnFailure=fly-runtime-fallback.service' "$rt_dropin" \
+    && [ "$(rt_ncalls '^restart ')" -eq "$restarts_before" ]; then
+    pass "a deploy's refresh (session --no-restart) keeps the drop-in, updates it, restarts nothing"
+else
+    fail "fly-runtime session --no-restart must rewrite the drop-in without restarting"
+fi
+# Signals: an interrupted switch rolls back to the previous state.
+rt_interrupt() {  # $1 = signal: run `session` on an unhealthy runtime, signal it mid-wait, print its status
+    local sig="$1" pid rc=0 n=0 base
+    base="$(rt_ncalls '^restart --no-block flysim.service')"
+    env RT_DIR="$rt_dir" PATH="$rt_dir/bin:$PATH" FLY_RELEASE_DIR="$rt_dir/release" \
+        FLY_ENV_FILE="$rt_dir/fly.env" FLY_SYSTEMD_DIR="$rt_dir/systemd" \
+        FLY_RUNTIME_LOG="$rt_dir/runtime.log" FLY_RUNTIME_HEALTH_TIMEOUT=60 RT_HEALTHY=0 \
+        FLY_RUNTIME_FELLBACK="$rt_fellback" FLY_RUNTIME_LOCK="$rt_dir/run/runtime.lock" \
+        python3 -c 'import os, signal, sys
+signal.signal(signal.SIGINT, signal.SIG_DFL)  # a background job of a non-interactive shell starts with INT ignored
+os.execvp(sys.argv[1], sys.argv[1:])' bash "$INFRA_DIR/bin/fly-runtime" session >/dev/null 2>&1 &
+    pid=$!
+    while [ "$(rt_ncalls '^restart --no-block flysim.service')" -le "$base" ] && [ "$n" -lt 100 ]; do
+        n=$((n + 1)); sleep 0.1
+    done
+    if [ -n "${2:-}" ]; then "$2" >/dev/null 2>&1 || true; fi
+    kill "-$sig" "$pid" 2>/dev/null || true
+    wait "$pid" || rc=$?
+    echo "$rc"
+}
+rm -f "$rt_dropin"
+for sig_case in TERM:143 INT:130 HUP:129; do
+    sig="${sig_case%%:*}"; want_rc="${sig_case##*:}"
+    restarts_before="$(rt_ncalls '^restart ')"
+    got_rc="$(rt_interrupt "$sig")"
+    if [ "$got_rc" = "$want_rc" ] && [ ! -f "$rt_dropin" ] \
+        && [ "$(rt_ncalls '^restart ')" -gt $((restarts_before + 1)) ] \
+        && grep -q 'rolled back' "$rt_dir/runtime.log"; then
+        pass "fly-runtime session interrupted by SIG$sig: drop-in removed, flysim.service restarted on the previous (legacy) state"
+    else
+        fail "fly-runtime session interrupted by SIG$sig: rc=$got_rc (want $want_rc), drop-in present=$([ -f "$rt_dropin" ] && echo yes || echo no)"
+    fi
+done
+mkdir -p "$(dirname "$rt_dropin")"
+printf '# previous-session-marker\n[Service]\nExecStart=\nExecStart=/previous\n' > "$rt_dropin"
+cp "$rt_dropin" "$rt_dir/dropin.before"
+got_rc="$(rt_interrupt TERM)"
+if [ "$got_rc" = 143 ] && cmp -s "$rt_dropin" "$rt_dir/dropin.before" \
+    && ! compgen -G "$rt_dropin.prev.*" >/dev/null; then
+    pass "fly-runtime session interrupted while already on session: the earlier drop-in is restored, no temp files left"
+else
+    fail "an interrupted re-run of session must restore the earlier drop-in (rc=$got_rc)"
+fi
+# M2, deterministic interleaving: a re-run of `session` over an older drop-in is waiting for
+# health, an OnFailure= fallback completes, THEN the switch is interrupted. The rollback must
+# not put the older drop-in back (it has no OnFailure=, and the stream would be stranded on the
+# session runtime).
+# shellcheck disable=SC2317  # called through rt_interrupt
+rt_fallback_now() {
+    env RT_DIR="$rt_dir" PATH="$rt_dir/bin:$PATH" FLY_RELEASE_DIR="$rt_dir/release" \
+        FLY_SYSTEMD_DIR="$rt_dir/systemd" FLY_RUNTIME_LOG="$rt_dir/runtime.log" \
+        FLY_RUNTIME_FELLBACK="$rt_fellback" FLY_RUNTIME_LOCK="$rt_dir/run/runtime.lock" \
+        bash "$INFRA_DIR/bin/fly-runtime" fallback "lint interleaving"
+}
+mkdir -p "$(dirname "$rt_dropin")"
+printf '# older-session-marker\n[Service]\nExecStart=\nExecStart=/previous\n' > "$rt_dropin"
+got_rc="$(rt_interrupt TERM rt_fallback_now)"
+if [ "$got_rc" = 143 ] && [ ! -f "$rt_dropin" ] && [ -f "$rt_fellback" ] \
+    && grep -q 'a fallback completed meanwhile' "$rt_dir/runtime.log"; then
+    pass "rollback after a completed fallback leaves legacy selected (does not restore the older drop-in)"
+else
+    fail "rollback must not restore an older drop-in after a completed fallback (rc=$got_rc, drop-in present=$([ -f "$rt_dropin" ] && echo yes || echo no))"
+fi
+# ... and the two share ONE lock: a held lock stops `session` from touching anything.
+rm -f "$rt_dropin" "$rt_fellback"
+(
+    exec 8>>"$rt_dir/run/runtime.lock"
+    flock 8
+    RT_ARGS=(session)
+    if ! fly_runtime FLY_RUNTIME_LOCK_WAIT=1 && [ ! -f "$rt_dropin" ]; then
+        touch "$rt_dir/lock-respected"
+    fi
+)
+if [ -f "$rt_dir/lock-respected" ]; then
+    pass "fly-runtime session waits on the same lock as fallback and does not switch without it"
+else
+    fail "fly-runtime session must take the shared ${FLY_RUNTIME_LOCK:-runtime.lock} lock"
+fi
+rm -f "$rt_dropin"
+mv "$rt_dir/release/flysim-session" "$rt_dir/flysim-session.away"
+if ! fly_runtime && [ ! -f "$rt_dropin" ]; then
+    pass "fly-runtime session refuses a release without flysim-session"
+else
+    fail "fly-runtime session must refuse a release without flysim-session"
+fi
+rm -rf "$rt_dir"
+
 echo "--- fly-watchdog check 2: the feed counters follow FLY_FEED_VIA ---"
 if ! tail -n1 "$INFRA_DIR/bin/fly-watchdog" | grep -qE '^main "\$@"$'; then
     fail "fly-watchdog: expected the last line to be 'main \"\$@\"' — the check-2 fixture strips it"

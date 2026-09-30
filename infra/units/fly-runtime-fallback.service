@@ -1,0 +1,19 @@
+# infra/units/fly-runtime-fallback.service — pushed to /etc/systemd/system/.
+#
+# The persistent fallback from the session runtime to the legacy loop (SERVE-01 review, C1).
+# It is never enabled and in no target: the drop-in that `fly-runtime session` writes on
+# flysim.service (10-runtime.conf) carries `OnFailure=fly-runtime-fallback.service` together with
+# StartLimitIntervalSec=600, StartLimitBurst=3 and RestartMode=direct (without it OnFailure= fires on
+# every crash, not at the start limit), so three starts of flysim.service on the
+# session binary inside ten minutes -- from any cause, and from any caller: a reboot, the
+# watchdog, fly-loop-recover, a deploy -- run this unit once. `fly-runtime fallback` removes the
+# drop-in (which removes this OnFailure= too), daemon-reloads, restarts flysim.service on the
+# legacy binary and writes /run/fly/runtime-fellback.json plus a journal line (tag fly-runtime).
+# It is idempotent and refuses to act without an executable legacy binary. Runs as root.
+[Unit]
+Description=fly-runtime-fallback: flysim.service failed on the session runtime, back to legacy
+# Its own start limit stays the default; a fallback that has already happened is a no-op.
+
+[Service]
+Type=oneshot
+ExecStart=/opt/fly/bin/fly-runtime fallback

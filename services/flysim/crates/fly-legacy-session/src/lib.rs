@@ -7,6 +7,8 @@
 //! - [`admission`]: sugar by the legacy rules; the operator reward pulse refused.
 //! - [`trace`]: the session's `FLY_TRACE`, in the legacy loop's format, and the comparison.
 //! - [`driver`]: a stub readout for parity runs that must earn rewards.
+//! - [`service`]: the composition as the live service behind flysim's listeners (SERVE-01),
+//!   the `flysim-session` binary.
 //!
 //! `docs/design/session-framework/legacy-gameboy-v1.md` is the contract, `implementation.md`
 //! TASK-01 the record.
@@ -15,5 +17,6 @@ pub mod admission;
 pub mod composition;
 pub mod driver;
 pub mod import;
+pub mod service;
 pub mod task;
 pub mod trace;

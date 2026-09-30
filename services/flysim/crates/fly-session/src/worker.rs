@@ -939,6 +939,9 @@ fn classify_default(method: &str) -> Option<OpClass> {
         "Worker.Hello" | "Worker.Status" | "Worker.Acknowledge" | "Worker.Shutdown" => {
             Some(OpClass::ReadOnly)
         }
+        // The legacy agent's feed status (SERVE-01): a read of the committed boundary that
+        // changes nothing, so a duplicate simply reads again.
+        crate::legacy_agent::METHOD_FEED_STATUS => Some(OpClass::ReadOnly),
         _ => None,
     }
 }

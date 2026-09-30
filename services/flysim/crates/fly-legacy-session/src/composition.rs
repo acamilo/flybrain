@@ -173,6 +173,25 @@ pub async fn boot(
     config: LegacyConfig,
     store: &StoreConfig,
 ) -> Result<(LegacySession, Boot), String> {
+    let (mut session, boot) = boot_unsaved(root, config, store).await?;
+    // `Sim::boot`: a durable save of the state the process starts from, then the intervals.
+    session.save(SaveKind::Durable).await?;
+    session
+        .checkpointer_mut()
+        .expect("attached")
+        .start_intervals(Instant::now());
+    Ok((session, boot))
+}
+
+/// [`boot`] up to the store: the restore (or the fresh start) with the store attached, but no
+/// startup save yet and the intervals not started. The service host (SERVE-01) writes its boot
+/// events first, so the startup save records their watermark as the legacy one does, and then
+/// takes the save and starts the intervals itself.
+pub async fn boot_unsaved(
+    root: &Path,
+    config: LegacyConfig,
+    store: &StoreConfig,
+) -> Result<(LegacySession, Boot), String> {
     let hot = flysim::store::Store::new(&store.hot_dir, store.keep_generations);
     let durable = flysim::store::Store::new(&store.durable_dir, store.keep_generations);
     let candidates = flysim::store::restore_order(&hot, &durable);
@@ -232,7 +251,7 @@ pub async fn boot(
             }
         }
     }
-    let (mut session, boot) = match outcome {
+    let (session, boot) = match outcome {
         Some(pair) => pair,
         None if candidates.is_empty() => {
             let mut session = LegacySession::start(&root.join("fresh"), config).await?;
@@ -253,12 +272,6 @@ pub async fn boot(
             ));
         }
     };
-    // `Sim::boot`: a durable save of the state the process starts from, then the intervals.
-    session.save(SaveKind::Durable).await?;
-    session
-        .checkpointer_mut()
-        .expect("attached")
-        .start_intervals(Instant::now());
     Ok((session, boot))
 }
 
@@ -576,6 +589,18 @@ impl LegacySession {
 
     pub fn checkpointer_mut(&mut self) -> Option<&mut LegacyCheckpointer> {
         self.checkpointer.as_mut()
+    }
+
+    /// The feed event log's watermark the next save records (`lastEventId`): the restored
+    /// file's until a host that keeps a feed event log sets its own.
+    pub fn last_event_id(&self) -> u64 {
+        self.last_event_id
+    }
+
+    /// The service host's event log watermark, recorded by every save from now on as the legacy
+    /// loop records `log.next_id() - 1` (SERVE-01).
+    pub fn set_last_event_id(&mut self, last_event_id: u64) {
+        self.last_event_id = last_event_id;
     }
 
     /// One save of the committed boundary, written by the checkpointer's writer thread; waits for

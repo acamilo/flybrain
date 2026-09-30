@@ -163,6 +163,20 @@ pub fn ledgers_of(
     .to_string()
 }
 
+/// What one transition gave the feed (SERVE-01), in the order the legacy loop emits it: the
+/// executor's starts and finishes, the rewards, the observation's abandonments, and a rollback's
+/// trigger and macro events. Kept whether or not a parity run records, because the service host
+/// publishes it; taken once per transition ([`PokeredTask::take_feed`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FeedRecord {
+    pub executed: Vec<MacroEvent>,
+    pub rewards: Vec<flybrain_gb::adapter::RewardEvent>,
+    pub abandoned: Vec<MacroEvent>,
+    /// `Some((game_over, events))` when the ratchet's rollback ran at this boundary: the trigger
+    /// (a game over, else a stall) and the executor's cancel-and-observe events.
+    pub rollback: Option<(bool, Vec<MacroEvent>)>,
+}
+
 /// How the object is configured. Everything here is composition, not state.
 #[derive(Clone, Debug)]
 pub struct PokeredConfig {
@@ -197,6 +211,12 @@ struct Inner {
     driver: Option<Box<dyn crate::driver::DecisionDriver>>,
     /// Addresses the engine read that the image does not capture ([`Watched`]).
     uncaptured: std::collections::BTreeSet<u16>,
+    /// The feed's view of the transitions since the last [`PokeredTask::take_feed`].
+    feed: FeedRecord,
+    /// The joypad mask the executor last applied (the legacy `frame.buttons`).
+    mask: u32,
+    /// Whether the rollback asked for at the last boundary was a game over (else a stall).
+    rollback_game_over: bool,
     /// The seed the next fresh macro layer is built with ([`PALETTE_SEED`], or a restored
     /// agent's RNG state as the legacy loop seeds it).
     palette_seed: u32,
@@ -239,6 +259,9 @@ impl PokeredTask {
                 records: Vec::new(),
                 driver: None,
                 uncaptured: std::collections::BTreeSet::new(),
+                feed: FeedRecord::default(),
+                mask: 0,
+                rollback_game_over: false,
                 palette_seed: PALETTE_SEED,
             })),
         })
@@ -270,6 +293,38 @@ impl PokeredTask {
     /// (`legacy-gameboy-v1` section 8): a register window reads `$FF` in the image.
     pub fn uncaptured_reads(&self) -> Vec<u16> {
         self.lock().uncaptured.iter().copied().collect()
+    }
+
+    /// The feed's record of the transitions since the last call (SERVE-01).
+    pub fn take_feed(&self) -> FeedRecord {
+        std::mem::take(&mut self.lock().feed)
+    }
+
+    /// The joypad mask the executor last applied, as the legacy header's `buttons` reads it.
+    pub fn mask(&self) -> u32 {
+        self.lock().mask
+    }
+
+    /// The joypad mask a restore installed (the checkpoint's `buttons`), before any apply.
+    pub fn set_mask(&self, mask: u32) {
+        self.lock().mask = mask;
+    }
+
+    /// Read the adapter, the ratchet and the macro layer as they stand at the committed
+    /// boundary: the parts of a feed header that are the task's (SERVE-01). Changes nothing.
+    pub fn inspect<R>(
+        &self,
+        f: impl FnOnce(&PokemonRedReward, &Ratchet, Option<&MacroLayer>) -> R,
+    ) -> R {
+        let inner = self.lock();
+        f(&inner.adapter, &inner.ratchet, inner.macros.as_ref())
+    }
+
+    /// Whether this cartridge earns semantic rewards (`adapter.rom_allowed`), which the legacy
+    /// header reports as `game.semanticRewards`.
+    pub fn semantic_rewards(&self) -> bool {
+        let inner = self.lock();
+        inner.adapter.rom_allowed(&inner.cartridge.sha256_hex())
     }
 
     /// Seeds the next restore's fresh macro layer as the legacy loop does after a restore: with
@@ -627,6 +682,8 @@ impl Task for TaskFace {
         drop(span);
         let span = fly_session::profile::span("task.observe");
         let abandoned = inner.observe(&image, ms);
+        inner.feed.rewards.extend(rewards.iter().cloned());
+        inner.feed.abandoned.extend(abandoned.iter().cloned());
         drop(span);
         let span = fly_session::profile::span("task.ratchet");
         let progress = inner.adapter.progress();
@@ -682,6 +739,7 @@ impl Task for TaskFace {
             }
             events.push(task_event);
         }
+        inner.rollback_game_over = game_over;
         let episode = recover.then(|| EpisodeRequest {
             kind: EpisodeRequestKind::Rollback,
             reason: id(if game_over { "game-over" } else { "stall" }),
@@ -740,6 +798,10 @@ impl Task for TaskFace {
             None => Vec::new(),
         };
         events.extend(inner.observe(&image, ms));
+        let game_over = inner.rollback_game_over;
+        inner.feed.rollback = Some((game_over, events.clone()));
+        // `LegacyFrame::rollback` releases every button with the restored slot.
+        inner.mask = 0;
         if let Some(record) = inner.open.as_mut() {
             record.rolled_back = true;
             record
@@ -821,6 +883,7 @@ impl Task for TaskFace {
         inner.macros = fresh_layer(&inner.config, inner.palette_seed);
         inner.current = None;
         inner.open = None;
+        inner.feed = FeedRecord::default();
         inner.epoch = epoch.clone();
         inner.evaluations = 0;
         inner.issued = 0;
@@ -950,6 +1013,8 @@ impl ActionExecutor for ExecutorFace {
                 None => (raw, Vec::new()),
             }
         };
+        inner.mask = mask;
+        inner.feed.executed.extend(events.iter().cloned());
         if inner.config.record {
             inner.open = Some(TaskRecord {
                 boundary: scope.step,

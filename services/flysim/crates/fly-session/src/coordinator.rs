@@ -603,9 +603,12 @@ impl Coordinator {
             .collect()
     }
 
-    /// The bytes of one media handle this committed boundary holds, by attachment name (the
-    /// view or an audio chunk), or `None` when the boundary holds no such handle. (The same
-    /// method as SERVE-01's service host reads the step's audio with.)
+    /// The bytes of one media attachment this committed boundary holds (a view, e.g.
+    /// `media::view_attachment("lcd")`, or an audio chunk, `media::audio_attachment(..)`), or
+    /// `None` when the boundary holds no such attachment. A read: the handle stays held.
+    ///
+    /// For a host that presents the boundary itself (SERVE-01's service host, which publishes
+    /// the legacy feed from the committed frame and audio chunk).
     pub async fn media_bytes(&self, name: &str) -> Result<Option<Vec<u8>>, String> {
         let Some(artifact) = self.views.get(name).or_else(|| self.audio.get(name)) else {
             return Ok(None);
@@ -615,6 +618,59 @@ impl Coordinator {
             .await
             .map(Some)
             .map_err(|e| format!("reading {name}: {}", e.message))
+    }
+
+    /// One read-only extension call to an agent at the committed boundary, answered by that
+    /// worker's own method (`method` must be one it lists). Unlike every session operation this
+    /// never fences the epoch: a read that failed changed nothing, and its caller decides what
+    /// a missing answer means (SERVE-01: the legacy agent's `Legacy.FeedStatus`).
+    pub async fn read_agent_extension(
+        &mut self,
+        agent_id: &Id,
+        method: &'static str,
+    ) -> Result<Value, String> {
+        let Phase::Ready(_) = self.phases.phase() else {
+            return Err(format!("{method} reads a committed Ready boundary"));
+        };
+        let Some(worker) = self.agent_ref(agent_id).cloned() else {
+            return Err(format!("no agent {agent_id}"));
+        };
+        let request_id = self.serials.next(&worker.service);
+        let started = Instant::now();
+        let outcome = call_owned(
+            self.bus.clone(),
+            worker,
+            method,
+            None,
+            Map::new(),
+            Vec::new(),
+            request_id,
+            Vec::new(),
+            self.deadlines.probe,
+        )
+        .await;
+        self.metrics.record(method, started.elapsed());
+        match outcome {
+            CallOutcome::Answered(reply) => reply
+                .result()
+                .cloned()
+                .map_err(|e| format!("{method}: {}", e.message)),
+            CallOutcome::Refused(e) => Err(format!("{method}: {}", e.message)),
+            CallOutcome::Expired => Err(format!("{method}: no reply within the probe deadline")),
+        }
+    }
+
+    /// Bounds the session's in-memory records for a host that runs for days (SERVE-01's service):
+    /// the transition trace keeps only its last entry (a deferred rollback amends that one), and
+    /// the phase trace, the audit and the injection log are emptied. Every one of them otherwise
+    /// grows with every transition. A parity run or a test that reads them never calls this.
+    pub fn trim_records(&mut self) {
+        let last = self.trace.transitions.pop();
+        self.trace.transitions.clear();
+        self.trace.transitions.extend(last);
+        self.trace.phases.clear();
+        self.audit.clear();
+        self.injection_log.clear();
     }
 
     /// Where each declared audio stream's next chunk may start.
@@ -2625,6 +2681,7 @@ impl Coordinator {
             slot.prepare_request = None;
         }
         let publish_span = crate::profile::span("coord.publish");
+        let publishing = Instant::now();
         self.publish_events(k + 1, &evaluation.events).await?;
         // Every boundary with events or boundary actions is published; otherwise every
         // `snapshot_every`-th (1 unless the composition thins it, as the legacy feed publishes at
@@ -2637,6 +2694,7 @@ impl Coordinator {
             self.publish_snapshot(k + 1, &decisions, &controls, &event_ids).await?;
         }
         drop(publish_span);
+        self.metrics.record("publish", publishing.elapsed());
 
         // A rollback request was applied above and is not an episode end; only a terminal one
         // pauses the session for the episode policy.

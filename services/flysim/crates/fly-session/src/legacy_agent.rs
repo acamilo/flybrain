@@ -84,6 +84,19 @@ pub const SPIKES_ATTACHMENT: &str = "telemetry.spikes";
 /// Bit `i` is neuron `i` in dataset order, little-endian within a byte, `ceil(neurons/8)` bytes:
 /// the legacy feed's `spike_bitset` layout.
 pub const SPIKES_CONTENT_TYPE: &str = "application/x-fly-spike-bitset";
+/// The legacy agent's read-only feed status (SERVE-01), and the capability that advertises it.
+///
+/// The legacy feed header and `GET /status` carry numbers from inside the network that no
+/// session-framework message carries: the plasticity rule's whole statistics (`learning.changed`
+/// counts synapses whose gain moved, `learning.synapses` the rule's edges), the decoder's
+/// per-channel baseline and last score, and the rates and pulse as they stand at the committed
+/// boundary. The session runtime's service host reads them here, once per published snapshot, at a
+/// committed `Ready(k)`, which is where the legacy loop reads them for its own publish. It is a
+/// declared extension of this one worker, not a `workers-v1` method: it changes nothing, is
+/// answered in any phase once initialized, and is not in any trace.
+pub const METHOD_FEED_STATUS: &str = "Legacy.FeedStatus";
+pub const FEED_STATUS_CAPABILITY: &str = "legacy-feed-status-v1";
+
 /// The one stimulus kind the profile supports.
 pub const REWARD_PULSE: &str = gameboy::STIMULUS_REWARD_PULSE;
 
@@ -597,6 +610,66 @@ pub fn telemetry_of(agent: &NeuralAgent, brain_ticks: u64, reinforcements: u64) 
     }
 }
 
+/// A finite number for JSON: the legacy header's `finite`, applied before the value is sent.
+fn finite_or_zero(value: f64) -> f64 {
+    if value.is_finite() { value } else { 0.0 }
+}
+
+/// The [`METHOD_FEED_STATUS`] result: exactly what the legacy loop's `publish` and
+/// `publish_decoder_status` read from the network, in the network's own order.
+///
+/// ```text
+/// { brainMs, rates: [[role, hz], ...], populationRate, rewardRemainingMs,
+///   learning: { enabled, updates, changed, synapses, signal },
+///   decoder: { calibrated, pending: [...], channels: [{channel, role, baseline, score}] } }
+/// ```
+///
+/// Rates are pairs rather than an object so their order survives any JSON reader. Every
+/// number goes through the legacy `finite` first: JSON has no NaN, and the header would have
+/// written 0 for one anyway.
+pub fn feed_status_of(agent: &NeuralAgent) -> Value {
+    let network = &agent.network;
+    let stats = network.plasticity.statistics();
+    let decoder = &agent.decoder;
+    let scores = decoder.last_scores();
+    let baselines = decoder.baselines();
+    let rates: Vec<Value> = network
+        .rates
+        .iter()
+        .map(|(name, hz)| json!([name, finite_or_zero(hz)]))
+        .collect();
+    let channels: Vec<Value> = decoder
+        .channel_roles()
+        .into_iter()
+        .map(|(channel, role)| {
+            json!({
+                "channel": channel,
+                "role": role,
+                "baseline": finite_or_zero(baselines.get_or_zero(role)),
+                "score": finite_or_zero(scores.get_or_zero(channel)),
+            })
+        })
+        .collect();
+    json!({
+        "brainMs": finite_or_zero(network.ms),
+        "rates": rates,
+        "populationRate": finite_or_zero(network.population_rate),
+        "rewardRemainingMs": finite_or_zero(network.reward_remaining()),
+        "learning": {
+            "enabled": stats.enabled,
+            "updates": finite_or_zero(stats.updates),
+            "changed": stats.changed,
+            "synapses": stats.synapses,
+            "signal": finite_or_zero(stats.signal),
+        },
+        "decoder": {
+            "calibrated": decoder.calibrated(),
+            "pending": decoder.pending_baseline_roles(),
+            "channels": channels,
+        },
+    })
+}
+
 /// `gameboy-channels-v1` from a decode's active set: the button mask in `GAMEBOY_BUTTONS`
 /// order, and the first bound channel the decode holds, which is exactly the channel the legacy
 /// macro layer's `asked` would start.
@@ -869,6 +942,28 @@ impl LegacyAgentWorker {
         let agent = self.agent.as_ref().expect("initialized");
         let accumulator = self.accumulator.as_ref().expect("initialized");
         telemetry_of(agent, accumulator.brain_ticks(), self.reinforcements)
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Legacy.FeedStatus (SERVE-01)
+
+    /// The network as the legacy loop's `publish` reads it, at the committed boundary.
+    fn feed_status(&self) -> DomainResult<HandlerReply> {
+        let Some(agent) = self.agent.as_ref() else {
+            return Err(DomainError::before(
+                ErrorCode::InvalidPhase,
+                "Legacy.FeedStatus needs an initialized agent",
+            ));
+        };
+        if matches!(self.phase, AgentPhase::Prepared(_) | AgentPhase::Failed) {
+            return Err(DomainError::before(
+                ErrorCode::InvalidPhase,
+                "Legacy.FeedStatus reads a committed boundary",
+            ));
+        }
+        let mut reply = HandlerReply::new(object(feed_status_of(agent)));
+        reply.mutated = false;
+        Ok(reply)
     }
 
     // ---------------------------------------------------------------------------------------
@@ -1826,6 +1921,7 @@ impl WorkerEndpoint for LegacyAgentWorker {
             id("pixel-observation-v1"),
             id(crate::state::CHECKPOINT_CAPABILITY),
             id(ROLLBACK_CAPABILITY),
+            id(FEED_STATUS_CAPABILITY),
         ]
     }
 
@@ -1846,6 +1942,7 @@ impl WorkerEndpoint for LegacyAgentWorker {
             "State.Capture",
             "State.StageRestore",
             "State.ActivateRestore",
+            METHOD_FEED_STATUS,
         ]
     }
 
@@ -1865,6 +1962,7 @@ impl WorkerEndpoint for LegacyAgentWorker {
                 "State.Capture" => self.state_capture(&ctx).await,
                 "State.StageRestore" => self.state_stage_restore(&ctx).await,
                 "State.ActivateRestore" => self.state_activate_restore(&ctx).await,
+                METHOD_FEED_STATUS => self.feed_status(),
                 other => Err(DomainError::before(
                     ErrorCode::Unsupported,
                     format!("{other} is not an agent method"),

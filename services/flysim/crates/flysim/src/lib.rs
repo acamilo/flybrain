@@ -80,6 +80,34 @@ impl AppState {
 /// The simulation runs on the calling thread and the listeners on a two-worker tokio runtime, so
 /// a stalled socket cannot preempt the loop and the process exits when the loop does.
 pub fn run(config: Config) -> Result<()> {
+    serve(config, |shared, snapshots, commands, notifier| {
+        let mut sim = Sim::boot(shared, snapshots, commands)?;
+        notifier.notify("READY=1\nSTATUS=simulation running\n");
+        let result = sim.run(notifier);
+        notifier.notify("STOPPING=1\n");
+        drop(sim);
+        result
+    })
+}
+
+/// Bind the listeners and serve them around `sim`, which runs on the calling thread and
+/// returns when the service should stop; it sends `READY=1` once it is up.
+///
+/// `sim` is handed the state the listeners share, the snapshot slot they read, the command
+/// queue they write, and the systemd notifier. The legacy loop ([`Sim`], through [`run`]) and the
+/// session runtime (`fly-legacy-session`'s service host, SERVE-01) are both run this way, so the
+/// feed listener, the bus publisher, the control API, the metrics listener and the signal
+/// handling are one copy of the code whichever runtime is behind them: the binding contracts
+/// (`docs/feed-protocol.md`, `docs/control-api.md`) are served by the same bytes.
+pub fn serve<F>(config: Config, sim: F) -> Result<()>
+where
+    F: FnOnce(
+        Arc<Shared>,
+        watch::Sender<Arc<Snapshot>>,
+        mpsc::Receiver<Command>,
+        &sdnotify::Notifier,
+    ) -> Result<()>,
+{
     let ring = EventRing::new();
     let shared = Arc::new(Shared::new(config.clone(), ring));
     let (commands, command_rx) = mpsc::channel(COMMAND_QUEUE);
@@ -181,11 +209,7 @@ pub fn run(config: Config) -> Result<()> {
     runtime.spawn(reload_chat_deny_list_on_sighup(Arc::clone(&state.shared)));
 
     let notifier = sdnotify::Notifier::from_env();
-    let mut sim = Sim::boot(shared, snapshots_tx, command_rx)?;
-    notifier.notify("READY=1\nSTATUS=simulation running\n");
-    let result = sim.run(&notifier);
-    notifier.notify("STOPPING=1\n");
-    drop(sim);
+    let result = sim(shared, snapshots_tx, command_rx, &notifier);
     if let Some((bus_runtime, bus)) = bus_runtime {
         // The publisher ends by itself once the watch sender is gone; stopping the runtime under
         // it, rather than the router first, keeps a last in-flight publish from being logged as
