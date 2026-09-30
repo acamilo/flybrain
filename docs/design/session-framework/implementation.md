@@ -596,6 +596,40 @@ milliseconds per frame:
 Earlier the same 2-thread and 3-thread in-process arms took 19.7 and 17.0 ms. With 3 threads the
 shadow keeps real time with about 20 % to spare.
 
+**Review round 2, 2026-09-30** (APPROVE-WITH-NOTES; R3 and G1 were required before `start`).
+The branch was rebased onto port/task-01 `eaf588d`, and main v0.6.7 was merged in: row 68 and
+adapter `pokered-unique8-v8`. The live shadow will therefore carry the v8 compatibility string.
+The fixtures were already v8 on main.
+
+- *R3.* `allows_cutover` floors the window at `REQUIRED_BRAIN_SECONDS` (10,800). A verdict run with
+  a shorter `--required-brain-seconds` passes as a rehearsal but never passes `check`. There is a
+  test case for this.
+- *G1, the host guard.*
+  - `start` measures a 10-minute baseline of 60 samples before the shadow exists: the median RTF,
+    its spread as 1.4826 x MAD, and the lag growth rate over the most recent half.
+  - The guard trips only on a sustained degradation *against that baseline*: 3 checks in a row in
+    which the last 5 samples of the same process fall below it, in RTF or in lag rate, by more
+    than max(0.05, 4 x spread / sqrt 5).
+  - It stops itself when the shadow is not running. `check` refuses after a trip or with the
+    shadow down.
+  - Tested over two kinds of trace:
+    - *Synthetic*, shaped on the release container: a flat 0.66, 0.77-0.99 and 0.6-1.0 noisy, per
+      second and per sample, and real time with hiccups. There was no false trip in 800 3-hour
+      runs, and every one of 400 degradations tripped (to 0.55-0.75, and 0.66 to 0.58).
+    - *Recorded* from a real flysim, now fixtures: alone (at about 1.0, and at 0.4-1.0 under box
+      load) no trip; with a real idle shadow on other cpus no trip; with a real shadow on the fly's
+      own cpu (0.66 to 0.44-0.60) a trip at check 7.
+  - One recording had a load step inside its baseline, which widened a mean/sd baseline to a
+    0.25 margin. That is why the baseline is robust.
+- *G1, the in-shadow back-off* (`LagJudge`). It pauses the shadow while the live lag grows faster
+  than the baseline rate plus the margin (re-read from `baseline.json`). It lifts itself for
+  10 minutes when a pause did not help, because then the shadow is not the cause. Tests show:
+  - a flat 0.66 fly is never paused;
+  - with no baseline, at most 1 minute in 11 is paused;
+  - a shadow that costs the fly time stays paused about half the time.
+- *N3.* `lagTransitions` is recomputed at every verdict write, over the rest of the current file
+  and every newer one, including while the shadow is backed off.
+
 ### STATE-01 — Coherent all-participant checkpoint/recovery
 
 **Depends on:** SESSION-02, MEDIA-01; validate with fake agents first, then AGENT-01/ENV-01.

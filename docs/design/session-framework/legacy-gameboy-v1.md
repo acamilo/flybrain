@@ -806,14 +806,16 @@ make sure of it:
 - *The guard* (`fly-shadow-run guard`, every 60 s, root) judges the live fly against its own pace
   before the shadow existed. The live fly does not always keep real time: the release container
   has run at a realtime factor of 0.66, and at 0.77-0.99 after its cpuset rebalance. So `start`
-  first measures a 10-minute baseline: the mean and spread of 10-s `fly_realtime_factor` means,
-  and the `fly_lag_seconds` growth rate. The guard trips only on a *sustained* degradation against
+  first measures a 10-minute baseline over sixty 10-s `fly_realtime_factor` means. It records
+  their median and their spread (1.4826 x MAD), so a step in the window cannot set or widen it,
+  and the `fly_lag_seconds` growth rate over the most recent half. The guard trips only on a *sustained* degradation against
   that baseline: 3 checks in a row in which the last 5 samples of the same process fall below the
   baseline realtime factor, or grow lag faster than the baseline rate, by more than
   max(0.05, 4 x spread / sqrt 5). A trip stops everything and restarts flysim without the trace.
   The guard stops itself when the shadow is not running. `lint.sh` holds the rule to the release
-  container's profiles, synthesized, and to traces recorded from a real flysim with and without a
-  shadow. It found no false trip in 600 synthetic 3-hour runs.
+  container's profiles, synthesized, and to four traces recorded from a real flysim with and
+  without a real shadow (`infra/tests/fixtures/shadow-guard`). In 800 synthetic 3-hour runs it
+  found no false trip, and it caught all 400 degradations.
 - *The shadow* runs at `SCHED_IDLE` off flysim's CPUs. It pauses for a minute while the live lag
   grows faster than the baseline rate. When a pause does not help, the shadow is not the cause,
   and it stops pausing for 10 minutes.
