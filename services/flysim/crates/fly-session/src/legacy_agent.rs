@@ -402,9 +402,21 @@ pub fn spike_bitset(last_spike_ms: &[f64], since_ms: f64, now_ms: f64) -> Vec<u8
     if now_ms <= since_ms {
         return bytes;
     }
-    for (index, last) in last_spike_ms.iter().enumerate() {
-        if *last >= since_ms {
-            bytes[index >> 3] |= 1 << (index & 7);
+    // Eight neurons per byte, branch-free, so the compiler vectorises the comparison (PERF-01:
+    // 139,255 neurons a frame). The same `last >= since` test as the bit-at-a-time loop.
+    let chunks = last_spike_ms.chunks_exact(8);
+    let tail = chunks.remainder();
+    for (byte, chunk) in bytes.iter_mut().zip(chunks) {
+        let mut bits = 0u8;
+        for (bit, last) in chunk.iter().enumerate() {
+            bits |= u8::from(*last >= since_ms) << bit;
+        }
+        *byte = bits;
+    }
+    if !tail.is_empty() {
+        let at = last_spike_ms.len() / 8;
+        for (bit, last) in tail.iter().enumerate() {
+            bytes[at] |= u8::from(*last >= since_ms) << bit;
         }
     }
     bytes
@@ -1042,6 +1054,9 @@ impl LegacyAgentWorker {
         let brain_ticks = accumulator.brain_ticks();
         let remainder = accumulator.remainder();
         self.transition_start_ms = agent.network.ms;
+        // Profiling runs the brain's own phase clock too, as a measured legacy loop does, so
+        // the two brains carry the same instrumentation (PERF-01).
+        agent.network.profile = crate::profile::enabled();
         let ticks_span = crate::profile::span("agent.ticks");
         agent.network.step(ticks);
         drop(ticks_span);
@@ -1196,7 +1211,8 @@ impl LegacyAgentWorker {
             telemetry: self.telemetry(),
         };
         let _seal_span = crate::profile::span("agent.seal_spikes");
-        let artifact = crate::media::seal_copy(ctx.client, SPIKES_CONTENT_TYPE.to_owned(), &spikes)
+        let artifact = ctx
+            .seal(SPIKES_CONTENT_TYPE, spikes)
             .await
             .map_err(|e| applied(e.code, e.message))?;
         self.status.set_state(WorkerState::Ready);
@@ -1860,6 +1876,46 @@ mod tests {
             vec![0, 0],
             "an empty window is empty"
         );
+    }
+
+    #[test]
+    fn the_bytewise_spike_bitset_is_the_bit_at_a_time_one() {
+        // PERF-01 replaced the per-neuron loop; every length and window agrees with it,
+        // including NaN (never >=) and infinities.
+        fn reference(last: &[f64], since: f64, now: f64) -> Vec<u8> {
+            let mut bytes = vec![0u8; last.len().div_ceil(8)];
+            if now <= since {
+                return bytes;
+            }
+            for (index, value) in last.iter().enumerate() {
+                if *value >= since {
+                    bytes[index >> 3] |= 1 << (index & 7);
+                }
+            }
+            bytes
+        }
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for len in 0..40usize {
+            for _ in 0..20 {
+                let last: Vec<f64> = (0..len)
+                    .map(|_| match next() % 10 {
+                        0 => f64::NAN,
+                        1 => f64::NEG_INFINITY,
+                        2 => -1_000_000.0,
+                        n => (n * 3) as f64,
+                    })
+                    .collect();
+                let since = (next() % 30) as f64;
+                let now = since + (next() % 3) as f64;
+                assert_eq!(spike_bitset(&last, since, now), reference(&last, since, now));
+            }
+        }
     }
 
     #[test]

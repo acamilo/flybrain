@@ -11,7 +11,12 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 static STATE: AtomicU8 = AtomicU8::new(0); // 0 unknown, 1 off, 2 on
-static TABLE: Mutex<BTreeMap<&'static str, (u64, Duration)>> = Mutex::new(BTreeMap::new());
+static TABLE: Mutex<BTreeMap<&'static str, (u64, Duration, Duration)>> = Mutex::new(BTreeMap::new());
+
+/// Whether profiling is on for this process (`FLY_SESSION_PROFILE`).
+pub fn enabled() -> bool {
+    on()
+}
 
 fn on() -> bool {
     match STATE.load(Ordering::Relaxed) {
@@ -39,9 +44,11 @@ impl Drop for Span {
             let mut table = TABLE
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let entry = table.entry(name).or_insert((0, Duration::ZERO));
+            let entry = table.entry(name).or_insert((0, Duration::ZERO, Duration::ZERO));
+            let elapsed = started.elapsed();
             entry.0 += 1;
-            entry.1 += started.elapsed();
+            entry.1 += elapsed;
+            entry.2 = entry.2.max(elapsed);
         }
     }
 }
@@ -53,7 +60,22 @@ pub fn report() -> Vec<(&'static str, u64, Duration)> {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let out = table
         .iter()
-        .map(|(name, (count, total))| (*name, *count, *total / (*count).max(1) as u32))
+        .map(|(name, (count, total, _))| (*name, *count, *total / (*count).max(1) as u32))
+        .collect();
+    table.clear();
+    out
+}
+
+/// As [`report`], with each span's longest single sample: `(name, count, mean, max)`.
+pub fn report_with_max() -> Vec<(&'static str, u64, Duration, Duration)> {
+    let mut table = TABLE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let out = table
+        .iter()
+        .map(|(name, (count, total, max))| {
+            (*name, *count, *total / (*count).max(1) as u32, *max)
+        })
         .collect();
     table.clear();
     out

@@ -159,7 +159,29 @@ pub struct HandlerCtx<'a> {
     pub method: &'a str,
     pub request: &'a SessionRpcRequest,
     pub client: &'a flybus::Client,
-    pub incoming: &'a flybus::Request,
+    pub incoming: &'a Incoming,
+}
+
+/// How a domain request reached the shell, and so where its attachments are.
+pub enum Incoming {
+    /// A bus request delivery: the attachments are the delivery's.
+    Bus(flybus::Request),
+    /// The in-process local lane ([`LocalLane`]): the caller's own handles, in memory or
+    /// sealed, handed over without a bus message.
+    Local(Vec<(String, flybus::Artifact)>),
+}
+
+impl Incoming {
+    fn artifact(&self, name: &str) -> Result<flybus::Artifact, String> {
+        match self {
+            Incoming::Bus(request) => request.artifact(name).map_err(|e| e.message),
+            Incoming::Local(list) => list
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, a)| a.clone())
+                .ok_or_else(|| format!("no attachment named {name:?}")),
+        }
+    }
 }
 
 impl HandlerCtx<'_> {
@@ -185,9 +207,24 @@ impl HandlerCtx<'_> {
         self.incoming.artifact(name).map_err(|e| {
             DomainError::before(
                 ErrorCode::BufferInvalid,
-                format!("attachment {name:?} is missing or unowned: {}", e.message),
+                format!("attachment {name:?} is missing or unowned: {e}"),
             )
         })
+    }
+
+    /// True when the request came over the in-process local lane.
+    pub fn is_local(&self) -> bool {
+        matches!(self.incoming, Incoming::Local(_))
+    }
+
+    /// One immutable reply artifact holding `bytes`. Over the local lane it is an in-memory
+    /// artifact that owns `bytes` (no copy, no store file, no router round trip); over the bus
+    /// it is allocated, written and sealed in the router's store as before.
+    pub async fn seal(&self, content_type: &str, bytes: Vec<u8>) -> DomainResult<flybus::Artifact> {
+        if self.is_local() {
+            return Ok(flybus::Artifact::in_memory(content_type, bytes));
+        }
+        crate::media::seal_copy(self.client, content_type.to_owned(), &bytes).await
     }
 }
 
@@ -231,6 +268,8 @@ pub struct WorkerHandle {
     pub service_incarnation: String,
     pub status: StatusCell,
     pub cache: Arc<tokio::sync::Mutex<ResultCache>>,
+    /// The same shell, reachable without the bus by a caller in this process.
+    pub local: LocalLane,
     task: tokio::task::JoinHandle<()>,
     client: flybus::Client,
 }
@@ -248,6 +287,7 @@ impl WorkerHandle {
     /// Stops serving and closes the worker's bus connection, which drops its registration and
     /// every owner it held. A later reply from it can attach to nothing.
     pub async fn stop(self) {
+        self.local.close();
         self.task.abort();
         let _ = self.task.await;
         self.client.close().await;
@@ -257,6 +297,7 @@ impl WorkerHandle {
     /// dropped, which this does. For a supervisor's `Drop`, where there is no runtime to wait
     /// on.
     pub fn abort(self) {
+        self.local.close();
         self.task.abort();
     }
 
@@ -266,7 +307,154 @@ impl WorkerHandle {
     /// the process's exit are the same event rather than two racing ones.
     pub async fn join(self) {
         let _ = self.task.await;
+        self.local.close();
         self.client.close().await;
+    }
+}
+
+// -------------------------------------------------------------------------------------------
+// The in-process local lane (PERF-01)
+
+/// A terminal domain reply delivered over the local lane, with the artifacts it attaches.
+pub struct LocalReply {
+    pub outcome: SessionRpcOutcome,
+    pub artifacts: Vec<(String, flybus::Artifact)>,
+}
+
+/// A request admitted by the local lane and not yet answered. Like an admitted bus call, it is
+/// in the worker's order already: a request sent after it to the same worker runs after it.
+pub struct LocalPending(tokio::sync::oneshot::Receiver<LocalReply>);
+
+impl LocalPending {
+    /// Waits for the terminal reply. `None` when the worker stopped before answering, which
+    /// the caller treats exactly as a bus call whose connection was lost.
+    pub async fn finish(self) -> Option<LocalReply> {
+        self.0.await.ok()
+    }
+}
+
+/// What the local lane dispatches into: one worker's shell, the same one its bus loop uses.
+trait LocalDispatch: Send + Sync {
+    fn send(
+        &self,
+        method: String,
+        request: SessionRpcRequest,
+        attachments: Vec<(String, flybus::Artifact)>,
+    ) -> BoxFuture<'_, Result<LocalPending, DomainError>>;
+    fn close(&self);
+}
+
+/// A handle on a worker's shell for a caller in the same process (`workers-v1` PERF-01
+/// amendment). A request sent this way goes through exactly the admission a bus request goes
+/// through -- deduplication and the operation key, the result cache, the arrival-order lock and
+/// the endpoint -- and returns the same `SessionRpcOutcome`; only the transport differs: no bus
+/// message, no router, and reply artifacts the handler may keep in memory
+/// ([`HandlerCtx::seal`]). The common `Worker.*` methods are not served here: they stay on the
+/// bus, where the supervisor asks them.
+#[derive(Clone)]
+pub struct LocalLane(Arc<dyn LocalDispatch>);
+
+impl std::fmt::Debug for LocalLane {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LocalLane")
+    }
+}
+
+impl LocalLane {
+    /// Admits one domain request in this worker's order and returns without waiting for it
+    /// to execute. Refuses what the bus loop would answer without entering the endpoint's
+    /// order (the common methods) with UNSUPPORTED, before any mutation.
+    pub async fn send(
+        &self,
+        method: &str,
+        request: SessionRpcRequest,
+        attachments: Vec<(String, flybus::Artifact)>,
+    ) -> Result<LocalPending, DomainError> {
+        self.0.send(method.to_owned(), request, attachments).await
+    }
+
+    fn close(&self) {
+        self.0.close();
+    }
+}
+
+/// True for a method the local lane carries: every method the shell admits through its
+/// result cache into the endpoint. `Worker.*` stays on the bus.
+pub fn local_lane_carries(method: &str) -> bool {
+    matches!(classify_default(method), Some(OpClass::StepMutation | OpClass::Lifecycle))
+}
+
+/// How the shell answers one request: over the bus, or into a local waiter.
+enum Answer {
+    Bus(flybus::Responder),
+    Local(tokio::sync::oneshot::Sender<LocalReply>),
+}
+
+impl Answer {
+    async fn send(self, outcome: SessionRpcOutcome, artifacts: &[(String, flybus::Artifact)]) {
+        match self {
+            Answer::Bus(responder) => {
+                let list: Vec<(&str, &flybus::Artifact)> =
+                    artifacts.iter().map(|(n, a)| (n.as_str(), a)).collect();
+                let _ = responder.reply(outcome.to_outcome(), &list).await;
+            }
+            Answer::Local(tx) => {
+                let _ = tx.send(LocalReply { outcome, artifacts: artifacts.to_vec() });
+            }
+        }
+    }
+}
+
+/// Everything fixed about one worker's shell, shared by its bus loop and its local lane.
+struct Shell<E> {
+    client: flybus::Client,
+    endpoint: Arc<tokio::sync::Mutex<E>>,
+    cache: Arc<tokio::sync::Mutex<ResultCache>>,
+    order: Arc<LockOrder>,
+    status: StatusCell,
+    worker_id: Id,
+    incarnation_id: Id,
+    session_id: Id,
+    methods: Vec<&'static str>,
+    /// Admission is one request at a time across both lanes, so tickets follow arrival.
+    admission: tokio::sync::Mutex<()>,
+    closed: std::sync::atomic::AtomicBool,
+    /// The admitted mutations' tasks, awaited when the shell stops.
+    running: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+}
+
+/// The local lane's hold on a shell.
+struct ShellRef<E>(Arc<Shell<E>>);
+
+impl<E: WorkerEndpoint> LocalDispatch for ShellRef<E> {
+    fn send(
+        &self,
+        method: String,
+        request: SessionRpcRequest,
+        attachments: Vec<(String, flybus::Artifact)>,
+    ) -> BoxFuture<'_, Result<LocalPending, DomainError>> {
+        let shell = &self.0;
+        Box::pin(async move {
+            if shell.closed.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(DomainError::before(
+                    ErrorCode::IdentityMismatch,
+                    format!("{method}: the worker {} has stopped", shell.worker_id),
+                ));
+            }
+            if !local_lane_carries(&method) {
+                return Err(DomainError::before(
+                    ErrorCode::Unsupported,
+                    format!("{method} is not carried by the local lane"),
+                ));
+            }
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            shell.admit(method, request, Incoming::Local(attachments), Answer::Local(tx)).await;
+            Ok(LocalPending(rx))
+        })
+    }
+
+    fn close(&self) {
+        self.0.closed.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -282,7 +470,30 @@ pub fn serve<E: WorkerEndpoint>(
     let service_name = service.name().to_owned();
     let service_incarnation = service.incarnation().to_owned();
     let cache = Arc::new(tokio::sync::Mutex::new(ResultCache::new()));
-    let task = tokio::spawn(run(client.clone(), service, Arc::new(tokio::sync::Mutex::new(endpoint)), cache.clone()));
+    // Identity and capabilities are fixed for the endpoint's lifetime, so the shell reads them
+    // once and never takes the endpoint mutex to answer Hello or Status.
+    let common = Common {
+        role: endpoint.role(),
+        capabilities: endpoint.capabilities(),
+        threads: endpoint.worker_threads(),
+        extra_ack: endpoint.acknowledge_extra_id(),
+    };
+    let shell = Arc::new(Shell {
+        client: client.clone(),
+        session_id: endpoint.session_id(),
+        methods: endpoint.methods(),
+        endpoint: Arc::new(tokio::sync::Mutex::new(endpoint)),
+        cache: cache.clone(),
+        order: Arc::new(LockOrder::default()),
+        status: status.clone(),
+        worker_id: worker_id.clone(),
+        incarnation_id: incarnation_id.clone(),
+        admission: tokio::sync::Mutex::new(()),
+        closed: std::sync::atomic::AtomicBool::new(false),
+        running: Mutex::new(Vec::new()),
+    });
+    let local = LocalLane(Arc::new(ShellRef(shell.clone())));
+    let task = tokio::spawn(run(shell, service, common));
     WorkerHandle {
         worker_id,
         incarnation_id,
@@ -290,36 +501,25 @@ pub fn serve<E: WorkerEndpoint>(
         service_incarnation,
         status,
         cache,
+        local,
         task,
         client,
     }
 }
 
-async fn run<E: WorkerEndpoint>(
-    client: flybus::Client,
-    mut service: flybus::Service,
-    endpoint: Arc<tokio::sync::Mutex<E>>,
-    cache: Arc<tokio::sync::Mutex<ResultCache>>,
-) {
-    // Identity and capabilities are fixed for the endpoint's lifetime, so the shell reads them
-    // once and never takes the endpoint mutex to answer Hello or Status.
-    #[allow(clippy::type_complexity)]
-    let (worker_id, incarnation_id, session_id, role, capabilities, status, methods, threads, extra_ack) = {
-        let e = endpoint.lock().await;
-        (
-            e.worker_id(),
-            e.incarnation_id(),
-            e.session_id(),
-            e.role(),
-            e.capabilities(),
-            e.status_cell(),
-            e.methods(),
-            e.worker_threads(),
-            e.acknowledge_extra_id(),
-        )
-    };
-    let mut running: Vec<tokio::task::JoinHandle<()>> = Vec::new();
-    let order = Arc::new(LockOrder::default());
+/// What the bus loop answers without entering the endpoint.
+struct Common {
+    role: Role,
+    capabilities: Vec<Id>,
+    threads: u64,
+    extra_ack: Option<Id>,
+}
+
+async fn run<E: WorkerEndpoint>(shell: Arc<Shell<E>>, mut service: flybus::Service, common: Common) {
+    let Common { role, capabilities, threads, extra_ack } = common;
+    let (worker_id, incarnation_id, session_id) =
+        (shell.worker_id.clone(), shell.incarnation_id.clone(), shell.session_id.clone());
+    let (status, cache) = (shell.status.clone(), shell.cache.clone());
     while let Some(incoming) = service.next().await {
         let method = incoming.method().to_owned();
         let responder = incoming.responder();
@@ -340,8 +540,6 @@ async fn run<E: WorkerEndpoint>(
                 continue;
             }
         };
-        // The contract type already validated the `req-<U64>` form when it read the envelope.
-        let serial = request.request_id.clone();
 
         // The common methods never enter the endpoint mutex, so they answer during a mutation.
         match method.as_str() {
@@ -397,7 +595,12 @@ async fn run<E: WorkerEndpoint>(
                         let value = result.to_json();
                         let outcome =
                             success(&request, &worker_id, &incarnation_id, object(value));
+                        // The local lane stops with the bus loop: nothing is admitted after a
+                        // Shutdown on either.
+                        shell.closed.store(true, std::sync::atomic::Ordering::SeqCst);
                         let _ = responder.reply(outcome.to_outcome(), &[]).await;
+                        // Admitted mutations still finish and answer.
+                        shell.drain().await;
                         return;
                     }
                     Err(e) => {
@@ -415,36 +618,60 @@ async fn run<E: WorkerEndpoint>(
             }
             _ => {}
         }
+        shell
+            .admit(method, request, Incoming::Bus(incoming), Answer::Bus(responder))
+            .await;
+    }
+    shell.drain().await;
+}
 
-        let class = if methods.contains(&method.as_str()) {
+impl<E: WorkerEndpoint> Shell<E> {
+    /// Waits until every admitted mutation has answered.
+    async fn drain(&self) {
+        let running = std::mem::take(&mut *self.running.lock().expect("never poisoned"));
+        for task in running {
+            let _ = task.await;
+        }
+    }
+
+    /// Classification, deduplication and the arrival-order ticket for one endpoint request,
+    /// then its execution in a task of its own. Both lanes come here, one request at a time.
+    async fn admit(
+        self: &Arc<Self>,
+        method: String,
+        request: SessionRpcRequest,
+        incoming: Incoming,
+        answer: Answer,
+    ) {
+        let (worker_id, incarnation_id) = (&self.worker_id, &self.incarnation_id);
+        let refuse = |e: DomainError, scope: Option<Scope>| {
+            failure(&request.request_id, worker_id, incarnation_id, scope, e)
+        };
+        // One admission at a time across both lanes: the ticket order is the arrival order.
+        let _admission = self.admission.lock().await;
+        let _span = crate::profile::span("shell.admit");
+        // The contract type already validated the `req-<U64>` form when it read the envelope.
+        let serial = request.request_id.clone();
+        let class = if self.methods.contains(&method.as_str()) {
             classify_default(&method)
         } else {
             None
         };
         let Some(class) = class else {
-            let outcome = failure(
-                &request.request_id,
-                &worker_id,
-                &incarnation_id,
-                request.scope.clone(),
+            let outcome = refuse(
                 DomainError::before(ErrorCode::Unsupported, format!("{method} is not supported")),
+                request.scope.clone(),
             );
-            let _ = responder.reply(outcome.to_outcome(), &[]).await;
-            continue;
+            answer.send(outcome, &[]).await;
+            return;
         };
 
         let body = match request.body_digest(&method) {
             Ok(body) => body,
             Err(e) => {
-                let outcome = failure(
-                    &request.request_id,
-                    &worker_id,
-                    &incarnation_id,
-                    request.scope.clone(),
-                    DomainError::invalid(format!("{method}: {e}")),
-                );
-                let _ = responder.reply(outcome.to_outcome(), &[]).await;
-                continue;
+                let outcome = refuse(DomainError::invalid(format!("{method}: {e}")), request.scope.clone());
+                answer.send(outcome, &[]).await;
+                return;
             }
         };
         let key = match (class, &request.scope) {
@@ -456,18 +683,12 @@ async fn run<E: WorkerEndpoint>(
                 worker_id: worker_id.clone(),
             },
             (OpClass::StepMutation, None) => {
-                let outcome = failure(
-                    &request.request_id,
-                    &worker_id,
-                    &incarnation_id,
-                    None,
-                    DomainError::invalid(format!("{method} requires a scope")),
-                );
-                let _ = responder.reply(outcome.to_outcome(), &[]).await;
-                continue;
+                let outcome = refuse(DomainError::invalid(format!("{method} requires a scope")), None);
+                answer.send(outcome, &[]).await;
+                return;
             }
             _ => OperationKey {
-                session_id: session_id.clone(),
+                session_id: self.session_id.clone(),
                 epoch: id("lifecycle"),
                 step: 0,
                 method: method.clone(),
@@ -479,55 +700,37 @@ async fn run<E: WorkerEndpoint>(
         // is dereferenced, because a duplicate may arrive after its input delivery was
         // consumed and needs only the cached result.
         let admission = {
-            let mut c = cache.lock().await;
+            let mut c = self.cache.lock().await;
             c.admit(class, &key, serial.clone(), &body)
         };
         match admission {
             Admission::Replay(reply) => {
-                let _ = responder.reply(reply.outcome.to_outcome(), &reply.attachments()).await;
-                continue;
+                answer.send(reply.outcome.clone(), &reply.artifacts).await;
+                return;
             }
             Admission::Refuse(e) => {
-                let outcome = failure(
-                    &request.request_id,
-                    &worker_id,
-                    &incarnation_id,
-                    request.scope.clone(),
-                    e,
-                );
-                let _ = responder.reply(outcome.to_outcome(), &[]).await;
-                continue;
+                let outcome = refuse(e, request.scope.clone());
+                answer.send(outcome, &[]).await;
+                return;
             }
             Admission::Execute => {}
         }
 
-        status.set_active(Some(request.request_id.clone()));
+        self.status.set_active(Some(request.request_id.clone()));
         // The mutation runs in its own task so the shell keeps reading. That is what lets an
         // exact duplicate arriving mid-execution be refused with IN_PROGRESS while the
-        // original bus call still completes normally. The endpoint mutex, not this loop,
+        // original call still completes normally. The endpoint mutex, not this loop,
         // enforces one mutation at a time.
-        running.retain(|task| !task.is_finished());
-        let ticket = order.issue();
-        running.push(tokio::spawn(execute(
-            client.clone(),
-            endpoint.clone(),
-            order.clone(),
+        let ticket = self.order.issue();
+        let task = tokio::spawn(execute(
+            self.clone(),
             ticket,
-            cache.clone(),
-            status.clone(),
-            worker_id.clone(),
-            incarnation_id.clone(),
-            class,
-            key,
-            serial,
-            body,
-            method,
-            request,
-            incoming,
-        )));
-    }
-    for task in running {
-        let _ = task.await;
+            Admitted { class, key, serial, body, method, request, incoming },
+            answer,
+        ));
+        let mut running = self.running.lock().expect("never poisoned");
+        running.retain(|task| !task.is_finished());
+        running.push(task);
     }
 }
 
@@ -591,34 +794,36 @@ async fn futures_poll_once<F: std::future::Future + Unpin>(mut f: F) -> Option<F
     .await
 }
 
-/// Runs one admitted mutation, records its reply and answers the bus call.
-#[allow(clippy::too_many_arguments)]
-async fn execute<E: WorkerEndpoint>(
-    client: flybus::Client,
-    endpoint: Arc<tokio::sync::Mutex<E>>,
-    order: Arc<LockOrder>,
-    ticket: u64,
-    cache: Arc<tokio::sync::Mutex<ResultCache>>,
-    status: StatusCell,
-    worker_id: Id,
-    incarnation_id: Id,
+/// One admitted request, as `execute` needs it.
+struct Admitted {
     class: OpClass,
     key: OperationKey,
     serial: DomainRequestId,
     body: Digest,
     method: String,
     request: SessionRpcRequest,
-    incoming: flybus::Request,
+    incoming: Incoming,
+}
+
+/// Runs one admitted mutation, records its reply and answers the call.
+async fn execute<E: WorkerEndpoint>(
+    shell: Arc<Shell<E>>,
+    ticket: u64,
+    admitted: Admitted,
+    answer: Answer,
 ) {
-    let responder = incoming.responder();
+    let Admitted { class, key, serial, body, method, request, incoming } = admitted;
+    let (worker_id, incarnation_id, status, cache) =
+        (&shell.worker_id, &shell.incarnation_id, &shell.status, &shell.cache);
     let outcome = {
         // One mutation at a time: the endpoint mutex is the worker's simulation lock, and it is
         // never held across a bus round trip taken by anything else.
-        let mut e = order.lock_in_turn(ticket, &endpoint).await;
+        let mut e = shell.order.lock_in_turn(ticket, &shell.endpoint).await;
+        let _span = crate::profile::span("shell.handle");
         let ctx = HandlerCtx {
             method: &method,
             request: &request,
-            client: &client,
+            client: &shell.client,
             incoming: &incoming,
         };
         e.handle(ctx).await
@@ -628,30 +833,35 @@ async fn execute<E: WorkerEndpoint>(
         Ok(HandlerReply { deferred: Some(rest), .. }) => rest.await,
         other => other,
     };
+    let _span = crate::profile::span("shell.record");
     match outcome {
         Ok(reply) => {
-            let outcome = success(&request, &worker_id, &incarnation_id, reply.result.clone());
+            let outcome = success(&request, worker_id, incarnation_id, reply.result.clone());
             // The cache owns its own hold on every artifact, so a replay survives the first
             // caller consuming its delivery. The holds are independent router round trips, so
-            // they are taken concurrently.
+            // they are taken concurrently; an in-memory artifact is its own hold.
             let retains: Vec<_> = reply
                 .artifacts
                 .iter()
                 .map(|(name, artifact)| {
                     let (name, artifact) = (name.clone(), artifact.clone());
-                    tokio::spawn(async move {
-                        match artifact.retain().await {
-                            Ok(hold) => (name, hold),
-                            Err(_) => (name, artifact),
+                    async move {
+                        if artifact.is_in_memory() {
+                            return (name, artifact);
                         }
-                    })
+                        let task = tokio::spawn(async move {
+                            match artifact.retain().await {
+                                Ok(hold) => (name, hold),
+                                Err(_) => (name, artifact),
+                            }
+                        });
+                        task.await.expect("a retain task never panics")
+                    }
                 })
                 .collect();
             let mut holds = Vec::with_capacity(retains.len());
             for retain in retains {
-                if let Ok(pair) = retain.await {
-                    holds.push(pair);
-                }
+                holds.push(retain.await);
             }
             let cached = CachedReply::with_artifacts(outcome.clone(), holds);
             {
@@ -663,9 +873,7 @@ async fn execute<E: WorkerEndpoint>(
                 }
             }
             status.set_completed(request.request_id.clone());
-            let attachments: Vec<(&str, &flybus::Artifact)> =
-                reply.artifacts.iter().map(|(n, a)| (n.as_str(), a)).collect();
-            let _ = responder.reply(outcome.to_outcome(), &attachments).await;
+            answer.send(outcome, &reply.artifacts).await;
         }
         Err(e) => {
             if e.mutation == MutationCertainty::None {
@@ -675,8 +883,8 @@ async fn execute<E: WorkerEndpoint>(
             } else {
                 let cached = CachedReply::new(failure_outcome(
                     &request.request_id,
-                    &worker_id,
-                    &incarnation_id,
+                    worker_id,
+                    incarnation_id,
                     request.scope.clone(),
                     e.clone(),
                 ));
@@ -691,12 +899,12 @@ async fn execute<E: WorkerEndpoint>(
             status.set_active(None);
             let outcome = failure(
                 &request.request_id,
-                &worker_id,
-                &incarnation_id,
+                worker_id,
+                incarnation_id,
                 request.scope.clone(),
                 e,
             );
-            let _ = responder.reply(outcome.to_outcome(), &[]).await;
+            answer.send(outcome, &[]).await;
         }
     }
 }

@@ -508,6 +508,9 @@ pub struct Publisher {
     state: SharedState,
     ledger: Ledger,
     sequence: u64,
+    /// The snapshot publish still waiting for the router's admission, when snapshots are
+    /// published without waiting ([`Publisher::publish_snapshot_deferred`], PERF-01).
+    in_flight: Option<(String, tokio::task::JoinHandle<Result<flybus::PublishReceipt, flybus::BusError>>)>,
 }
 
 impl Publisher {
@@ -529,6 +532,7 @@ impl Publisher {
             state: Arc::new(Mutex::new(PublishedState::default())),
             ledger: Ledger::default(),
             sequence: 0,
+            in_flight: None,
         }
     }
 
@@ -635,8 +639,31 @@ impl Publisher {
             .map(|(name, artifact)| (name.clone(), artifact.reference().clone()))
             .collect();
         check_publication(descriptor, snapshot, &named, audio_next_sample)?;
-        let refs: Vec<(&str, &flybus::Artifact)> =
-            attachments.iter().map(|(n, a)| (n.as_str(), a)).collect();
+        // An in-memory artifact (the in-process local lane) is in no router's store, so the
+        // published message carries a sealed copy of it and names that copy: the coherence
+        // check above ran against the handles the agents were given.
+        let mut published = std::borrow::Cow::Borrowed(snapshot);
+        let mut sealed = Vec::with_capacity(attachments.len());
+        for (name, artifact) in attachments {
+            let copy = crate::rpc::promote(&self.bus, artifact).await?;
+            if copy.reference() != artifact.reference() {
+                let (old, new) = (artifact.reference(), copy.reference());
+                let snapshot = published.to_mut();
+                for view in &mut snapshot.views {
+                    if &view.pixels == old {
+                        view.pixels = new.clone();
+                    }
+                }
+                for chunk in &mut snapshot.audio {
+                    if &chunk.samples == old {
+                        chunk.samples = new.clone();
+                    }
+                }
+            }
+            sealed.push((name.as_str(), copy));
+        }
+        let refs: Vec<(&str, &flybus::Artifact)> = sealed.iter().map(|(n, a)| (*n, a)).collect();
+        let snapshot = published.as_ref();
         let topic = self.snapshot_topic.topic.clone();
         let outcome = PublicationOutcome::from_bus(
             &topic,
@@ -653,6 +680,61 @@ impl Publisher {
         lock(&self.state).latest = Some(snapshot.clone());
         self.ledger.record(&outcome);
         Ok(outcome)
+    }
+
+    /// As [`Publisher::publish_snapshot`], without waiting for the router: the value is checked,
+    /// numbered and recorded now, and the bus publish runs beside the next transition. Returns
+    /// the outcome of the **previous** deferred snapshot, settled first, so snapshots reach the
+    /// topic in order and a fault is still reported, one publication later (PERF-01).
+    pub async fn publish_snapshot_deferred(
+        &mut self,
+        descriptor: &SessionDescriptor,
+        snapshot: &CommittedSnapshot,
+        attachments: &[(String, flybus::Artifact)],
+        audio_next_sample: &BTreeMap<String, u64>,
+    ) -> DomainResult<Option<PublicationOutcome>> {
+        let previous = self.settle_in_flight().await;
+        let named: Vec<(String, ArtifactRef)> = attachments
+            .iter()
+            .map(|(name, artifact)| (name.clone(), artifact.reference().clone()))
+            .collect();
+        check_publication(descriptor, snapshot, &named, audio_next_sample)?;
+        let mut sealed = Vec::with_capacity(attachments.len());
+        for (name, artifact) in attachments {
+            if artifact.is_in_memory() {
+                return Err(DomainError::invalid(format!(
+                    "attachment {name} is in memory; the coordinator attaches sealed copies"
+                )));
+            }
+            sealed.push((name.clone(), artifact.clone()));
+        }
+        let topic = self.snapshot_topic.topic.clone();
+        let (bus, payload, publish_topic) =
+            (self.bus.clone(), object(snapshot.to_json()), topic.clone());
+        self.in_flight = Some((
+            topic,
+            tokio::spawn(async move {
+                let refs: Vec<(&str, &flybus::Artifact)> =
+                    sealed.iter().map(|(n, a)| (n.as_str(), a)).collect();
+                bus.publish(&publish_topic, payload, &refs).await
+            }),
+        ));
+        self.sequence += 1;
+        lock(&self.state).latest = Some(snapshot.clone());
+        Ok(previous)
+    }
+
+    /// Waits for the deferred snapshot publish still in flight, records its outcome and
+    /// returns it; `None` when there is none.
+    pub async fn settle_in_flight(&mut self) -> Option<PublicationOutcome> {
+        let (topic, task) = self.in_flight.take()?;
+        let result = match task.await {
+            Ok(result) => result,
+            Err(e) => Err(flybus::BusError::new(flybus::ErrorCode::RouterLost, e.to_string())),
+        };
+        let outcome = PublicationOutcome::from_bus(&topic, result);
+        self.ledger.record(&outcome);
+        Some(outcome)
     }
 
     /// Offers this boundary's events to the bounded batch and publishes what it holds.

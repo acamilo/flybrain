@@ -42,6 +42,10 @@ use crate::worker::{StatusCell, WorkerHandle, serve};
 pub enum Via {
     Memory,
     Unix,
+    /// In memory, and every in-process participant is also offered over its local lane
+    /// ([`crate::worker::LocalLane`], PERF-01): its endpoint methods are called without a bus
+    /// message. A thread or a separate process still reaches the router over its socket.
+    Local,
 }
 
 /// Where a participant runs.
@@ -340,6 +344,8 @@ pub struct LaunchedWorker {
     pub peak_rss_kib: u64,
     body: Body,
     status: Option<StatusCell>,
+    /// The local lane a reference carries, when the launcher offers it.
+    local: Option<crate::worker::LocalLane>,
     /// The per-participant socket endpoint, kept alive for the connection's lifetime.
     _listener: Option<UnixListenerHandle>,
 }
@@ -354,6 +360,7 @@ impl LaunchedWorker {
             &self.identity.worker_id,
         );
         r.domain_incarnation = Some(self.domain_incarnation.clone());
+        r.local = self.local.clone();
         r
     }
 
@@ -419,7 +426,7 @@ impl Endpoints {
     /// A connection this process owns, over the configured transport.
     async fn connect(&self, client_id: &str) -> Result<Client, flybus::BusError> {
         let transport = match self.via {
-            Via::Memory => self.router.connect_in_memory_as(client_id),
+            Via::Memory | Via::Local => self.router.connect_in_memory_as(client_id),
             Via::Unix => {
                 let path = self.socket_path(client_id);
                 let listener = self.listen(&path, client_id).await?;
@@ -471,6 +478,8 @@ pub struct Launcher {
     supervisor: Client,
     workers: BTreeMap<Id, LaunchedWorker>,
     serial: u64,
+    /// Whether an in-process participant's reference carries its local lane (PERF-01).
+    local_lane: bool,
 }
 
 /// The bus client id the supervisor connects under.
@@ -534,7 +543,16 @@ impl Launcher {
             supervisor,
             workers: BTreeMap::new(),
             serial: 0,
+            local_lane: mode == ExecutionMode::InProcess && via == Via::Local,
         })
+    }
+
+    /// Offers every in-process participant launched from now on over the local lane
+    /// ([`crate::worker::LocalLane`]): its [`LaunchedWorker::worker_ref`] carries the lane, so a
+    /// coordinator in this process calls its endpoint methods without the bus. A thread or a
+    /// separate process has no lane and is always reached over the bus.
+    pub fn use_local_lane(&mut self, on: bool) {
+        self.local_lane = on;
     }
 
     pub fn mode(&self) -> ExecutionMode {
@@ -742,6 +760,10 @@ impl Launcher {
             Body::Process(Some(child)) => Some(child.id()),
             _ => None,
         };
+        let local = match &body {
+            Body::Task(Some(handle)) if self.local_lane => Some(handle.local.clone()),
+            _ => None,
+        };
         // The registration is discovered, not assumed: the launcher says hello with the
         // identity it configured, and the reply is what the coordinator later pins.
         let identified = self.identify(identity).await;
@@ -756,6 +778,7 @@ impl Launcher {
                     peak_rss_kib: 0,
                     body,
                     status,
+                    local: None,
                     _listener: listener,
                 };
                 terminate(&mut dying);
@@ -770,6 +793,7 @@ impl Launcher {
             peak_rss_kib: 0,
             body,
             status,
+            local,
             _listener: listener,
         };
         worker.refresh_rss();

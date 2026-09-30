@@ -854,7 +854,7 @@ impl LegacyGameboyEnvironment {
     /// if there was one.
     async fn observation(
         live: &mut Live,
-        client: &flybus::Client,
+        ctx: &HandlerCtx<'_>,
         audio: Option<Vec<u8>>,
     ) -> DomainResult<(WorldObservation, Vec<(String, flybus::Artifact)>)> {
         let image = {
@@ -868,16 +868,15 @@ impl LegacyGameboyEnvironment {
         }
         let audio_f32 = audio.as_deref().map(audio_f32le);
         // The three artifacts are independent: they are sealed concurrently, so the boundary
-        // waits for the router's round trips once rather than three times.
+        // waits for the router's round trips once rather than three times. Over the local lane
+        // each is an in-memory artifact owning its bytes (`HandlerCtx::seal`).
         let seal_span = crate::profile::span("env.seal");
         let (frame, memory, samples) = tokio::join!(
-            media::seal_copy(client, FRAME_CONTENT_TYPE.to_owned(), &live.framebuffer),
-            media::seal_copy(client, MEMORY_CONTENT_TYPE.to_owned(), &image),
+            ctx.seal(FRAME_CONTENT_TYPE, live.framebuffer.to_vec()),
+            ctx.seal(MEMORY_CONTENT_TYPE, image),
             async {
-                match &audio_f32 {
-                    Some(bytes) => media::seal_copy(client, AUDIO_CONTENT_TYPE.to_owned(), bytes)
-                        .await
-                        .map(Some),
+                match audio_f32 {
+                    Some(bytes) => ctx.seal(AUDIO_CONTENT_TYPE, bytes).await.map(Some),
                     None => Ok(None),
                 }
             }
@@ -998,7 +997,7 @@ impl LegacyGameboyEnvironment {
             audio_discontinuity: false,
         };
         let (observation, attachments) =
-            LegacyGameboyEnvironment::observation(&mut live, ctx.client, None).await?;
+            LegacyGameboyEnvironment::observation(&mut live, ctx, None).await?;
         self.live = Some(live);
         // The world is stopped when O[0] goes out and cannot free-run while the brain warms up.
         self.status.set_state(WorkerState::Ready);
@@ -1074,7 +1073,7 @@ impl LegacyGameboyEnvironment {
         status.progress(1);
 
         let (observation, attachments) =
-            LegacyGameboyEnvironment::observation(live, ctx.client, Some(audio)).await?;
+            LegacyGameboyEnvironment::observation(live, ctx, Some(audio)).await?;
         let result = StepResult {
             batch_id: params.batch_id,
             applied_from_step: applied_from,
@@ -1170,7 +1169,7 @@ impl LegacyGameboyEnvironment {
         live.batches.clear();
         live.audio_discontinuity = true;
         let (observation, attachments) =
-            LegacyGameboyEnvironment::observation(live, ctx.client, None).await?;
+            LegacyGameboyEnvironment::observation(live, ctx, None).await?;
         status.set_state(WorkerState::Ready);
         status.set_scope(Some(scope.clone()));
         status.progress(1);
@@ -1435,7 +1434,7 @@ impl LegacyGameboyEnvironment {
             audio_discontinuity: true,
         };
         let (observation, attachments) =
-            LegacyGameboyEnvironment::observation(&mut live, ctx.client, None).await?;
+            LegacyGameboyEnvironment::observation(&mut live, ctx, None).await?;
         self.live = Some(live);
         self.activated.insert(token);
         self.status.set_state(WorkerState::Ready);
