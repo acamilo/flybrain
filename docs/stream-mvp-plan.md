@@ -967,3 +967,13 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   v0.6.7. Cutover is `fly-shadow-run check && fly-runtime session` after three hours of zero
   divergence; rollback is `fly-runtime legacy`. Every slice and the release candidate were
   independently reviewed (APPROVE-WITH-NOTES).
+- 2026-09-30 (v0.7.1, loop review hotfix): row 70. The fly's first live catch (a Zubat, Mt. Moon)
+  gave it a second party member, and in the next trainer battle the cartridge's SHIFT-style offer
+  "Will ZUBAT change POKéMON?" opened the battle party list with the same menu id as a forced
+  switch after a faint. Read as forced, the pad was SWITCH (no healthy target) and NEXT ("ZUBAT is
+  already out!", the list again) for 58 brain minutes; the recovery ladder's rung-11 reset erased
+  the catch and, restores being deterministic, replayed the path back into the trap. A forced
+  switch now also requires the active battler at 0 HP; the offer is the fly's own turn with SWITCH
+  and BACK. ROM test from the live checkpoint: NEXT on all 6,000 frames before, BACK and the battle
+  continues after; a real post-faint switch unchanged. The ladder change (protect recent catches
+  from resets) is held back for a review finding. Review: APPROVE.
