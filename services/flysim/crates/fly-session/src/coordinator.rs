@@ -1562,6 +1562,19 @@ struct AdmissionState {
     ended: Vec<(Admission, AdmissionEnd)>,
 }
 
+impl AdmissionState {
+    fn set_remaining(&mut self, agent_id: &Id, remaining: Option<f64>) {
+        match remaining {
+            Some(ms) => {
+                self.remaining.insert(agent_id.clone(), ms);
+            }
+            None => {
+                self.remaining.remove(agent_id);
+            }
+        }
+    }
+}
+
 /// The edge's handle on admission: queue what the composition's rules admitted, read the last
 /// commit's stimulus pulse, collect the outcomes. Clone it freely; every clone is the same queue.
 #[derive(Clone, Debug, Default)]
@@ -1619,6 +1632,11 @@ impl AdmissionQueue {
     }
 
     fn end(&self, admissions: Vec<Admission>, end: AdmissionEnd) {
+        self.commit(admissions, end, &[]);
+    }
+
+    /// Ends the admissions and records the commit's pulses under one lock.
+    fn commit(&self, admissions: Vec<Admission>, end: AdmissionEnd, pulses: &[(Id, Option<f64>)]) {
         let mut state = self.lock();
         for admission in admissions {
             state
@@ -1626,18 +1644,38 @@ impl AdmissionQueue {
                 .retain(|a| a.interaction_id() != admission.interaction_id());
             state.ended.push((admission, end.clone()));
         }
+        for (agent_id, remaining) in pulses {
+            state.set_remaining(agent_id, *remaining);
+        }
+    }
+
+    /// Decides and queues one admission under the lock every commit takes: `decide` gets the
+    /// agent's last reported pulse and the longest pending one, and returns the admission to
+    /// queue (or a refusal). No commit can interleave between the reads and the push, which is
+    /// the single-threaded legacy loop's answer (TASK-01 review R2-3).
+    pub fn admit_with<E>(
+        &self,
+        agent_id: &Id,
+        decide: impl FnOnce(Option<f64>, Option<f64>) -> Result<Admission, E>,
+    ) -> Result<Admission, E> {
+        let mut state = self.lock();
+        let remaining = state.remaining.get(agent_id).copied();
+        let pending = state
+            .queued
+            .iter()
+            .chain(state.in_flight.iter())
+            .filter(|a| a.agent_id() == agent_id)
+            .map(|a| match a {
+                Admission::Stimulus { duration_ms, .. } => *duration_ms,
+            })
+            .reduce(f64::max);
+        let admission = decide(remaining, pending)?;
+        state.queued.push(admission.clone());
+        Ok(admission)
     }
 
     fn set_remaining(&self, agent_id: &Id, remaining: Option<f64>) {
-        let mut state = self.lock();
-        match remaining {
-            Some(ms) => {
-                state.remaining.insert(agent_id.clone(), ms);
-            }
-            None => {
-                state.remaining.remove(agent_id);
-            }
-        }
+        self.lock().set_remaining(agent_id, remaining);
     }
 
     fn forget_remaining(&self) {
@@ -2447,10 +2485,14 @@ impl Coordinator {
         self.stats.advances += 1;
         // The admissions this transition carried are applied: its Prepare committed.
         let applied = std::mem::take(&mut self.in_flight_admissions);
-        self.admissions.end(applied.clone(), AdmissionEnd::Applied { boundary: k + 1 });
-        for (agent_id, result) in &commits {
-            self.admissions.set_remaining(agent_id, result.telemetry.stimulus_remaining_ms);
-        }
+        // One lock for the end of the in-flight admissions and the new pulse: an edge thread
+        // never sees the admission gone and the old pulse still standing (TASK-01 review R2-3).
+        let pulses: Vec<(Id, Option<f64>)> = commits
+            .iter()
+            .map(|(agent_id, result)| (agent_id.clone(), result.telemetry.stimulus_remaining_ms))
+            .collect();
+        self.admissions
+            .commit(applied.clone(), AdmissionEnd::Applied { boundary: k + 1 }, &pulses);
 
         let view_digests = if self.record_details {
             self.view_digests(&step_result.observation).await?
@@ -5928,5 +5970,73 @@ impl Coordinator {
             to: to_epoch.clone(),
             events,
         })
+    }
+}
+
+#[cfg(test)]
+mod admission_race_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// TASK-01 review R2-3: a sugar arriving while a commit ends the in-flight admission and
+    /// reports the pulse must never see "no pending admission" beside the old, over pulse. The
+    /// only state the hammer accepts in is exactly that torn one; the commit under test is
+    /// atomic, so it is never seen.
+    #[test]
+    fn no_sugar_is_admitted_between_a_commit_ending_and_its_pulse() {
+        let queue = AdmissionQueue::default();
+        let agent = id("fly");
+        let in_flight = Admission::Stimulus {
+            agent_id: agent.clone(),
+            interaction_id: id("sugar-1"),
+            kind_id: id("reward-pulse"),
+            duration_ms: 400.0,
+        };
+        let stop = AtomicBool::new(false);
+        let torn = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !stop.load(Ordering::Relaxed) {
+                    let admitted = queue.admit_with(&agent, |remaining, pending| {
+                        if remaining.unwrap_or(0.0).max(pending.unwrap_or(0.0)) > 0.0 {
+                            Err(())
+                        } else {
+                            Ok(Admission::Stimulus {
+                                agent_id: agent.clone(),
+                                interaction_id: id("sugar-x"),
+                                kind_id: id("reward-pulse"),
+                                duration_ms: 1.0,
+                            })
+                        }
+                    });
+                    if admitted.is_ok() {
+                        torn.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                }
+            });
+            for _ in 0..200_000 {
+                if torn.load(Ordering::Relaxed) {
+                    break;
+                }
+                // The state after a cut: the sugar is in flight and the last pulse is over.
+                {
+                    let mut state = queue.lock();
+                    state.queued.clear();
+                    state.in_flight = vec![in_flight.clone()];
+                    state.set_remaining(&agent, Some(0.0));
+                }
+                queue.commit(
+                    vec![in_flight.clone()],
+                    AdmissionEnd::Applied { boundary: 1 },
+                    &[(agent.clone(), Some(400.0))],
+                );
+            }
+            stop.store(true, Ordering::Relaxed);
+        });
+        assert!(
+            !torn.load(Ordering::Relaxed),
+            "a sugar was admitted into a live pulse in the commit's window"
+        );
     }
 }
