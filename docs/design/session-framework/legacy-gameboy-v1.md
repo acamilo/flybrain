@@ -293,12 +293,22 @@ signal. The object serves exactly one agent on one port.
 
 - *The ratchet's slot.* The ratchet ledger stays in the task. Its snapshot lives in the environment
   as the slot `best`. The ratchet only asks whether one exists: its budget test is "no snapshot".
-  So the task holds a marker snapshot in its place, and a task ledger records `slot: bool`. A slot
+  So the task holds a marker snapshot in its place, and a task ledger records `slotFilled`. A slot
   save is asked for exactly when the legacy capture closure runs: safe, and rank above best.
-- *The palette seed.* The legacy loop seeds the palette from the brain's RNG state after boot.
-  `MacroMachine` never reads its generator: no macro has a random step, and flybrain-gb's macro
-  tests show two seeds press the same buttons. The executor therefore uses a constant, and nothing
-  about it crosses to the agent.
+- *The task ledger is artifact-backed* (amended 2026-09-29, TASK-01 review B1). The adapter's
+  lifetime ledger grows with play: it is 42-46 KB on the live fly at rungs 12-15, which is past
+  the 32 KiB `TypedValue` bound. So the typed ledger is `{reward: {digest, byteLength}, ratchet,
+  slotFilled}`, and the adapter state's JSON travels as the ledger attachment `reward`. A
+  checkpoint files it as the payload `task-ledger-reward` ([workers-v1](workers-v1.md) section 1's
+  explicit artifact-backed schema; `Task::capture_attachments`). A missing, altered or unreadable
+  attachment is `INCOMPATIBLE_STATE`, never a panic, so a boot falls to the next candidate.
+- *The palette seed* (amended 2026-09-29, TASK-01 review N3). The legacy loop seeds the palette
+  from the brain's RNG state after boot. A restore does the same: it seeds with the restored
+  agent state's RNG, which it holds. A fresh start cannot see the agent's RNG after the warm-up,
+  so it uses a constant. That is exact because `MacroMachine` never reads its generator: no macro
+  has a random step. `fly-legacy-session` `tests/palette_seed.rs` holds this on the cartridge:
+  two seeds, driven by the same decisions, press the same buttons for 3000 frames. A future
+  macro that draws from the generator fails there.
 - *The clock of the first observation.* A fresh start's layer observes O[0] at the end of the
   warm-up, `warmupMs` = 2500 ms, which the profile pins. That is the same time the legacy loop's
   `Sim::boot` observes at, although the agent is initialized after the task bootstraps. After a
@@ -580,6 +590,15 @@ bridge's fulfil path and refund path both get tests in the slice that wires them
   fails first. The legacy rules run on the edge side, unchanged: flysim's `RateLimiter` and the
   clamp. They read `stimulusRemainingMs` from the last `Agent.Commit` or `Agent.Rollback` reply.
   After a restore the pulse is unknown and a request is refused with a retry of one frame.
+  *Amended 2026-09-29 (TASK-01 review N1):* a sugar admitted but not yet reported on by a commit
+  counts as an active pulse, at its full duration (`AdmissionQueue::pending_stimulus_ms`). The
+  legacy `stimulate` activates the pulse the moment it admits, so this matches:
+  - two sugars between two commits get one admission and one `PulseActive`, as the legacy drain
+    gives them;
+  - the rate-limit slot is not spent on the refused one.
+
+  The retry advice may differ by less than a frame. Legacy reports the pulse decayed by the
+  ticks between drains; here it is undecayed until the commit reports it.
 - *The operator's `POST /reward` pulse is refused (declared).* In the legacy loop it is off unless
   an operator sets `control.allow_reward`. Every shipped configuration leaves it off, and the API
   answers 403. The session runtime has no counterpart to turn on, because a reinforcement outside

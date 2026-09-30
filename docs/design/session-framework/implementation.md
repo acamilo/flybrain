@@ -407,6 +407,40 @@ order. Where the legacy side runs in the test, the ledgers are compared after ev
 well: adapter export, ratchet state, and the executor's scene, bound channels, running macro,
 counts and "nearer". Results: see the TASK-01 run report and the amendment below.
 
+**Amendment, 2026-09-29 (TASK-01 review fix round).** The review blocked on B1 and noted
+N1 to N5. All are fixed here; the dated amendments to legacy-gameboy-v1 section 10 and 15 cover
+B1, N1 and N3.
+
+- **B1: the task ledger is artifact-backed.** On the live fly the adapter ledger is 42-46 KB,
+  past the 32 KiB `TypedValue` bound.
+  - `Task` gains `capture_attachments`, `validate_restore_with` and `install_restore_with`.
+  - The coordinator files those attachments as `task-ledger-<name>` payloads in captures and
+    imports.
+  - A bad ledger is an error, never a panic, so a boot falls to the next candidate.
+  - Boot parity now covers row 64 (42 KB) and the row 65 yard (46 KB).
+- **N1: a sugar admitted before the next commit is an active pulse.**
+- **N3: a restore seeds the palette as `Sim::boot` does.** `tests/palette_seed.rs` shows that the
+  seed is never read.
+- **N4: saves are queued to the writer thread.**
+- **N5: speed.** The profile is below. Changes:
+  - The world seals its three artifacts concurrently.
+  - Cache and caller holds are taken concurrently.
+  - In-process participants use the in-memory transport.
+  - A service session publishes every other boundary (the feed's 30 Hz) and keeps a bounded
+    history.
+  - `State.Capture` is off the loop. The worker shell lets a handler finish its reply outside
+    the endpoint's lock, and takes mutations in arrival order. The legacy agent copies its state
+    under the lock, then encodes, digests and seals it off the lock. The coordinator's
+    `begin_capture` / `finish_capture` let the session step on while the payload is written.
+- **Measured** (`tests/speed.rs`, `tests/speed_ab.rs`):
+  - The brain is the same: the legacy `ticks` phase and the agent's `ticks` span agree within a
+    few percent.
+  - What remains is a fixed per-frame overhead of the process boundary. It is about 3-5 ms on a
+    quiet 8-core build box: roughly 0.7-1 ms per RPC round trip for Prepare, Advance and Commit,
+    plus the world's and the agent's artifact seals and reads.
+  - Against it, the legacy loop spends about 0.7 ms per frame outside the ticks.
+  - The report `claude-task-01` has the per-phase table and what would close the rest.
+
 ### STATE-01 — Coherent all-participant checkpoint/recovery
 
 **Depends on:** SESSION-02, MEDIA-01; validate with fake agents first, then AGENT-01/ENV-01.

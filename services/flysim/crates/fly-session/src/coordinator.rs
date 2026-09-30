@@ -384,6 +384,8 @@ pub struct Coordinator {
     pending_rollback: Option<(u64, EpisodeRequest)>,
     /// [`Coordinator::bound_history`].
     history_limit: Option<usize>,
+    /// [`Coordinator::snapshot_every`].
+    snapshot_every: u64,
     lifecycle_acks: Vec<(WorkerRef, DomainRequestId)>,
     stats: Stats,
     /// The ordered actions this session took, for the ordering assertions.
@@ -505,6 +507,7 @@ impl Coordinator {
             defer_rollbacks: false,
             pending_rollback: None,
             history_limit: None,
+            snapshot_every: 1,
             lifecycle_acks: Vec::new(),
             stats: Stats::default(),
             audit: Vec::new(),
@@ -714,6 +717,15 @@ impl Coordinator {
         self.history_limit = Some(keep);
     }
 
+    /// Publishes the committed snapshot of every `n`-th boundary, and of every boundary with task
+    /// events or boundary actions. Presentation reads snapshots as latest values
+    /// (`publishing-v1`), and the legacy feed publishes at `snapshot_hz` (30 Hz) from its 60 Hz
+    /// loop, so a live composition need not pay a publication on every frame. 1 (every boundary)
+    /// by default.
+    pub fn snapshot_every(&mut self, n: u64) {
+        self.snapshot_every = n.max(1);
+    }
+
     fn trim_history(&mut self) {
         let Some(keep) = self.history_limit else { return };
         fn trim<T>(items: &mut Vec<T>, keep: usize) {
@@ -771,6 +783,19 @@ impl Coordinator {
         &mut self,
         checkpoint_id: &Id,
     ) -> Outcome<(u64, Vec<u8>, Vec<(Id, Vec<u8>)>)> {
+        let pending = self.begin_capture(checkpoint_id).await?;
+        self.finish_capture(pending).await
+    }
+
+    /// Sends every participant's `State.Capture` for the committed boundary and returns without
+    /// waiting for the replies: the capture off the loop (TASK-01 review N5).
+    ///
+    /// Each participant takes its state at the boundary when it handles the request, which it
+    /// does before any request sent after it (a worker takes its lock in arrival order), and a
+    /// participant that encodes off its lock (the legacy agent) answers the next Prepare while it
+    /// seals the payload. The session may step on; [`Coordinator::finish_capture`] collects the
+    /// payloads, in the order sent, whenever the host is ready for them.
+    pub async fn begin_capture(&mut self, checkpoint_id: &Id) -> Outcome<PendingCapture> {
         let origin = self.phases.phase();
         let Some(boundary) = origin.committed_boundary().filter(|_| origin.is_committed_boundary())
         else {
@@ -789,24 +814,67 @@ impl Coordinator {
         participants.extend(self.agents.iter().map(|slot| slot.worker.clone()));
         let params = object(CaptureParams { checkpoint_id: checkpoint_id.clone() }.to_json());
         let want = vec![crate::state::PAYLOAD_ATTACHMENT.to_owned()];
-        let mut payloads = Vec::new();
+        let scope = self.scope(boundary);
+        let mut calls = Vec::new();
         for worker in participants {
-            let reply = self
-                .call(&worker, "State.Capture", Some(self.scope(boundary)), params.clone(), &[], &want)
-                .await?;
+            let request_id = self.serials.next(&worker.service);
+            let sent = crate::rpc::send(
+                &self.bus,
+                &worker,
+                "State.Capture",
+                Some(scope.clone()),
+                params.clone(),
+                &[],
+                request_id,
+                &want,
+            )
+            .await;
+            match sent {
+                Ok(sent) => calls.push((worker, sent)),
+                Err(e) => {
+                    self.blame(Some(worker.worker_id.clone()));
+                    return Err(self.fail_now(e, "capture"));
+                }
+            }
+        }
+        self.transition(origin)?;
+        Ok(PendingCapture { checkpoint_id: checkpoint_id.clone(), boundary, scope, calls })
+    }
+
+    /// Collects a capture begun with [`Coordinator::begin_capture`]: the world's payload and
+    /// every agent's, read and released.
+    pub async fn finish_capture(
+        &mut self,
+        pending: PendingCapture,
+    ) -> Outcome<(u64, Vec<u8>, Vec<(Id, Vec<u8>)>)> {
+        let PendingCapture { checkpoint_id, boundary, scope, calls } = pending;
+        let mut payloads = Vec::new();
+        for (worker, sent) in calls {
+            let reply = match sent.finish().await {
+                Ok(reply) => reply,
+                Err(e) => {
+                    self.blame(Some(worker.worker_id.clone()));
+                    return Err(self.fail_now(e, "capture"));
+                }
+            };
+            self.check_reply(&worker, &reply, &Some(scope.clone()), "State.Capture")?;
+            if let Err(e) = reply.result() {
+                return Err(self.fail_now(e, "capture"));
+            }
             let Some(artifact) = reply.artifacts.get(crate::state::PAYLOAD_ATTACHMENT).cloned() else {
                 return Err(self.fail_now(
                     DomainError::before(ErrorCode::BufferInvalid, "State.Capture carried no payload"),
                     "capture",
                 ));
             };
+            let span = crate::profile::span("coord.capture.read");
             let bytes = artifact.read_all().await.map_err(|e| {
                 self.fail_now(DomainError::before(ErrorCode::BufferInvalid, e.message.clone()), "capture")
             })?;
+            drop(span);
             self.acknowledge_replies(&worker, std::slice::from_ref(&reply.request_id)).await?;
             payloads.push((worker.worker_id.clone(), bytes));
         }
-        self.transition(origin)?;
         let world = payloads.remove(0).1;
         self.audit.push(format!("captured-payloads:{checkpoint_id}@{boundary}"));
         Ok((boundary, world, payloads))
@@ -1575,6 +1643,19 @@ struct AdmissionState {
     ended: Vec<(Admission, AdmissionEnd)>,
 }
 
+impl AdmissionState {
+    fn set_remaining(&mut self, agent_id: &Id, remaining: Option<f64>) {
+        match remaining {
+            Some(ms) => {
+                self.remaining.insert(agent_id.clone(), ms);
+            }
+            None => {
+                self.remaining.remove(agent_id);
+            }
+        }
+    }
+}
+
 /// The edge's handle on admission: queue what the composition's rules admitted, read the last
 /// commit's stimulus pulse, collect the outcomes. Clone it freely; every clone is the same queue.
 #[derive(Clone, Debug, Default)]
@@ -1632,6 +1713,11 @@ impl AdmissionQueue {
     }
 
     fn end(&self, admissions: Vec<Admission>, end: AdmissionEnd) {
+        self.commit(admissions, end, &[]);
+    }
+
+    /// Ends the admissions and records the commit's pulses under one lock.
+    fn commit(&self, admissions: Vec<Admission>, end: AdmissionEnd, pulses: &[(Id, Option<f64>)]) {
         let mut state = self.lock();
         for admission in admissions {
             state
@@ -1639,18 +1725,38 @@ impl AdmissionQueue {
                 .retain(|a| a.interaction_id() != admission.interaction_id());
             state.ended.push((admission, end.clone()));
         }
+        for (agent_id, remaining) in pulses {
+            state.set_remaining(agent_id, *remaining);
+        }
+    }
+
+    /// Decides and queues one admission under the lock every commit takes: `decide` gets the
+    /// agent's last reported pulse and the longest pending one, and returns the admission to
+    /// queue (or a refusal). No commit can interleave between the reads and the push, which is
+    /// the single-threaded legacy loop's answer (TASK-01 review R2-3).
+    pub fn admit_with<E>(
+        &self,
+        agent_id: &Id,
+        decide: impl FnOnce(Option<f64>, Option<f64>) -> Result<Admission, E>,
+    ) -> Result<Admission, E> {
+        let mut state = self.lock();
+        let remaining = state.remaining.get(agent_id).copied();
+        let pending = state
+            .queued
+            .iter()
+            .chain(state.in_flight.iter())
+            .filter(|a| a.agent_id() == agent_id)
+            .map(|a| match a {
+                Admission::Stimulus { duration_ms, .. } => *duration_ms,
+            })
+            .reduce(f64::max);
+        let admission = decide(remaining, pending)?;
+        state.queued.push(admission.clone());
+        Ok(admission)
     }
 
     fn set_remaining(&self, agent_id: &Id, remaining: Option<f64>) {
-        let mut state = self.lock();
-        match remaining {
-            Some(ms) => {
-                state.remaining.insert(agent_id.clone(), ms);
-            }
-            None => {
-                state.remaining.remove(agent_id);
-            }
-        }
+        self.lock().set_remaining(agent_id, remaining);
     }
 
     fn forget_remaining(&self) {
@@ -1689,6 +1795,21 @@ pub struct RollbackDetails {
     pub observation: WorldObservation,
     pub view_digests: Vec<(String, Digest)>,
     pub agents: Vec<(Id, fly_session_types::extensions::AgentRollbackResult)>,
+}
+
+/// A capture sent to every participant and not yet collected ([`Coordinator::begin_capture`]).
+pub struct PendingCapture {
+    checkpoint_id: Id,
+    boundary: u64,
+    scope: Scope,
+    calls: Vec<(WorkerRef, crate::rpc::SentCall)>,
+}
+
+impl PendingCapture {
+    /// The committed boundary the capture is of.
+    pub fn boundary(&self) -> u64 {
+        self.boundary
+    }
 }
 
 /// A checkpoint of another format, assembled by an importer in each participant's own capture
@@ -2445,10 +2566,14 @@ impl Coordinator {
         self.stats.advances += 1;
         // The admissions this transition carried are applied: its Prepare committed.
         let applied = std::mem::take(&mut self.in_flight_admissions);
-        self.admissions.end(applied.clone(), AdmissionEnd::Applied { boundary: k + 1 });
-        for (agent_id, result) in &commits {
-            self.admissions.set_remaining(agent_id, result.telemetry.stimulus_remaining_ms);
-        }
+        // One lock for the end of the in-flight admissions and the new pulse: an edge thread
+        // never sees the admission gone and the old pulse still standing (TASK-01 review R2-3).
+        let pulses: Vec<(Id, Option<f64>)> = commits
+            .iter()
+            .map(|(agent_id, result)| (agent_id.clone(), result.telemetry.stimulus_remaining_ms))
+            .collect();
+        self.admissions
+            .commit(applied.clone(), AdmissionEnd::Applied { boundary: k + 1 }, &pulses);
 
         let view_digests = if self.record_details && self.digest_views {
             self.view_digests(&step_result.observation).await?
@@ -2521,7 +2646,16 @@ impl Coordinator {
         }
         let publishing = Instant::now();
         self.publish_events(k + 1, &evaluation.events).await?;
-        self.publish_snapshot(k + 1, &decisions, &controls, &event_ids).await?;
+        // Every boundary with events or boundary actions is published; otherwise every
+        // `snapshot_every`-th (1 unless the composition thins it, as the legacy feed publishes at
+        // `snapshot_hz`, 30 Hz, from a 60 Hz loop).
+        if self.snapshot_every <= 1
+            || (k + 1).is_multiple_of(self.snapshot_every)
+            || !evaluation.events.is_empty()
+            || !boundary_actions.is_empty()
+        {
+            self.publish_snapshot(k + 1, &decisions, &controls, &event_ids).await?;
+        }
         self.metrics.record("publish", publishing.elapsed());
 
         // A rollback request was applied above and is not an episode end; only a terminal one
@@ -5919,5 +6053,73 @@ impl Coordinator {
             to: to_epoch.clone(),
             events,
         })
+    }
+}
+
+#[cfg(test)]
+mod admission_race_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// TASK-01 review R2-3: a sugar arriving while a commit ends the in-flight admission and
+    /// reports the pulse must never see "no pending admission" beside the old, over pulse. The
+    /// only state the hammer accepts in is exactly that torn one; the commit under test is
+    /// atomic, so it is never seen.
+    #[test]
+    fn no_sugar_is_admitted_between_a_commit_ending_and_its_pulse() {
+        let queue = AdmissionQueue::default();
+        let agent = id("fly");
+        let in_flight = Admission::Stimulus {
+            agent_id: agent.clone(),
+            interaction_id: id("sugar-1"),
+            kind_id: id("reward-pulse"),
+            duration_ms: 400.0,
+        };
+        let stop = AtomicBool::new(false);
+        let torn = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while !stop.load(Ordering::Relaxed) {
+                    let admitted = queue.admit_with(&agent, |remaining, pending| {
+                        if remaining.unwrap_or(0.0).max(pending.unwrap_or(0.0)) > 0.0 {
+                            Err(())
+                        } else {
+                            Ok(Admission::Stimulus {
+                                agent_id: agent.clone(),
+                                interaction_id: id("sugar-x"),
+                                kind_id: id("reward-pulse"),
+                                duration_ms: 1.0,
+                            })
+                        }
+                    });
+                    if admitted.is_ok() {
+                        torn.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                }
+            });
+            for _ in 0..200_000 {
+                if torn.load(Ordering::Relaxed) {
+                    break;
+                }
+                // The state after a cut: the sugar is in flight and the last pulse is over.
+                {
+                    let mut state = queue.lock();
+                    state.queued.clear();
+                    state.in_flight = vec![in_flight.clone()];
+                    state.set_remaining(&agent, Some(0.0));
+                }
+                queue.commit(
+                    vec![in_flight.clone()],
+                    AdmissionEnd::Applied { boundary: 1 },
+                    &[(agent.clone(), Some(400.0))],
+                );
+            }
+            stop.store(true, Ordering::Relaxed);
+        });
+        assert!(
+            !torn.load(Ordering::Relaxed),
+            "a sugar was admitted into a live pulse in the commit's window"
+        );
     }
 }

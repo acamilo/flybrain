@@ -30,6 +30,30 @@ use flysim::frame::{LegacyFrame, Parts};
 use flysim::macros::macro_layer;
 use flysim::snapshot::MacroMode;
 
+/// The legacy frame's phases, timed through the one hook the stream itself uses.
+struct Phases {
+    last: Instant,
+    sums: std::collections::BTreeMap<&'static str, f64>,
+    on: bool,
+}
+
+impl flysim::frame::FrameObserver for Phases {
+    fn after(&mut self, phase: flysim::frame::FramePhase, _agent: &mut NeuralAgent) {
+        let now = Instant::now();
+        if self.on {
+            let name = match phase {
+                flysim::frame::FramePhase::Ticked => "legacy.ticks",
+                flysim::frame::FramePhase::Executed => "legacy.decode+execute",
+                flysim::frame::FramePhase::Emulated => "legacy.frame",
+                flysim::frame::FramePhase::Advanced => "legacy.take_frame",
+                flysim::frame::FramePhase::Committed => "legacy.evaluate+commit",
+            };
+            *self.sums.entry(name).or_default() += (now - self.last).as_secs_f64() * 1000.0;
+        }
+        self.last = now;
+    }
+}
+
 const FRAME_MS: f64 = 1000.0 * 70_224.0 / 4_194_304.0;
 
 fn env_usize(name: &str, default: usize) -> usize {
@@ -94,8 +118,16 @@ async fn session_against_legacy_per_frame() {
         let _ = layer.observe(&mut emulator, &AdapterLedger(&adapter), agent.network.ms);
     }
     let mut legacy_ms = 0.0;
+    let mut phases = Phases {
+        last: Instant::now(),
+        sums: Default::default(),
+        on: false,
+    };
+    let mut boundary_ms = 0.0;
     for n in 0..warmup + frames {
         let started = Instant::now();
+        phases.on = n >= warmup;
+        phases.last = started;
         let mut parts = Parts {
             agent: &mut agent,
             emulator: &mut emulator,
@@ -103,16 +135,40 @@ async fn session_against_legacy_per_frame() {
             ratchet: &mut ratchet,
             macros: macros.as_mut(),
         };
-        let transition = frame.transition(&mut parts, &mut ()).unwrap();
+        let transition = frame.transition(&mut parts, &mut phases).unwrap();
+        let at = Instant::now();
         frame
             .boundary(&mut parts, &transition.evaluated.progress, transition.ms)
             .unwrap();
         if n >= warmup {
+            boundary_ms += at.elapsed().as_secs_f64() * 1000.0;
+        }
+        if n >= warmup {
             legacy_ms += started.elapsed().as_secs_f64() * 1000.0;
         }
     }
+    // What a legacy checkpoint costs the loop: the agent's export (the writer thread encodes).
+    let at = Instant::now();
+    for _ in 0..10 {
+        std::hint::black_box(agent.export_state());
+    }
+    let export_ms = at.elapsed().as_secs_f64() * 100.0;
     drop(agent);
     let legacy_per = legacy_ms / frames as f64;
+    for (name, sum) in &phases.sums {
+        eprintln!(
+            "  legacy {name:<24} mean {:>8.0} us",
+            sum * 1000.0 / frames as f64
+        );
+    }
+    eprintln!(
+        "  legacy boundary                  mean {:>8.0} us",
+        boundary_ms * 1000.0 / frames as f64
+    );
+    eprintln!(
+        "  legacy agent.export_state        mean {:>8.0} us (per checkpoint)",
+        export_ms * 1000.0
+    );
     eprintln!(
         "legacy loop: {legacy_per:.2} ms/frame over {frames} frames ({threads} threads), realtime factor at 1x {:.2}",
         (FRAME_MS / legacy_per).min(1.0)
@@ -152,6 +208,32 @@ async fn session_against_legacy_per_frame() {
                 session.step().await.unwrap();
             }
             let per = started.elapsed().as_secs_f64() * 1000.0 / frames as f64;
+            if !paced {
+                // What a save costs the loop: the participants' State.Capture at the boundary.
+                let root = tempfile::tempdir().unwrap();
+                session
+                    .attach_store(&fly_legacy_session::composition::StoreConfig {
+                        hot_dir: root.path().join("hot"),
+                        durable_dir: root.path().join("durable"),
+                        keep_generations: 2,
+                        hot_seconds: 1e9,
+                        checkpoint_seconds: 1e9,
+                        speed: 1.0,
+                    })
+                    .unwrap();
+                let at = Instant::now();
+                for _ in 0..5 {
+                    let ticket = session
+                        .queue_save(fly_session::legacy_checkpoint::SaveKind::Hot)
+                        .await
+                        .unwrap();
+                    drop(ticket);
+                }
+                eprintln!(
+                    "  session save (capture on the loop)   mean {:>8.0} us",
+                    at.elapsed().as_secs_f64() * 1e6 / 5.0
+                );
+            }
             let factor = FRAME_MS / per;
             eprintln!(
                 "session {} {}: {per:.2} ms/frame, realtime factor {:.2} ({:.2}x the legacy loop's cost)",

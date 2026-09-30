@@ -937,6 +937,13 @@ impl SessionHost {
                     if self.status != FeedStatus::Paused {
                         self.status = FeedStatus::Paused;
                         self.emit(NewEvent::new(FeedEventKind::System, "Paused by the operator"));
+                        // A pause must never hold a begun save (TASK-01 review R2-1). This host
+                        // saves through `queue_save`, which hands its capture over at once, so
+                        // there is normally nothing to flush; a begun capture would reach the
+                        // writer here rather than sit until the next step.
+                        if let Err(error) = self.session.flush_captures().await {
+                            tracing::error!(%error, "could not hand over the pending captures on pause");
+                        }
                         if let Err(error) = self.checkpoint(SaveKind::Durable, None).await {
                             tracing::error!(%error, "could not checkpoint on pause");
                         }
