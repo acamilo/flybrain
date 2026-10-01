@@ -76,7 +76,9 @@ else
 fi
 (cd "$release" && sha256sum -c MANIFEST --quiet) || die "MANIFEST verification failed for $release"
 [ -x "$release/fly-shadow" ] || die "$release has no fly-shadow: this release predates SHADOW-01"
-"$release/fly-shadow" ingest 2>&1 | grep -q 'needs --root' \
+# The bare subcommand exits 2 (usage); under pipefail a pipe into grep would fail on that, so capture.
+probe="$("$release/fly-shadow" ingest 2>&1 || true)"
+printf '%s' "$probe" | grep -q 'needs --root' \
     || die "$release/fly-shadow has no ingest: this release predates SHADOW-02"
 ln -sfn "$release" /opt/fly/current.tmp && mv -T /opt/fly/current.tmp /opt/fly/current
 log "/opt/fly/current -> $release"
