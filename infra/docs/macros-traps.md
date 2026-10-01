@@ -3687,3 +3687,44 @@ Ladder replay of the day (the same logs and the same start state, base against b
   Zubat, 17:46) is new, so a restart at 18:04 and then the protection hold through 18:54, no reset.
 
 The replay is open loop: the log after 16:50 is what the base's reset produced.
+
+## 2026-10-01, row 71: Route 25, a ball past the bag's window
+
+### What was live
+
+v0.7.3 legacy, adapter v8, rung 15 (NUGGET BRIDGE), map 36 (Route 25), two badges. After the
+Route 25 trainers, a wild battle began. The pad held `THROW BALL` alone and every start was
+`blocked`: 131 of 131 in ten minutes, about two hours in all. A flysim restart restored a hot
+generation from inside the same battle with the same bag open, so the trap came back at once. The
+coordinator then reset the run to milestone 15.
+
+### Reproduction (hot generation 263767, inside the trap)
+
+- The state: `wIsInBattle` 1 (wild, not a trainer), a wild Oddish L13 at 8/36, Wartortle L35 at
+  21/105 with PP left (only GROWL at 0).
+- The bag: TM34, HELIX FOSSIL, NUGGET, TM45, POKé BALL x2. Party of 2, Oddish not in it.
+- The bag was open with `wListScrollOffset` 3, so the window showed TM45, POKé BALL and CANCEL,
+  with the arrow on row 1, the ball.
+- Row 69's rule (enemy HP low for the ball) withheld everything but the ball.
+- `THROW BALL` aims at bag index 4. The seam reported the window row (0..2) as the cursor, so the
+  cursor step walked between rows 1 and 2 until its budget ran out.
+
+The hypotheses in the brief were all checked:
+
+- **A trainer battle.** No, it is wild.
+- **No balls in the bag.** No, there are two.
+- **The ball counted wrong.** Its index was right; the cursor reading was wrong.
+- **RUN, or PP.** Not involved.
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 71 | the battle bag's cursor was read as the window's row, so a bag entry past the third could never be reached; with row 69's low-HP rule, `THROW BALL` alone on the pad and blocked for ever | any wild battle against a species not in the party at low HP, with the ball fourth or later in the bag (`ITEM`'s Potion likewise, without the trap) | `a_battle_frame_with_a_cursor_accepting_input_is_the_flys_turn`, `row71_a_ball_past_the_bags_window_is_thrown` (`FLY_ROW71_CHECKPOINT`), `row71_the_list_scroll_offset_is_where_the_cartridge_reads_it` | **fixed**: cursor = `wCurrentMenuItem + wListScrollOffset` (`$CC36`, pinned from the cartridge; `docs/design/macros.md` 12.34). The mart's lists read the same way; `MART_CURSOR_ROWS` stays |
+
+| test | 390d118 | branch |
+| --- | --- | --- |
+| `row71_a_ball_past_the_bags_window_is_thrown` | 11 starts, 10 `blocked`, nothing thrown in 3,000 frames. **Fails** | thrown, Oddish caught (`wCapturedMonSpecies`) by f350, 0 `blocked`. Passes |
+| `a_catch_on_the_cartridge_pays_the_catch_rule_once_with_the_species_in_its_label`, `row69_at_low_hp_a_wild_battles_pad_is_the_ball` | pass | pass (balls in the window's first rows, unscrolled) |
+
+The watchdog and the ladder flagged the trap correctly. The restart could not help, because the
+trap is in the game state and the hot checkpoint is inside it (row 70's lesson again). Only a reset
+or the fix ends it.
