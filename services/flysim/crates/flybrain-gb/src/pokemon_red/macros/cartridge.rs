@@ -118,6 +118,11 @@ pub const CHEAPEST_PURCHASE: u32 = {
 /// can name, and a purchase aimed at one is a button whose script gives up before it presses
 /// anything. [`super::palette::stock_index`] is where the rule is applied, once, for both the pad
 /// and the plan.
+///
+/// Row 71 pinned `wListScrollOffset` from the cartridge, and `state::shop` now reports the buy
+/// list's cursor as the entry (row plus offset), so the reading is right however the list is
+/// scrolled. The limit stays until a purchase past the third row has been surveyed on the
+/// cartridge: lifting it would put new buttons on the pad, which is its own change.
 pub const MART_CURSOR_ROWS: usize = 3;
 
 /// Cursor indices of the battle menu, as `state::BattleMenu::Main` documents them: "0 FIGHT,

@@ -2142,11 +2142,16 @@ restored the same battle with the same bag open, so the trap came straight back.
   the moves, `SWITCH`, `RUN` and the bag's `BACK` at low HP, so the dead button became the only
   one.
 
-The mart's buy list scrolls the same way, and `MART_CURSOR_ROWS` (row 55) still limits purchases
-to the first three rows. Lifting that limit with the pinned offset is a separate change.
+Other lists, checked: the mart's buy and sell lists are `DisplayListMenuID` lists too, and
+`state::shop` now reports their cursor as the entry in the same way. The battle menu, the move
+list, the party list and the start menu do not scroll. No macro navigates the PC's lists.
+`MART_CURSOR_ROWS` (row 55) still limits purchases to the first three rows, because lifting it puts
+new buttons on the pad and needs its own survey on the cartridge.
 
 Tests: `a_battle_frame_with_a_cursor_accepting_input_is_the_flys_turn` (state, a bag scrolled by
-three),
+three), `a_mart_reports_which_of_its_screens_is_up` (a scrolled buy list, and a stale offset on the
+counter menu), the catch test's check that its ball is in the window's first rows (it still
+throws),
 `row71_a_ball_past_the_bags_window_is_thrown` (`FLY_ROW71_CHECKPOINT`, the live trap) and
 `row71_the_list_scroll_offset_is_where_the_cartridge_reads_it` (FLY_ROM).
 

@@ -1370,19 +1370,33 @@ pub fn shop(memory: &mut dyn MemoryReader) -> Option<Shop> {
         if text_box(memory).waiting {
             return Some(Shop { screen: ShopScreen::Talking, cursor });
         }
-        let screen = if mart_item_window_drawn(memory) {
-            ShopScreen::Buying
-        } else {
-            ShopScreen::BuySellQuit
-        };
-        return Some(Shop { screen, cursor });
+        if mart_item_window_drawn(memory) {
+            return Some(Shop { screen: ShopScreen::Buying, cursor: list_entry(memory, cursor) });
+        }
+        return Some(Shop { screen: ShopScreen::BuySellQuit, cursor });
     }
     if read(memory, ram::wTextBoxID) != poke::BUY_SELL_QUIT_MENU {
         return None;
     }
-    let screen =
-        if list == poke::ITEM_LIST_MENU { ShopScreen::Selling } else { ShopScreen::BuySellQuit };
-    Some(Shop { screen, cursor })
+    if list == poke::ITEM_LIST_MENU {
+        return Some(Shop { screen: ShopScreen::Selling, cursor: list_entry(memory, cursor) });
+    }
+    Some(Shop { screen: ShopScreen::BuySellQuit, cursor })
+}
+
+/// A `DisplayListMenuID` cursor as the entry it is on rather than the window's row (row 71).
+///
+/// The arrow walks the window's rows and the list scrolls under it, so the entry is the row plus
+/// [`poke::LIST_SCROLL_OFFSET`], and the last entry the window can reach is its last row plus the
+/// same. Only for a list that is on screen: the offset is one shared byte that outlives every list,
+/// so a menu that is not a list menu keeps its own cursor.
+fn list_entry(memory: &mut dyn MemoryReader, cursor: Cursor) -> Cursor {
+    let offset = read(memory, poke::LIST_SCROLL_OFFSET);
+    Cursor {
+        current: cursor.current.saturating_add(offset),
+        max: cursor.max.saturating_add(offset),
+        ..cursor
+    }
 }
 
 /// Whether the mart's priced item window is the thing drawn over the counter menu.

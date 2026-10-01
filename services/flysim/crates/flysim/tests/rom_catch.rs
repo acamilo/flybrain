@@ -210,6 +210,13 @@ fn a_catch_on_the_cartridge_pays_the_catch_rule_once_with_the_species_in_its_lab
         return;
     }
     eprintln!("bag holds {balls} balls");
+    // Row 71's other half: this checkpoint's ball is in the bag window's first rows, unscrolled,
+    // so the catch below is the throw that worked before the scroll offset was read and must
+    // still work after it.
+    let ball_entry = state::bag(&mut Run::resume(&rom, &checkpoint).gb)
+        .iter()
+        .position(|item| (0x01..=0x04).contains(&item.id) && item.count > 0);
+    assert!(ball_entry.is_some_and(|entry| entry < 3), "ball at bag entry {ball_entry:?}");
 
     // Five brain minutes per attempt is generous for a forest checkpoint: the live run threw 28
     // balls in its first Viridian Forest session (`pokemon_red::macros::palette`). An attempt

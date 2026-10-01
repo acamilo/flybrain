@@ -1072,6 +1072,8 @@ the cartridge instead.
 
 **`BattleMenu::Bag`'s `cursor`** is now `wCurrentMenuItem + wListScrollOffset`, the bag entry
 under the arrow, which is the sum the cartridge makes on A. In the live trap the arrow was on row 1
-with an offset of 3, so it was on entry 4, the Poké Ball. The mart's buy list
-(`MART_CURSOR_ROWS`, section 7) still uses the first three rows only.
+with an offset of 3, so it was on entry 4, the Poké Ball. `state::shop`'s buy and sell lists
+report their cursor (and its `max`) as the entry the same way. The offset is added only while a
+list is on screen, because the byte outlives every list. Purchases still use only the first three
+rows (`MART_CURSOR_ROWS`, section 7).
 

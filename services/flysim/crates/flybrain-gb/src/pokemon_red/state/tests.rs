@@ -586,6 +586,17 @@ fn a_mart_reports_which_of_its_screens_is_up() {
         .screen_tile(poke::MART_NAME_COLUMN, poke::MART_NAME_ROW, poke::CHAR_UPPER_A);
     assert_eq!(shop(&mut wram).map(|shop| shop.screen), Some(ShopScreen::Buying));
 
+    // Row 71: the buy list's cursor is the entry, the window's row plus the scroll offset, and so
+    // is the last entry the window reaches.
+    wram.cursor(4, 5, 1, 2, poke::pad::A | poke::pad::B).set(poke::LIST_SCROLL_OFFSET, 2);
+    let buying = shop(&mut wram).unwrap();
+    assert_eq!((buying.cursor.current, buying.cursor.max), (3, 4));
+    // The counter menu is not a list menu: a stale offset leaves its cursor alone.
+    wram.screen_tile(poke::MART_NAME_COLUMN, poke::MART_NAME_ROW, 0x7f);
+    let counter = shop(&mut wram).unwrap();
+    assert_eq!(counter.screen, ShopScreen::BuySellQuit);
+    assert_eq!((counter.cursor.current, counter.cursor.max), (1, 2));
+
     // The bag list on its own is the start menu's, not a mart's.
     let mut wram = Wram::overworld();
     wram.set(ram::wFontLoaded, poke::BIT_FONT_LOADED)
