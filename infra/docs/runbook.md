@@ -862,7 +862,9 @@ the partition above is completed by making the sim's CPUs exclusive:
   whose `AllowedCPUs=` is the sim's set (`flysim.slice.d/cpuset.conf`, written by `05-deploy.sh` from
   `lib/common.sh`'s `cpuset_dropin_plan`, the same call that writes every other drop-in).
 - `bin/fly-cpu-confine apply` sets `AllowedCPUs=` the **non-sim** CPUs on `system.slice` (every
-  other service, cron, apt, sshd), `user.slice` (every login session) and `init.scope`. It runs as
+  other service, cron, apt, sshd), `user.slice` (every login session) and `init.scope`, and writes
+  the same list to `/sys/fs/cgroup/.lxc/cpuset.cpus` (where `pct exec` / `pct enter` processes land,
+  see below). It runs as
   both sim units' `ExecStartPre` (root, failure never blocks the start), so it is re-applied after
   every boot and every restart. The lists come from `/etc/fly/cpuset.env`, which the deploy writes.
 - The slice is named without a dash on purpose: systemd nests `a-b.slice` under `a.slice`, and a
@@ -881,18 +883,38 @@ the partition above is completed by making the sim's CPUs exclusive:
   is no confinement, so `05-deploy.sh` writes `FLY_SESSION_PIN=0` to `/etc/fly/fly.env` and the
   session runtime's threads float, as before PERF-02. With the partition in force it writes
   `FLY_SESSION_PIN=1`. (The runtime treats exactly `0` as off.)
-- **Not reachable from inside:** a process the host starts into the container with `pct exec`
-  (`lxc-attach`) is not placed by systemd, so these two slices may not cover it (which cgroup it
-  lands in has not been verified on the release container). `fly-cpu-confine check` lists every
-  process outside `flysim.slice` that may run on a sim CPU (exit 1 if there is one): run it after
-  a deploy and after anything unusual. Run long operator jobs through
-  `pct exec <ctid> -- systemd-run --scope --slice=system.slice -- <command>`; the deploy itself
-  already pins its heavy steps to the page CPUs.
+- **`pct exec` / `pct enter`:** `lxc-attach` puts its processes in the cgroup `/.lxc` (or
+  `/.lxc-N`), a sibling of `system.slice` that systemd does not manage. `apply` writes the non-sim
+  list into the `cpuset.cpus` of every such cgroup that already exists (it never creates one; lxc
+  owns it). Where that file is not writable it logs a warning and carries on: `apply` never fails
+  the sim's start. In that case run long operator jobs through
+  `pct exec <ctid> -- systemd-run --scope --slice=system.slice -- <command>`. A `.lxc-N` created
+  after `apply` is not covered until the next sim start. `fly-cpu-confine check` lists every
+  process outside `flysim.slice` that may run on a sim CPU (exit 1 if there is one); its own
+  process and the shell chain it was started from are printed as a note and not counted, so it
+  exits 0 on a healthy container when run through `pct exec`.
+- **After the first deploy (once):** restart the sim so the confinement is applied, then read it.
+  `apply` is refused while flysim still runs outside `flysim.slice`, so nothing changes until then.
+  ```
+  pct exec <ctid> -- systemctl restart flysim.service
+  pct exec <ctid> -- /opt/fly/bin/fly-cpu-confine status    # system.slice, user.slice, init.scope and /.lxc = the non-sim cpus; flysim.slice = the sim's; flysim ControlGroup under /flysim.slice/
+  pct exec <ctid> -- /opt/fly/bin/fly-cpu-confine check     # exit 0: "ok: only flysim.slice can reach ..."
+  pct exec <ctid> -- systemctl show -p AllowedCPUs flycast.service xvfb.service   # still the drop-in values
+  ```
+  Then watch the probation RTF. A `check` that names a process is a hog to move or stop.
 - **If lag grows on the session runtime**: `fly-cpu-confine check`, then `top -H` for a stray hog on
   the sim's CPUs. `FLY_SESSION_PIN=0` (a drop-in) restores floating.
 - `fly-cpu-confine release` undoes the runtime confinement (until the next sim start); it sets
-  the three back to the container's whole cpuset explicitly, because systemd keeps the old mask for
-  an empty `AllowedCPUs=` while the cpuset controller stays on for another unit.
+  `system.slice`, `user.slice`, `init.scope` and `/.lxc` back to the container's whole cpuset
+  explicitly, because systemd keeps the old mask for an empty `AllowedCPUs=` while the cpuset
+  controller stays on for another unit. (Tested in `tests/lint.sh` against a fake cgroup tree.)
+- **Rollback by re-running an older infra tree's `05-deploy.sh`** (rather than the symlink flip in
+  "Roll back a release", which is fine): an infra tree older than this change has no
+  `Slice=flysim.slice`, so flysim restarts into `system.slice`, which is still confined to the
+  non-sim CPUs. Its `AllowedCPUs=` then does not intersect that set and it floats over the page and
+  encoder CPUs while the sim's own CPUs sit idle (the slow shape again, not a black stream). After
+  such a rollback run `pct exec <ctid> -- /opt/fly/bin/fly-cpu-confine release` (or reboot), then
+  restart flysim.
 
 Verified on a real-systemd box (4 CPUs, the sim as a unit in `flysim.slice` on 3 of them, 3 sweep
 threads, paced at 0.55x): confined or not, with no hog the session holds 0.55; five busy loops (three

@@ -269,7 +269,7 @@ refuses to write the drop-ins until the conf actually carries
 
 The sim's CPUs are also kept exclusive to it (PERF-02 review N1, `infra/docs/runbook.md` "The sim's
 CPUs are exclusive to the sim"): the sim units run in `flysim.slice`, and `bin/fly-cpu-confine`
-confines `system.slice`, `user.slice` and `init.scope` to the other CPUs when the sim starts.
+confines `system.slice`, `user.slice`, `init.scope` and `/.lxc` (`pct exec`) to the other CPUs when the sim starts.
 Without a partition (`CPUSET` unset) none of this applies and the deploy turns the session
 runtime's worker pinning off (`FLY_SESSION_PIN=0`).
 

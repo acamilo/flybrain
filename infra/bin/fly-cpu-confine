@@ -2,11 +2,13 @@
 # infra/bin/fly-cpu-confine — keep every process that is not the sim off the sim's CPUs.
 #
 # Usage (INSIDE the container, as root):
-#   fly-cpu-confine apply     confine system.slice, user.slice and init.scope to the non-sim CPUs
-#   fly-cpu-confine release   undo `apply` (those three go back to the container's whole cpuset)
+#   fly-cpu-confine apply     confine system.slice, user.slice, init.scope and /.lxc (where `pct exec`
+#                             lands) to the non-sim CPUs
+#   fly-cpu-confine release   undo `apply` (all of them go back to the container's whole cpuset)
 #   fly-cpu-confine status    what each of them is confined to, and where the sim runs
 #   fly-cpu-confine check     list every process that is not in flysim.slice but may run on a
-#                             sim CPU (exit 1 if there is one)
+#                             sim CPU (exit 1 if there is one); this command's own process and its
+#                             parents (the shell it was started from) are noted, not failed
 #
 # Why. The session runtime pins its sweep workers one per CPU (PERF-02). A pinned worker cannot
 # leave its CPU, so any sustained CPU-bound process that may run there stalls every barrier:
@@ -30,8 +32,11 @@
 # sim that has not been restarted into flysim.slice would silently make it float over the page
 # CPUs. `apply` refuses (exit 3, nothing changed) if a sim unit is outside flysim.slice.
 #
-# Not reachable from here: a process the host starts into the container with `pct exec`
-# (lxc-attach). Check where it lands with `check`; run long operator jobs with
+# `pct exec` / `pct enter` (lxc-attach) put their processes in the cgroup `/.lxc` (or `/.lxc-N`),
+# a sibling of system.slice that systemd does not manage. It is written directly
+# (cpuset.cpus), only if it already exists (a cgroup lxc owns is never created here), and a
+# failure is a warning, never an error: it must not stop the sim from starting. If it cannot be
+# written, `check` lists what is running there; run long operator jobs with
 # `systemd-run --scope --slice=system.slice -- <cmd>` (or `... -- bash`).
 set -euo pipefail
 
@@ -42,6 +47,26 @@ set -euo pipefail
 : "${SIM_SLICE:=flysim.slice}"
 : "${SIM_UNITS:=flysim.service flysim-session.service}"
 CONFINED_UNITS="system.slice user.slice init.scope"
+
+# existing lxc attach cgroups (/.lxc, /.lxc-N) that have a cpuset
+lxc_cgroups() {
+    local d
+    for d in "$CGROUP_ROOT"/.lxc "$CGROUP_ROOT"/.lxc-*; do
+        [ -d "$d" ] && [ -e "$d/cpuset.cpus" ] && echo "$d"
+    done
+    return 0
+}
+
+# set_lxc CPUS — write CPUS into every lxc attach cgroup; warn, never fail.
+set_lxc() {
+    local d
+    for d in $(lxc_cgroups); do
+        if ! echo "$1" > "$d/cpuset.cpus" 2>/dev/null; then
+            log "WARNING: cannot write ${d}/cpuset.cpus; processes started with pct exec stay unconfined (run long jobs with systemd-run --scope --slice=system.slice)"
+        fi
+    done
+    return 0
+}
 
 log() { echo "fly-cpu-confine: $*" >&2; }
 
@@ -92,7 +117,8 @@ case "$cmd" in
         for u in $CONFINED_UNITS; do
             timeout 20 "$SYSTEMCTL" set-property --runtime "$u" "AllowedCPUs=${OTHER_CPUS}"
         done
-        log "system.slice, user.slice and init.scope confined to ${OTHER_CPUS}; ${SIM_SLICE} keeps ${SIM_CPUS}"
+        set_lxc "$OTHER_CPUS"
+        log "system.slice, user.slice, init.scope and /.lxc confined to ${OTHER_CPUS}; ${SIM_SLICE} keeps ${SIM_CPUS}"
         ;;
     release)
         # Not `AllowedCPUs=` (empty): systemd leaves the cgroup's cpuset.cpus at its last value while
@@ -102,11 +128,15 @@ case "$cmd" in
         for u in $CONFINED_UNITS; do
             timeout 20 "$SYSTEMCTL" set-property --runtime "$u" "AllowedCPUs=${all_cpus}"
         done
-        log "system.slice, user.slice and init.scope released to the container's whole cpuset (${all_cpus:-unknown})"
+        set_lxc "$all_cpus"
+        log "system.slice, user.slice, init.scope and /.lxc released to the container's whole cpuset (${all_cpus:-unknown})"
         ;;
     status)
         for u in $CONFINED_UNITS $SIM_SLICE; do
             echo "$u AllowedCPUs=$("$SYSTEMCTL" show -p AllowedCPUs --value "$u" 2>/dev/null || true)"
+        done
+        for d in $(lxc_cgroups); do
+            echo "${d#"$CGROUP_ROOT"} cpuset.cpus=$(cat "$d/cpuset.cpus" 2>/dev/null || true)"
         done
         for u in $SIM_UNITS; do
             echo "$u ControlGroup=$("$SYSTEMCTL" show -p ControlGroup --value "$u" 2>/dev/null || true)"
@@ -119,6 +149,13 @@ case "$cmd" in
         fi
         sim="$(expand "$SIM_CPUS" | sort -n | tr '\n' ' ')"
         bad=0
+        # this process and its parents (the pct exec shell chain) are not a CPU hog
+        self=" "
+        p="${SELF_PID:-$$}"
+        while [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null && [ "${#self}" -lt 400 ]; do
+            self="$self$p "
+            p="$(sed -n 's/^PPid:[[:space:]]*//p' "$PROC_ROOT/$p/status" 2>/dev/null || true)"
+        done
         for d in "$PROC_ROOT"/[0-9]*; do
             pid="${d##*/}"
             [ -r "$d/status" ] || continue
@@ -133,6 +170,10 @@ case "$cmd" in
                 for s in $sim; do [ "$c" = "$s" ] && hit="$hit$c,"; done
             done
             if [ -n "$hit" ]; then
+                case "$self" in *" $pid "*)
+                    log "note: ${pid} ($(cat "$d/comm" 2>/dev/null)) is this check's own process chain in ${cg:-?} and may run on sim cpu ${hit%,}; not counted"
+                    continue ;;
+                esac
                 echo "process $pid ($(cat "$d/comm" 2>/dev/null)) in ${cg:-?} may run on sim cpu ${hit%,}"
                 bad=1
             fi
@@ -141,7 +182,7 @@ case "$cmd" in
         exit "$bad"
         ;;
     *)
-        sed -n '2,12p' "$0" >&2
+        sed -n '2,11p' "$0" >&2
         exit 2
         ;;
 esac

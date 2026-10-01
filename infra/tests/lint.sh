@@ -1572,7 +1572,8 @@ grep -qE 'FLY_SESSION_PIN=0' "$INFRA_DIR/05-deploy.sh" && grep -qE 'PARTITION_AC
 # bin/fly-cpu-confine against a stub systemctl and a fake /proc
 cc="$INFRA_DIR/bin/fly-cpu-confine"
 cc_dir="$(mktemp -d "${TMPDIR:-/tmp}/fly-lint-confine.XXXXXX")"
-mkdir -p "$cc_dir/bin" "$cc_dir/proc"
+mkdir -p "$cc_dir/bin" "$cc_dir/proc" "$cc_dir/cg/.lxc"
+echo 0-15 > "$cc_dir/cg/.lxc/cpuset.cpus"
 cat > "$cc_dir/bin/systemctl" <<'STUB'
 #!/usr/bin/env bash
 echo "systemctl $*" >> "$STUB_LOG"
@@ -1591,7 +1592,7 @@ STUB
 chmod +x "$cc_dir/bin/systemctl" "$cc_dir/bin/timeout"
 printf 'FLY_SIM_CPUS=1,3,5,7\nFLY_OTHER_CPUS=9,11,13-15\n' > "$cc_dir/cpuset.env"
 cc_run() {
-    PATH="$cc_dir/bin:$PATH" CPUSET_ENV="${CPUSET_ENV:-$cc_dir/cpuset.env}" PROC_ROOT="$cc_dir/proc" STUB_LOG="$cc_dir/log" "$@"
+    PATH="$cc_dir/bin:$PATH" CPUSET_ENV="${CPUSET_ENV:-$cc_dir/cpuset.env}" PROC_ROOT="$cc_dir/proc" CGROUP_ROOT="${CGROUP_ROOT:-$cc_dir/cg}" STUB_LOG="$cc_dir/log" "$@"
 }
 : > "$cc_dir/log"
 out="$(cc_run "$cc" apply 2>&1)" && rc=0 || rc=$?
@@ -1602,6 +1603,28 @@ if [ "$rc" -eq 0 ] && [ "$(grep -c 'set-property --runtime .* AllowedCPUs=9,11,1
 else
     fail "fly-cpu-confine apply (rc=$rc): $out / $(cat "$cc_dir/log")"
 fi
+[ "$(cat "$cc_dir/cg/.lxc/cpuset.cpus")" = "9,11,13-15" ] \
+    && pass "fly-cpu-confine apply also confines /.lxc (where pct exec lands) to the non-sim cpus" \
+    || fail "fly-cpu-confine apply must write the non-sim cpus into /.lxc/cpuset.cpus (got $(cat "$cc_dir/cg/.lxc/cpuset.cpus"))"
+out="$(cc_run "$cc" status 2>&1)"
+grep -q '^/.lxc cpuset.cpus=9,11,13-15$' <<< "$out" \
+    && pass "fly-cpu-confine status shows /.lxc" \
+    || fail "fly-cpu-confine status must show /.lxc: $out"
+# unwritable /.lxc: warn, still exit 0, slices still confined; absent /.lxc: nothing created
+: > "$cc_dir/log"
+mkdir -p "$cc_dir/cg2/.lxc"
+mkdir "$cc_dir/cg2/.lxc/cpuset.cpus"   # a directory: the write fails, like a read-only cgroup file
+out="$(CGROUP_ROOT="$cc_dir/cg2" cc_run "$cc" apply 2>&1)" && rc=0 || rc=$?
+if [ "$rc" -eq 0 ] && grep -q 'WARNING: cannot write' <<< "$out" && [ "$(grep -c set-property "$cc_dir/log")" = 3 ]; then
+    pass "fly-cpu-confine apply warns, never fails, when /.lxc cannot be written (slices still confined)"
+else
+    fail "fly-cpu-confine apply with an unwritable /.lxc (rc=$rc): $out"
+fi
+mkdir -p "$cc_dir/cg3"
+CGROUP_ROOT="$cc_dir/cg3" cc_run "$cc" apply >/dev/null 2>&1
+[ -z "$(ls -A "$cc_dir/cg3")" ] \
+    && pass "fly-cpu-confine apply does not create /.lxc (lxc owns it)" \
+    || fail "fly-cpu-confine apply must not create cgroups under the root: $(ls -A "$cc_dir/cg3")"
 : > "$cc_dir/log"
 out="$(CG_flysim=/system.slice/flysim.service cc_run "$cc" apply 2>&1)" && rc=0 || rc=$?
 if [ "$rc" -eq 3 ] && ! grep -q set-property "$cc_dir/log"; then
@@ -1622,11 +1645,12 @@ else
     fail "fly-cpu-confine apply without cpuset.env must change nothing (rc=$rc): $out $(cat "$cc_dir/log")"
 fi
 : > "$cc_dir/log"
-echo 0-15 > "$cc_dir/cpuset.cpus.effective"
-CGROUP_ROOT="$cc_dir" cc_run "$cc" release >/dev/null 2>&1
+echo 0-15 > "$cc_dir/cg/cpuset.cpus.effective"
+CGROUP_ROOT="$cc_dir/cg" cc_run "$cc" release >/dev/null 2>&1
 [ "$(grep -c 'set-property --runtime .* AllowedCPUs=0-15$' "$cc_dir/log")" = 3 ] \
-    && pass "fly-cpu-confine release sets all three back to the container's whole cpuset (an empty AllowedCPUs= leaves the old mask in place)" \
-    || fail "fly-cpu-confine release: $(cat "$cc_dir/log")"
+    && [ "$(cat "$cc_dir/cg/.lxc/cpuset.cpus")" = "0-15" ] \
+    && pass "fly-cpu-confine release sets all three and /.lxc back to the container's whole cpuset (an empty AllowedCPUs= leaves the old mask in place)" \
+    || fail "fly-cpu-confine release: $(cat "$cc_dir/log") / lxc=$(cat "$cc_dir/cg/.lxc/cpuset.cpus")"
 # check: a fake /proc with a sim process in the slice, a clean neighbour, a kernel thread, then a hog
 mkproc() { # pid comm cgroup allowed
     mkdir -p "$cc_dir/proc/$1"
@@ -1650,6 +1674,27 @@ if [ "$rc" -eq 1 ] && grep -q 'process 13 (hog).*sim cpu 1,3,5,7' <<< "$out"; th
     pass "fly-cpu-confine check names a process that may run on a sim cpu"
 else
     fail "fly-cpu-confine check must flag the hog (rc=$rc): $out"
+fi
+# the check's own process chain (a pct exec shell) is noted, not failed; a stranger in /.lxc still fails
+rm -rf "$cc_dir/proc/13"
+mkproc 20 pctexec /.lxc 0-15
+mkproc 21 bash /.lxc 0-15
+mkproc 22 fly-cpu-confine /.lxc 0-15
+printf 'Name:\tx\nPPid:\t21\nCpus_allowed_list:\t0-15\n' > "$cc_dir/proc/22/status"
+printf 'Name:\tx\nPPid:\t20\nCpus_allowed_list:\t0-15\n' > "$cc_dir/proc/21/status"
+printf 'Name:\tx\nPPid:\t1\nCpus_allowed_list:\t0-15\n' > "$cc_dir/proc/20/status"
+out="$(SELF_PID=22 cc_run "$cc" check 2>&1)" && rc=0 || rc=$?
+if [ "$rc" -eq 0 ] && grep -q 'own process chain' <<< "$out" && ! grep -q '^process' <<< "$out"; then
+    pass "fly-cpu-confine check exits 0 when the only process on a sim cpu is its own pct exec chain"
+else
+    fail "fly-cpu-confine check must not count its own process or ancestors (rc=$rc): $out"
+fi
+mkproc 23 tar /.lxc 0-15
+out="$(SELF_PID=22 cc_run "$cc" check 2>&1)" && rc=0 || rc=$?
+if [ "$rc" -eq 1 ] && grep -q '^process 23 (tar)' <<< "$out" && ! grep -q '^process 2[012] ' <<< "$out"; then
+    pass "fly-cpu-confine check still flags a different process in /.lxc"
+else
+    fail "fly-cpu-confine check must flag a stranger in /.lxc (rc=$rc): $out"
 fi
 rm -rf "$cc_dir"
 
