@@ -117,6 +117,11 @@ async fn malformed_frames_close_the_connection(via: Via) {
     major["major"] = json!(2);
     let mut not_flybus = publish("msg-2");
     not_flybus["protocol"] = json!("flybusx");
+    // A read location is the router's to issue, in a delivery (BUS-01): never from a client.
+    let mut located = publish("msg-2");
+    let mut located_att = att("a");
+    located_att["readLocation"] = json!({"storeId": "s", "relativePath": "sealed/a-1"});
+    located["attachments"] = json!([located_att]);
 
     let cases: Vec<(&str, Vec<u8>)> = vec![
         ("nested duplicate key", br#"{"protocol":"flybus","major":1,"minor":0,"id":"msg-2","replyTo":null,"kind":"command","op":"publish","body":{"topic":"t.x","payload":{"a":{"b":1,"b":2}}},"attachments":[]}"#.to_vec()),
@@ -133,6 +138,7 @@ async fn malformed_frames_close_the_connection(via: Via) {
         ("non-null replyTo", text(reply_to).into_bytes()),
         ("wrong major after hello", text(major).into_bytes()),
         ("wrong protocol", text(not_flybus).into_bytes()),
+        ("a client attachment with a readLocation", text(located).into_bytes()),
     ];
     for (i, (what, bytes)) in cases.into_iter().enumerate() {
         let mut raw = e.raw_hello(&format!("bad-{i}")).await;
