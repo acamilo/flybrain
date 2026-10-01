@@ -977,3 +977,11 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   and BACK. ROM test from the live checkpoint: NEXT on all 6,000 frames before, BACK and the battle
   continues after; a real post-faint switch unchanged. The ladder change (protect recent catches
   from resets) is held back for a review finding. Review: APPROVE.
+- 2026-10-01 (v0.7.2, loop review): row 70's recovery ladder. A milestone reset within 2 hours of a
+  new species becomes a restart (operator decision: a catch is worth up to 2 h of a trap, not more);
+  a reset's deterministic replay re-earns rewards the restored archive already had, so progress and
+  catch protection now count only reward names the ladder has not seen; a held reset does not climb;
+  the last-archive marker expires. Escape from a trap only the lower rung clears: 2.08 h (as v0.7.0),
+  3.33 h with a catch just before it; 200-seed mean 4.80 h vs 4.44 h, worst unchanged at 25.4 h; at
+  most 2 resets per 24 h, restarts at least 3 h apart. Watchdog flags unchanged. Reviews: r1 BLOCK,
+  r2 BLOCK, r3 APPROVE, independent read APPROVE-WITH-NOTES.
