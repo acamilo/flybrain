@@ -420,6 +420,18 @@ fn a_battle_frame_with_a_cursor_accepting_input_is_the_flys_turn() {
     assert_eq!(fight.menu, BattleMenu::Bag { cursor: 0, count: 1 });
     assert!(fight.own_turn, "the battle bag is a cursor accepting input");
 
+    // Row 71: the window scrolls under the arrow, and the cursor is the entry, not the row. The
+    // live bag: TM34, HELIX FOSSIL, NUGGET and TM45 in front and the POKé BALL fifth, scrolled by
+    // three so the window shows TM45, the ball and CANCEL with the arrow on the ball.
+    use crate::pokemon_red::macros::cartridge::item;
+    wram.bag(&[(0xea, 1), (0x2a, 1), (0x31, 1), (0xf5, 1), (item::POKE_BALL, 2)])
+        .set(ram::wCurrentMenuItem, 1)
+        .set(poke::LIST_SCROLL_OFFSET, 3);
+    let fight = battle(&mut wram).unwrap();
+    assert_eq!(fight.menu, BattleMenu::Bag { cursor: 4, count: 5 }, "row 1 of a window scrolled by 3");
+    wram.set(poke::LIST_SCROLL_OFFSET, 0);
+    assert_eq!(battle(&mut wram).unwrap().menu, BattleMenu::Bag { cursor: 1, count: 5 });
+
     // And the two frames that are not a choice. A move list whose cursor cannot be placed is a
     // battle's opening frames (row 30b), and no menu at all is text, an animation or a turn
     // resolving.

@@ -807,3 +807,85 @@ fn row69_the_naming_bytes_are_where_the_cartridge_stores_them() {
     assert!(rom.windows(submit.len()).any(|window| window == submit), "wNamingScreenSubmitName");
     assert_eq!(poke::NAMING_SUBMIT, poke::NAMING_LENGTH + 1, "consecutive in the UNION");
 }
+
+fn row71_checkpoint() -> Option<flysim::store::Checkpoint> {
+    let path = std::env::var_os("FLY_ROW71_CHECKPOINT")?;
+    Some(
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope"),
+    )
+}
+
+/// Row 71: a ball past the bag's window is thrown.
+///
+/// The live trap (rung 15, Route 25): a wild Oddish at 8 of 36, the bag open and scrolled by
+/// three, POKé BALL its fifth entry with the arrow on it. Row 69's low-HP rule leaves
+/// `THROW BALL` alone on the pad, and on 390d118 its cursor step compared the bag index (4) with
+/// the window's row (`wCurrentMenuItem`, `0..=2`), never met it, and every start was `blocked`:
+/// 131 of 131 in ten minutes live. The stub leans on the one bound button, as the live fly could
+/// only do. On the branch the first throw catches the Oddish.
+#[test]
+fn row71_a_ball_past_the_bags_window_is_thrown() {
+    let Some(rom) = rom() else {
+        eprintln!("skipped: FLY_ROM is not set");
+        return;
+    };
+    let Some(checkpoint) = row71_checkpoint() else {
+        eprintln!("skipped: no FLY_ROW71_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, &checkpoint);
+    assert_eq!(run.byte(ram::wIsInBattle), 1, "the trap is a wild battle, not a trainer's");
+    let balls = run.balls();
+    assert!(balls > 0, "the checkpoint's bag holds a ball");
+    let enemy = run.byte(ram::wEnemyMonSpecies);
+    assert_ne!(run.byte(ram::wCapturedMonSpecies), enemy, "nothing caught yet");
+    let mut pads: std::collections::BTreeSet<Vec<String>> = Default::default();
+    let mut thrown_at = None;
+    for frame in 0..3_000u32 {
+        let bound = run.layer.bound_channels();
+        if run.layer.running().is_none() {
+            pads.insert(bound.clone());
+        }
+        let hot = bound.first().cloned();
+        let active =
+            run.decoder.decode_bound(&rates(hot.as_deref()), run.ms, false, None, Some(&bound));
+        run.legacy.execute(Some(&mut run.layer), &active, 0, run.ms, &mut run.gb, &run.adapter);
+        run.ms += MS_PER_FRAME;
+        run.frame += 1;
+        let evaluated = run
+            .legacy
+            .stub_advance(Some(&mut run.layer), &mut run.gb, &mut run.adapter, run.ms)
+            .expect("a frame should complete");
+        run.payouts.extend(evaluated.rewards);
+        // The cartridge takes the ball out of the bag only once the catch's screens are over (the
+        // nickname is the fly's own buttons, which this stub does not press), so the ball keeping
+        // the Oddish (`wCapturedMonSpecies`) counts as the throw too.
+        if run.balls() < balls || run.byte(ram::wCapturedMonSpecies) == enemy {
+            thrown_at = Some(frame);
+            break;
+        }
+    }
+    let counts = run.layer.counts();
+    let caught = run.byte(ram::wCapturedMonSpecies) == enemy;
+    eprintln!("thrown at {thrown_at:?}; caught {caught}; {counts:?}; pads {pads:?}");
+    assert!(thrown_at.is_some(), "the ball was never thrown: {counts:?}");
+    assert_eq!(counts.blocked, 0, "a THROW BALL that blocked on the way: {counts:?}");
+}
+
+/// `wListScrollOffset` is where the cartridge reads it when a list entry is chosen (row 71):
+/// `DisplayListMenuIDLoop.buttonAPressed`'s `ld a, [wCurrentMenuItem] / ld c, a /
+/// ld a, [wListScrollOffset] / add c / ld c, a`, once in the cartridge.
+#[test]
+fn row71_the_list_scroll_offset_is_where_the_cartridge_reads_it() {
+    let Some(rom) = rom() else {
+        eprintln!("skipped: FLY_ROM is not set");
+        return;
+    };
+    use flybrain_gb::pokemon_red::state::poke;
+    let [lo, hi] = ram::wCurrentMenuItem.to_le_bytes();
+    let [slo, shi] = poke::LIST_SCROLL_OFFSET.to_le_bytes();
+    let selects = [0xfa, lo, hi, 0x4f, 0xfa, slo, shi, 0x81, 0x4f];
+    let found = rom.windows(selects.len()).filter(|window| *window == selects).count();
+    assert_eq!(found, 1, "wListScrollOffset's read in DisplayListMenuIDLoop");
+}
