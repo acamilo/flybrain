@@ -549,11 +549,20 @@ PY
         exit 1
     fi
     [ -x "$BIN" ] || die "$BIN is missing"
-    # The live service's configuration, for its compatibility string.
-    set -a
-    # shellcheck disable=SC1090,SC1091
-    . "${FLY_ENV_FILE:-/etc/fly/fly.env}"
-    set +a
+    # The live service's configuration, for its compatibility string. fly.env is systemd's
+    # EnvironmentFile syntax (GAME_TITLE=Pokemon Red is valid there), so it is read as KEY=VALUE
+    # lines, as fly-runtime does, never sourced as shell.
+    local line key value env_file="${FLY_ENV_FILE:-/etc/fly/fly.env}"
+    if [ -f "$env_file" ]; then
+        while IFS= read -r line || [ -n "$line" ]; do
+            [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+            key="${line%%=*}"
+            value="${line#*=}"
+            value="${value%\"}"
+            value="${value#\"}"
+            export "${key}=${value}"
+        done <"$env_file"
+    fi
     # The release CUT-01 switches into and the binary it switches to: SERVE-01's service there.
     "$BIN" check --verdict "$SHADOW_DIR/verdict.json" --current "${FLY_CURRENT_DIR:-/opt/fly/current}" \
         --binary flysim-session "$@"

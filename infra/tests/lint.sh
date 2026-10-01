@@ -2355,6 +2355,16 @@ else
     fail "loop recovery tests failed; run python3 -m unittest discover -s infra/tests -p test_loop_recover.py -v"
 fi
 
+echo "--- fly.env is read, never sourced ---"
+# fly.env is systemd EnvironmentFile syntax: GAME_TITLE=Pokemon Red is valid there and a shell
+# error when sourced (the v0.7.3 cutover's check died on it). Scripts parse KEY=VALUE lines.
+sourced="$(grep -n -E '^[[:space:]]*(\.|source)[[:space:]]+.*(fly\.env|FLY_ENV_FILE)' "$REPO_ROOT"/infra/bin/* 2>/dev/null || true)"
+if [ -z "$sourced" ]; then
+    pass "no infra/bin script sources fly.env"
+else
+    fail "fly.env sourced as shell (parse KEY=VALUE lines instead): $sourced"
+fi
+
 echo "==="
 if [ "$FAILED" -eq 0 ]; then
     echo "lint.sh: ALL CHECKS PASSED"
