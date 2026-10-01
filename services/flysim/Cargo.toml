@@ -11,6 +11,7 @@ members = [
     "crates/flybus",
     "crates/flysim",
     "crates/flysim-store",
+    "crates/fly-scorecard",
 ]
 
 [workspace.package]

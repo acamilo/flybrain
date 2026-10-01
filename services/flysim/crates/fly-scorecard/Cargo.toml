@@ -1,0 +1,31 @@
+[package]
+name = "fly-scorecard"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "The behavioural scorecard (B2): a repeatable multi-seed good-play regression harness over a fixed checkpoint set, on either runtime, with a release-against-release compare."
+
+[lib]
+name = "fly_scorecard"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fly-scorecard"
+path = "src/main.rs"
+
+[dependencies]
+# The unchanged engine under test: flysim's frame and macro layer (the legacy runtime), the
+# session composition (the session runtime), flybrain-gb's adapter and state readers.
+flysim = { path = "../flysim" }
+fly-legacy-session = { path = "../fly-legacy-session" }
+fly-session = { path = "../fly-session" }
+flybrain-core = { path = "../flybrain-core" }
+flybrain-gb = { path = "../flybrain-gb" }
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+tempfile = "3"
