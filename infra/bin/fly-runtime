@@ -3,14 +3,29 @@
 # session runtime (`flysim-session`, SERVE-01).
 #
 # Usage (INSIDE the container, as root):
-#   fly-runtime status              print `legacy` or `session`, and what flysim.service runs
-#   fly-runtime session [--no-restart] [--no-fallback] [--no-probation]
+#   fly-runtime status              print `legacy` or `session` (and the session's transport), and
+#                                   what flysim.service runs
+#   fly-runtime session [--local|--bus] [--no-restart] [--no-fallback] [--no-probation]
+#   fly-runtime session-bus [...]   the same as `session --bus`
 #   fly-runtime legacy  [--no-restart]
 #   fly-runtime fallback [reason]   (run by fly-runtime-fallback.service, see below; idempotent)
 #
 # CUT-01 calls `fly-runtime session` after its zero-divergence shadow; `fly-runtime legacy` is
 # the one-command rollback (port decisions, 2026-09-23). Neither migrates any data: both
 # binaries read and write the same FLYSIM01 stores, event log, sugar journal and chat sidecar.
+#
+# The session's transport (BUS-01). `--local` (the default for a first switch) runs the session's
+# participants in flysim-session's own process over the local lane. `--bus` runs them on the flybus
+# router over Unix sockets: flysim-session (the router, the coordinator, the listeners) starts the
+# agent and the world as child processes of the same unit (`fly-session legacy-agent`,
+# `fly-session legacy-environment`, from the same release), in flysim.slice, on flysim's cpuset.
+# The drop-in then carries `Environment=FLY_SESSION_TRANSPORT=bus`. Without either flag `session`
+# keeps the transport the drop-in already has, so 05-deploy's `session --no-restart` refresh never
+# changes it; `session --local` is the way back from the bus. Results, traces, checkpoints and the
+# compatibility string are the same in both: only where the participants run changes. A switch onto
+# the bus needs a shadow that ran the bus (`fly-shadow-run check --bus`), which the coordinator runs
+# before this command, as for the first cutover. Everything below applies to both transports: one
+# unit, OnFailure= falls back to LEGACY, the probation judges the session runtime either way.
 #
 # How the switch works. flysim.service stays the fly's one unit name, and the runtime it runs
 # is chosen by one drop-in, ${DROPIN}:
@@ -91,6 +106,7 @@ RUNTIME_LOG="$FLY_RUNTIME_LOG"
 FELLBACK_FILE="$FLY_RUNTIME_FELLBACK"
 FALLBACK_UNIT=fly-runtime-fallback.service
 SESSION_BIN="${FLY_RELEASE_DIR}/flysim-session"
+WORKER_BIN="${FLY_RELEASE_DIR}/fly-session"
 LEGACY_BIN="${FLY_RELEASE_DIR}/flysim"
 SESSION_DIR=/run/fly/session
 SHADOW_RUN_BIN="${FLY_SHADOW_RUN_BIN:-$(dirname "$(readlink -f "$0")")/fly-shadow-run}"
@@ -120,12 +136,26 @@ stop_shadow() {
 }
 
 usage() {
-    echo "usage: fly-runtime status | session [--no-restart] [--no-fallback] [--no-probation] | legacy [--no-restart] | fallback [reason]" >&2
+    echo "usage: fly-runtime status | session [--local|--bus] [--no-restart] [--no-fallback] [--no-probation] | session-bus [...] | legacy [--no-restart] | fallback [reason]" >&2
     exit 2
 }
 
 current() {
     if [ -f "$DROPIN" ]; then echo session; else echo legacy; fi
+}
+
+# The session's transport the drop-in selects: `bus` or `local` (also with no drop-in).
+current_transport() {
+    if [ -f "$DROPIN" ] && grep -qx 'Environment=FLY_SESSION_TRANSPORT=bus' "$DROPIN"; then
+        echo bus
+    else
+        echo local
+    fi
+}
+
+# `legacy`, `session` or `session-bus`, for the runtime log.
+current_label() {
+    if [ "$(current)" = session ] && [ "$(current_transport)" = bus ]; then echo session-bus; else current; fi
 }
 
 record() {
@@ -176,6 +206,12 @@ ExecStart=${SESSION_BIN}
 Environment=FLY_SESSION_DIR=${SESSION_DIR}
 Environment=MALLOC_ARENA_MAX=2
 EOF
+    if [ "$transport" = bus ]; then
+        cat >>"$tmp" <<EOF
+# BUS-01: the participants are child processes on the session router's Unix sockets.
+Environment=FLY_SESSION_TRANSPORT=bus
+EOF
+    fi
     chmod 0644 "$tmp"
     mv -f "$tmp" "$DROPIN"
 }
@@ -339,26 +375,33 @@ command="$1"; shift
 restart=1
 fallback=1
 probe=1
+transport=""
 fallback_reason=""
 if [ "$command" = fallback ]; then fallback_reason="$*"; set --; fi
+if [ "$command" = session-bus ]; then command=session; transport=bus; fi
 for arg in "$@"; do
     case "$arg" in
         --no-restart) restart=0 ;;
         --no-fallback) fallback=0 ;;
         --no-probation) probe=0 ;;
+        --bus) [ "$command" = session ] || usage; transport=bus ;;
+        --local) [ "$command" = session ] || usage; transport=local ;;
         *) usage ;;
     esac
 done
+# No flag: keep the drop-in's transport (05-deploy's refresh); local for a first switch.
+[ -n "$transport" ] || transport="$(current_transport)"
 
 case "$command" in
     status)
         current
+        if [ "$(current)" = session ]; then echo "  transport: $(current_transport)"; fi
         if [ -f "$FELLBACK_FILE" ]; then echo "  fell back to legacy: $(cat "$FELLBACK_FILE")"; fi
         if [ -x "$PROBATION_BIN" ]; then "$PROBATION_BIN" status 2>/dev/null | sed 's/^/  /' || true; fi
         systemctl show -p ExecStart --value "$FLY_SERVICE" 2>/dev/null | sed -n 's/.*path=\([^ ;]*\).*/  flysim.service runs \1/p' || true
         exit 0
         ;;
-    session|legacy) ;;
+    session|session-bus|legacy) ;;
     fallback)
         [ "$(id -u)" -eq 0 ] || die "run as root"
         do_fallback "${fallback_reason:-flysim.service failed on the session runtime (OnFailure=)}"
@@ -372,6 +415,9 @@ esac
 if [ "$command" = session ]; then
     [ -x "$SESSION_BIN" ] || die "this release has no ${SESSION_BIN}; the session runtime ships from SERVE-01 on"
     [ -x "$LEGACY_BIN" ] || die "no ${LEGACY_BIN}"
+    if [ "$transport" = bus ] && [ ! -x "$WORKER_BIN" ]; then
+        die "this release has no ${WORKER_BIN}: the bus transport starts its participants from it"
+    fi
     legacy_compat="$(compat_of "$LEGACY_BIN")"
     session_compat="$(compat_of "$SESSION_BIN")"
     [ -n "$session_compat" ] || die "${SESSION_BIN} --print-compatibility printed nothing (see its stderr); not switching"
@@ -381,7 +427,7 @@ if [ "$command" = session ]; then
   flysim-session: ${session_compat}"
     fi
     take_lock || die "another fly-runtime holds ${FLY_RUNTIME_LOCK}; not switching"
-    before="$(current)"
+    before="$(current_label)"
     if [ -f "$DROPIN" ]; then
         prev_dropin="$(mktemp "${DROPIN}.prev.XXXXXX")"
         cp -f "$DROPIN" "$prev_dropin"
@@ -390,7 +436,7 @@ if [ "$command" = session ]; then
     switching=1
     rm -f "$FELLBACK_FILE"
     write_dropin
-    record "session (was ${before}); compatibility ${session_compat}"
+    record "$(current_label) (was ${before}); compatibility ${session_compat}"
     if [ "$restart" -ne 1 ]; then
         systemctl daemon-reload
         switching=0
@@ -438,7 +484,7 @@ fi
 
 # legacy
 take_lock || die "another fly-runtime holds ${FLY_RUNTIME_LOCK}; not switching"
-before="$(current)"
+before="$(current_label)"
 switch_target=legacy
 switching=1
 rm -f "$DROPIN"
