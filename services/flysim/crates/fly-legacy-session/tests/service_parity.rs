@@ -19,6 +19,10 @@
 //! - **store**: the event log file, the journal lines (minus `wallMs`, the boot header's runtime
 //!   and wall clock), and the final durable checkpoint decoded (minus `wallMs`).
 //!
+//! The in-process session runs a second time with its control API on the bus (CTRL-01): the
+//! same script through `fly-control-edge`'s router and the control services on an embedded
+//! router, compared against the legacy run the same way.
+//!
 //! Gated on `FLY_ROM` (source `bin/rom-env.sh`). `toy_raw_*` uses the committed toy connectome and
 //! a store seeded by a legacy fresh start; `fafb_*` (also `FLY_SERVE01_FAFB`) the real connectome
 //! from the ENV-01 service trace's `rollback` checkpoint, which rolls back on its first boundary.
@@ -70,6 +74,10 @@ fn sha(bytes: &[u8]) -> String {
 enum Runtime {
     Legacy,
     Session(ExecutionMode),
+    /// The session runtime with its control API on the bus (`FLY_CONTROL_VIA=bus`, CTRL-01): the
+    /// script goes through `fly-control-edge`'s router, over the edge's Unix socket, to the
+    /// control services on the embedded router.
+    SessionOverBus(ExecutionMode),
 }
 
 impl Runtime {
@@ -77,6 +85,9 @@ impl Runtime {
         match self {
             Runtime::Legacy => "legacy".to_owned(),
             Runtime::Session(mode) => format!("session ({})", mode.label()),
+            Runtime::SessionOverBus(mode) => {
+                format!("session ({}) over the control bus", mode.label())
+            }
         }
     }
 }
@@ -245,7 +256,7 @@ fn record(
                 let mut sim = Sim::boot(loop_shared, snapshots_tx, command_rx)?;
                 sim.run(&notifier)
             }
-            Runtime::Session(mode) => {
+            Runtime::Session(mode) | Runtime::SessionOverBus(mode) => {
                 let options = ServiceOptions {
                     mode,
                     profile,
@@ -261,7 +272,23 @@ fn record(
         .enable_all()
         .build()
         .unwrap();
-    let router = flysim::api::router(state.clone());
+    let bus_dir = config.paths.save_dir.parent().unwrap().join("bus");
+    let (router, _control_bus) = match runtime {
+        Runtime::SessionOverBus(_) => driver.block_on(async {
+            let scope = flysim::controlbus::Scope::live();
+            let uses = flysim::bus::Uses { feed: false, control: true };
+            let bus = flysim::bus::start(&bus_dir, uses, &scope).await.unwrap();
+            let host = flysim::controlbus::serve(&bus.router, state.clone(), &scope)
+                .await
+                .unwrap();
+            let mut edge_config = fly_control_edge::EdgeConfig::from_flysim(&config, None);
+            edge_config.bus_dir = bus_dir.clone();
+            let metrics = Arc::new(fly_control_edge::EdgeMetrics::default());
+            let backend = fly_control_edge::connect(&edge_config, &metrics).await.unwrap();
+            (flysim::api::router_with(backend), Some((bus, host)))
+        }),
+        _ => (flysim::api::router(state.clone()), None),
+    };
     let metrics_router = flysim::api::metrics_router(state.clone());
     let recording = driver.block_on(async {
         let mut snapshots = snapshots;
@@ -627,10 +654,22 @@ fn run_pair(
     let started = Instant::now();
     let legacy = run(Runtime::Legacy, "legacy");
     eprintln!("{label}: legacy {} running snapshots in {:.1?}", legacy.running.len(), started.elapsed());
-    for exec in modes() {
+    let runtimes = modes()
+        .into_iter()
+        .map(Runtime::Session)
+        .chain([Runtime::SessionOverBus(ExecutionMode::InProcess)]);
+    for runtime in runtimes {
         let started = Instant::now();
-        let session = run(Runtime::Session(exec), &format!("session-{}", exec.label()));
-        let label = format!("{label}, {}", exec.label());
+        let exec = match runtime {
+            Runtime::Session(exec) | Runtime::SessionOverBus(exec) => exec,
+            Runtime::Legacy => unreachable!(),
+        };
+        let name = match runtime {
+            Runtime::SessionOverBus(_) => format!("session-bus-{}", exec.label()),
+            _ => format!("session-{}", exec.label()),
+        };
+        let session = run(runtime, &name);
+        let label = format!("{label}, {}", runtime.label());
         compare(&legacy, &session, &label);
         let rewards = legacy
             .events
