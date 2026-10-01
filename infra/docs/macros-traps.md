@@ -3725,6 +3725,14 @@ The hypotheses in the brief were all checked:
 | `row71_a_ball_past_the_bags_window_is_thrown` | 11 starts, 10 `blocked`, nothing thrown in 3,000 frames. **Fails** | thrown, Oddish caught (`wCapturedMonSpecies`) by f350, 0 `blocked`. Passes |
 | `a_catch_on_the_cartridge_pays_the_catch_rule_once_with_the_species_in_its_label`, `row69_at_low_hp_a_wild_battles_pad_is_the_ball` | pass | pass (balls in the window's first rows, unscrolled) |
 
+Trap hunt, 10 brain minutes with the real connectome from the trap checkpoint:
+
+- **390d118:** 33 of 33 windows flagged, 1 tile, `THROW BALL` 131 starts and 131 `blocked`. That
+  matches the live count exactly.
+- **Branch:** 1 of 33 flagged. That window is the opening battle text, with 71 tiles in it. The
+  ball is thrown on the first hold and the Oddish is caught at 0.10 min. The fly ends the keyboard
+  itself, and the run reaches 91 tiles.
+
 The watchdog and the ladder flagged the trap correctly. The restart could not help, because the
 trap is in the game state and the hot checkpoint is inside it (row 70's lesson again). Only a reset
 or the fix ends it.
