@@ -18,8 +18,9 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use axum::extract::State;
@@ -31,6 +32,19 @@ use flysim::feed::{self, FeedState};
 use flysim::feedbus;
 use flysim::metrics::{Metrics, metric};
 use tokio::sync::{oneshot, watch};
+
+/// A subscription that has delivered nothing for this long is not serving: the loop publishes a
+/// header at least every `1 / idle_snapshot_hz` even when paused, so silence this long means the
+/// bus is wedged, not that the fly is idle. `/healthz` turns 503 so the watchdog restarts the edge
+/// (it restarts nothing while flysim itself is unhealthy: that is flysim's check).
+pub const STALE_AFTER: Duration = Duration::from_secs(15);
+
+static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+/// Milliseconds since the process first asked, plus one so that 0 can mean "never".
+fn now_ms() -> u64 {
+    EPOCH.elapsed().as_millis() as u64 + 1
+}
 
 /// What the edge needs to know. Built from flysim's own configuration, so both processes read
 /// one environment file and cannot disagree about the port, the bus directory or the cadence.
@@ -75,9 +89,41 @@ pub struct EdgeMetrics {
     pub decode_failures: AtomicU64,
     /// Sessions that reached the bus but could not bind the feed port.
     pub bind_failures: AtomicU64,
+    /// [`now_ms`] when the last snapshot was taken off the bus; 0 before the first.
+    last_snapshot_ms: AtomicU64,
 }
 
 impl EdgeMetrics {
+    /// Note that a snapshot has just been taken off the bus.
+    fn snapshot_arrived(&self) {
+        self.snapshots.fetch_add(1, Ordering::Relaxed);
+        self.last_snapshot_ms.store(now_ms(), Ordering::Relaxed);
+    }
+
+    /// Seconds since the last snapshot came off the bus, or `None` before the first.
+    pub fn snapshot_age(&self) -> Option<Duration> {
+        match self.last_snapshot_ms.load(Ordering::Relaxed) {
+            0 => None,
+            at => Some(Duration::from_millis(now_ms().saturating_sub(at))),
+        }
+    }
+
+    /// Whether the edge is serving: subscribed, and hearing from the bus within [`STALE_AFTER`].
+    pub fn health(&self) -> Result<(), String> {
+        self.health_within(STALE_AFTER)
+    }
+
+    fn health_within(&self, stale_after: Duration) -> Result<(), String> {
+        if self.connected.load(Ordering::Relaxed) != 1 {
+            return Err("waiting for the feed bus".to_owned());
+        }
+        match self.snapshot_age() {
+            Some(age) if age <= stale_after => Ok(()),
+            Some(age) => Err(format!("no snapshot for {} s", age.as_secs())),
+            None => Err("no snapshot yet".to_owned()),
+        }
+    }
+
     pub fn render(&self) -> String {
         let mut out = String::with_capacity(1_024);
         let feed = &self.feed;
@@ -115,6 +161,13 @@ impl EdgeMetrics {
             "gauge",
             "1 while the edge is subscribed to the feed bus and serving.",
             self.connected.load(Ordering::Relaxed),
+        );
+        metric(
+            &mut out,
+            "fly_edge_snapshot_age_seconds",
+            "gauge",
+            "Seconds since the last snapshot came off the feed bus (-1 before the first).",
+            self.snapshot_age().map_or(-1.0, |age| age.as_secs_f64()),
         );
         metric(
             &mut out,
@@ -218,10 +271,9 @@ async fn prometheus(State(metrics): State<Arc<EdgeMetrics>>) -> impl IntoRespons
 }
 
 async fn healthz(State(metrics): State<Arc<EdgeMetrics>>) -> impl IntoResponse {
-    if metrics.connected.load(Ordering::Relaxed) == 1 {
-        (StatusCode::OK, "ok")
-    } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "waiting for the feed bus")
+    match metrics.health() {
+        Ok(()) => (StatusCode::OK, "ok".to_owned()),
+        Err(why) => (StatusCode::SERVICE_UNAVAILABLE, why),
     }
 }
 
@@ -291,7 +343,7 @@ async fn serve(
     listener: tokio::net::TcpListener,
 ) {
     let (snapshots, receiver) = watch::channel(Arc::new(first));
-    metrics.snapshots.fetch_add(1, Ordering::Relaxed);
+    metrics.snapshot_arrived();
     tracing::info!(feed = %config.feed_bind, bus = %config.bus_dir.display(), "serving the feed from the bus");
     metrics.connected.store(1, Ordering::Relaxed);
 
@@ -317,7 +369,7 @@ async fn serve(
             Ok(snapshot) => {
                 drop(message);
                 snapshots.send_replace(Arc::new(snapshot));
-                metrics.snapshots.fetch_add(1, Ordering::Relaxed);
+                metrics.snapshot_arrived();
             }
             Err(error) => {
                 metrics.decode_failures.fetch_add(1, Ordering::Relaxed);
@@ -340,5 +392,34 @@ async fn serve(
         .is_err()
     {
         tracing::warn!("the feed listener took more than 5 s to stop");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn health_needs_the_bus_and_recent_snapshots() {
+        let metrics = EdgeMetrics::default();
+        assert_eq!(metrics.snapshot_age(), None);
+        assert!(metrics.health().unwrap_err().contains("waiting"));
+        metrics.connected.store(1, Ordering::Relaxed);
+        assert!(metrics.health().unwrap_err().contains("no snapshot yet"));
+        metrics.snapshot_arrived();
+        assert_eq!(metrics.health(), Ok(()));
+        std::thread::sleep(Duration::from_millis(40));
+        assert!(metrics.snapshot_age().unwrap() >= Duration::from_millis(40));
+        assert!(
+            metrics
+                .health_within(Duration::from_millis(10))
+                .unwrap_err()
+                .contains("no snapshot for")
+        );
+        metrics.snapshot_arrived();
+        assert_eq!(metrics.health_within(Duration::from_millis(30)), Ok(()));
+        metrics.connected.store(0, Ordering::Relaxed);
+        assert!(metrics.health().is_err());
+        assert!(metrics.render().contains("fly_edge_snapshot_age_seconds"));
     }
 }
