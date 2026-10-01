@@ -2184,9 +2184,10 @@ Knowledge inside macros, never in the choice; the pad still lists buttons and th
 - **Ladder.** Unchanged; no reward for shopping or healing (rewards are the adapter's,
   untouched).
 - **Screen.** Two new channel tags; the cells and the MACROS rate row take them as they come.
-- **Proof.** ROM-gated from the Viridian checkpoint: `GO SHOP` enters the Viridian mart and
-  `BUY POTION` buys one; `GO HEAL` enters the center and `HEAL` restores the party; the errand is
-  not offered again in Viridian; trap hunt before/after.
+- **Proof.** ROM-gated: from the Viridian checkpoint `GO HEAL` enters the center and `HEAL`
+  restores the party; from the rung-11 Pewter checkpoint (a state where `GO SHOP` is dealt, since
+  rows 62/66: money, no ball, no parcel) `GO SHOP` enters the mart and walks to its counter, and
+  is not dealt back from the street for the reached window; trap hunt before/after.
 
 ## 14. The full pad and four move buttons (the operator, 2026-09-17: "scoot fly over. make it 2
 ## columns" … "four, one per move slot" … "2 cols.")
