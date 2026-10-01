@@ -124,6 +124,19 @@ need pct
 FLY_FEED_VIA_EFFECTIVE="$(feed_via_normalize "${FLY_FEED_VIA:-}")" \
     || die "05-deploy: FLY_FEED_VIA must be 'direct' or 'bus', got '${FLY_FEED_VIA}'"
 
+# The container's own value, read before anything changes. A `fly-feed bus` (or `direct`) on the
+# container is not in the env file unless the operator put it there, and this deploy writes the env
+# file's value into fly.env. Nothing breaks (flysim and flyedge.service both follow fly.env at
+# their next start, so the feed stays served either way) but the mode would change at the next
+# restart of flysim, which is not what anyone meant. Said once, loudly, here.
+FLY_FEED_VIA_LIVE="$(ct_exec "$CTID" -- awk -F= '/^FLY_FEED_VIA=/ { v=$2 } END { print v }' /etc/fly/fly.env 2>/dev/null \
+    | tr -d ' \r"' | tr '[:upper:]' '[:lower:]' || true)"
+if [ -n "$FLY_FEED_VIA_LIVE" ] && [ "$FLY_FEED_VIA_LIVE" != "$FLY_FEED_VIA_EFFECTIVE" ]; then
+    log "05-deploy: WARNING: the container's fly.env says FLY_FEED_VIA=${FLY_FEED_VIA_LIVE} and $1 says ${FLY_FEED_VIA_EFFECTIVE};" \
+        "this deploy writes ${FLY_FEED_VIA_EFFECTIVE}, which flysim applies at its next restart (no restart is done here)." \
+        "If ${FLY_FEED_VIA_LIVE} is what you want, set FLY_FEED_VIA=${FLY_FEED_VIA_LIVE} in $1 and deploy again; \`fly-feed status\` shows both."
+fi
+
 # CHROMIUM_PROFILE is validated here, not left to the launcher: a typo or a
 # `vgl` on a container that never had VirtualGL installed would only show up as
 # flystage refusing to start, i.e. a black stream, minutes after the deploy
@@ -420,6 +433,17 @@ The 'current' symlink has NOT been moved; the running release is untouched."
 The 'current' symlink has NOT been moved."
         fi
         log "05-deploy: flysim.service runs the session runtime; this release ships flysim-session with flysim's compatibility string"
+    fi
+
+    # The feed bus (EDGE-02). Bus mode needs the release's fly-edge: without it flyedge.service's
+    # ConditionPathExists= skips the unit, flysim has left :7400 to it, and the stage has no feed.
+    # Refused when the env file asks for bus, and when the container is in bus mode now (an edge
+    # that is running keeps running, but the first time it restarts there is nothing to start; and
+    # the way back is `fly-feed direct`, which needs no binary of this release).
+    if [ "$FLY_FEED_VIA_EFFECTIVE" = bus ] || [ "$FLY_FEED_VIA_LIVE" = bus ]; then
+        ct_exec "$CTID" -- test -x "${release_path}/fly-edge" \
+            || die "05-deploy: REFUSING to deploy release ${version}: the feed is on the bus (FLY_FEED_VIA=bus: $([ "$FLY_FEED_VIA_EFFECTIVE" = bus ] && echo "in $1" || echo "on the container")) and this release has no fly-edge. Run \`fly-feed direct\` in the container and set FLY_FEED_VIA=direct in $1 first, or deploy a release that ships fly-edge. The 'current' symlink has NOT been moved."
+        log "05-deploy: the feed is on the bus; this release ships fly-edge"
     fi
 
     log "05-deploy: flipping /opt/fly/current -> ${release_path} atomically"
@@ -770,7 +794,7 @@ fi
 # ---------------------------------------------------------------------------
 log "05-deploy: converging bin/ helpers to /opt/fly/bin"
 ct_exec "$CTID" -- mkdir -p /opt/fly/bin
-for name in fly-watchdog fly-loop-recover fly-loop-reset fly-recap fly-retention fly-reset-to-milestone fly-cpu-confine fly-runtime fly-runtime-probation fly-shadow-run flypush flystage-launch flycast-launch wait-for-x wait-for-stage wait-for-health; do
+for name in fly-watchdog fly-loop-recover fly-loop-reset fly-recap fly-retention fly-reset-to-milestone fly-cpu-confine fly-feed fly-runtime fly-runtime-probation fly-shadow-run flypush flystage-launch flycast-launch wait-for-x wait-for-stage wait-for-health; do
     converge_file "$CTID" "$INFRA_DIR/bin/$name" "/opt/fly/bin/$name" 0755 root:root >/dev/null
 done
 

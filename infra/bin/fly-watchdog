@@ -48,6 +48,7 @@ log_info() {
 # encoder actually opened (docs/design/gpu.md section 5).
 : "${FLY_ENCODER_METRIC:=${TEXTFILE_DIR}/fly_encoder.prom}"
 : "${FLY_ENV_FILE:=/etc/fly/fly.env}"
+: "${FLY_PROC_DIR:=/proc}"
 # --- check 9 (capture freeze) inputs, infra/docs/capture-freeze.md ---------
 : "${FLY_REC_DIR:=/srv/fly/media/rec}"       # flycast's 10-minute mpegts segments
 : "${FFMPEG:=/usr/bin/ffmpeg}"
@@ -156,7 +157,7 @@ write_textfile_metrics() {
     {
         echo "# HELP fly_watchdog_restarts_total Restarts issued because that unit's own check failed (cascade restarts from another unit's escalation are counted only in fly_watchdog_escalations_total, not here)."
         echo "# TYPE fly_watchdog_restarts_total counter"
-        for unit in flysim flystage flycast mediamtx flypush flystage-web; do
+        for unit in flysim flystage flycast mediamtx flypush flystage-web flyedge; do
             echo "fly_watchdog_restarts_total{unit=\"${unit}\"} $(get_counter restarts_total "$unit")"
         done
         # Check 7's own restart reason, kept as a separate labelset on the
@@ -357,25 +358,81 @@ check_flysim() {
 # bus"), which exports them under the same names. FLY_FEED_METRICS_URL in the
 # watchdog's own environment overrides both.
 # ============================================================================
+# `direct` or `bus`: who serves the feed RIGHT NOW. What fly.env says is what the next start of
+# flysim does; what the running flysim started with (its environment: `fly-feed status` reads the
+# same) is what is true. They differ between a deploy that changed FLY_FEED_VIA and the next
+# restart, and judging the edge in that window would restart a flysim that is serving the feed
+# itself. So: the running process when its environment can be read (flysim runs as the same user),
+# else the file. Lowercased, because flysim reads the value case-insensitively; anything else, or
+# no line, is direct.
+feed_via() {
+    local via="" pid=""
+    pid="$(systemctl show -p MainPID --value flysim.service 2>/dev/null | head -n1 || true)"
+    if [ -n "$pid" ] && [ "$pid" != 0 ] && [ -r "${FLY_PROC_DIR}/${pid}/environ" ]; then
+        via="$(tr '\0' '\n' <"${FLY_PROC_DIR}/${pid}/environ" 2>/dev/null | awk -F= '/^FLY_FEED_VIA=/ { print $2; exit }' | tr -d ' \r"' | tr '[:upper:]' '[:lower:]' || true)"
+    elif [ -f "$FLY_ENV_FILE" ]; then
+        via="$(awk -F= '/^FLY_FEED_VIA=/ { print $2; exit }' "$FLY_ENV_FILE" 2>/dev/null | tr -d ' \r"' | tr '[:upper:]' '[:lower:]' || true)"
+    fi
+    if [ "$via" = "bus" ]; then echo bus; else echo direct; fi
+}
+
 feed_metrics_url() {
     if [ -n "${FLY_FEED_METRICS_URL:-}" ]; then
         echo "$FLY_FEED_METRICS_URL"
         return
     fi
-    local via=""
-    if [ -f "$FLY_ENV_FILE" ]; then
-        # Lowercased: flysim reads the value case-insensitively, so `Bus` is bus mode.
-        via="$(awk -F= '/^FLY_FEED_VIA=/ { print $2; exit }' "$FLY_ENV_FILE" 2>/dev/null | tr -d ' \r"' | tr '[:upper:]' '[:lower:]' || true)"
-    fi
-    if [ "$via" = "bus" ]; then
+    if [ "$(feed_via)" = "bus" ]; then
         echo "$FLY_EDGE_METRICS_URL"
     else
         echo "$FLY_METRICS_URL"
     fi
 }
 
+# Check 2a (FLY_FEED_VIA=bus only): the edge itself. flyedge.service active and its /healthz 200
+# (subscribed to flysim's bus, a snapshot within the last 15 s). Not judged while flysim is down
+# or restarting (check 1's business: the edge follows it by itself), and one failed pass is let go:
+# a flysim that has only just answered may not have published yet. After that:
+#   2nd consecutive failure   restart flyedge (the escalation's restart)
+#   3rd                       and the page and the encoder (escalate's chain)
+#   4th                       the edge cannot be kept up: the feed goes back to flysim, `fly-feed
+#                             direct --no-wait` (a restart of flysim, one stream gap, then the page
+#                             is served again by the process that always worked). It is logged as
+#                             an escalation and leaves FLY_FEED_VIA=direct until an operator
+#                             switches again; this check then does nothing.
+check_flyedge() {
+    if [ "$(feed_via)" != "bus" ]; then
+        record_ok flyedge
+        return 0
+    fi
+    if ! curl -fsS -o /dev/null --max-time 5 "${FLY_CONTROL_URL}/healthz" 2>/dev/null; then
+        return 0
+    fi
+    if is_active flyedge.service \
+        && curl -fsS -o /dev/null --max-time 5 "${FLY_EDGE_METRICS_URL}/healthz" 2>/dev/null; then
+        record_ok flyedge
+        return 0
+    fi
+    record_fail flyedge
+    local n
+    n="$(fail_count flyedge)"
+    if [ "$n" -ge 4 ] && fails_within_minutes flyedge 15; then
+        log_err "flyedge: ${n} consecutive failures, restarts did not bring it back: switching the feed to direct (fly-feed direct)"
+        inc_counter "escalations_total"
+        sudo /opt/fly/bin/fly-feed direct --no-wait || log_err "fly-feed direct FAILED; the edge stays down"
+        record_ok flyedge
+    elif [ "$n" -ge 2 ]; then
+        escalate flyedge flystage flycast
+    fi
+}
+
 check_flystage() {
-    local metrics frames clients ok=1
+    local metrics frames clients ok=1 chain=(flycast)
+    if [ "$(feed_via)" = "bus" ] && [ -z "${FLY_FEED_METRICS_URL:-}" ]; then
+        # The edge serves the page. While it is down or silent that is check 2a's to fix, and a
+        # restarted page would only reconnect to nothing (and count towards a reboot).
+        curl -fsS -o /dev/null --max-time 5 "${FLY_EDGE_METRICS_URL}/healthz" 2>/dev/null || return 0
+        chain=(flyedge flycast)
+    fi
     metrics="$(curl -fsS "$(feed_metrics_url)/metrics" 2>/dev/null || true)"
     if [ -z "$metrics" ]; then
         ok=0
@@ -402,7 +459,7 @@ check_flystage() {
         record_ok flystage
     else
         record_fail flystage
-        escalate flystage flycast
+        escalate flystage "${chain[@]}"
     fi
 }
 
@@ -1227,6 +1284,7 @@ check_loop() {
 
 main() {
     check_flysim
+    check_flyedge
     check_flystage
     check_flycast
     check_encoder

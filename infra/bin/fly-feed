@@ -1,0 +1,316 @@
+#!/usr/bin/env bash
+# infra/bin/fly-feed — who serves the feed WebSocket (ws://127.0.0.1:7400/feed): flysim itself
+# (`direct`) or fly-edge over flysim's feed bus (`bus`). EDGE-02; docs/design/flybus.md, "Feed over
+# the bus"; the runbook's "Feed over the bus".
+#
+# Usage (INSIDE the container, as root):
+#   fly-feed status                       configured, running, the edge and its counters (any user)
+#   fly-feed bus    [--no-restart] [--no-rollback]
+#   fly-feed direct [--no-restart] [--no-wait]
+#
+# One line decides: FLY_FEED_VIA in /etc/fly/fly.env. flysim reads it, flyedge.service's
+# ExecCondition= reads it, flysim.service has Wants=flyedge.service, so every start of flysim brings
+# up the edge in bus mode and skips it in direct mode, whoever started flysim and on whichever
+# runtime (flysim or flysim-session, `fly-runtime`): nothing else has to be enabled, started or
+# remembered. `fly-feed bus|direct` rewrites that line, restarts flysim.service (the feed changes
+# hands at the start, so the stream is down for the length of a flysim restart, exactly like the
+# unstick rule's) and waits until the page is on the feed again.
+#
+# What "healthy" means after a switch, in this order, within FLY_FEED_HEALTH_TIMEOUT (300 s):
+#   1. flysim's /healthz answers (a NEW invocation: the old process is not mistaken for it);
+#   2. bus: the edge's /healthz answers 200 (subscribed, snapshots arriving);
+#   3. if flystage.service is active: its page is on the feed (`fly_feed_clients` >= 1 on the
+#      counters of whoever serves it) and `fly_frames_sent_total` advances. Without a page unit
+#      (a box that only serves the feed) the wait ends at 2.
+# If that does not happen, `bus` puts FLY_FEED_VIA back to what it was, restarts flysim and checks
+# the same way (--no-rollback leaves it to the operator); `direct` is already the way back, so it
+# only reports. A switch that is interrupted (ssh drops, INT/TERM/HUP) rolls back the same way.
+# `--no-restart` only rewrites the line (the next start of flysim applies it). `--no-wait` restarts
+# flysim without blocking and does not wait for health or roll anything back: it is what the
+# watchdog runs (as a sudoers-granted `fly-feed direct --no-wait`) when the edge cannot be kept up.
+#
+# 05-deploy.sh writes FLY_FEED_VIA into fly.env from the operator's env file on every deploy and
+# does not restart flysim. After a `fly-feed bus`, put FLY_FEED_VIA=bus in the env file too, or the
+# next deploy writes `direct` back (the next flysim start would then follow it) and says so.
+#
+# Restarts count against flysim.service's start limit (3 in 10 minutes while the session runtime is
+# selected, `fly-runtime`): a switch and its rollback are two.
+#
+# Every switch is logged to the journal (tag fly-feed) and ${FEED_LOG}.
+set -euo pipefail
+
+: "${FLY_ENV_FILE:=/etc/fly/fly.env}"
+: "${FLY_SERVICE:=flysim.service}"
+: "${FLY_EDGE_SERVICE:=flyedge.service}"
+: "${FLY_PAGE_SERVICE:=flystage.service}"
+: "${FLY_RELEASE_DIR:=/opt/fly/current}"
+: "${FLY_CONTROL_URL:=http://127.0.0.1:7401}"
+: "${FLY_METRICS_URL:=http://127.0.0.1:9101}"
+: "${FLY_EDGE_METRICS_URL:=http://127.0.0.1:9102}"
+: "${FLY_PROC_DIR:=/proc}"
+: "${FLY_FEED_HEALTH_TIMEOUT:=300}"
+: "${FLY_FEED_LOG:=/var/lib/fly/feed.log}"
+: "${FLY_FEED_LOCK:=/run/fly/feed.lock}"
+: "${FLY_FEED_SAMPLE_SECONDS:=3}"
+FEED_LOG="$FLY_FEED_LOG"
+
+log() { echo "fly-feed: $*" >&2; }
+die() { log "$*"; exit 1; }
+
+record() {
+    if command -v logger >/dev/null 2>&1; then
+        logger -t fly-feed -- "$*" || true
+    fi
+    mkdir -p "$(dirname "$FEED_LOG")" 2>/dev/null || true
+    echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') $*" >>"$FEED_LOG" 2>/dev/null || log "could not append to $FEED_LOG"
+}
+
+usage() {
+    echo "usage: fly-feed status | bus [--no-restart] [--no-rollback] [--no-wait] | direct [--no-restart] [--no-wait]" >&2
+    exit 2
+}
+
+# direct | bus | invalid:<value>. flysim reads the value case-insensitively; a missing line is direct.
+configured() {
+    local value=""
+    if [ -f "$FLY_ENV_FILE" ]; then
+        value="$(awk -F= '/^FLY_FEED_VIA=/ { v=$0; sub(/^FLY_FEED_VIA=/, "", v); last=v } END { print last }' "$FLY_ENV_FILE" 2>/dev/null || true)"
+    fi
+    value="$(printf '%s' "$value" | tr -d ' \r"' | tr '[:upper:]' '[:lower:]')"
+    case "$value" in
+        ""|direct) echo direct ;;
+        bus) echo bus ;;
+        *) echo "invalid:${value}" ;;
+    esac
+}
+
+# What the running flysim process started with (its environment, not the file): direct | bus |
+# stopped | unknown.
+running() {
+    local pid value
+    pid="$(systemctl show -p MainPID --value "$FLY_SERVICE" 2>/dev/null | head -n1 || true)"
+    if [ -z "$pid" ] || [ "$pid" = 0 ]; then echo stopped; return; fi
+    if [ ! -r "${FLY_PROC_DIR}/${pid}/environ" ]; then echo unknown; return; fi
+    value="$(tr '\0' '\n' <"${FLY_PROC_DIR}/${pid}/environ" 2>/dev/null | awk -F= '/^FLY_FEED_VIA=/ { print $2; exit }' | tr -d ' \r"' | tr '[:upper:]' '[:lower:]' || true)"
+    case "$value" in
+        bus) echo bus ;;
+        *) echo direct ;;
+    esac
+}
+
+# The counters of whoever serves the feed in `via` mode.
+metrics_url() {
+    if [ "$1" = bus ]; then echo "$FLY_EDGE_METRICS_URL"; else echo "$FLY_METRICS_URL"; fi
+}
+
+# metric URL NAME -> the value of the first sample of NAME, or empty.
+metric() {
+    curl -fsS --max-time 5 "$1/metrics" 2>/dev/null | awk -v n="$2" '$1 == n { print $2; exit }' || true
+}
+
+# Whole-number part of a Prometheus value ("3", "3.0", "1e+06" is not expected for these).
+whole() { printf '%.0f' "${1:-0}" 2>/dev/null || echo 0; }
+
+# The page is on the feed: at least one client, and the frames counter moves over a sample.
+page_on_feed() {
+    local url first second clients
+    url="$(metrics_url "$1")"
+    clients="$(metric "$url" fly_feed_clients)"
+    [ "$(whole "$clients")" -ge 1 ] || return 1
+    first="$(metric "$url" fly_frames_sent_total)"
+    sleep "$FLY_FEED_SAMPLE_SECONDS"
+    second="$(metric "$url" fly_frames_sent_total)"
+    [ -n "$first" ] && [ -n "$second" ] && [ "$(whole "$second")" -gt "$(whole "$first")" ]
+}
+
+page_unit_active() { systemctl is-active --quiet "$FLY_PAGE_SERVICE" 2>/dev/null; }
+
+old_invocation=""
+# Wait for a NEW flysim invocation to be healthy and the feed to be flowing in `via` mode.
+healthy() {
+    local via="$1" deadline
+    deadline=$(( $(date +%s) + FLY_FEED_HEALTH_TIMEOUT ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if [ -n "$old_invocation" ] \
+            && [ "$(systemctl show -p InvocationID --value "$FLY_SERVICE" 2>/dev/null | head -n1 || true)" = "$old_invocation" ]; then
+            sleep 1
+            continue
+        fi
+        if curl -fsS -o /dev/null --max-time 5 "${FLY_CONTROL_URL}/healthz" 2>/dev/null; then
+            if [ "$via" = bus ] && ! curl -fsS -o /dev/null --max-time 5 "${FLY_EDGE_METRICS_URL}/healthz" 2>/dev/null; then
+                sleep 1
+                continue
+            fi
+            if ! page_unit_active; then
+                log "healthy (${via}): ${FLY_PAGE_SERVICE} is not active, so no page to wait for"
+                return 0
+            fi
+            if page_on_feed "$via"; then
+                log "healthy (${via}): the page is on the feed and frames are moving"
+                return 0
+            fi
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+# Rewrite (or add) the FLY_FEED_VIA line, keeping every other line, the mode and the owner.
+set_via() {
+    local value="$1" tmp
+    [ -f "$FLY_ENV_FILE" ] || die "no ${FLY_ENV_FILE}; deploy first (infra/05-deploy.sh writes it)"
+    tmp="$(mktemp "${FLY_ENV_FILE}.XXXXXX")"
+    awk -v v="$value" '
+        /^FLY_FEED_VIA=/ { if (!done) { print "FLY_FEED_VIA=" v; done=1 } ; next }
+        { print }
+        END { if (!done) print "FLY_FEED_VIA=" v }
+    ' "$FLY_ENV_FILE" >"$tmp"
+    chmod --reference="$FLY_ENV_FILE" "$tmp" 2>/dev/null || chmod 0640 "$tmp"
+    chown --reference="$FLY_ENV_FILE" "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$FLY_ENV_FILE"
+}
+
+locked=0
+take_lock() {
+    [ "$locked" -eq 0 ] || return 0
+    mkdir -p "$(dirname "$FLY_FEED_LOCK")" 2>/dev/null || true
+    exec 8>>"$FLY_FEED_LOCK"
+    flock -w 60 8 || die "another fly-feed holds ${FLY_FEED_LOCK}; not switching"
+    locked=1
+}
+
+restart_flysim() {
+    systemctl reset-failed "$FLY_SERVICE" 2>/dev/null || true
+    old_invocation="$(systemctl show -p InvocationID --value "$FLY_SERVICE" 2>/dev/null | head -n1 || true)"
+    log "restarting ${FLY_SERVICE}"
+    # --no-block: a start that never becomes READY must not hold this process (and the lock);
+    # `healthy` proves it is talking to the new invocation.
+    systemctl restart --no-block "$FLY_SERVICE"
+}
+
+status_report() {
+    local conf run edge_state url
+    conf="$(configured)"
+    run="$(running)"
+    echo "configured: ${conf}"
+    echo "running:    ${run}"
+    if [ "$run" != stopped ] && [ "$run" != unknown ] && [ "$conf" != "$run" ] && [[ "$conf" != invalid:* ]]; then
+        echo "  fly.env and the running flysim disagree: the next start of ${FLY_SERVICE} applies ${conf} (fly-feed ${conf} does it now)"
+    fi
+    edge_state="$(systemctl is-active "$FLY_EDGE_SERVICE" 2>/dev/null || true)"
+    echo "${FLY_EDGE_SERVICE}: ${edge_state:-unknown}"
+    url="$(metrics_url "$run")"
+    if [ "$run" = bus ]; then
+        if curl -fsS -o /dev/null --max-time 5 "${FLY_EDGE_METRICS_URL}/healthz" 2>/dev/null; then
+            echo "edge healthz: ok"
+        else
+            echo "edge healthz: NOT OK ($(curl -sS --max-time 5 "${FLY_EDGE_METRICS_URL}/healthz" 2>&1 | head -c 100))"
+        fi
+        echo "edge snapshot age: $(metric "$url" fly_edge_snapshot_age_seconds) s; bus lost: $(metric "$url" fly_edge_bus_lost_total); bind failures: $(metric "$url" fly_edge_bind_failures_total); decode failures: $(metric "$url" fly_edge_decode_failures_total)"
+    fi
+    echo "feed clients: $(metric "$url" fly_feed_clients) (counters of the ${run} server); frames sent: $(metric "$url" fly_frames_sent_total)"
+    if [ -f "$FEED_LOG" ]; then echo "last switch: $(tail -n1 "$FEED_LOG")"; fi
+}
+
+[ $# -ge 1 ] || usage
+command="$1"; shift
+restart=1
+rollback=1
+wait_for_health=1
+for arg in "$@"; do
+    case "$arg" in
+        --no-restart) restart=0 ;;
+        --no-rollback) rollback=0 ;;
+        --no-wait) wait_for_health=0 ;;
+        *) usage ;;
+    esac
+done
+
+case "$command" in
+    status) status_report; exit 0 ;;
+    bus|direct) ;;
+    *) usage ;;
+esac
+
+[ "$(id -u)" -eq 0 ] || die "run as root (it writes ${FLY_ENV_FILE} and restarts ${FLY_SERVICE})"
+before="$(configured)"
+[[ "$before" != invalid:* ]] || die "FLY_FEED_VIA in ${FLY_ENV_FILE} is '${before#invalid:}', not direct or bus; fix it (a deploy rewrites it) before switching"
+
+if [ "$command" = bus ]; then
+    [ -x "${FLY_RELEASE_DIR}/fly-edge" ] || die "this release has no ${FLY_RELEASE_DIR}/fly-edge; bus mode needs one (deploy a release that ships it)"
+fi
+
+take_lock
+running_before="$(running)"
+if [ "$before" = "$command" ] && [ "$running_before" = "$command" ] && [ "$restart" -eq 1 ]; then
+    log "already ${command}: fly.env says it and the running flysim started that way; nothing to do"
+    status_report
+    exit 0
+fi
+
+# An interrupted or failed `bus` puts the previous value back and restarts flysim on it. When
+# the line already said bus (a deploy wrote it, the running flysim never started that way), the
+# way back is direct: the state that worked.
+back="$before"
+if [ "$before" = bus ] && [ "$command" = bus ]; then back=direct; fi
+switching=0
+restarted=0
+# shellcheck disable=SC2317  # runs from the EXIT trap
+on_exit() {
+    local rc=$?
+    trap - EXIT INT TERM HUP
+    if [ "$switching" -eq 1 ]; then
+        switching=0
+        set_via "$back" || true
+        record "${back} (switch to ${command} interrupted or failed (exit ${rc}); rolled back)"
+        if [ "$restarted" -eq 1 ]; then restart_flysim || true; fi
+    fi
+    exit "$rc"
+}
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+switching=1
+set_via "$command"
+record "${command} (was ${before}; flysim was running ${running_before})"
+if [ "$restart" -ne 1 ]; then
+    switching=0
+    log "FLY_FEED_VIA=${command} written; the next start of ${FLY_SERVICE} applies it"
+    exit 0
+fi
+restarted=1
+restart_flysim
+if [ "$wait_for_health" -ne 1 ]; then
+    switching=0
+    record "${command}: flysim restart queued (--no-wait); health not checked"
+    log "restart queued; fly-feed status shows the result"
+    exit 0
+fi
+if healthy "$command"; then
+    switching=0
+    if [ "$command" = direct ] && systemctl is-active --quiet "$FLY_EDGE_SERVICE" 2>/dev/null; then
+        log "WARNING: ${FLY_EDGE_SERVICE} is still active in direct mode; stopping it"
+        systemctl stop "$FLY_EDGE_SERVICE" || true
+    fi
+    record "${command}: healthy"
+    log "the feed is served ${command}"
+    exit 0
+fi
+log "the feed did not come up healthy (${command}) within ${FLY_FEED_HEALTH_TIMEOUT}s"
+if [ "$command" = bus ] && [ "$rollback" -eq 1 ]; then
+    set_via "$back"
+    switching=0
+    record "${back} (automatic rollback: ${command} was not healthy within ${FLY_FEED_HEALTH_TIMEOUT}s)"
+    restart_flysim
+    if healthy "$back"; then
+        log "rolled back to ${back}; it is healthy"
+    else
+        log "rolled back to ${back}, and it is NOT healthy either: journalctl -u ${FLY_SERVICE} -u ${FLY_EDGE_SERVICE}"
+    fi
+else
+    switching=0
+    record "${command}: NOT healthy; left as it is (journalctl -u ${FLY_SERVICE} -u ${FLY_EDGE_SERVICE})"
+fi
+exit 1

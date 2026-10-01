@@ -14,6 +14,11 @@
 [Unit]
 Description=flysim: the fly brain, emulator, and control/feed APIs
 After=network.target
+# Every start of flysim starts the feed edge when fly.env says FLY_FEED_VIA=bus, and skips it in
+# direct mode (units/flyedge.service decides): a stop and start of flysim (fly-loop-reset,
+# fly-reset-to-milestone) would otherwise leave the stage with nothing on :7400, because
+# flyedge.service's Requires= stops the edge with flysim but does not bring it back.
+Wants=flyedge.service
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
