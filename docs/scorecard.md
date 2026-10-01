@@ -15,7 +15,7 @@ export FLY_ROM=/path/to/the-cartridge      # read, never copied
 cargo build --release -p fly-scorecard     # from services/flysim
 
 fly-scorecard list                                   # the set, resolved, each checkpoint's rung
-fly-scorecard suite --label v0.7.5 --out card.json   # the set x 3 seeds x 12 brain minutes
+fly-scorecard suite --label v0.7.5 --out card.json   # the set x 3 seeds x 10 brain minutes
 fly-scorecard summary card.json                      # one screen of markdown
 fly-scorecard compare old.json new.json              # exit 1 when a metric regressed
 fly-scorecard run-one --checkpoint X --seed 1        # one run, JSON out (--out FILE)
@@ -70,7 +70,7 @@ One `RunReport` per (checkpoint, seed). Every number is computed from per-frame 
 The watchdog's rules are the shell's: the same thresholds, the same order, the same two-probe
 memory for the zero-progress, unrewarded and unwon-battle rules. Two things differ, both about
 time: a run is short, so the probe cadence is a parameter (default every 120 brain seconds,
-first at 300; the stream's is five wall minutes) and the window is the last ten brain minutes or
+first at 240; the stream's is five wall minutes) and the window is the last ten brain minutes or
 the whole run when it is shorter; and the first probe compares the exploration count with the
 run's starting count, which the live check lacks after a boot.
 
@@ -94,17 +94,20 @@ minute are reported, never judged: healing more can follow losing more.
 
 ## Cost and size
 
-A brain minute is about 25 wall seconds on a 5-thread session run on the build box (the legacy
-loop is about a quarter faster). The default suite, twelve checkpoints by three seeds by twelve
-brain minutes, is 432 brain minutes: two runs at a time, five threads each, on ten cores, a little
-over an hour. More seeds tighten the test; longer runs let rungs climb. Three seeds of twelve
-minutes is the smallest suite whose pair count (36) can reach p < 0.001.
+On the ten-core build box a session run costs about 15 to 20 wall seconds per brain minute of
+throughput, whatever the split: one job of five threads, two of four and three of three were
+within 20% of each other (two jobs of four threads was best, and is the default; the legacy loop
+is about a quarter faster). The default suite, twelve checkpoints by three seeds by ten brain
+minutes, is 360 brain minutes: about an hour and a half on a quiet box. The box is shared: a
+compile storm beside it triples the wall time and changes no number. More seeds tighten the
+test; longer runs let rungs climb. Three seeds is the smallest suite whose pair count (36) can
+reach p < 0.001.
 
 ## What it does not do
 
 - It does not rebuild session ledgers a restore starts empty (the trap hunt's
   `FLY_TRAP_SEED_*`); a trap that needs them is that tool's.
-- Twelve brain minutes rarely climb two rungs. Rungs per hour is a rate over many runs, not a
+- Ten brain minutes rarely climb two rungs. Rungs per hour is a rate over many runs, not a
   per-run prediction; a release that is faster by a rung every few hours shows only across the
   suite.
 - It judges play against the previous release, not against a notion of good. A regression is

@@ -50,13 +50,13 @@ enum Cmd {
         checkpoint: PathBuf,
         #[arg(long, default_value_t = 1)]
         seed: u32,
-        #[arg(long, default_value_t = 12.0)]
+        #[arg(long, default_value_t = 10.0)]
         minutes: f64,
         #[arg(long, default_value = "session")]
         runtime: String,
         #[arg(long, default_value = "macros")]
         mode: String,
-        #[arg(long, default_value_t = 5)]
+        #[arg(long, default_value_t = 4)]
         threads: usize,
         #[arg(long, default_value_t = 120.0)]
         probe_s: f64,
@@ -80,14 +80,14 @@ enum Cmd {
         /// Seeds 1..=K.
         #[arg(long, default_value_t = 3)]
         seeds: u32,
-        #[arg(long, default_value_t = 12.0)]
+        #[arg(long, default_value_t = 10.0)]
         minutes: f64,
         #[arg(long, default_value = "session")]
         runtime: String,
         #[arg(long, default_value = "macros")]
         mode: String,
         /// Sweep threads per run.
-        #[arg(long, default_value_t = 5)]
+        #[arg(long, default_value_t = 4)]
         threads: usize,
         /// Runs at a time.
         #[arg(long, default_value_t = 2)]

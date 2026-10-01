@@ -35,7 +35,7 @@ pub struct TallyConfig {
 
 impl Default for TallyConfig {
     fn default() -> Self {
-        Self { rules: Rules::default(), probe_s: 120.0, first_probe_s: 300.0 }
+        Self { rules: Rules::default(), probe_s: 120.0, first_probe_s: 240.0 }
     }
 }
 
