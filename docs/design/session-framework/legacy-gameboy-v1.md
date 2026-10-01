@@ -440,6 +440,22 @@ behaviour they must not change.
   the flysim cpuset, work overlapping Prepare (a publication left in flight, for instance) slowed
   the ticks by up to a third, so the coordinator finishes each boundary before the next Prepare.
 
+**Amendment, 2026-10-01 (PERF-02): thread placement in the service.** Again nothing in the
+declaration, the digest or the compatibility string changes, and no result can: placement chooses
+the CPU a thread runs on, never what an index of a parallel phase computes.
+
+- `flysim-session` (in-process and thread modes), before it spawns any thread, gives each of the
+  `RAYON_NUM_THREADS - 1` spawned sweep workers one CPU of the unit's cpuset to itself and confines
+  every other thread -- the dispatching runtime worker, the coordinator, the listeners, the
+  checkpoint writer -- to the rest (the first CPU, plus any beyond the sweep's). Process mode and
+  the legacy loop are unchanged. `FLY_SESSION_PIN=0` keeps every thread floating, as before.
+- Why: the session's host threads sleep and wake around every transition, so the sweep workers
+  park and wake every transition too, and the scheduler often woke two of them onto one CPU while
+  a host thread held another: each parallel phase of that transition then took two shares' time.
+  On the release CPU model with a four-CPU cpuset the session's ticks ran 35% slower than the
+  legacy loop's, which is what failed CUT-01's speed probation (0.959 < 0.97); placed, they cost
+  what the legacy loop's do.
+
 ## 13. Machine-readable parts
 
 | Where | What |
