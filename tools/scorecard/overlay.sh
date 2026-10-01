@@ -13,7 +13,9 @@ set -euo pipefail
 ref="${1:?usage: overlay.sh <scorecard-ref> <target-tree>}"
 target="${2:?usage: overlay.sh <scorecard-ref> <target-tree>}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo="$(git -C "$here" rev-parse --show-toplevel)"
+# SCORECARD_REPO names the repository holding <scorecard-ref> when this script was extracted
+# from it (a copy outside any checkout).
+repo="${SCORECARD_REPO:-$(git -C "$here" rev-parse --show-toplevel)}"
 ws="$target/services/flysim/Cargo.toml"
 task="$target/services/flysim/crates/fly-legacy-session/src/task.rs"
 
