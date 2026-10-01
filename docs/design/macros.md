@@ -2114,6 +2114,47 @@ Tests: `the_shift_offers_party_list_is_the_flys_turn_and_its_way_out_is_back`, t
 uses `FLY_ROW70_FORCED_CHECKPOINT`, the rung-12 archive carried forward by the stub to the same
 Lass with a Zubat caught.
 
+### 12.34 The battle bag's cursor is the entry, not the window's row (2026-10-01, row 71)
+
+Live on v0.7.3, rung 15, Route 25 (map 36): a wild Oddish L13 at 8 of 36, Wartortle L35 out, the
+bag open. Row 69's rule saw the HP low enough for the ball and left `THROW BALL` alone on the pad.
+Every start was `blocked`, 131 of 131 in ten minutes and about two hours in all. A flysim restart
+restored the same battle with the same bag open, so the trap came straight back.
+
+- **Not a trainer.** `wIsInBattle` was 1 (wild), so the cartridge would have taken the ball.
+  There were two Poké Balls in the bag, the party had room, the Oddish was a new species, and
+  Wartortle's moves had PP left. `THROW BALL` was a correct button that its script could not
+  carry out.
+- **The misread.** The battle bag is a `DisplayListMenuID` list. Its window shows three entries,
+  the arrow moves over rows `0, 1, 2` (`wCurrentMenuItem`), and the list scrolls under the arrow.
+  The entry under the arrow is the row plus `wListScrollOffset`. `state::battle` reported the row
+  as the bag cursor. `THROW BALL` aims at the ball's bag index, here 4 (TM34, HELIX FOSSIL, NUGGET
+  and TM45 come first), and no row can ever be 4. The cursor step walked between rows 1 and 2, ran out
+  of budget and blocked, even though the arrow was on the ball (offset 3, row 1).
+- **The rule.** The bag cursor is `wCurrentMenuItem + wListScrollOffset`, the same sum
+  `DisplayListMenuIDLoop` makes when A selects. `wListScrollOffset` (`$CC36`) is pinned from the
+  operand of that read and checked against the cartridge, the same way as `hJoyLast` (12.27).
+  Every UP or DOWN press then moves the entry by one, either by moving the arrow or by scrolling
+  the window, so the existing cursor step reaches any entry. `ITEM`'s Potion had the same limit
+  (fourth entry or later) and is fixed by the same change.
+- **Why row 69 turned it into a trap.** Before row 69, a ball fourth or later in the bag was a
+  dead `THROW BALL` next to the moves. That cost a hold but did not trap the fly. Row 69 withholds
+  the moves, `SWITCH`, `RUN` and the bag's `BACK` at low HP, so the dead button became the only
+  one.
+
+Other lists, checked: the mart's buy and sell lists are `DisplayListMenuID` lists too, and
+`state::shop` now reports their cursor as the entry in the same way. The battle menu, the move
+list, the party list and the start menu do not scroll. No macro navigates the PC's lists.
+`MART_CURSOR_ROWS` (row 55) still limits purchases to the first three rows, because lifting it puts
+new buttons on the pad and needs its own survey on the cartridge.
+
+Tests: `a_battle_frame_with_a_cursor_accepting_input_is_the_flys_turn` (state, a bag scrolled by
+three), `a_mart_reports_which_of_its_screens_is_up` (a scrolled buy list, and a stale offset on the
+counter menu), the catch test's check that its ball is in the window's first rows (it still
+throws),
+`row71_a_ball_past_the_bags_window_is_thrown` (`FLY_ROW71_CHECKPOINT`, the live trap) and
+`row71_the_list_scroll_offset_is_where_the_cartridge_reads_it` (FLY_ROM).
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")

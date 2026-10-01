@@ -239,6 +239,9 @@ pub enum BattleMenu {
     /// `ITEM` and section 14's `THROW BALL` navigate by (2026-09-17). Then it needed to be the
     /// fly's *turn*: a bag reading as nobody's turn landed on the between-turns row, whose `NEXT`
     /// is the A that advances text and on an open bag is the A that uses an item (12.10).
+    ///
+    /// `cursor` is the 0-based bag entry the arrow is on -- the window's row plus the list's
+    /// scroll offset, so the bag's `count`th entry is CANCEL (row 71).
     Bag { cursor: u8, count: u8 },
 }
 

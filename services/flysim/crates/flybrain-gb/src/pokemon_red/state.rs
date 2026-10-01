@@ -50,6 +50,18 @@ pub mod poke {
     /// reads it back from there (row 63, `docs/design/macros.md` 12.27).
     pub const H_JOY_LAST: u16 = 0xffb1;
 
+    /// `wListScrollOffset`, `$CC36`: how many entries of a `DisplayListMenuID` list are scrolled
+    /// off the top of its window (row 71, `docs/design/macros.md` 12.34).
+    ///
+    /// Not in the reviewed address list, so pinned the way [`H_JOY_LAST`] is: read from the
+    /// operands of the cartridge's own instructions and checked by the ROM-gated test.
+    /// `DisplayListMenuIDLoop.buttonAPressed` turns the cursor into the entry it selects with
+    /// `ld a, [wCurrentMenuItem] / ld c, a / ld a, [wListScrollOffset] / add c / ld c, a`
+    /// (`home/list_menu.asm`), whose second load is `$CC36`. The cursor walks the window's rows
+    /// `0, 1, 2` and the window scrolls under it, so the entry under the cursor is the row plus
+    /// this.
+    pub const LIST_SCROLL_OFFSET: u16 = 0xcc36;
+
     /// `ram/hram.asm`: `hWhoseTurn`, "0 on player's turn, 1 on enemy's turn". Counted from the
     /// `hJoyLast` anchor above through the declarations that follow it (each `UNION` at its
     /// largest member) to `$FFF3`; the section's remaining nine bytes then end at `$FFFE`, the
@@ -687,8 +699,18 @@ pub fn battle(memory: &mut dyn MemoryReader) -> Option<Battle> {
         // Pokédex page, the nickname offer and the naming screen -- read as an open bag, the pad
         // was `BACK` and `THROW BALL`, and the ball's A presses typed the nickname: 6,900 frames
         // from the catch to the end of the battle, under a `THROW BALL` that threw nothing.
+        //
+        // **And the cursor is the bag entry, not the window's row** (row 71). `wCurrentMenuItem`
+        // is the row of the window the arrow is on, `0..=2`, and the window scrolls under it, so
+        // the entry is that row plus [`poke::LIST_SCROLL_OFFSET`] -- the sum the cartridge itself
+        // makes when A selects. Read as the row alone, a ball fourth or later in the bag was a
+        // target no cursor reading could ever equal: live on rung 15, a wild Oddish at 8 of 36,
+        // POKé BALL fifth in the bag, `THROW BALL` alone on the pad (row 69's throw at low
+        // HP) and every start `blocked` while the arrow sat on the ball itself, 131 of 131 in ten
+        // minutes.
         let count = bag(memory).len().min(usize::from(poke::BAG_CAPACITY));
-        BattleMenu::Bag { cursor: cursor.current, count: u8::try_from(count).unwrap_or(0) }
+        let entry = cursor.current.saturating_add(read(memory, poke::LIST_SCROLL_OFFSET));
+        BattleMenu::Bag { cursor: entry, count: u8::try_from(count).unwrap_or(0) }
     } else {
         BattleMenu::None
     };
@@ -1348,19 +1370,33 @@ pub fn shop(memory: &mut dyn MemoryReader) -> Option<Shop> {
         if text_box(memory).waiting {
             return Some(Shop { screen: ShopScreen::Talking, cursor });
         }
-        let screen = if mart_item_window_drawn(memory) {
-            ShopScreen::Buying
-        } else {
-            ShopScreen::BuySellQuit
-        };
-        return Some(Shop { screen, cursor });
+        if mart_item_window_drawn(memory) {
+            return Some(Shop { screen: ShopScreen::Buying, cursor: list_entry(memory, cursor) });
+        }
+        return Some(Shop { screen: ShopScreen::BuySellQuit, cursor });
     }
     if read(memory, ram::wTextBoxID) != poke::BUY_SELL_QUIT_MENU {
         return None;
     }
-    let screen =
-        if list == poke::ITEM_LIST_MENU { ShopScreen::Selling } else { ShopScreen::BuySellQuit };
-    Some(Shop { screen, cursor })
+    if list == poke::ITEM_LIST_MENU {
+        return Some(Shop { screen: ShopScreen::Selling, cursor: list_entry(memory, cursor) });
+    }
+    Some(Shop { screen: ShopScreen::BuySellQuit, cursor })
+}
+
+/// A `DisplayListMenuID` cursor as the entry it is on rather than the window's row (row 71).
+///
+/// The arrow walks the window's rows and the list scrolls under it, so the entry is the row plus
+/// [`poke::LIST_SCROLL_OFFSET`], and the last entry the window can reach is its last row plus the
+/// same. Only for a list that is on screen: the offset is one shared byte that outlives every list,
+/// so a menu that is not a list menu keeps its own cursor.
+fn list_entry(memory: &mut dyn MemoryReader, cursor: Cursor) -> Cursor {
+    let offset = read(memory, poke::LIST_SCROLL_OFFSET);
+    Cursor {
+        current: cursor.current.saturating_add(offset),
+        max: cursor.max.saturating_add(offset),
+        ..cursor
+    }
 }
 
 /// Whether the mart's priced item window is the thing drawn over the counter menu.

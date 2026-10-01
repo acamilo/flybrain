@@ -1058,3 +1058,22 @@ one `$77`) from (10, 3). The run's length is the capacity (`PLAYER_NAME_LENGTH -
 `NAME_LENGTH - 1`). The menu bytes outlive the screen, so both halves are needed, as for
 `yes_no_prompt`. The player's and rival's names at the start of a game are this screen before
 `wStatusFlags6`'s game-timer bit is set, and `scene::detect` answers `Title` for them first.
+
+## 16. The list's scroll offset (2026-10-01, `docs/design/macros.md` 12.34)
+
+Row 71. One byte the reviewed list does not carry. It is pinned the way `hJoyLast` is, and
+`row71_the_list_scroll_offset_is_where_the_cartridge_reads_it` (FLY_ROM) reads it back from the
+code that uses it. Section 7's "cannot be pinned" applied to the symbol table. The pin comes from
+the cartridge instead.
+
+| name | where | what reads it |
+| --- | --- | --- |
+| `wListScrollOffset` | `$CC36` | entries scrolled off the top of a `DisplayListMenuID` window; the operand of `DisplayListMenuIDLoop.buttonAPressed`'s `ld a, [wCurrentMenuItem] / ld c, a / ld a, [wListScrollOffset] / add c / ld c, a`, found once in the cartridge |
+
+**`BattleMenu::Bag`'s `cursor`** is now `wCurrentMenuItem + wListScrollOffset`, the bag entry
+under the arrow, which is the sum the cartridge makes on A. In the live trap the arrow was on row 1
+with an offset of 3, so it was on entry 4, the Poké Ball. `state::shop`'s buy and sell lists
+report their cursor (and its `max`) as the entry the same way. The offset is added only while a
+list is on screen, because the byte outlives every list. Purchases still use only the first three
+rows (`MART_CURSOR_ROWS`, section 7).
+

@@ -420,6 +420,18 @@ fn a_battle_frame_with_a_cursor_accepting_input_is_the_flys_turn() {
     assert_eq!(fight.menu, BattleMenu::Bag { cursor: 0, count: 1 });
     assert!(fight.own_turn, "the battle bag is a cursor accepting input");
 
+    // Row 71: the window scrolls under the arrow, and the cursor is the entry, not the row. The
+    // live bag: TM34, HELIX FOSSIL, NUGGET and TM45 in front and the POKé BALL fifth, scrolled by
+    // three so the window shows TM45, the ball and CANCEL with the arrow on the ball.
+    use crate::pokemon_red::macros::cartridge::item;
+    wram.bag(&[(0xea, 1), (0x2a, 1), (0x31, 1), (0xf5, 1), (item::POKE_BALL, 2)])
+        .set(ram::wCurrentMenuItem, 1)
+        .set(poke::LIST_SCROLL_OFFSET, 3);
+    let fight = battle(&mut wram).unwrap();
+    assert_eq!(fight.menu, BattleMenu::Bag { cursor: 4, count: 5 }, "row 1 of a window scrolled by 3");
+    wram.set(poke::LIST_SCROLL_OFFSET, 0);
+    assert_eq!(battle(&mut wram).unwrap().menu, BattleMenu::Bag { cursor: 1, count: 5 });
+
     // And the two frames that are not a choice. A move list whose cursor cannot be placed is a
     // battle's opening frames (row 30b), and no menu at all is text, an animation or a turn
     // resolving.
@@ -573,6 +585,17 @@ fn a_mart_reports_which_of_its_screens_is_up() {
     wram.set(ram::wListMenuID, poke::PRICED_ITEM_LIST_MENU)
         .screen_tile(poke::MART_NAME_COLUMN, poke::MART_NAME_ROW, poke::CHAR_UPPER_A);
     assert_eq!(shop(&mut wram).map(|shop| shop.screen), Some(ShopScreen::Buying));
+
+    // Row 71: the buy list's cursor is the entry, the window's row plus the scroll offset, and so
+    // is the last entry the window reaches.
+    wram.cursor(4, 5, 1, 2, poke::pad::A | poke::pad::B).set(poke::LIST_SCROLL_OFFSET, 2);
+    let buying = shop(&mut wram).unwrap();
+    assert_eq!((buying.cursor.current, buying.cursor.max), (3, 4));
+    // The counter menu is not a list menu: a stale offset leaves its cursor alone.
+    wram.screen_tile(poke::MART_NAME_COLUMN, poke::MART_NAME_ROW, 0x7f);
+    let counter = shop(&mut wram).unwrap();
+    assert_eq!(counter.screen, ShopScreen::BuySellQuit);
+    assert_eq!((counter.cursor.current, counter.cursor.max), (1, 2));
 
     // The bag list on its own is the start menu's, not a mart's.
     let mut wram = Wram::overworld();
