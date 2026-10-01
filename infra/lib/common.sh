@@ -168,6 +168,19 @@ feed_via_normalize() {
     esac
 }
 
+# control_via_normalize VALUE — FLY_CONTROL_VIA as feed_via_normalize does FLY_FEED_VIA:
+# lowercased (empty means "direct"), or return 1 for anything but direct|bus. flysim refuses
+# anything else at boot; 05-deploy.sh refuses it at deploy and writes the lowercased word, which
+# the watchdog reads to know who serves :7401 (docs/design/flybus.md, "Control over the bus").
+control_via_normalize() {
+    local via
+    via="$(printf '%s' "${1:-direct}" | tr '[:upper:]' '[:lower:]')"
+    case "$via" in
+        direct|bus) printf '%s\n' "$via" ;;
+        *) return 1 ;;
+    esac
+}
+
 cpuset_partition() {
     local cpuset="$1" rayon_threads="$2" encoder_cores="${3:-2}"
     local sim_cpus remainder remainder_count page_count page_cpus encoder_cpus
@@ -196,7 +209,7 @@ cpuset_partition() {
 #   flysim.slice            the sim's CPUs (flysim.service and flysim-session.service run in it);
 #   flysim.service, flysim-session.service   the same set (belt and braces: a unit outside the
 #                            slice is still bounded);
-#   xvfb, flystage, flystage-web, pulse, mediamtx, flyedge   the page CPUs;
+#   xvfb, flystage, flystage-web, pulse, mediamtx, flyedge, flycontrol-edge   the page CPUs;
 #   flycast                  the encoder CPUs;
 #   flyshadow                page + encoder (never the sim's);
 #   FLY_SIM_CPUS / FLY_OTHER_CPUS   "=": the lists /etc/fly/cpuset.env carries; OTHER is every CPU
@@ -209,7 +222,7 @@ cpuset_dropin_plan() {
     read -r sim page enc <<< "$(cpuset_partition "$cpuset" "$rayon" "$encoder")" || return 1
     echo "flysim.slice $sim"
     for u in flysim flysim-session; do echo "${u}.service $sim"; done
-    for u in xvfb flystage flystage-web pulse mediamtx flyedge; do echo "${u}.service $page"; done
+    for u in xvfb flystage flystage-web pulse mediamtx flyedge flycontrol-edge; do echo "${u}.service $page"; done
     echo "flycast.service $enc"
     echo "flyshadow.service ${page},${enc}"
     echo "FLY_SIM_CPUS= $sim"

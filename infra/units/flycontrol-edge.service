@@ -1,0 +1,50 @@
+# infra/units/flycontrol-edge.service — pushed to /etc/systemd/system/flycontrol-edge.service.
+#
+# The control API (http://127.0.0.1:7401, docs/control-api.md) served from
+# flysim's control services on the bus (docs/design/flybus.md, "Control over
+# the bus"; services/flysim/crates/fly-control-edge). DISABLED BY DEFAULT: it
+# is in no target's Wants=/Requires= and 07-enable.sh does not enable it.
+# With FLY_CONTROL_VIA=direct (the default, written into /etc/fly/fly.env by
+# 05-deploy.sh) flysim binds 127.0.0.1:7401 itself and this unit has nothing
+# to do. The switch and the way back are infra/docs/runbook.md, "Control over
+# the bus"; in short:
+#
+#   on:   FLY_CONTROL_VIA=bus in the env file, 05-deploy.sh, then
+#         systemctl enable flycontrol-edge.service; systemctl restart flysim.service
+#         (flysim stops binding :7401; the edge binds it once the services answer)
+#   back: FLY_CONTROL_VIA=direct, 05-deploy.sh, systemctl disable --now
+#         flycontrol-edge.service, systemctl restart flysim.service
+#
+# Ordering: flysim owns the router (/run/fly/bus, shared with the feed when
+# that rides the bus too), so it starts first and the edge follows it.
+# Requires= makes an explicit stop or restart of flysim (the unstick rule's
+# restart and fly-runtime's switch included) stop or restart the edge with
+# it. A crash-restart of flysim is covered by the
+# edge itself: it unbinds :7401 and reconnects every 500 ms, so to every
+# client it looks exactly like flysim restarting. The edge holds no state.
+[Unit]
+Description=flycontrol-edge: the control API served from flysim's control services on the bus
+After=flysim.service
+Requires=flysim.service
+# A release that predates fly-control-edge has no binary; stay cleanly
+# inactive rather than restart-looping.
+ConditionPathExists=/opt/fly/current/fly-control-edge
+
+[Service]
+Type=simple
+User=fly
+# FLY_CONTROL_VIA, FLY_BUS_DIR and the rest of flysim's configuration: the
+# edge reads the same file, so the two cannot disagree about the port or the bus.
+EnvironmentFile=/etc/fly/fly.env
+Environment=FLY_CONTROL_BIND=127.0.0.1:7401
+Environment=FLY_BUS_DIR=/run/fly/bus
+# Its own /metrics and /healthz. Loopback only.
+Environment=FLY_CONTROL_EDGE_METRICS_ADDR=127.0.0.1:9103
+ExecStart=/opt/fly/current/fly-control-edge
+Restart=always
+RestartSec=2
+# Small JSON requests; an /events page is the largest thing it ever holds.
+MemoryMax=128M
+
+[Install]
+WantedBy=fly.target

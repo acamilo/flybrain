@@ -801,6 +801,71 @@ pct exec $CTID -- /opt/fly/bin/fly-runtime legacy
   growth, a restore, a restart, legacy cancel), and the unit wiring has been run under a real
   systemd 257 user manager (state, timer enable/disable, `OnFailure`-style fallback, resume).
 
+## Control over the bus (CTRL-01)
+
+`FLY_CONTROL_VIA` picks who serves `http://127.0.0.1:7401`: `direct` (the default; flysim binds
+it) or `bus`. In bus mode flysim registers the control API as RPC services on its embedded flybus
+router, and `flycontrol-edge.service` serves the same HTTP bytes on `:7401` by calling them
+(`docs/design/flybus.md`, "Control over the bus"). Clients do not change: the bridge, the stage's
+health wait, the watchdog, `fly-runtime`, the probation and shadow guards, `fly-loop-recover`,
+the stream check and `curl` still talk to `:7401`. It works under either runtime, independently
+of `FLY_FEED_VIA`. Claim the container in the host log first, as for any host work.
+
+**Prerequisites.** The release ships `fly-control-edge` (`ls /opt/fly/current/fly-control-edge`).
+The env file has `FLY_CONTROL_VIA=bus`, deployed with `05-deploy.sh`. The deploy only rewrites
+`/etc/fly/fly.env` and pushes the unit; it neither enables the edge nor restarts flysim, so the
+box keeps serving `:7401` directly until step 2.
+
+```
+# 1. Before: what the switch must preserve.
+pct exec $CTID -- grep -E '^FLY_(CONTROL|FEED)_VIA=' /etc/fly/fly.env   # FLY_CONTROL_VIA=bus
+pct exec $CTID -- curl -s 127.0.0.1:7401/status | jq '.frame, .status, .checkpoint'
+pct exec $CTID -- curl -s -X POST 127.0.0.1:7401/checkpoint            # a fresh generation to restart from
+# 2. The switch: flysim stops binding :7401 and registers the services; the edge binds :7401 once
+#    they answer. Between the two, :7401 refuses connections, exactly as during any flysim restart.
+pct exec $CTID -- systemctl enable flycontrol-edge.service
+pct exec $CTID -- systemctl restart flysim.service
+pct exec $CTID -- systemctl start flycontrol-edge.service
+# 3. Verify.
+pct exec $CTID -- ss -ltnp | grep ':7401'                            # users:(("fly-control-edg"...
+pct exec $CTID -- curl -s 127.0.0.1:7401/healthz                     # {"status":"ok"}
+pct exec $CTID -- curl -s 127.0.0.1:7401/status | jq '.frame, .status'   # the frame moves
+pct exec $CTID -- curl -s 127.0.0.1:9103/metrics | grep -E '^fly_control_edge_(bus_connected|calls_total|call_failures_total)'
+pct exec $CTID -- journalctl -u flysim -b --since -5min | grep -E 'control services registered|bus listening'
+pct exec $CTID -- ls /run/fly/bus/control-edge.sock /run/fly/bus/control/
+pct exec $CTID -- curl -s 127.0.0.1:7410/health | jq .               # the bridge: sim reachable
+```
+
+- **Healthy looks like:** `fly_control_edge_bus_connected 1`, `calls_total` rising (the bridge and
+  the watchdog poll it), `call_failures_total` flat, no `fly-watchdog:` restart lines, and the next
+  real channel-points sugar fulfilled as before. Do not fire a test sugar or chat line on the live
+  stream to prove it; both are visible on screen.
+- **Watchdog.** With `FLY_CONTROL_VIA=bus`, check 1 reads flysim's own `/healthz` on `:9101`, so a
+  dead edge never restarts the fly. Check 1b restarts `flycontrol-edge` alone when `:7401` fails
+  while flysim is healthy (the sudoers file grants exactly that restart).
+- **Restarts.** `systemctl restart flysim.service` (the unstick rule, `fly-runtime`, the ladder)
+  restarts the edge with it (`Requires=`). A crash-restart of flysim needs nothing: the edge
+  unbinds `:7401`, reconnects every 500 ms and binds again once the new services answer.
+
+**Rollback** (any time, no release change):
+
+```
+pct exec $CTID -- sed -i 's/^FLY_CONTROL_VIA=.*/FLY_CONTROL_VIA=direct/' /etc/fly/fly.env
+pct exec $CTID -- systemctl disable --now flycontrol-edge.service
+pct exec $CTID -- systemctl restart flysim.service                   # binds :7401 itself again
+pct exec $CTID -- curl -s 127.0.0.1:7401/healthz
+# then set FLY_CONTROL_VIA=direct in the env file too, or the next 05-deploy.sh writes bus back.
+```
+
+- **Rolling back to a release from before CTRL-01 while in bus mode** is safe. The older flysim
+  does not know `FLY_CONTROL_VIA`, so it binds `:7401` itself. The edge unit's
+  `ConditionPathExists=` keeps it inactive on a release without the binary, and the older
+  watchdog reads `:7401` as before. Switch to direct first anyway, so the env file says what
+  runs.
+- **If the edge cannot bind** (`fly_control_edge_bind_failures_total` rising, "the control port
+  cannot be bound" in its journal), flysim is still in direct mode. `fly.env` says bus but flysim
+  was not restarted after the deploy. Restart flysim (step 2).
+
 ## CPU partition (cpuset)
 
 `05-deploy.sh` derives the in-guest `AllowedCPUs=` drop-ins for every app unit

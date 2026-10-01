@@ -511,6 +511,60 @@ else
     pass "07-enable.sh and verify.sh leave flyedge.service alone"
 fi
 # ---------------------------------------------------------------------------
+# 3b2b. The control bus edge (CTRL-01, docs/design/flybus.md, "Control over the
+# bus"). flycontrol-edge.service is off unless the operator switches a
+# container to FLY_CONTROL_VIA=bus, follows flysim when on, and the deploy
+# writes the default. The watchdog's use of FLY_CONTROL_VIA is driven for real
+# further down, next to check 2's.
+# ---------------------------------------------------------------------------
+echo "--- flycontrol-edge.service: off by default, after and bound to flysim ---"
+CEDGE_UNIT="$INFRA_DIR/units/flycontrol-edge.service"
+if [ ! -f "$CEDGE_UNIT" ]; then
+    fail "units/flycontrol-edge.service is missing"
+else
+    grep -qE '^After=.*\bflysim\.service\b' "$CEDGE_UNIT" \
+        && pass "flycontrol-edge.service orders itself After=flysim.service" \
+        || fail "flycontrol-edge.service must be After=flysim.service: flysim owns the router"
+    grep -qE '^Requires=.*\bflysim\.service\b' "$CEDGE_UNIT" \
+        && pass "flycontrol-edge.service Requires=flysim.service" \
+        || fail "flycontrol-edge.service must Require flysim.service"
+    grep -qE '^ExecStart=/opt/fly/current/fly-control-edge$' "$CEDGE_UNIT" \
+        && pass "flycontrol-edge.service runs the release's fly-control-edge" \
+        || fail "flycontrol-edge.service ExecStart must be /opt/fly/current/fly-control-edge"
+    grep -qE '^ConditionPathExists=/opt/fly/current/fly-control-edge$' "$CEDGE_UNIT" \
+        && pass "flycontrol-edge.service stays inactive on a release without fly-control-edge" \
+        || fail "flycontrol-edge.service needs ConditionPathExists=/opt/fly/current/fly-control-edge"
+    grep -qE '^Environment=FLY_CONTROL_BIND=127\.0\.0\.1:7401$' "$CEDGE_UNIT" \
+        && pass "flycontrol-edge.service binds the contract's loopback :7401" \
+        || fail "flycontrol-edge.service FLY_CONTROL_BIND must be 127.0.0.1:7401 (docs/control-api.md)"
+    grep -qE '^Environment=FLY_CONTROL_EDGE_METRICS_ADDR=127\.0\.0\.1:' "$CEDGE_UNIT" \
+        && pass "flycontrol-edge.service keeps its metrics on loopback" \
+        || fail "flycontrol-edge.service FLY_CONTROL_EDGE_METRICS_ADDR must be a 127.0.0.1 address"
+fi
+if target_pulls "$INFRA_DIR/units/fly.target" | grep -qx 'flycontrol-edge.service'; then
+    fail "fly.target pulls flycontrol-edge.service in; it must stay off until the operator enables it"
+else
+    pass "fly.target does not pull flycontrol-edge.service in"
+fi
+if grep -E '^(ALWAYS_ON_UNITS|APP_UNITS)=' "$INFRA_DIR/07-enable.sh" "$INFRA_DIR/verify.sh" | grep -q 'flycontrol-edge'; then
+    fail "07-enable.sh or verify.sh lists flycontrol-edge.service as always-on"
+else
+    pass "07-enable.sh and verify.sh leave flycontrol-edge.service alone"
+fi
+grep -qE '^    echo "FLY_CONTROL_VIA=\$\{FLY_CONTROL_VIA_EFFECTIVE\}"$' "$INFRA_DIR/05-deploy.sh" \
+    && pass "05-deploy.sh writes FLY_CONTROL_VIA into fly.env" \
+    || fail "05-deploy.sh must write FLY_CONTROL_VIA (validated) into fly.env"
+grep -qE '^fly ALL=\(root\) NOPASSWD: /usr/bin/systemctl restart flycontrol-edge\.service$' "$INFRA_DIR/config/fly-sudoers" \
+    && pass "the watchdog may restart flycontrol-edge.service" \
+    || fail "config/fly-sudoers must let the watchdog restart flycontrol-edge.service (check 1b)"
+cv_out="$(bash -c "source '$INFRA_DIR/lib/common.sh' >/dev/null 2>&1; for v in '' direct Bus BUS http; do control_via_normalize \"\$v\" || echo refused; done" 2>&1)"
+if [ "$(echo $cv_out)" = "direct direct bus bus refused" ]; then
+    pass "control_via_normalize: empty/direct -> direct, Bus/BUS -> bus, anything else refused"
+else
+    fail "control_via_normalize: got '$(echo $cv_out)'"
+fi
+
+# ---------------------------------------------------------------------------
 # 3b3. The shadow run (SHADOW-01, infra/units/flyshadow.service).
 #
 # Report-only and off by default. What would break it is statically visible: the unit ending up
@@ -1397,6 +1451,27 @@ else
     feed_url_case "BUS" "FLY_FEED_VIA=BUS" "" "http://edge"
     feed_url_case "quoted bus" 'FLY_FEED_VIA="bus"' "" "http://edge"
     feed_url_case "explicit override wins" "FLY_FEED_VIA=bus" "http://other" "http://other"
+    # Check 1 reads flysim's own /healthz: :7401 when flysim serves it, flysim's read-only
+    # listener when the control edge does (FLY_CONTROL_VIA=bus), so an edge outage never
+    # restarts the fly (CTRL-01).
+    health_url_case() {
+        local label="$1" env_line="$2" want="$3" got
+        printf '%s\n' "$env_line" > "$fe_fixture/fly.env"
+        got="$(FLY_ENV_FILE="$fe_fixture/fly.env" FLY_CONTROL_URL=http://control \
+            FLY_METRICS_URL=http://sim \
+            WD_RUN_DIR="$fe_fixture/run" WD_STATE_DIR="$fe_fixture/state" \
+            TEXTFILE_DIR="$fe_fixture/textfile" \
+            bash -c "source '$fe_fixture/wd.sh'; flysim_health_url" 2>&1 || true)"
+        if [ "$got" = "$want" ]; then
+            pass "check 1 flysim health: $label -> $got"
+        else
+            fail "check 1 flysim health: $label: got '$got', want '$want'"
+        fi
+    }
+    health_url_case "direct" "FLY_CONTROL_VIA=direct" "http://control/healthz"
+    health_url_case "no FLY_CONTROL_VIA line" "FLY_FEED_VIA=bus" "http://control/healthz"
+    health_url_case "bus" "FLY_CONTROL_VIA=bus" "http://sim/healthz"
+    health_url_case "Bus" 'FLY_CONTROL_VIA="Bus"' "http://sim/healthz"
     rm -rf "$fe_fixture"
 fi
 
