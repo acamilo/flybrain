@@ -42,8 +42,8 @@
 //! The box may send at most three divergence files, and only after a diverged verdict of this run
 //! ([`DivergenceFiles`]): a faulty box cannot fill the container's disk.
 //!
-//! **Coverage lost.** A trace that flysim stopped for want of a consumer (`"reason":"no-consumer"`,
-//! after ten minutes without a heartbeat) leaves the live fly running untraced, and the box's
+//! **Coverage lost.** A trace that flysim stopped (`"reason":"no-consumer"`, after ten minutes without a
+//! heartbeat, or `"reason":"byte-cap"`) leaves the live fly running untraced, and the box's
 //! catch-up bound counts trace *lines*, so a box that has not yet reached that line looks caught up
 //! once the link is back. The relay therefore scans the trace bytes it forwards for that marker;
 //! on finding it, it sets `coverageLost` in `relay.json` (sticky, also across a relay restart of the
@@ -261,7 +261,7 @@ struct Relay {
     scan_tail: BTreeMap<String, (u64, Vec<u8>)>,
 }
 
-/// Coverage of the live fly was lost: flysim stopped its trace for want of a consumer.
+/// Coverage of the live fly was lost: flysim stopped its trace (no consumer, or the byte cap).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CoverageLost {
     trace: String,
@@ -270,7 +270,6 @@ struct CoverageLost {
     at: String,
 }
 
-/// The marker flysim writes when it stops a trace for want of a consumer.
 /// Whether trace file `a` started at or after `b` (by the start in its name; else by name).
 fn trace_not_before(a: &str, b: &str) -> bool {
     match (
@@ -282,24 +281,26 @@ fn trace_not_before(a: &str, b: &str) -> bool {
     }
 }
 
-const NO_CONSUMER_MARKER: &[u8] = b"\"reason\":\"no-consumer\"";
+/// The reasons for which flysim stops a trace, as written in its `{"truncated":true,"reason":..}`
+/// line: no consumer (a stale heartbeat) and the byte cap. Both leave the live fly running
+/// untraced, so the relay treats them alike (SHADOW-02 r3 N4).
+const STOP_MARKERS: [&[u8]; 2] = [b"\"reason\":\"no-consumer\"", b"\"reason\":\"byte-cap\""];
 
-/// Whether `bytes` hold a whole `{"truncated":true,"reason":"no-consumer"}` line.
-fn has_no_consumer_marker(bytes: &[u8]) -> bool {
-    let mut from = 0;
-    while let Some(i) = bytes[from..]
-        .windows(NO_CONSUMER_MARKER.len())
-        .position(|w| w == NO_CONSUMER_MARKER)
-    {
-        let at = from + i;
-        let start = bytes[..at].iter().rposition(|b| *b == b'\n').map_or(0, |n| n + 1);
-        let end = bytes[at..].iter().position(|b| *b == b'\n').map_or(bytes.len(), |n| at + n);
-        if bytes[start..end].windows(16).any(|w| w == b"\"truncated\":true") {
-            return true;
+/// Whether `bytes` hold a whole `{"truncated":true,"reason":"no-consumer"|"byte-cap"}` line.
+fn has_stop_marker(bytes: &[u8]) -> bool {
+    STOP_MARKERS.iter().any(|marker| {
+        let mut from = 0;
+        while let Some(i) = bytes[from..].windows(marker.len()).position(|w| w == *marker) {
+            let at = from + i;
+            let start = bytes[..at].iter().rposition(|b| *b == b'\n').map_or(0, |n| n + 1);
+            let end = bytes[at..].iter().position(|b| *b == b'\n').map_or(bytes.len(), |n| at + n);
+            if bytes[start..end].windows(16).any(|w| w == b"\"truncated\":true") {
+                return true;
+            }
+            from = at + 1;
         }
-        from = at + 1;
-    }
-    false
+        false
+    })
 }
 
 /// The divergence files the relay takes from the box: only after a diverged verdict of this run,
@@ -700,16 +701,16 @@ impl Relay {
         }
     }
 
-    /// Looks for flysim's no-consumer stop in trace bytes about to be sent.
+    /// Looks for flysim's stop (no consumer, byte cap) in trace bytes about to be sent.
     fn scan_trace(&mut self, name: &str, offset: u64, chunk: &[u8]) {
         let mut buf = match self.scan_tail.remove(name) {
             Some((end, tail)) if end == offset => tail,
             _ => Vec::new(),
         };
         buf.extend_from_slice(chunk);
-        if self.coverage_lost.is_none() && has_no_consumer_marker(&buf) {
+        if self.coverage_lost.is_none() && has_stop_marker(&buf) {
             log(format!(
-                "{name}: flysim stopped its trace for want of a consumer; coverage of the live fly \
+                "{name}: flysim stopped its trace (no consumer or byte cap); coverage of the live fly \
                  is lost for this window"
             ));
             self.coverage_lost = Some(CoverageLost {
@@ -1127,19 +1128,21 @@ mod tests {
 
     #[test]
     fn the_no_consumer_stop_is_found_and_nothing_else_is() {
-        assert!(has_no_consumer_marker(
+        assert!(has_stop_marker(
             b"{\"a\":1}\n{\"reason\":\"no-consumer\",\"truncated\":true}\n"
         ));
-        assert!(has_no_consumer_marker(
+        assert!(has_stop_marker(
             b"{\"truncated\":true,\"reason\":\"no-consumer\"}"
         ));
-        // The byte cap is an allowed skip (`trace-cap`), not a lost consumer.
-        assert!(!has_no_consumer_marker(
+        // The byte cap is a stop like any other (N4).
+        assert!(has_stop_marker(
             b"{\"reason\":\"byte-cap\",\"truncated\":true}\n"
         ));
+        assert!(!has_stop_marker(b"{\"reason\":\"other\",\"truncated\":true}\n"));
+        assert!(!has_stop_marker(b"{\"reason\":\"byte-cap\"}\n"));
         // Not a marker line.
-        assert!(!has_no_consumer_marker(b"{\"note\":{\"reason\":\"no-consumer\"}}\n"));
-        assert!(!has_no_consumer_marker(b""));
+        assert!(!has_stop_marker(b"{\"note\":{\"reason\":\"no-consumer\"}}\n"));
+        assert!(!has_stop_marker(b""));
     }
 
     #[test]

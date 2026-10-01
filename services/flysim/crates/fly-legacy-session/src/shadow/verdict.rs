@@ -298,6 +298,13 @@ impl Verdict {
         self.last_stop_trace = Some(trace.to_owned());
         self.brain_ms = 0.0;
         self.checkpoints = Checkpoints::default();
+        // A pass belongs to the window it was reached in: the new one has not qualified yet
+        // (r3 N3). A diverged or errored verdict stays what it is.
+        if self.status == Status::Pass {
+            self.status = Status::Running;
+            self.passed_at = None;
+            self.reason = String::new();
+        }
     }
 
     pub fn brain_seconds(&self) -> f64 {
@@ -591,11 +598,9 @@ mod tests {
         .to_json()
     }
 
-    #[test]
-    fn a_stop_ends_the_window() {
-        // B2: brain time compared before a coverage gap never counts toward a pass.
-        let mut v = Verdict {
-            status: Status::Running,
+    fn verdict_struct(status: Status) -> Verdict {
+        Verdict {
+            status,
             reason: String::new(),
             binary_sha256: String::new(),
             binaries: Default::default(),
@@ -625,6 +630,18 @@ mod tests {
             spool_evicted: 0,
             cost: Cost::default(),
             run_id: None,
+        }
+    }
+
+    #[test]
+    fn a_stop_ends_the_window() {
+        // B2: brain time compared before a coverage gap never counts toward a pass.
+        let mut v = verdict_struct(Status::Running);
+        v.brain_ms = 1_819_000.0;
+        v.checkpoints = Checkpoints {
+            identical: 400,
+            declared: 0,
+            unavailable: 0,
         };
         v.end_window("trace-1.jsonl", "no-consumer".to_owned());
         assert_eq!(v.brain_seconds(), 0.0);
@@ -636,6 +653,32 @@ mod tests {
         assert_eq!(j["window"]["ends"][0]["discardedBrainSeconds"], 1819.0);
         // A gap is not an allowed skip.
         assert!(!SKIP_KINDS.contains(&"trace-cap"));
+    }
+
+    #[test]
+    fn a_window_end_takes_back_a_pass_and_nothing_else() {
+        let mut v = verdict_struct(Status::Pass);
+        v.passed_at = Some(now_iso());
+        v.reason = "10800 s compared".to_owned();
+        v.brain_ms = 10_800_000.0;
+        v.end_window("trace-2.jsonl", "byte-cap".to_owned());
+        let j = v.to_json();
+        assert_eq!(j["status"], "running");
+        assert!(j["passedAt"].is_null());
+        assert_eq!(j["compared"]["brainSeconds"], 0.0);
+        assert_eq!(j["window"]["lastStopTrace"], "trace-2.jsonl");
+        // The cutover rule refuses it on any count.
+        let now = parse_iso(&now_iso()).unwrap();
+        let binaries: std::collections::BTreeMap<String, String> = Default::default();
+        let release = Release { dir: "/opt/fly/releases/test", binaries: &binaries };
+        assert!(allows_cutover(&j, "flysim-session", &release, "c", now, 300).is_err());
+        let mut forced = j.clone();
+        forced["status"] = json!("pass");
+        assert!(allows_cutover(&forced, "flysim-session", &release, "c", now, 300).is_err());
+        // Diverged stays diverged.
+        let mut d = verdict_struct(Status::Diverged);
+        d.end_window("trace-3.jsonl", "no-consumer".to_owned());
+        assert_eq!(d.status, Status::Diverged);
     }
 
     #[test]

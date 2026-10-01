@@ -1064,6 +1064,11 @@ impl Shadow {
         let mut rank_since_ms = rank_since_ms;
         let mut context: VecDeque<(Value, Value)> = VecDeque::new();
         let mut captures_taken: u64 = 0;
+        // After a declared reward pulse the rest of the trace cannot be compared, but it is still
+        // read for its stop line: a stop later in the same trace is a coverage gap and must end
+        // the window (SHADOW-02 r3 N5).
+        let mut reward_skipped = false;
+        let compared_before = self.verdict.agreement.transitions;
         loop {
             let line = match self.next_line(follower).await {
                 Ok(Some(line)) => line,
@@ -1103,6 +1108,9 @@ impl Shadow {
                     format!("the live trace stopped ({})", live["reason"]),
                 );
             }
+            if reward_skipped {
+                continue;
+            }
             let Some(behaviour) = live.get("behaviour").cloned() else {
                 continue;
             };
@@ -1120,13 +1128,22 @@ impl Shadow {
                         admission.replay_sugar(duration);
                     }
                     Some("reward") => {
-                        return SegmentEnd::Skipped(
-                            "operator-reward-pulse",
-                            format!(
+                        let compared = self.verdict.agreement.transitions - compared_before;
+                        eprintln!(
+                            "fly-shadow: {name} skipped (operator-reward-pulse) after {compared} \
+                             transitions; reading on for a stop"
+                        );
+                        self.verdict.skipped.push(Skipped {
+                            trace: name.to_owned(),
+                            transitions_compared: compared,
+                            kind: "operator-reward-pulse".to_owned(),
+                            reason: format!(
                                 "an operator reward pulse at step {step:?} (declared \
                              operator-reward-pulse: not available on the session runtime)"
                             ),
-                        );
+                        });
+                        reward_skipped = true;
+                        break;
                     }
                     other => {
                         return SegmentEnd::Skipped(
@@ -1135,6 +1152,9 @@ impl Shadow {
                         );
                     }
                 }
+            }
+            if reward_skipped {
+                continue;
             }
             // Back off while the live fly is losing real time ([`LagGuard`]).
             if let Some(lag) = self.lag.clone() {

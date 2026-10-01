@@ -215,17 +215,23 @@ fn a_no_consumer_stop_in_the_forwarded_trace_makes_the_relay_unhealthy_until_a_n
     let _ = &s.mirror;
 }
 
-/// A stop of another kind (the byte cap) is an allowed skip and does not lose coverage.
+/// N4: the byte cap stops the trace like a missing consumer: the live fly runs untraced from
+/// there, so the relay flags it the same way (sticky, durable, unhealthy).
 #[test]
-fn a_byte_cap_stop_is_not_a_lost_coverage() {
+fn a_byte_cap_stop_is_a_lost_coverage_like_a_no_consumer_stop() {
     let tmp = tempfile::tempdir().unwrap();
     let s = Setup::start(tmp.path());
     let trace = s.container.join("trace").join(TRACE);
     append(&trace, b"{\"boot\":true}\n{\"reason\":\"byte-cap\",\"truncated\":true}\n");
-    std::thread::sleep(Duration::from_secs(3));
+    wait_for("the byte-cap stop to be flagged", 60, || {
+        !s.relay_json()["coverageLost"].is_null()
+    });
     let r = s.relay_json();
-    assert!(r["coverageLost"].is_null(), "{r}");
-    wait_for("a healthy relay", 60, || s.relay_json()["healthy"] == true);
+    assert_eq!(r["coverageLost"]["trace"], TRACE, "{r}");
+    assert_eq!(r["healthy"], false, "{r}");
+    // Durable: relay.json on disk says so (the same file a restarted relay reads).
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(!s.relay_json()["coverageLost"].is_null(), "sticky: {}", s.relay_json());
 }
 
 /// A relay restart within the run keeps what the first relay saw.

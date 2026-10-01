@@ -629,10 +629,21 @@ pct exec <ctid> -- /opt/fly/bin/fly-shadow-run stop --restart-flysim   # shadow,
   the count at its stop, so the pass still comes 10,800 s after the gap. `check` refuses while
   `coverageLost` is set (it closes only when the verdict's `window.lastStopTrace` is that trace or
   a later one) and for a verdict without a `window`. Catching up and restarting never clear it.
-  **Never restart the relay (`systemctl restart flyshadow`) mid-run**: its stop removes the
-  heartbeat, flysim stops tracing within a minute, and that costs the run (a coverage loss: safe,
-  and the run starts over). `coverageLost` is synced to disk before the chunk with the stop is
-  forwarded.
+  The relay flags a byte-cap stop exactly like a no-consumer one. A reward pulse (a declared skip)
+  does not hide a later stop in the same trace: the shadow reads on for it and the stop still ends
+  the window. After a window end the verdict's `status` is `running` again (not `pass`) until the
+  new window has compared the required time.
+  **After a long outage (more than the 10 minutes) the run cannot recover in practice**: the shadow
+  would have to restart while the stopped trace is still the newest file and reach its stop before
+  any flysim restart, and flysim's next boot is untraced (no heartbeat) so the shadow diverges
+  (`coverage`). Do not try to nurse it. The operator starts a new run (as root in the release
+  container, `pct exec <release-ctid> --` in front): `/opt/fly/bin/fly-shadow-run stop
+  --restart-flysim && /opt/fly/bin/fly-shadow-run start`. The old verdict is kept beside the new
+  one.
+  **Restarting the relay (`systemctl restart flyshadow`) mid-run** removes the heartbeat. If the
+  restart is faster than flysim's next minute check nothing is lost, otherwise flysim stops tracing
+  and the run is lost (safe: start a new run as above); do not rely on the fast case.
+  `coverageLost` is synced to disk before the chunk with the stop is forwarded.
 - **Resources**: the shadow is a second whole brain, at about the live fly's CPU per frame.
   Remote, it runs on the box's own cores at normal priority (`flyshadow-remote.service`), and the
   container pays the relay (about 0.5 % of a core, measured; about 2.1 GB an hour over the network:
