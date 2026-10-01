@@ -1002,3 +1002,12 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   could not clear it. The cursor is now the row plus the list's scroll offset, as the cartridge
   computes it; the mart's lists the same. ROM test from the live checkpoint: 10 blocked before,
   Oddish caught after. Review: APPROVE.
+- 2026-10-01 (v0.7.5, port slice PERF-02): the first cutover (v0.7.3, after a 3 h shadow with zero
+  divergence) failed its speed probation at a median 0.959x real time and fell back to legacy on
+  its own. Cause: with exactly as many CPUs as sweep threads, the session's other threads woke each
+  frame and the scheduler often stacked two sweep threads on one CPU. flysim-session now pins each
+  sweep worker to its own CPU and its other threads to the remaining one (16.2 to 13.0 ms a frame on
+  a build box of the release CPU; legacy 10.5), and the sim gets its own slice: every other unit,
+  user session and `pct exec` shell is confined off its CPUs (a hog there collapsed a pinned
+  session). Results, traces and the compatibility string are unchanged. Reviews: two rounds,
+  APPROVE-WITH-NOTES; notes addressed.
