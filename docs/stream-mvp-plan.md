@@ -985,3 +985,12 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   3.33 h with a catch just before it; 200-seed mean 4.80 h vs 4.44 h, worst unchanged at 25.4 h; at
   most 2 resets per 24 h, restarts at least 3 h apart. Watchdog flags unchanged. Reviews: r1 BLOCK,
   r2 BLOCK, r3 APPROVE, independent read APPROVE-WITH-NOTES.
+- 2026-10-01 (v0.7.3, port slice SHADOW-02): the shadow moves off the release container. On the
+  container a light relay forwards the live trace, new saves and the sugar journal over one outbound
+  ssh link whose key can only run the receiver; a build box mirrors them and runs the unchanged
+  shadow on its own cores; the verdict comes back. Release binding by binary hashes; the relay's
+  heartbeat is fresh only while the link, the box's shadow and the sync are; any trace stop (no
+  consumer, byte cap, outage) ends the verdict window, so a pass needs 3 h of compared brain time
+  after the last loss. The guard and `check` stay on the container. The on-box shadow (v0.7.0)
+  slowed the live fly; the relay costs about 0.5% of a core. Reviews: BLOCK, BLOCK,
+  APPROVE-WITH-NOTES, APPROVE.
