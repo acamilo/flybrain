@@ -880,7 +880,7 @@ loop_status_fields() {
 loop_macro_stream() {
     [ -f "$FLY_EVENT_LOG" ] || return 0
     tail -n "$WD_LOOP_TAIL_LINES" "$FLY_EVENT_LOG" 2>/dev/null \
-        | jq -r 'fromjson? // empty | select(.kind == "macro" or .kind == "reward") | "\(.brainMs)\t\(.label)\t\(.kind)\t\(.rewardKind // "")"' -R 2>/dev/null \
+        | jq -r 'fromjson? // empty | select(.kind == "macro" or .kind == "reward" or .kind == "milestone") | "\(.brainMs)\t\(.label)\t\(.kind)\t\(.rewardKind // "")"' -R 2>/dev/null \
         || true
 }
 
@@ -888,13 +888,22 @@ loop_macro_stream() {
 #
 #   total US distinct US topCount US period US repeats US windowFrom US
 #   windowTo US topName US block US tail US decisions US refused US blocked US
-#   timeout US done US rewards US fights US wins
+#   timeout US done US rewards US fights US wins US progress US species US keys
 #
 # `total` counts start events inside the window, `decisions` starts plus
 # refusals (the sequence, `distinct` and `topCount` are over decisions), and
 # the next four count each outcome in the window, and `rewards` the reward
 # events in it (row 58), `fights` the `MOVE n` decisions and `wins` the
-# rewards of kind wildwin/trainer/badge (row 67). `period`/`repeats` describe
+# rewards of kind wildwin/trainer/badge (row 67). `progress` counts the lasting
+# progress in the window (row 70): a `milestone` event (a new rung), or a reward of kind
+# pokedex (a species owned for the first time), area (a map entered for the first time),
+# trainer or badge -- each paid once per run, so a ring cannot earn them twice -- and
+# `species` the pokedex ones alone. `keys` names each of them once as `kind:label`
+# (`pokedex:OWNED #8`, `milestone:Reached MT. MOON`), RS-joined, at most 64: a milestone
+# reset restores the reward ledger, so its replay pays the same rewards again, and only
+# the names tell a replayed reward from a new one. They are reported, never read by a
+# rule here: the recovery ladder uses them to tell a trap that follows real progress from
+# one that outlived its last step. `period`/`repeats` describe
 # the shortest repeating block at the END of the sequence (0/0 when nothing
 # repeats), `block` is that block comma-joined, and `tail` is the last 12
 # names for context. The window ends at the newest macro event's own brain
@@ -903,17 +912,28 @@ loop_analyze() {
     awk -F'\t' -v win="$WD_LOOP_WINDOW_MS" -v maxp="$WD_LOOP_MAX_PERIOD" '
     # Reward lines are counted and nothing else: the window still ends at the
     # newest macro event, as it always has.
-    $3 == "reward" { rms[++nr] = $1 + 0; rkind[nr] = $4; next }
+    $3 == "reward" { rms[++nr] = $1 + 0; rkind[nr] = $4; rlbl[nr] = $2; next }
+    $3 == "milestone" { rms[++nr] = $1 + 0; rkind[nr] = "milestone"; rlbl[nr] = $2; next }
     { ms[++n] = $1 + 0; lbl[n] = $2 }
     END {
-        if (n == 0) { printf "0\0370\0370\0370\0370\0370\0370\037\037\037\0370\0370\0370\0370\0370\0370\0370\0370\n"; exit }
+        if (n == 0) { printf "0\0370\0370\0370\0370\0370\0370\037\037\037\0370\0370\0370\0370\0370\0370\0370\0370\0370\0370\037\n"; exit }
         to = ms[n]; from = to - win
         k = 0; distinct = 0; topn = 0; top = ""
         starts = 0; refused = 0; blocked = 0; timeout = 0; done = 0; rewards = 0
-        fights = 0; wins = 0
+        fights = 0; wins = 0; progress = 0; species = 0; keys = ""; nkeys = 0
         for (q = 1; q <= nr; q++) if (rms[q] >= from) {
+            lasting = rkind[q] == "milestone" || rkind[q] == "pokedex" || rkind[q] == "area" \
+                || rkind[q] == "trainer" || rkind[q] == "badge"
+            if (lasting) {
+                progress++
+                key = rkind[q] ":" rlbl[q]
+                gsub(/[\036\037]/, " ", key)
+                if (!(key in seenkey) && nkeys < 64) { seenkey[key] = 1; keys = keys (nkeys++ ? "\036" : "") key }
+            }
+            if (rkind[q] == "milestone") continue
             rewards++
             if (rkind[q] == "wildwin" || rkind[q] == "trainer" || rkind[q] == "badge") wins++
+            if (rkind[q] == "pokedex") species++
         }
         for (i = 1; i <= n; i++) {
             if (ms[i] < from) continue
@@ -948,9 +968,9 @@ loop_analyze() {
         tailstr = ""
         start = k - 11; if (start < 1) start = 1
         for (j = start; j <= k; j++) tailstr = tailstr (tailstr == "" ? "" : ", ") seq[j]
-        printf "%d\037%d\037%d\037%d\037%d\037%d\037%d\037%s\037%s\037%s\037%d\037%d\037%d\037%d\037%d\037%d\037%d\037%d\n", \
+        printf "%d\037%d\037%d\037%d\037%d\037%d\037%d\037%s\037%s\037%s\037%d\037%d\037%d\037%d\037%d\037%d\037%d\037%d\037%d\037%d\037%s\n", \
             starts, distinct, topn, period, repeats, from, to, top, block, tailstr, \
-            k, refused, blocked, timeout, done, rewards, fights, wins
+            k, refused, blocked, timeout, done, rewards, fights, wins, progress, species, keys
     }'
 }
 
@@ -1008,15 +1028,15 @@ check_loop() {
     echo "$delta" > "${WD_RUN_DIR}/loop.places_delta"
 
     local analysis total distinct topn period repeats win_from win_to top block tailstr
-    local decisions refused blocked timeouts completed rewards fights wins
+    local decisions refused blocked timeouts completed rewards fights wins progress species keys
     analysis="$(loop_macro_stream | loop_analyze)"
     IFS=$'\037' read -r total distinct topn period repeats win_from win_to top block tailstr \
-        decisions refused blocked timeouts completed rewards fights wins <<< "$analysis"
+        decisions refused blocked timeouts completed rewards fights wins progress species keys <<< "$analysis"
     total="${total:-0}"; distinct="${distinct:-0}"; topn="${topn:-0}"
     period="${period:-0}"; repeats="${repeats:-0}"
     decisions="${decisions:-0}"; refused="${refused:-0}"; blocked="${blocked:-0}"
     timeouts="${timeouts:-0}"; completed="${completed:-0}"; rewards="${rewards:-0}"
-    fights="${fights:-0}"; wins="${wins:-0}"
+    fights="${fights:-0}"; wins="${wins:-0}"; progress="${progress:-0}"; species="${species:-0}"
     echo "$distinct" > "${WD_RUN_DIR}/loop.distinct"
     echo "$period" > "${WD_RUN_DIR}/loop.period"
     echo "$repeats" > "${WD_RUN_DIR}/loop.repeats"
@@ -1130,6 +1150,9 @@ check_loop() {
         --argjson rewards "$rewards" \
         --argjson fights "$fights" \
         --argjson wins "$wins" \
+        --argjson progress "$progress" \
+        --argjson species "$species" \
+        --arg keys "${keys:-}" \
         --argjson windowFrom "${win_from:-0}" \
         --argjson windowTo "${win_to:-0}" \
         --argjson windowMs "$WD_LOOP_WINDOW_MS" \
@@ -1161,6 +1184,8 @@ check_loop() {
             rewards: $rewards,
             fights: $fights,
             wins: $wins,
+            progress: { lasting: $progress, species: $species,
+                        keys: (if $keys == "" then [] else ($keys | split("\u001e")) end) },
             tail: (if $tail == "" then [] else ($tail | split(", ")) end)
           },
           dominant: { name: (if $dominant == "" then null else $dominant end),

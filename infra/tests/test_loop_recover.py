@@ -117,6 +117,143 @@ class RecoveryTests(unittest.TestCase):
         self.confirm(T0, rank=13)
         self.assertEqual(self.acts, [("restart", None)])
 
+    # Row 70: the rung-11 reset replayed the run exactly (1,138 of 1,138 events), caught the Zubat
+    # again and walked into the same trap; the next step reset to rung 11 again and erased the catch.
+    def test_progress_after_the_last_step_starts_the_ladder_over(self):
+        recover.write_json(recover.STATE, {"level": 4, "bestRank": 12, "resets": [], "actedAt": T0 - 7200})
+        # an area and a species inside the windows of probes well after the step
+        self.tick(T0 - 3000, suspected=0, window={"progress": {"lasting": 2, "species": 0}})
+        self.assertIn("flysim restarted", self.confirm(T0))
+        self.assertEqual(self.acts, [("restart", None)])
+        history = [json.loads(line) for line in recover.HISTORY.read_text().splitlines()]
+        self.assertIn("progress since the last step", [event.get("why") for event in history])
+
+    def test_progress_while_a_step_settles_does_not_start_the_ladder_over(self):
+        recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "resets": [], "actedAt": T0 - 1500})
+        self.tick(T0 - 1400, suspected=0, window={"progress": {"lasting": 3, "species": 0}})
+        self.confirm(T0)
+        self.assertEqual(self.acts, [("reset", 11)])
+
+    def test_a_species_owned_recently_is_never_reset_away(self):
+        owned = T0 - 1200
+        recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "resets": [],
+                                           "actedAt": T0 - recover.HOLD - 300, "speciesAt": owned})
+        self.assertIn("flysim restarted", self.confirm(T0))
+        self.assertEqual(self.acts, [("restart", None)])
+        history = [json.loads(line) for line in recover.HISTORY.read_text().splitlines()]
+        self.assertIn("protect", [event.get("event") for event in history])
+        # the hold still spaces the restarts, and says why
+        self.assertIn("protection window", self.confirm(T0 + 300 + recover.SETTLE + 10))
+        # the protection lasts PROTECT from the species; then the ladder resets as before
+        self.assertIn("reset to rung 11", self.tick(owned + recover.PROTECT + 60))
+
+    def test_a_probe_that_owns_a_species_starts_the_protection(self):
+        self.tick(T0, suspected=0, window={"progress": {"lasting": 1, "species": 1}})
+        self.assertEqual(recover.load(recover.STATE, {}).get("speciesAt"), T0)
+        self.assertEqual(recover.load(recover.STATE, {}).get("progressAt"), T0)
+
+    def test_the_last_resets_archive_is_not_restored_again(self):
+        acted = T0 - recover.HOLD - 100
+        recover.write_json(recover.STATE, {"level": 3, "bestRank": 12, "resets": [acted],
+                                           "actedAt": acted, "lastReset": 11, "lastResetAt": acted})
+        self.confirm(T0)
+        self.assertEqual(self.acts, [("restart", None)])
+
+    def test_a_protected_reset_does_not_climb_but_the_archive_just_used_does(self):
+        # protected: the restart keeps the level's slot, so the reset comes at the same rung later
+        owned = T0 - 600
+        recover.write_json(recover.STATE, {"level": 1, "bestRank": 12, "resets": [], "actedAt": 0,
+                                           "speciesAt": owned})
+        self.confirm(T0)
+        self.assertEqual(self.acts, [("restart", None)])
+        self.assertEqual(recover.load(recover.STATE, {}).get("level"), 1)
+        # the archive just restored: a restart that climbs, and the marker is forgotten after AGAIN
+        self.acts.clear()
+        reset_at = T0 - recover.HOLD - 100
+        recover.write_json(recover.STATE, {"level": 1, "bestRank": 12, "resets": [reset_at], "actedAt": reset_at,
+                                           "lastReset": 12, "lastResetAt": reset_at})
+        self.confirm(T0 + 1000)
+        self.assertEqual(self.acts, [("restart", None)])
+        self.assertEqual(recover.load(recover.STATE, {}).get("level"), 2)
+        self.acts.clear()
+        self.tick(reset_at + recover.AGAIN + 60)
+        self.assertNotIn("lastReset", recover.load(recover.STATE, {}))
+
+    def test_a_reset_records_its_archive_and_a_new_best_rung_forgets_it(self):
+        recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "resets": [], "actedAt": 0})
+        self.confirm(T0)
+        self.assertEqual(recover.load(recover.STATE, {}).get("lastReset"), 11)
+        self.tick(T0 + 300 + recover.SETTLE + 10, suspected=0, rank=13)
+        self.assertNotIn("lastReset", recover.load(recover.STATE, {}))
+
+    # Row 70 review r3: a reset restores the reward ledger, so its replay pays the archive's rewards
+    # again. Progress is a reward name the ladder has not seen before, not a count.
+    def test_a_replay_that_re_earns_seen_rewards_does_not_start_the_ladder_over(self):
+        seen = ["area:AREA 59", "pokedex:OWNED #8", "trainer:BEAT ROUTE 3 TRAINER 0", "milestone:Reached MT. MOON"]
+        recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "resets": [], "actedAt": T0 - 7200,
+                                           "progressSeen": seen})
+        replay = {"progress": {"lasting": 4, "species": 1, "keys": seen}}
+        self.tick(T0 - 3000, suspected=0, window=replay)
+        state = recover.load(recover.STATE, {})
+        self.assertNotIn("progressAt", state)
+        self.assertNotIn("speciesAt", state)  # the replayed catch was protected before the reset
+        self.assertEqual(state["progressSeen"], seen)
+        self.confirm(T0)
+        self.assertEqual(self.acts, [("reset", 11)])
+
+    def test_a_reward_not_seen_before_starts_the_ladder_over_and_a_new_species_is_protected(self):
+        recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "resets": [], "actedAt": T0 - 7200,
+                                           "progressSeen": ["area:AREA 59"]})
+        self.tick(T0 - 3000, suspected=0,
+                  window={"progress": {"lasting": 2, "species": 1, "keys": ["area:AREA 59", "pokedex:OWNED #41"]}})
+        state = recover.load(recover.STATE, {})
+        self.assertEqual((state["progressAt"], state["speciesAt"]), (T0 - 3000, T0 - 3000))
+        self.assertEqual(state["progressSeen"], ["area:AREA 59", "pokedex:OWNED #41"])
+        self.assertIn("flysim restarted", self.confirm(T0))
+        history = [json.loads(line) for line in recover.HISTORY.read_text().splitlines()]
+        self.assertIn("progress since the last step", [event.get("why") for event in history])
+
+    def test_a_catch_while_the_fly_stays_flagged_does_not_start_the_ladder_over(self):
+        acted = T0 - recover.HOLD - 600
+        recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "resets": [], "actedAt": acted,
+                                           "clearAt": acted + 60})
+        catch = {"progress": {"lasting": 1, "species": 1, "keys": ["pokedex:OWNED #41"]}}
+        self.assertIn("flysim restarted", self.confirm(T0, window=catch))
+        self.assertEqual(self.acts, [("restart", None)])  # the rung-11 reset, held for the new species
+        self.assertEqual(recover.load(recover.STATE, {}).get("level"), 2)
+
+    def test_without_reward_names_the_counts_still_count(self):
+        recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "resets": [], "actedAt": T0 - 7200,
+                                           "progressSeen": ["pokedex:OWNED #8"]})
+        self.tick(T0 - 3000, suspected=0, window={"progress": {"lasting": 1, "species": 1}})
+        state = recover.load(recover.STATE, {})
+        self.assertEqual((state["progressAt"], state["speciesAt"]), (T0 - 3000, T0 - 3000))
+
+    def test_the_names_remembered_are_bounded(self):
+        recover.write_json(recover.STATE, {"progressSeen": [f"area:AREA {n}" for n in range(recover.SEEN)]})
+        self.tick(T0, suspected=0, window={"progress": {"lasting": 1, "species": 0, "keys": ["area:AREA X"]}})
+        seen = recover.load(recover.STATE, {})["progressSeen"]
+        self.assertEqual((len(seen), seen[0], seen[-1]), (recover.SEEN, "area:AREA 1", "area:AREA X"))
+        # a malformed list is ignored item by item
+        self.tick(T0 + 300, suspected=0, window={"progress": {"lasting": 1, "species": 0, "keys": [{}, ["x"], 3]}})
+        self.assertEqual(recover.load(recover.STATE, {})["progressSeen"][-1], "area:AREA X")
+
+    def test_restarts_stay_a_hold_apart_after_the_ladder_starts_over(self):
+        recover.write_json(recover.STATE, {"level": 1, "bestRank": 12, "resets": [], "actedAt": T0 - 3600,
+                                           "lastAction": "restart"})
+        self.tick(T0 - 2000, suspected=0, window={"progress": {"lasting": 1, "species": 0, "keys": ["area:AREA 60"]}})
+        self.assertIn("last restart was under three hours ago", self.confirm(T0))
+        self.assertEqual(self.acts, [])
+        self.assertIn("flysim restarted", self.tick(T0 - 3600 + recover.HOLD))
+
+    def test_a_failed_reset_does_not_block_its_archive(self):
+        recover.act.side_effect = lambda action, target: self.acts.append((action, target)) or False
+        recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "resets": [], "actedAt": 0})
+        self.assertIn("reset FAILED", self.confirm(T0))
+        state = recover.load(recover.STATE, {})
+        self.assertNotIn("lastReset", state)
+        self.assertEqual((state["level"], len(state["resets"])), (3, 1))  # it still climbed and spent the reset
+
     def test_quiet_hours_start_the_ladder_over(self):
         recover.write_json(recover.STATE, {"level": 2, "bestRank": 12, "actedAt": 0,
                                            "lastSuspectedAt": T0 - recover.QUIET - 1})
@@ -268,6 +405,139 @@ BUILD = "lif-1ms-f64-v2/pokered-unique8-v7/abc/fly-kc-mbon-rstdp-v2"
 
 
 @unittest.skipIf(recover.os.geteuid() == 0, "the wrapper ignores test overrides as root")
+class ClosedLoopTests(unittest.TestCase):
+    """Row 70 review L1: a trap no restart clears, every reset replaying it exactly (closed loop)."""
+    M = 60
+    R11 = dict(events=[(20, "pokedex"), (21, "trainer"), (35, "trainer"), (44, "area"), (46, "milestone"),
+                       (52, "pokedex")], trap=58, rank_after=[(46, 12)], start_rank=11)
+    R12 = dict(events=[(7, "pokedex")], trap=12, rank_after=[], start_rank=12)
+    R10 = dict(events=[(30, "area"), (60, "milestone"), (90, "milestone"), (100, "pokedex")], trap=110,
+               rank_after=[(60, 11), (90, 12)], start_rank=10)
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        for name, value in (("REPORT", "loop.json"), ("STATE", "s.json"), ("HISTORY", "h.jsonl"),
+                            ("NOTICE", "n.json")):
+            patcher = patch.object(recover, name, root / value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for name, value in (("restorable_rungs", lambda: {9, 10, 11, 12}), ("verdict", lambda report: (None, None))):
+            patcher = patch.object(recover, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.env = patch.dict("os.environ", {}, clear=False)
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        for key in ("FLY_LOOP_ROUTER_URL", "FLY_LOOP_MODELS", "FLY_LOOP_MODEL", "FLY_LOOP_ROUTER_KEY"):
+            recover.os.environ.pop(key, None)
+
+    def simulate(self, archives, hours, species_before=None, names=True):
+        """The fly is trapped from T0; returns [(hours, action, target)]. A reset replays its archive.
+
+        Every lasting reward has a name (window.progress.keys): the fly earned each archive's rewards
+        once before the trap, in clear probes the ladder saw, and a replay pays the same names again.
+        """
+        M = self.M
+        sim = dict(events=[(T0 - species_before * M, "pokedex", "pokedex:pre")] if species_before else [],
+                   rank=12, rank_changes=[], trap_from=T0, now=T0, acts=[])
+        history = [f"{k}:{rung}/{o}" for rung, a in sorted(archives.items()) for o, k in a["events"]]
+        for i in range(0, len(history), 3) if names else ():
+            recover.REPORT.write_text(json.dumps({
+                "at": T0 - 86400 + i * 300, "suspected": 0, "action": "none", "milestone": {"rank": 12},
+                "window": {"progress": {"lasting": 3, "species": 0, "keys": history[i:i + 3]}}}))
+            recover.run(now=T0 - 86400 + i * 300 + 5, sleep=lambda s: None)
+        seen = recover.load(recover.STATE, {}).get("progressSeen")
+
+        def act(action, target):
+            sim["acts"].append((sim["now"], action, target))
+            if action == "reset":
+                a = archives[target]
+                sim["rank"] = a["start_rank"]
+                sim["events"] = [(sim["now"] + o * M, k, f"{k}:{target}/{o}") for o, k in a["events"]]
+                sim["rank_changes"] = [(sim["now"] + o * M, r) for o, r in a["rank_after"]]
+                sim["trap_from"] = None if a["trap"] is None else sim["now"] + a["trap"] * M
+            return True
+
+        recover.write_json(recover.STATE, dict({"bestRank": 12, "rank": 12, "level": 0},
+                                               **({"progressSeen": seen} if seen else {})))
+        recover.HISTORY.write_text("")
+        with patch.object(recover, "act", side_effect=act):
+            t = T0
+            while t < T0 + hours * 3600:
+                for change in list(sim["rank_changes"]):
+                    if change[0] <= t:
+                        sim["rank"] = change[1]
+                        sim["rank_changes"].remove(change)
+                win = [(k, name) for at, k, name in sim["events"] if t - 600 <= at <= t]
+                trapped = sim["trap_from"] is not None and t - sim["trap_from"] >= 600
+                recover.REPORT.write_text(json.dumps({
+                    "at": t, "suspected": 1 if trapped else 0, "action": "none", "reason": "dominant",
+                    "sequence": ["NEXT"], "milestone": {"rank": sim["rank"], "label": "X"}, "map": 59,
+                    "window": {"progress": dict({
+                        "lasting": sum(k in ("pokedex", "area", "trainer", "badge", "milestone") for k, _ in win),
+                        "species": sum(k == "pokedex" for k, _ in win)},
+                        **({"keys": [name for _, name in win]} if names else {}))}}))
+                sim["now"] = t + 5
+                recover.run(now=t + 5, sleep=lambda s: None)
+                t += 300
+        return [((at - T0) / 3600, action, target) for at, action, target in sim["acts"]]
+
+    def test_a_restart_proof_trap_is_reset_in_bounded_time_and_again(self):
+        acts = self.simulate({11: self.R11, 12: self.R12, 10: self.R10, 9: self.R10}, 72, species_before=6)
+        resets = [a for a in acts if a[1] == "reset"]
+        # v0.7.0 resets again at 24.75 h; the ladder is no worse, and keeps resetting
+        self.assertTrue(resets and resets[0][0] <= 25, acts)
+        self.assertTrue(len([a for a in resets if a[0] <= 25]) >= 1, acts)
+        self.assertTrue(len(resets) >= 3, acts)
+        gaps = [b[0] - a[0] for a, b in zip(resets, resets[1:])]
+        self.assertTrue(all(g <= 25 for g in gaps), acts)
+        # the first step is a restart; the catch stays protected for 2 h
+        self.assertEqual(acts[0][1], "restart")
+        self.assertTrue(all(a[0] >= 2 - 0.2 for a in resets[:1]), acts)
+
+    def test_the_held_reset_is_the_rung_12_one_not_a_deeper_rung(self):
+        acts = self.simulate({11: self.R11, 12: self.R12, 10: self.R10, 9: self.R10}, 24, species_before=6)
+        self.assertEqual([a[2] for a in acts if a[1] == "reset"][:1], [12], acts)
+
+    def test_a_trap_the_rung_12_archive_escapes_ends_there(self):
+        clean = dict(self.R12, trap=None)
+        acts = self.simulate({11: self.R11, 12: clean, 10: self.R10, 9: self.R10}, 24, species_before=6)
+        self.assertEqual([a[1:] for a in acts if a[1] == "reset"], [("reset", 12)], acts)
+        self.assertEqual(len(acts), 2, acts)
+
+    def test_without_a_catch_the_ladder_resets_early(self):
+        acts = self.simulate({11: self.R11, 12: self.R12, 10: self.R10, 9: self.R10}, 24)
+        self.assertLessEqual(next(a[0] for a in acts if a[1] == "reset"), 1, acts)
+
+    def test_a_trap_only_the_rung_below_escapes_is_reached_promptly(self):
+        # review r2 N1: the rung-12 replay re-earns progress, then traps; only rung 11 escapes.
+        # v0.7.0 reset to 11 at 2.08 h; holding the level on the archive just used took 24.75 h, and
+        # counting the replay's area and species as progress took 5.58 h (6.83 h after a catch).
+        late12 = dict(events=[(30, "area"), (40, "pokedex")], trap=60, rank_after=[], start_rank=12)
+        archives = {11: dict(self.R11, trap=None), 12: late12, 10: self.R10, 9: self.R10}
+        for species_before, bound in ((None, 2.1), (6, 2.1 + 2)):  # a catch 6 min before the trap: +2 h at most
+            with self.subTest(species_before=species_before):
+                self.setUp()
+                acts = self.simulate(archives, 96, species_before=species_before)
+                resets = [a for a in acts if a[1] == "reset"]
+                self.assertEqual([a[2] for a in resets], [12, 11], acts)
+                self.assertLessEqual(resets[-1][0], bound, acts)
+
+    def test_restarts_are_a_hold_apart_in_every_closed_loop(self):
+        late12 = dict(events=[(30, "area"), (40, "pokedex")], trap=60, rank_after=[], start_rank=12)
+        for archives in ({11: self.R11, 12: self.R12, 10: self.R10, 9: self.R10},
+                         {11: self.R11, 12: late12, 10: self.R10, 9: self.R10}):
+            for species_before in (None, 6):
+                self.setUp()
+                acts = self.simulate(archives, 72, species_before=species_before)
+                restarts = [a[0] for a in acts if a[1] == "restart"]
+                self.assertTrue(all(b - a >= 3 - 1e-6 for a, b in zip(restarts, restarts[1:])), acts)
+                resets = [a[0] for a in acts if a[1] == "reset"]
+                self.assertTrue(all(sum(1 for y in resets if x <= y < x + 24) <= 2 for x in resets), acts)
+
+
 class WrapperTests(unittest.TestCase):
     """infra/bin/fly-loop-reset against a fake flysim, systemctl, reset tool and archives."""
 

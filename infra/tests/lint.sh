@@ -2015,6 +2015,38 @@ LPCAT
         fail "check 10: a won battle gave suspected=$(lp_metric fly_loop_suspected) wins=$(lp_metric fly_loop_wins)"
     fi
 
+    # (9) Row 70: the report carries the window's lasting progress for the recovery ladder --
+    # a milestone event, and rewards of kind pokedex/area/trainer/badge -- and the species
+    # alone. The flag itself does not read them: the same battles still flag with a species
+    # owned in the window, as long as nothing was won.
+    lp_reset
+    lp_cycle 25 "GO OBJECTIVE" "TALK" "NO" "NEXT" "NEXT" "NEXT" "MOVE 2" "NEXT" \
+        "MOVE 2" "NEXT" "MOVE 3" "NEXT" | lp_outcomes "$lp_fixture/events.jsonl" "done"
+    printf '%s\n' \
+        '{"id":999991,"wallMs":1758000999991,"brainMs":100000,"kind":"reward","label":"OWNED #41","value":0.5,"rewardKind":"pokedex"}' \
+        '{"id":999992,"wallMs":1758000999992,"brainMs":100001,"kind":"reward","label":"AREA 59","value":0.2,"rewardKind":"area"}' \
+        '{"id":999993,"wallMs":1758000999993,"brainMs":100002,"kind":"milestone","label":"Reached MT. MOON","value":12}' \
+        >> "$lp_fixture/events.jsonl"
+    lp_status "$lp_fixture/status.json" 2311
+    lp_pass
+    lp_pass
+    lp_pass
+    if lp_report="$(jq -e -r '[.reason, (.window.rewards|tostring), (.window.progress.lasting|tostring), (.window.progress.species|tostring)] | join(" ")' "$lp_fixture/run/loop.json" 2>/dev/null)" \
+       && [ "$lp_report" = "unwon-battles 2 3 1" ]; then
+        pass "check 10: loop.json carries the window's lasting progress (a rung, a species, a map) for the ladder, and the flag does not read it"
+    else
+        fail "check 10: loop.json read back as '${lp_report:-UNREADABLE}' — expected 'unwon-battles 2 3 1'"
+    fi
+    # ... and names each once (review r3): a reset's replay pays the same rewards again, and only
+    # the names let the ladder tell them from new ones.
+    lp_expected='pokedex:OWNED #41|area:AREA 59|milestone:Reached MT. MOON'
+    if lp_report="$(jq -e -r '.window.progress.keys | join("|")' "$lp_fixture/run/loop.json" 2>/dev/null)" \
+       && [ "$lp_report" = "$lp_expected" ]; then
+        pass "check 10: loop.json names the window's lasting progress (kind:label) so the ladder can tell a replayed reward from a new one"
+    else
+        fail "check 10: window.progress.keys read back as '${lp_report:-UNREADABLE}' — expected '${lp_expected}'"
+    fi
+
     # The ethos, asserted rather than reviewed: over every case above, check 10
     # restarted nothing. It reports; a human or a review agent decides.
     if [ ! -s "$lp_fixture/systemctl.log" ]; then
