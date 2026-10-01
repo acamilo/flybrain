@@ -18,7 +18,10 @@ need pct
 
 PACKAGES="xvfb x11-utils x11-xserver-utils xauth chromium pulseaudio pulseaudio-utils \
 ffmpeg fonts-dejavu-core fonts-liberation2 fonts-noto-core fonts-noto-color-emoji \
-fontconfig prometheus-node-exporter curl ca-certificates jq rsync sysstat procps zstd sudo"
+fontconfig prometheus-node-exporter curl ca-certificates jq rsync sysstat procps zstd sudo \
+openssh-client"
+# openssh-client (SHADOW-02): the remote shadow's relay dials OUT to a build box. The client only;
+# the container still runs no sshd (below).
 # Nothing was added for the capture-freeze fix (2026-09-16): bin/wait-for-stage
 # needs `xdpyinfo` and `xwininfo` (x11-utils) and `pactl`
 # (pulseaudio-utils), and check 9 of fly-watchdog needs `ffmpeg` — all three

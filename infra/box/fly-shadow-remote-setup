@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# infra/box/fly-shadow-remote-setup — prepare a BUILD BOX to run the remote shadow (SHADOW-02).
+# Run as root ON THE BOX (never on the release container, never on the host), by the coordinator.
+# Idempotent: re-run it for every release the container runs.
+#
+#   fly-shadow-remote-setup RELEASE_TARBALL ROM_FILE RELAY_PUBKEY --from ADDRS [--cpus LIST] [--threads N]
+#
+#   RELEASE_TARBALL  the exact flybrain-<version>.tar.gz deployed to the release container. It is
+#                    installed at the SAME path, /opt/fly/releases/<version>, MANIFEST-verified,
+#                    root-owned, and /opt/fly/current points to it: the shadow's verdict names
+#                    that directory and the SHA-256 of its binaries, and `fly-shadow ingest`
+#                    refuses a relay whose release differs.
+#   ROM_FILE         the cartridge; its SHA-256 must be the container's ROM_SHA256.
+#   RELAY_PUBKEY     the public half of the relay's key (the private half lives only on the
+#                    release container, /etc/fly/shadow-remote/id_ed25519, owned by fly).
+#   --from ADDRS     REQUIRED: restricts the key to the container's address (authorized_keys from=).
+#   --cpus LIST      AllowedCPUs for the shadow, a drop-in: its own cores, never shared with the
+#                    live fly's NUMA node.
+#   --threads N      the shadow's sweep threads (default 4; one per core in --cpus). It must run
+#                    clearly faster than real time: see the runbook's "Which box".
+#
+# What it sets up:
+#   - user flyshadow, the mirror /srv/fly-shadow-remote (flyshadow's; 0750) and, apart from it, the
+#     user's home /srv/fly-shadow-remote-home, ROOT-owned with a root-owned .ssh: flyshadow can
+#     neither change nor rename the key file (in a home it owned, it could rename .ssh);
+#   - /srv/fly-shadow-remote-home/.ssh/authorized_keys, ROOT-owned, with one
+#     line: restrict,command="/opt/fly/current/fly-shadow ingest --root /srv/fly-shadow-remote",from="..." <key>. restrict turns off forwarding, agent, X11 and the pty; the forced command
+#     ignores what the client asks for; the ingest writes nothing outside the mirror;
+#   - /etc/fly/fly-shadow-remote.env: FLY_ROM, FLY_DATASET (this box's paths);
+#   - flyshadow-remote.service and flyshadow-remote.path (enabled; the service starts at the first
+#     run id the relay brings).
+# A re-run never follows a symlink under the mirror (flyshadow owns it and could plant one): it
+# refuses if any of the mirror's paths is a symlink, and leaves an existing directory as it is.
+# The release container's address is only in authorized_keys (from=); the relay dials out to the box.
+set -euo pipefail
+
+die() { echo "fly-shadow-remote-setup: $*" >&2; exit 2; }
+log() { echo "fly-shadow-remote-setup: $*"; }
+
+[ "$(id -u)" = 0 ] || die "run as root on the build box"
+[ $# -ge 3 ] || die "usage: fly-shadow-remote-setup RELEASE_TARBALL ROM_FILE RELAY_PUBKEY --from ADDRS [--cpus LIST] [--threads N]"
+tarball="$1"; rom="$2"; pubkey="$3"; shift 3
+from=""; cpus=""; threads=4
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --from) from="$2"; shift 2 ;;
+        --cpus) cpus="$2"; shift 2 ;;
+        --threads) threads="$2"; shift 2 ;;
+        *) die "unknown option $1" ;;
+    esac
+done
+here="$(cd "$(dirname "$0")" && pwd)"
+ROOT=/srv/fly-shadow-remote
+HOME_DIR=/srv/fly-shadow-remote-home
+[ -n "$from" ] || die "--from is required: the relay key must be restricted to the container's address"
+[ -f "$tarball" ] || die "no tarball $tarball"
+[ -f "$rom" ] || die "no ROM $rom"
+[ -f "$pubkey" ] || die "no public key $pubkey"
+base="$(basename "$tarball")"; version="${base#flybrain-}"; version="${version%.tar.gz}"
+[[ "$version" =~ ^[A-Za-z0-9._-]+$ ]] || die "cannot parse a version from $base"
+[[ "$from" =~ ^[0-9A-Fa-f.:,/*]*$ ]] || die "--from takes addresses or patterns only"
+[[ "$cpus" =~ ^[0-9,-]*$ ]] || die "--cpus takes a CPU list"
+[[ "$threads" =~ ^[1-9][0-9]?$ ]] || die "--threads takes a number"
+key="$(head -n 1 "$pubkey")"
+[[ "$key" =~ ^ssh-(ed25519|rsa)\ [A-Za-z0-9+/=]+( [^\"]*)?$ ]] || die "$pubkey is not one ssh public key line"
+command -v sshd >/dev/null || [ -x /usr/sbin/sshd ] || die "this box has no sshd"
+
+# The release, exactly as 05-deploy installs it on the container (but root-owned here).
+release="/opt/fly/releases/${version}"
+if [ -f "$release/MANIFEST" ]; then
+    log "release $version already at $release"
+else
+    install -d -m 0755 "$release"
+    tar -xzf "$tarball" -C "$release"
+    chown -R root:root "$release"
+fi
+(cd "$release" && sha256sum -c MANIFEST --quiet) || die "MANIFEST verification failed for $release"
+[ -x "$release/fly-shadow" ] || die "$release has no fly-shadow: this release predates SHADOW-01"
+"$release/fly-shadow" ingest 2>&1 | grep -q 'needs --root' \
+    || die "$release/fly-shadow has no ingest: this release predates SHADOW-02"
+ln -sfn "$release" /opt/fly/current.tmp && mv -T /opt/fly/current.tmp /opt/fly/current
+log "/opt/fly/current -> $release"
+
+# The user, the mirror and the user's home. The home and its .ssh are root's; the mirror is
+# flyshadow's, so nothing in it is trusted: no symlink is followed there, as root.
+[ -L "$ROOT" ] && die "$ROOT is a symlink: refusing to follow it"
+[ -L "$HOME_DIR" ] && die "$HOME_DIR is a symlink: refusing to follow it"
+if id flyshadow >/dev/null 2>&1; then
+    [ "$(getent passwd flyshadow | cut -d: -f6)" = "$HOME_DIR" ] || usermod --home "$HOME_DIR" flyshadow
+else
+    useradd --system --home-dir "$HOME_DIR" --no-create-home --shell /bin/sh --user-group flyshadow
+fi
+if [ -e "$ROOT" ]; then
+    [ -d "$ROOT" ] || die "$ROOT is not a directory"
+else
+    mkdir -m 0750 "$ROOT"
+    chown -h flyshadow:flyshadow "$ROOT"
+fi
+for d in trace hot durable out; do
+    [ -L "$ROOT/$d" ] && die "$ROOT/$d is a symlink: refusing to follow it"
+    if [ -e "$ROOT/$d" ]; then
+        [ -d "$ROOT/$d" ] || die "$ROOT/$d is not a directory"
+    else
+        mkdir -m 0750 "$ROOT/$d"
+        chown -h flyshadow:flyshadow "$ROOT/$d"
+    fi
+done
+# An earlier version of this script kept .ssh in the mirror, where flyshadow could rename it.
+if [ -e "$ROOT/.ssh" ] || [ -L "$ROOT/.ssh" ]; then rm -rf "$ROOT/.ssh"; fi
+if [ -L "$HOME_DIR/.ssh" ]; then rm -f "$HOME_DIR/.ssh"; fi
+install -d -o root -g root -m 0755 "$HOME_DIR"
+install -d -o root -g root -m 0755 "$HOME_DIR/.ssh"
+line="restrict,command=\"/opt/fly/current/fly-shadow ingest --root $ROOT\",from=\"$from\""
+printf '%s %s\n' "$line" "$key" > "$HOME_DIR/.ssh/authorized_keys.new"
+chown root:root "$HOME_DIR/.ssh/authorized_keys.new"; chmod 0644 "$HOME_DIR/.ssh/authorized_keys.new"
+mv -f "$HOME_DIR/.ssh/authorized_keys.new" "$HOME_DIR/.ssh/authorized_keys"
+log "authorized_keys: the relay key may run only the ingest"
+
+# The cartridge and this box's paths.
+rom_sha="$(sha256sum "$rom" | cut -d' ' -f1)"
+install -d -m 0755 /srv/fly/rom
+install -o root -g flyshadow -m 0640 "$rom" "/srv/fly/rom/${rom_sha}.gb"
+install -d -m 0755 /etc/fly
+cat > /etc/fly/fly-shadow-remote.env <<ENV
+# written by infra/box/fly-shadow-remote-setup (SHADOW-02): this box's paths for the remote shadow.
+FLY_ROM=/srv/fly/rom/${rom_sha}.gb
+FLY_DATASET=/opt/fly/current/data/fafb-v783
+ENV
+log "ROM sha256 $rom_sha (must equal the container's ROM_SHA256)"
+
+# The units.
+install -m 0644 "$here/flyshadow-remote.service" /etc/systemd/system/flyshadow-remote.service
+install -m 0644 "$here/flyshadow-remote.path" /etc/systemd/system/flyshadow-remote.path
+install -d -m 0755 /etc/systemd/system/flyshadow-remote.service.d
+{
+    printf '# written by fly-shadow-remote-setup\n[Service]\nEnvironment=FLY_SHADOW_THREADS=%s\n' "$threads"
+    [ -n "$cpus" ] && printf 'AllowedCPUs=%s\n' "$cpus"
+} > /etc/systemd/system/flyshadow-remote.service.d/10-cores.conf
+log "${threads} threads${cpus:+ on CPUs $cpus}"
+systemctl daemon-reload
+systemctl enable --now flyshadow-remote.path
+systemctl enable flyshadow-remote.service
+# A running shadow of an older release restarts on this one (the relay's next run resets anyway).
+systemctl try-restart flyshadow-remote.service || true
+log "ready: the container's fly-shadow-run start brings the first run id"

@@ -800,7 +800,6 @@ several processes.
 - `startup-save-gone`: a process whose startup save was already gone when the shadow reached it,
   because the shadow started late or its spool evicted the file;
 - `operator-reward-pulse`;
-- `trace-cap`: the live trace stopped at its byte cap, or with no consumer;
 - `no-transition`: a process that ran none.
 
 A skip adds nothing to the window. A trace the shadow cannot read is `trace-malformed`, which
@@ -878,3 +877,54 @@ over:
 `fly-shadow check` (and `fly-shadow-run check`) implements exactly this rule and exits 0 only when
 it holds. Anything else keeps the legacy fly. The one-command rollback `fly-runtime legacy` is
 CUT-01's.
+
+**Amendment, 2026-09-30 (SHADOW-02): the shadow runs on a build box.** On the release container
+the shadow cost the live fly real time: SCHED_IDLE on the page and encoder CPUs, sharing them with
+the encoder and the browser and the memory bandwidth of flysim's NUMA node, it took about 27 ms a
+frame, fell further behind every hour (so it could never meet the catch-up bound), and the live
+realtime factor fell from 0.9998 to 0.93-0.98. It recovered to 0.999-1.0 the moment the shadow
+stopped. The comparison itself is unchanged: the shadow is the same binary of the same release,
+following the same trace. What moves is where it runs, and so how its inputs reach it and its
+verdict comes back (`shadow::remote`, `shadow::relay`, `shadow::ingest`).
+
+- *The relay* (`fly-shadow relay`, the container's `flyshadow.service` with the drop-in
+  `fly-shadow-run start` writes) opens one ssh connection to the box and streams, every quarter
+  second: the new live saves of both stores, then the new bytes of every trace file of this run
+  (oldest first; a file's size read after the directory listing, so an older file is complete
+  when a newer one reaches the box), then the sugar journal as read before the listing. Trace files
+  that started before the run (`FLY_SHADOW_RUN_ID`, the start's Unix ms) and saves older than a
+  minute before it are not sent. A writer thread owns the link, so a stall never blocks the relay:
+  new saves are read as they appear and held in memory (256 MiB, about 8 minutes; a hot save lives
+  about ten seconds), trace bytes wait on disk, and a newer file and the journal wait until every
+  older file is complete on its way.
+- *The ingest* (`fly-shadow ingest --root <dir>`) is the forced command of the relay's key on the
+  box (`authorized_keys` `restrict,command=`); the box holds no credential for the container. It
+  refuses a relay whose release directory or binary SHA-256 differ from its own, so the box runs the
+  container's release, installed from the same tarball at the same path, and the verdict's
+  `candidate` is exactly what `check` recomputes on the container. A new run id resets the mirror
+  and restarts the box's shadow (it exits with status 4; `--run-id-file`).
+- *The heartbeat.* flysim's `<trace dir>/consumer` on the container is now the relay's. The relay
+  touches it only while it is healthy: connected; the box reported within 30 s that the shadow of
+  this run is alive (its own heartbeat fresh and its verdict this run's, running or passed); and
+  the box has acknowledged every byte that was on the container's disk a minute earlier. A dead box,
+  shadow or link, and a stalled sync, therefore stop the live trace exactly as a dead local shadow
+  does. The relay removes the file when it stops.
+- *The verdict* on the container is the box's `verdict.json`, written back only when its new
+  `runId` member is this run's, with two changes: `lagTransitions` is the box's plus the live
+  trace not yet acknowledged by the box, so the catch-up bound covers the sync; and a `relay`
+  member (`relayedAt`, `remoteLagTransitions`, `unsyncedBytes`, `unsyncedTransitions`). A diverged
+  verdict brings `divergence.json` and the checkpoint files back, and the relay exits with status 3.
+- *Coverage, tightened for both placements.* A trace that stops for want of a consumer
+  (`"truncated":true,"reason":"no-consumer"`) while the shadow is following it is now a `coverage`
+  divergence, not a `trace-cap` skip: the rest of that live process can never be compared, and with
+  a relay a stalled sync is exactly how that happens. A stop already in the file when the shadow
+  started, and the byte cap, end the verdict's window instead (`window.ends`): what was compared
+  before them stops counting, and a pass needs its brain time after the last one (SHADOW-02 B2). The coverage
+  check reads the sugar journal before it lists the trace directory (a process creates its trace
+  file before it writes its boot header, so a boot between the two reads could look untraced
+  the other way round).
+- *`fly-shadow-run check`*, remote: in addition to everything above, `/srv/fly/shadow/relay.json`
+  must be less than a minute old and say `healthy`. `fly-shadow check` (the Rust rule) is
+  unchanged. `fly-shadow-run start` runs the shadow on the container only with `--local`.
+- *The guard* stays on the container and guards the live fly as before; it now watches the relay's
+  cost, which is a few file reads and one ssh stream.

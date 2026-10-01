@@ -13,6 +13,8 @@
 //! | `passedAt` | when `compared.brainSeconds` first reached `required.brainSeconds` with no divergence |
 //! | `firstDivergence` | `null`, or the first difference with its context (also `divergence.json`) |
 //! | `declaredDifferences` | the named exclusions the comparison applied |
+//! | `runId` | SHADOW-02, a remote shadow: the relay's run (`null` for a shadow on the container) |
+//! | `relay` | SHADOW-02, added by the relay on the container: `lagTransitions` there includes the live trace not yet on the box |
 //!
 //! `pass` is sticky only while nothing diverges: a shadow that keeps running after it passed and
 //! then finds a difference turns the verdict to `diverged`. `stopped` is a shadow that exited
@@ -48,12 +50,13 @@ use crate::trace::{Agreement, Difference};
 pub const FORMAT: &str = "fly-shadow-verdict-v1";
 
 /// Skips that are the live side's own events, not the session runtime's failures: the operator
-/// reward pulse (declared), a startup save rotated away before the shadow reached it, a trace
-/// stopped at its byte cap or for want of a consumer, and a process that ran no transition.
-pub const SKIP_KINDS: [&str; 4] = [
+/// reward pulse (declared), a startup save rotated away before the shadow reached it, and a
+/// process that ran no transition. A trace that stopped (byte cap, or no consumer before this
+/// shadow started) is a coverage gap, never a skip: it ends the window, see [`Verdict::end_window`]
+/// (SHADOW-02 B2).
+pub const SKIP_KINDS: [&str; 3] = [
     "operator-reward-pulse",
     "startup-save-gone",
-    "trace-cap",
     "no-transition",
 ];
 
@@ -136,6 +139,14 @@ pub struct Skipped {
     /// One of [`SKIP_KINDS`], or `trace-malformed`.
     pub kind: String,
     pub reason: String,
+}
+
+/// A coverage gap: the live trace stopped, so everything compared before it no longer counts.
+#[derive(Clone, Debug)]
+pub struct WindowEnd {
+    pub trace: String,
+    pub reason: String,
+    pub discarded_brain_seconds: f64,
 }
 
 /// The first divergence and its context.
@@ -226,6 +237,10 @@ pub struct Verdict {
     pub checkpoints: Checkpoints,
     pub segments_compared: u64,
     pub skipped: Vec<Skipped>,
+    /// Trace stops (coverage gaps) that ended a window: what they discarded.
+    pub window_ends: Vec<WindowEnd>,
+    /// The trace whose stop last ended the window (`None`: none yet). `compared` counts only after.
+    pub last_stop_trace: Option<String>,
     pub divergence: Option<Divergence>,
     pub started_at: String,
     pub passed_at: Option<String>,
@@ -235,6 +250,8 @@ pub struct Verdict {
     pub live_lag_seconds: Option<f64>,
     pub spool_evicted: u64,
     pub cost: Cost,
+    /// SHADOW-02: the relay's run id, for a remote shadow (`null` on the release container).
+    pub run_id: Option<String>,
 }
 
 pub fn now_iso() -> String {
@@ -269,6 +286,27 @@ pub fn iso(ms: i64) -> String {
 }
 
 impl Verdict {
+    /// A coverage gap (a trace stopped, whatever the reason): the live fly may run untraced from
+    /// here, so the brain time and saves compared so far stop counting. A pass needs the whole
+    /// window after the last gap (SHADOW-02 B2).
+    pub fn end_window(&mut self, trace: &str, reason: String) {
+        self.window_ends.push(WindowEnd {
+            trace: trace.to_owned(),
+            reason,
+            discarded_brain_seconds: self.brain_ms / 1000.0,
+        });
+        self.last_stop_trace = Some(trace.to_owned());
+        self.brain_ms = 0.0;
+        self.checkpoints = Checkpoints::default();
+        // A pass belongs to the window it was reached in: the new one has not qualified yet
+        // (r3 N3). A diverged or errored verdict stays what it is.
+        if self.status == Status::Pass {
+            self.status = Status::Running;
+            self.passed_at = None;
+            self.reason = String::new();
+        }
+    }
+
     pub fn brain_seconds(&self) -> f64 {
         self.brain_ms / 1000.0
     }
@@ -311,6 +349,12 @@ impl Verdict {
             "skipped": self.skipped.iter().map(|s| json!({
                 "trace": s.trace, "transitionsCompared": s.transitions_compared, "kind": s.kind, "reason": s.reason,
             })).collect::<Vec<_>>(),
+            "window": {
+                "lastStopTrace": self.last_stop_trace,
+                "ends": self.window_ends.iter().map(|w| json!({
+                    "trace": w.trace, "reason": w.reason, "discardedBrainSeconds": (w.discarded_brain_seconds * 1000.0).round() / 1000.0,
+                })).collect::<Vec<_>>(),
+            },
             "declaredDifferences": DECLARED.iter().map(|(name, what)| json!({"name": name, "what": what})).collect::<Vec<_>>(),
             "firstDivergence": self.divergence.as_ref().map(|d| {
                 let mut v = d.to_json();
@@ -325,6 +369,7 @@ impl Verdict {
             "liveLagSeconds": self.live_lag_seconds,
             "spoolEvicted": self.spool_evicted,
             "cost": self.cost.to_json(),
+            "runId": self.run_id,
         })
     }
 }
@@ -336,6 +381,22 @@ pub fn write_json(path: &Path, value: &Value) -> std::io::Result<()> {
     text.push('\n');
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)
+}
+
+/// [`write_json`], synced to disk (file and directory) before it returns.
+pub fn write_json_durable(path: &Path, value: &Value) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension("json.tmp");
+    let mut text = serde_json::to_string_pretty(value).expect("JSON serializes");
+    text.push('\n');
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(text.as_bytes())?;
+    f.sync_all()?;
+    std::fs::rename(&tmp, path)?;
+    if let Some(dir) = path.parent() {
+        std::fs::File::open(dir)?.sync_all()?;
+    }
+    Ok(())
 }
 
 /// Whether the saves compared are enough for the brain time compared ([`BRAIN_SECONDS_PER_SAVE`],
@@ -410,6 +471,12 @@ pub fn allows_cutover(
     }
     if candidate["compatibility"] != compatibility {
         return Err("the verdict is for another compatibility string".to_owned());
+    }
+    // Only a build that ends the window at a coverage gap counts brain time after it.
+    if verdict["window"].is_null() {
+        return Err(
+            "the verdict does not say where its window starts (an older shadow)".to_owned(),
+        );
     }
     let compared = verdict["compared"]["brainSeconds"].as_f64().unwrap_or(0.0);
     // The operator's window is a floor the verdict cannot lower: a shadow run with a shorter
@@ -516,6 +583,8 @@ mod tests {
             },
             segments_compared: 1,
             skipped: Vec::new(),
+            window_ends: Vec::new(),
+            last_stop_trace: None,
             divergence: None,
             started_at: now_iso(),
             passed_at: None,
@@ -524,8 +593,92 @@ mod tests {
             live_lag_seconds: None,
             spool_evicted: 0,
             cost: Cost::default(),
+            run_id: None,
         }
         .to_json()
+    }
+
+    fn verdict_struct(status: Status) -> Verdict {
+        Verdict {
+            status,
+            reason: String::new(),
+            binary_sha256: String::new(),
+            binaries: Default::default(),
+            release: String::new(),
+            compatibility: String::new(),
+            execution_mode: String::new(),
+            agent_threads: 1,
+            required_brain_seconds: 10_800.0,
+            agreement: Agreement::default(),
+            brain_ms: 1_819_000.0,
+            ledger_checks: 0,
+            checkpoints: Checkpoints {
+                identical: 400,
+                declared: 0,
+                unavailable: 0,
+            },
+            segments_compared: 1,
+            skipped: Vec::new(),
+            window_ends: Vec::new(),
+            last_stop_trace: None,
+            divergence: None,
+            started_at: now_iso(),
+            passed_at: None,
+            current_trace: None,
+            lag_transitions: 0,
+            live_lag_seconds: None,
+            spool_evicted: 0,
+            cost: Cost::default(),
+            run_id: None,
+        }
+    }
+
+    #[test]
+    fn a_stop_ends_the_window() {
+        // B2: brain time compared before a coverage gap never counts toward a pass.
+        let mut v = verdict_struct(Status::Running);
+        v.brain_ms = 1_819_000.0;
+        v.checkpoints = Checkpoints {
+            identical: 400,
+            declared: 0,
+            unavailable: 0,
+        };
+        v.end_window("trace-1.jsonl", "no-consumer".to_owned());
+        assert_eq!(v.brain_seconds(), 0.0);
+        v.brain_ms += 170_000.0;
+        let j = v.to_json();
+        assert_eq!(j["compared"]["brainSeconds"], 170.0);
+        assert_eq!(j["compared"]["checkpoints"]["identical"], 0);
+        assert_eq!(j["window"]["lastStopTrace"], "trace-1.jsonl");
+        assert_eq!(j["window"]["ends"][0]["discardedBrainSeconds"], 1819.0);
+        // A gap is not an allowed skip.
+        assert!(!SKIP_KINDS.contains(&"trace-cap"));
+    }
+
+    #[test]
+    fn a_window_end_takes_back_a_pass_and_nothing_else() {
+        let mut v = verdict_struct(Status::Pass);
+        v.passed_at = Some(now_iso());
+        v.reason = "10800 s compared".to_owned();
+        v.brain_ms = 10_800_000.0;
+        v.end_window("trace-2.jsonl", "byte-cap".to_owned());
+        let j = v.to_json();
+        assert_eq!(j["status"], "running");
+        assert!(j["passedAt"].is_null());
+        assert_eq!(j["compared"]["brainSeconds"], 0.0);
+        assert_eq!(j["window"]["lastStopTrace"], "trace-2.jsonl");
+        // The cutover rule refuses it on any count.
+        let now = parse_iso(&now_iso()).unwrap();
+        let binaries: std::collections::BTreeMap<String, String> = Default::default();
+        let release = Release { dir: "/opt/fly/releases/test", binaries: &binaries };
+        assert!(allows_cutover(&j, "flysim-session", &release, "c", now, 300).is_err());
+        let mut forced = j.clone();
+        forced["status"] = json!("pass");
+        assert!(allows_cutover(&forced, "flysim-session", &release, "c", now, 300).is_err());
+        // Diverged stays diverged.
+        let mut d = verdict_struct(Status::Diverged);
+        d.end_window("trace-3.jsonl", "no-consumer".to_owned());
+        assert_eq!(d.status, Status::Diverged);
     }
 
     #[test]
@@ -540,6 +693,10 @@ mod tests {
         let ok = |v: &Value| allows_cutover(v, "flysim-session", &release, "c", now, 300);
         let pass = verdict(Status::Pass, 10_800_000.0);
         assert_eq!(ok(&pass), Ok(()));
+        // A verdict that does not say where its window starts is an older shadow's (B2).
+        let mut undated = pass.clone();
+        undated.as_object_mut().unwrap().remove("window");
+        assert!(ok(&undated).is_err());
         // Another binary, another release, a changed file in it.
         assert!(allows_cutover(&pass, "fly-other", &release, "c", now, 300).is_err());
         let moved = Release {

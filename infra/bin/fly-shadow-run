@@ -5,7 +5,9 @@
 # agent at a time).
 #
 #   fly-shadow-run start     baseline the live fly (10 min), turn flysim's trace on, start flyshadow.service
-#                            and the live-impact guard, restart flysim once
+#                            and the live-impact guard, restart flysim once. The shadow runs on a
+#                            build box (SHADOW-02, below); --local runs it on this container
+#                            instead, which the live fly paid for on 2026-09-30 (RTF 0.999 -> 0.93)
 #   fly-shadow-run stop      stop the shadow and the guard, turn the trace off (at flysim's next
 #                            restart; --restart-flysim restarts it now), remove trace and spool
 #   fly-shadow-run status    the verdict in one screen
@@ -51,6 +53,21 @@
 # ActiveState inactive or failed (systemctl show), never activating: the shadow's 10-s crash-restart
 # delay must not switch the guard off. `check` also requires the guard timer active and baseline.json.
 #
+# REMOTE (SHADOW-02). With /etc/fly/shadow-remote.env present (the operator's private file:
+# FLY_SHADOW_REMOTE=<user>@<box>, FLY_SHADOW_REMOTE_KEY, FLY_SHADOW_REMOTE_KNOWN_HOSTS, optional
+# FLY_SHADOW_REMOTE_PORT), `start` gives flyshadow.service a drop-in (remote.conf) that runs
+# `fly-shadow relay` instead of the shadow: a light process, normal scheduling, off flysim's CPUs,
+# that streams the trace, the new saves and the sugar journal over one ssh connection to the box's
+# `fly-shadow ingest` (the key's forced command) and writes the box shadow's verdict back to
+# /srv/fly/shadow/verdict.json. The box runs the same release, at the same path, on its own cores
+# (infra/box/flyshadow-remote.service). Everything else here is unchanged: the unit name, the
+# guard, `check`, CUT-01. The relay keeps flysim's heartbeat fresh only while the box's shadow of
+# THIS run (FLY_SHADOW_RUN_ID, the start's Unix ms) is alive and the box has everything that was on
+# this disk a minute ago, so a dead box, shadow or network stops the trace like a dead local shadow.
+# `check` in remote mode also needs /srv/fly/shadow/relay.json healthy, less than a minute old, of
+# this run (the drop-in's id, which the verdict must carry too), without coverageLost (flysim
+# stopped its trace for want of a consumer) and with a trace file written in the last 90 s.
+#
 # Files (all owned by fly):
 #   /srv/fly/shadow/trace/trace-<ms>-<pid>.jsonl   flysim's per-process trace (4 GiB each, 8 in all)
 #   /srv/fly/shadow/trace/consumer                  the shadow's heartbeat
@@ -59,11 +76,18 @@
 #   /srv/fly/shadow/divergence.json                 the first divergence with its context
 #   /srv/fly/shadow/baseline.json                   the guard's baseline (and baseline-samples.jsonl)
 #   /srv/fly/shadow/guard-state.json                the guard's recent samples
+#   /srv/fly/shadow/relay.json                      remote mode: the relay's health
 set -euo pipefail
 
 SHADOW_DIR="${FLY_SHADOW_DIR:-/srv/fly/shadow}"
 DROPIN_DIR=/etc/systemd/system/flysim.service.d
 DROPIN="$DROPIN_DIR/shadow-trace.conf"
+REMOTE_ENV="${FLY_SHADOW_REMOTE_ENV:-/etc/fly/shadow-remote.env}"
+REMOTE_DROPIN_DIR="${FLY_SHADOW_REMOTE_DROPIN_DIR:-/etc/systemd/system/flyshadow.service.d}"
+REMOTE_DROPIN="$REMOTE_DROPIN_DIR/remote.conf"
+# How long start waits for the first heartbeat (remote: at least 300 s, because the box's shadow
+# restarts for the new run and the ingest hashes the release first).
+HEARTBEAT_WAIT="${FLY_SHADOW_HEARTBEAT_WAIT_SECONDS:-60}"
 BIN="${FLY_SHADOW_BIN:-/opt/fly/current/fly-shadow}"
 METRICS_URL="${FLY_METRICS_URL:-http://127.0.0.1:9101}"
 CONTROL_URL="${FLY_CONTROL_URL:-http://127.0.0.1:7401}"
@@ -235,10 +259,35 @@ if both:
     esac
 }
 
+# Remote mode's prerequisites, checked before anything changes.
+check_remote() {
+    [ -r "$REMOTE_ENV" ] || die "$REMOTE_ENV is not readable"
+    local target key known
+    target="$(sed -n 's/^FLY_SHADOW_REMOTE=//p' "$REMOTE_ENV" | tail -n 1)"
+    key="$(sed -n 's/^FLY_SHADOW_REMOTE_KEY=//p' "$REMOTE_ENV" | tail -n 1)"
+    known="$(sed -n 's/^FLY_SHADOW_REMOTE_KNOWN_HOSTS=//p' "$REMOTE_ENV" | tail -n 1)"
+    [ -n "$target" ] || die "$REMOTE_ENV sets no FLY_SHADOW_REMOTE"
+    { [ -n "$key" ] && [ -f "$key" ]; } || die "$REMOTE_ENV: FLY_SHADOW_REMOTE_KEY ($key) is not a file"
+    { [ -n "$known" ] && [ -f "$known" ]; } || die "$REMOTE_ENV: FLY_SHADOW_REMOTE_KNOWN_HOSTS ($known) is not a file"
+    [ "$(stat -c %U "$key")" = "${FLY_SHADOW_KEY_OWNER:-fly}" ] || die "$key must be owned by fly (the relay runs as fly)"
+    command -v ssh >/dev/null || die "no ssh client in this container (apt-get install openssh-client)"
+}
+
 start() {
     need_root
+    local mode=remote
+    for arg in "$@"; do
+        case "$arg" in
+            --local) mode=local ;;
+            *) die "start: unknown option $arg" ;;
+        esac
+    done
     [ -x "$BIN" ] || die "$BIN is missing: this release predates SHADOW-01"
     systemctl is-active --quiet flyshadow.service && die "flyshadow.service is already running"
+    if [ "$mode" = remote ]; then
+        [ -f "$REMOTE_ENV" ] || die "no $REMOTE_ENV: the shadow runs on a build box (SHADOW-02; runbook). Pass --local to run it on this container instead, at the live fly's expense"
+        check_remote
+    fi
     check_cpuset
     install -d -o fly -g fly -m 0755 "$SHADOW_DIR" "$SHADOW_DIR/trace"
     # A previous run's verdict is kept beside, never read as this run's.
@@ -261,7 +310,30 @@ start() {
     printf '{}\n' > "$SHADOW_DIR/guard-state.json"
     chown fly:fly "$SHADOW_DIR/baseline.json" "$samples" "$SHADOW_DIR/guard-state.json"
     log "baseline: $base"
-    mkdir -p "$DROPIN_DIR"
+    mkdir -p "$DROPIN_DIR" "$REMOTE_DROPIN_DIR"
+    if [ "$mode" = remote ]; then
+        local run_id
+        run_id="$(date +%s%3N)"
+        [ "$HEARTBEAT_WAIT" -ge 300 ] || HEARTBEAT_WAIT=300
+        cat > "$REMOTE_DROPIN" <<EOF
+# written by fly-shadow-run start (SHADOW-02); removed by fly-shadow-run stop and by its guard.
+# The shadow runs on a build box; this unit is its relay: light, normal scheduling, off flysim's CPUs.
+[Service]
+EnvironmentFile=$REMOTE_ENV
+Environment=FLY_SHADOW_RUN_ID=$run_id
+ExecStart=
+ExecStart=$BIN relay
+CPUSchedulingPolicy=other
+Nice=5
+CPUWeight=50
+IOSchedulingClass=best-effort
+MemoryMax=1G
+EOF
+        log "remote shadow, run $run_id: flyshadow.service relays to the build box in $REMOTE_ENV"
+    else
+        rm -f "$REMOTE_DROPIN"
+        log "LOCAL shadow on this container (--local)"
+    fi
     cat > "$DROPIN" <<EOF
 # written by fly-shadow-run start (SHADOW-01); removed by fly-shadow-run stop and by its guard.
 [Service]
@@ -269,13 +341,15 @@ Environment=FLY_TRACE_DIR=$SHADOW_DIR/trace
 Environment=FLY_TRACE_LEDGERS=$LEDGERS_EVERY
 EOF
     systemctl daemon-reload
+    rm -f "$SHADOW_DIR/relay.json" "$SHADOW_DIR/trace/consumer"
     systemctl start flyshadow.service
-    # flysim starts no trace without a live consumer: wait for the shadow's heartbeat.
-    for _ in $(seq 1 60); do
+    # flysim starts no trace without a live consumer: wait for the shadow's heartbeat (remote: the
+    # relay writes it once the box's shadow of this run is alive and the sync is caught up).
+    for _ in $(seq 1 "$HEARTBEAT_WAIT"); do
         [ -f "$SHADOW_DIR/trace/consumer" ] && break
         sleep 1
     done
-    [ -f "$SHADOW_DIR/trace/consumer" ] || { stop_all "the shadow wrote no heartbeat"; die "flyshadow.service did not come up"; }
+    [ -f "$SHADOW_DIR/trace/consumer" ] || { stop_all "the shadow wrote no heartbeat"; die "flyshadow.service did not come up (remote: journalctl -u flyshadow; $SHADOW_DIR/relay.json)"; }
     log "flyshadow.service started; restarting flysim.service so the shadow follows it from its start"
     systemctl restart flysim.service
     systemctl start flyshadow-guard.timer
@@ -286,7 +360,7 @@ EOF
 stop_all() {
     systemctl stop flyshadow-guard.timer 2>/dev/null || true
     systemctl stop flyshadow.service 2>/dev/null || true
-    rm -f "$DROPIN"
+    rm -f "$DROPIN" "$REMOTE_DROPIN"
     systemctl daemon-reload
     log "stopped the shadow: $1"
 }
@@ -375,6 +449,15 @@ status() {
     systemctl is-active flyshadow.service || true
     systemctl is-active flyshadow-guard.timer || true
     [ -f "$SHADOW_DIR/guard-tripped.json" ] && echo "GUARD TRIPPED: $(cat "$SHADOW_DIR/guard-tripped.json")"
+    if [ -f "$REMOTE_DROPIN" ] && [ -f "$SHADOW_DIR/relay.json" ]; then
+        python3 - "$SHADOW_DIR/relay.json" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+print(f"remote relay: {'healthy' if r.get('healthy') else 'NOT HEALTHY'} (connected {r.get('connected')}, "
+      f"box shadow alive {r.get('remoteAlive')} {r.get('remoteWhy') or ''}); caught up "
+      f"{r.get('caughtUpSecondsAgo')} s ago; unsynced {r.get('unsyncedBytes')} B; updated {r.get('updatedAt')}")
+PY
+    fi
     [ -f "$SHADOW_DIR/verdict.json" ] || { echo "no verdict yet"; return 0; }
     python3 - "$SHADOW_DIR/verdict.json" <<'PY'
 import json, sys
@@ -412,26 +495,79 @@ check() {
         echo "cutover refused: no baseline.json (this run was not baselined by fly-shadow-run start)"
         exit 1
     fi
+    # Remote (SHADOW-02): the relay must be healthy now (connected, the box's shadow of this run
+    # alive, the sync caught up), not just have relayed a pass lately; it must not have lost
+    # coverage (flysim stopped its trace for want of a consumer: review B1); the live trace must be
+    # being written; and the relay's, the verdict's and this run's drop-in's run ids must be one.
+    # A verdict that carries a run id is a remote run's: it never stands for a local shadow.
+    local why rc=0 run_id=""
+    [ -f "$REMOTE_DROPIN" ] && run_id="$(sed -n 's/^Environment=FLY_SHADOW_RUN_ID=//p' "$REMOTE_DROPIN" | tail -n 1)"
+    why="$(python3 - "$SHADOW_DIR/relay.json" "$SHADOW_DIR/verdict.json" "$([ -f "$REMOTE_DROPIN" ] && echo remote || echo local)" "$run_id" <<'PY'
+import datetime, json, sys
+relay_path, verdict_path, mode, run_id = sys.argv[1:5]
+def refuse(msg):
+    print(msg); sys.exit(1)
+try:
+    v = json.load(open(verdict_path))
+except Exception:
+    v = {}
+if mode == "local":
+    if v.get("runId") is not None:
+        refuse("the verdict is a remote run's (run %s) but this run is local: no remote drop-in" % v.get("runId"))
+    sys.exit(0)
+if not run_id:
+    refuse("the remote drop-in names no FLY_SHADOW_RUN_ID")
+try:
+    r = json.load(open(relay_path))
+    t = datetime.datetime.fromisoformat(r["updatedAt"].replace("Z", "+00:00"))
+except Exception as e:
+    refuse("no readable relay.json (%s)" % e)
+# updatedAt is the container's own clock (the relay writes it here), so skew between the two hosts
+# does not reach this check; the verdict's own age check does (see the runbook: run NTP on both).
+age = (datetime.datetime.now(datetime.timezone.utc) - t).total_seconds()
+if not -60 <= age <= 60:
+    refuse("relay.json is %.0f s old" % age)
+if r.get("runId") != run_id:
+    refuse("relay.json is for run %s, this run is %s" % (r.get("runId"), run_id))
+if v.get("runId") != run_id:
+    refuse("the verdict is for run %s, this run is %s" % (v.get("runId"), run_id))
+if v.get("window") is None:
+    refuse("the verdict does not say where its window starts (a shadow older than the B2 fix): a gap before it may be counted")
+if r.get("coverageLost"):
+    refuse("coverage of the live fly was lost (%s): its trace stopped for want of a consumer and the rest of that process is uncompared" % json.dumps(r["coverageLost"]))
+if not r.get("healthy"):
+    refuse("the relay is not healthy (connected %s, box shadow alive %s %s)" % (r.get("connected"), r.get("remoteAlive"), r.get("remoteWhy") or ""))
+ta = r.get("traceAgeSeconds")
+if ta is None:
+    refuse("no live trace file of this run")
+if ta > 90:
+    refuse("the live trace has not been written for %d s while the shadow claims to follow it (flysim paused, or its trace stopped)" % ta)
+PY
+)" || rc=$?
+    if [ "$rc" != 0 ]; then
+        echo "cutover refused: remote shadow: $why"
+        exit 1
+    fi
     [ -x "$BIN" ] || die "$BIN is missing"
     # The live service's configuration, for its compatibility string.
     set -a
-    # shellcheck disable=SC1091
-    . /etc/fly/fly.env
+    # shellcheck disable=SC1090,SC1091
+    . "${FLY_ENV_FILE:-/etc/fly/fly.env}"
     set +a
     # The release CUT-01 switches into and the binary it switches to: SERVE-01's service there.
-    "$BIN" check --verdict "$SHADOW_DIR/verdict.json" --current /opt/fly/current \
+    "$BIN" check --verdict "$SHADOW_DIR/verdict.json" --current "${FLY_CURRENT_DIR:-/opt/fly/current}" \
         --binary flysim-session "$@"
 }
 
 cmd="${1:-}"
 [ $# -gt 0 ] && shift
 case "$cmd" in
-    start) start ;;
+    start) start "$@" ;;
     stop) stop "$@" ;;
     status) status ;;
     check) check "$@" ;;
     guard) guard ;;
     baseline) [ $# = 1 ] || die "baseline SAMPLES.jsonl"; python3 -c "$GUARD_PY" baseline "$1" ;;
     simulate) [ $# = 2 ] || die "simulate BASELINE.jsonl CHECKS.jsonl"; python3 -c "$GUARD_PY" simulate "$1" "$2" ;;
-    *) echo "usage: fly-shadow-run start|stop [--restart-flysim] [--keep]|status|check [--max-age-seconds N]|guard|baseline SAMPLES.jsonl|simulate BASELINE.jsonl CHECKS.jsonl" >&2; exit 2 ;;
+    *) echo "usage: fly-shadow-run start [--local]|stop [--restart-flysim] [--keep]|status|check [--max-age-seconds N]|guard|baseline SAMPLES.jsonl|simulate BASELINE.jsonl CHECKS.jsonl" >&2; exit 2 ;;
 esac

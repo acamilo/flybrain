@@ -217,6 +217,7 @@ fn config(
         binary_sha256: "test".to_owned(),
         binaries: Default::default(),
         release: String::new(),
+        run_id_file: None,
     }
 }
 
@@ -568,4 +569,57 @@ fn the_shadow_follows_the_real_service_and_catches_every_planted_difference() {
     assert_eq!(d.kind, "boot", "{}", d.detail);
     assert!(d.detail.contains("restore gate"), "{}", d.detail);
     assert!(got.skipped.is_empty());
+
+    // r3 N5: a declared reward pulse ends the comparison of its trace, but a stop later in the
+    // same trace (here the byte cap) must still end the window: what was compared before the
+    // pulse, and the untraced time after the stop, must not count toward a pass.
+    let full_brain_seconds = verdict.brain_seconds();
+    let at = tampered(&dirs.trace, &neg.join("reward/trace"), |n, v| {
+        (n == 100)
+            .then(|| v["behaviour"]["admissions"] = serde_json::json!([{"kind": "reward"}]))
+            .is_some()
+    });
+    let files = transitions(&neg.join("reward/trace"));
+    let (first_name, second_n) = (
+        files[0].0.file_name().unwrap().to_string_lossy().into_owned(),
+        files[1].1,
+    );
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&files[0].0).unwrap();
+        writeln!(f, "{{\"truncated\":true,\"reason\":\"byte-cap\"}}").unwrap();
+    }
+    let _ = std::fs::remove_dir_all(neg.join("reward").join("out"));
+    let reward_config = self::config(&rom, &neg.join("reward"), &neg.join("reward/trace"), (&empty, &empty), &spool);
+    let out = reward_config.out_dir.clone();
+    let stop = StopFlag::default();
+    let handle = spawn_shadow(reward_config, stop.clone());
+    let deadline = Instant::now() + Duration::from_secs(600);
+    loop {
+        let v = verdict_of(&out);
+        let ended = !v["window"]["ends"].as_array().is_none_or(|e| e.is_empty());
+        if (ended && v["compared"]["transitions"].as_u64() >= Some(101 + second_n as u64))
+            || handle.is_finished()
+            || Instant::now() > deadline
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    stop.request();
+    let (ended, verdict) = handle.join().unwrap().expect("the shadow ran");
+    assert_ne!(ended, Ended::Diverged, "{:?}", verdict.reason);
+    let j = verdict.to_json();
+    eprintln!("reward then stop (reward at step {at}): {j}");
+    assert_eq!(j["skipped"][0]["kind"], "operator-reward-pulse", "{j}");
+    assert_eq!(j["window"]["lastStopTrace"], first_name.as_str(), "{j}");
+    assert_eq!(j["window"]["ends"][0]["trace"], first_name.as_str(), "{j}");
+    assert!(j["window"]["ends"][0]["discardedBrainSeconds"].as_f64().unwrap() > 0.0, "{j}");
+    // Only the second process counts, after the window ended: what the first one compared before
+    // the pulse is dropped and its uncompared remainder never was added, so less than the whole.
+    let whole = full_brain_seconds;
+    let after = j["compared"]["brainSeconds"].as_f64().unwrap();
+    let dropped = j["window"]["ends"][0]["discardedBrainSeconds"].as_f64().unwrap();
+    assert!(after + dropped < whole - 1.0, "{after} + {dropped} against {whole}: {j}");
+    assert_ne!(j["status"], "pass", "{j}");
 }
