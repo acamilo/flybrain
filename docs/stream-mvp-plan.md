@@ -994,3 +994,11 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   after the last loss. The guard and `check` stay on the container. The on-box shadow (v0.7.0)
   slowed the live fly; the relay costs about 0.5% of a core. Reviews: BLOCK, BLOCK,
   APPROVE-WITH-NOTES, APPROVE.
+- 2026-10-01 (v0.7.4, loop review hotfix): row 71. On Route 24 (rung 15) the fly met a wild
+  Oddish at low HP with two Poké Balls in a bag that had grown to five items (TMs, HELIX FOSSIL,
+  NUGGET), so the ball was the fifth entry and the list scrolled. The macro state read the bag
+  cursor as the window row only, so THROW BALL could never reach the ball and was blocked every
+  time; row 69's low-HP rule left it the only card. A restart restores the open bag, so the ladder
+  could not clear it. The cursor is now the row plus the list's scroll offset, as the cartridge
+  computes it; the mart's lists the same. ROM test from the live checkpoint: 10 blocked before,
+  Oddish caught after. Review: APPROVE.
