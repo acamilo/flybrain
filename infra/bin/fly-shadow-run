@@ -531,6 +531,8 @@ if r.get("runId") != run_id:
     refuse("relay.json is for run %s, this run is %s" % (r.get("runId"), run_id))
 if v.get("runId") != run_id:
     refuse("the verdict is for run %s, this run is %s" % (v.get("runId"), run_id))
+if v.get("window") is None:
+    refuse("the verdict does not say where its window starts (a shadow older than the B2 fix): a gap before it may be counted")
 if r.get("coverageLost"):
     refuse("coverage of the live fly was lost (%s): its trace stopped for want of a consumer and the rest of that process is uncompared" % json.dumps(r["coverageLost"]))
 if not r.get("healthy"):

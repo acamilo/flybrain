@@ -10,7 +10,7 @@
 //! 1. A fresh fly and a restart, with sugar: the box's `pass` arrives on the container side with
 //!    this run's id, and finished trace files are removed on the container too.
 //! 2. The remote shadow dies: the relay stops the heartbeat and flysim stops its trace; a new
-//!    shadow starts a new window, reports that stop (which predates it) as a `trace-cap` skip,
+//!    shadow starts a new window, ends its window at that stop (which predates it; B2),
 //!    and follows the next process.
 //! 3. The sync stalls (the ingest is stopped): the heartbeat goes stale, flysim stops its trace
 //!    (`no-consumer`); once the sync is back the box sees the gap and fails the verdict as a
@@ -369,18 +369,41 @@ fn the_remote_shadow_follows_through_the_relay_and_fails_closed() {
         json_of(&verdict_path)["startedAt"] != started_before
     });
     live.stop();
-    // The stop happened before this shadow: history, an allowed skip, not a coverage gap.
-    wait_for("the stopped file skipped as trace-cap", 120, || {
+    // The stop happened before this shadow: it ends the window (nothing before it counts), it is
+    // not a skip.
+    wait_for("the stopped file to end the window", 120, || {
+        json_of(&verdict_path)["window"]["ends"]
+            .as_array()
+            .is_some_and(|e| !e.is_empty())
+    });
+    assert!(
         json_of(&verdict_path)["skipped"]
             .as_array()
-            .is_some_and(|s| s.iter().any(|k| k["kind"] == "trace-cap"))
-    });
+            .is_some_and(|s| s.iter().all(|k| k["kind"] != "trace-cap"))
+    );
     let live = Live::start(&flysim, &rom, &container, &root.join("flysim-4.log"));
     live.run_for(3_000.0);
     wait_for("the new window comparing the next process", 120, || {
         json_of(&verdict_path)["compared"]["transitions"].as_u64() > Some(0)
     });
     assert!(json_of(&verdict_path)["firstDivergence"].is_null());
+    // B2: the replayed stopped trace's brain time was discarded at its stop; the verdict counts
+    // only the process after the gap.
+    {
+        let v = json_of(&verdict_path);
+        let discarded = v["window"]["ends"][0]["discardedBrainSeconds"]
+            .as_f64()
+            .unwrap();
+        let compared = v["compared"]["brainSeconds"].as_f64().unwrap();
+        assert!(
+            discarded > 0.0,
+            "the stopped trace had brain time before the gap: {v}"
+        );
+        assert!(
+            compared < discarded,
+            "{compared} s counted after the gap, {discarded} s before it must not count: {v}"
+        );
+    }
 
     // 3. The sync stalls: the ingest stops reading.
     let pid = std::fs::read_to_string(&pid_file).unwrap().trim().to_owned();

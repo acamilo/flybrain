@@ -800,7 +800,6 @@ several processes.
 - `startup-save-gone`: a process whose startup save was already gone when the shadow reached it,
   because the shadow started late or its spool evicted the file;
 - `operator-reward-pulse`;
-- `trace-cap`: the live trace stopped at its byte cap, or with no consumer;
 - `no-transition`: a process that ran none.
 
 A skip adds nothing to the window. A trace the shadow cannot read is `trace-malformed`, which
@@ -919,7 +918,8 @@ verdict comes back (`shadow::remote`, `shadow::relay`, `shadow::ingest`).
   (`"truncated":true,"reason":"no-consumer"`) while the shadow is following it is now a `coverage`
   divergence, not a `trace-cap` skip: the rest of that live process can never be compared, and with
   a relay a stalled sync is exactly how that happens. A stop already in the file when the shadow
-  started is history and stays a `trace-cap` skip, and the byte cap stays a skip. The coverage
+  started, and the byte cap, end the verdict's window instead (`window.ends`): what was compared
+  before them stops counting, and a pass needs its brain time after the last one (SHADOW-02 B2). The coverage
   check reads the sugar journal before it lists the trace directory (a process creates its trace
   file before it writes its boot header, so a boot between the two reads could look untraced
   the other way round).

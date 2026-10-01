@@ -621,8 +621,18 @@ pct exec <ctid> -- /opt/fly/bin/fly-shadow-run stop --restart-flysim   # shadow,
   and, counted in trace lines, soon caught up, long before its shadow reaches that stop. The relay
   therefore scans the trace bytes it forwards for the stop and sets `coverageLost` in
   `/srv/fly/shadow/relay.json`; it reports itself not healthy (no heartbeat) and `check` refuses
-  until the box's shadow reaches the stop and diverges (`coverage`), or restarts (a new window,
-  which treats the stop as history). Catching up never clears it.
+  until the box's shadow reaches the stop and diverges (`coverage`), or ends its window at that
+  stop. **A stop ends the window** (B2): a trace that stopped (no consumer, byte cap) is a coverage
+  gap, never a skip. The shadow discards the brain time and saves compared before it
+  (`window.ends` in the verdict says how much), and a `pass` needs the whole 10,800 s after the
+  last gap. A box shadow that restarts after a gap replays the stopped trace, counts it, and drops
+  the count at its stop, so the pass still comes 10,800 s after the gap. `check` refuses while
+  `coverageLost` is set (it closes only when the verdict's `window.lastStopTrace` is that trace or
+  a later one) and for a verdict without a `window`. Catching up and restarting never clear it.
+  **Never restart the relay (`systemctl restart flyshadow`) mid-run**: its stop removes the
+  heartbeat, flysim stops tracing within a minute, and that costs the run (a coverage loss: safe,
+  and the run starts over). `coverageLost` is synced to disk before the chunk with the stop is
+  forwarded.
 - **Resources**: the shadow is a second whole brain, at about the live fly's CPU per frame.
   Remote, it runs on the box's own cores at normal priority (`flyshadow-remote.service`), and the
   container pays the relay (about 0.5 % of a core, measured; about 2.1 GB an hour over the network:

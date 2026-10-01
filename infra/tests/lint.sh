@@ -750,7 +750,7 @@ if command -v python3 >/dev/null 2>&1; then
         local rc=0 out dropin_dir="$rc_tmp/flyshadow.d"
         rm -f "$rc_tmp/shadow/relay.json"
         [ "$3" = none ] || printf '%s\n' "$3" > "$rc_tmp/shadow/relay.json"
-        printf '%s\n' "${4:-{\"runId\":\"1790000000000\",\"status\":\"running\"\}}" > "$rc_tmp/shadow/verdict.json"
+        printf '%s\n' "${4:-{\"runId\":\"1790000000000\",\"status\":\"running\",\"window\":{\"lastStopTrace\":null\}\}}" > "$rc_tmp/shadow/verdict.json"
         [ "${5:-}" = local ] && dropin_dir="$rc_tmp/none.d"
         out="$(PATH="$rc_tmp/bin:$PATH" FLY_SHADOW_DIR="$rc_tmp/shadow" FLY_SHADOW_BIN="$rc_tmp/none" \
             FLY_SHADOW_REMOTE_DROPIN_DIR="$dropin_dir" "$INFRA_DIR/bin/fly-shadow-run" check 2>&1)" || rc=$?
@@ -772,6 +772,9 @@ if command -v python3 >/dev/null 2>&1; then
     rc_check "live trace not written for 5 minutes" refused "{\"updatedAt\":\"$now\",\"runId\":\"1790000000000\",\"healthy\":true,\"coverageLost\":null,\"traceAgeSeconds\":300}"
     rc_check "no live trace file" refused "{\"updatedAt\":\"$now\",\"runId\":\"1790000000000\",\"healthy\":true,\"coverageLost\":null,\"traceAgeSeconds\":null}"
     rc_check "relay.json of another run" refused "{\"updatedAt\":\"$now\",\"runId\":\"1789999999999\",\"healthy\":true,\"coverageLost\":null,\"traceAgeSeconds\":12}"
+    # B2: a verdict that does not carry its window (an older shadow) may count time before a gap.
+    rc_check "a verdict without a window (B2)" refused "{$good}" "{\"runId\":\"1790000000000\",\"status\":\"pass\"}"
+    rc_check "a verdict with a window, after a stop (B2)" passes-gates "{$good}" "{\"runId\":\"1790000000000\",\"status\":\"pass\",\"window\":{\"lastStopTrace\":\"trace-1790000005000-4242.jsonl\"}}"
     rc_check "verdict of another run" refused "{$good}" "{\"runId\":\"1789999999999\",\"status\":\"pass\"}"
     rc_check "a local run's verdict (no run id) in remote mode" refused "{$good}" "{\"runId\":null,\"status\":\"pass\"}"
     rc_check "a remote verdict without a remote drop-in" refused "{$good}" "{\"runId\":\"1790000000000\",\"status\":\"pass\"}" local

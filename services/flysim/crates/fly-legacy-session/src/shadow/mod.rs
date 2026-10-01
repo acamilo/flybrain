@@ -525,6 +525,8 @@ pub async fn run(config: ShadowConfig, stop: StopFlag) -> Result<(Ended, Verdict
             checkpoints: Checkpoints::default(),
             segments_compared: 0,
             skipped: Vec::new(),
+            window_ends: Vec::new(),
+            last_stop_trace: None,
             divergence: None,
             started_at: verdict::now_iso(),
             passed_at: None,
@@ -770,6 +772,18 @@ impl Shadow {
             match end {
                 SegmentEnd::Completed => {
                     eprintln!("fly-shadow: {name} ended; {compared} transitions identical");
+                    if !self.config.keep_traces {
+                        let _ = std::fs::remove_file(&next);
+                    }
+                }
+                SegmentEnd::Skipped("trace-cap", reason) => {
+                    // A stopped trace is a coverage gap: what was compared before it stops
+                    // counting (SHADOW-02 B2).
+                    eprintln!(
+                        "fly-shadow: {name} stopped after {compared} transitions: {reason}; the \
+                         window restarts after it"
+                    );
+                    self.verdict.end_window(&name, reason);
                     if !self.config.keep_traces {
                         let _ = std::fs::remove_file(&next);
                     }

@@ -726,7 +726,7 @@ back to 0.999-1.0 the moment the shadow was stopped.
 **Tests.** `tests/shadow_remote.rs` (ROM, the toy connectome) runs the real `flysim`, the relay and
 the real `fly-shadow ingest` binary (over pipes where production has ssh) and a remote shadow:
 a fresh fly and a restart with sugar pass and come back with the run id; a dead remote shadow stops
-the heartbeat and flysim's trace, and the new shadow skips that stop as history (`trace-cap`) and
+the heartbeat and flysim's trace, and the new shadow ends its window at that stop (what it compared before it no longer counts, B2) and
 follows the next process; a stalled ingest leaves the relay reporting "not healthy", flysim stops
 its trace, and when the link is back the box fails the verdict as `coverage` and the relay brings
 it and `divergence.json` back and exits 3. Unit tests: frames, names, the release refusal, offsets

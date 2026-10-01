@@ -5,7 +5,7 @@
 //! After a long outage flysim stops its trace (`"reason":"no-consumer"`) and the live fly runs
 //! untraced. When the link heals the box is alive and, counted in trace lines, caught up long
 //! before its shadow reaches that stop. The relay must not call that healthy: it sets a sticky
-//! `coverageLost`, stops the heartbeat, and clears it only when the shadow starts a new window.
+//! `coverageLost`, stops the heartbeat, and clears it only when the verdict's window starts after the stop (a restart alone does not).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -102,9 +102,14 @@ impl Setup {
                 }
                 while alive.load(Ordering::Relaxed) {
                     let _ = std::fs::write(mirror.join("trace/consumer"), "beat");
+                    // 1: a window that has not ended at the stop; 2: a new window (a restart)
+                    // that replays the stopped trace and has not reached its stop; 3: one whose
+                    // verdict counts from after the stop.
+                    let w = window.load(Ordering::Relaxed);
                     let verdict = json!({
                         "runId": RUN_ID, "status": "running", "lagTransitions": 0,
-                        "startedAt": format!("window-{}", window.load(Ordering::Relaxed)),
+                        "startedAt": format!("window-{}", w.min(2)),
+                        "window": {"lastStopTrace": if w >= 3 { json!(TRACE) } else { Value::Null }},
                     });
                     let _ = std::fs::write(
                         mirror.join("out/verdict.json"),
@@ -195,8 +200,14 @@ fn a_no_consumer_stop_in_the_forwarded_trace_makes_the_relay_unhealthy_until_a_n
     std::thread::sleep(Duration::from_secs(1));
     assert!(!s.relay_json()["coverageLost"].is_null());
 
-    // A restarted shadow (a new window) takes the stop as history.
+    // B2: a restarted shadow (a new window) that has not ended its window at the stop still
+    // counts the time before the gap: the loss stays.
     s.window.store(2, Ordering::Relaxed);
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(!s.relay_json()["coverageLost"].is_null());
+    assert_eq!(s.relay_json()["healthy"], false);
+    // Its verdict counts from after the stop: closed.
+    s.window.store(3, Ordering::Relaxed);
     wait_for("the new window to clear the stop", 60, || {
         let r = s.relay_json();
         r["coverageLost"].is_null() && r["healthy"] == true

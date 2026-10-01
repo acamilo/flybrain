@@ -48,9 +48,11 @@
 //! once the link is back. The relay therefore scans the trace bytes it forwards for that marker;
 //! on finding it, it sets `coverageLost` in `relay.json` (sticky, also across a relay restart of the
 //! same run) and reports itself unhealthy, which stops the heartbeat and makes `check` refuse. It
-//! clears only when the box's shadow starts a new window (a new `startedAt`: a restarted shadow
-//! takes that stop as history, as the `trace-cap` skip), and it is never cleared by the shadow
-//! catching up. `relay.json` also carries `traceAgeSeconds`, the age of the newest trace file, which
+//! clears only when the box's verdict says its window starts after that stop (`window.lastStopTrace`
+//! is the lost trace or a later one: the shadow ended its window at the stop, so its compared
+//! brain time counts only from after the gap), never by the shadow catching up or restarting. A
+//! relay that restarts mid-run ends the run's coverage (flysim stops tracing without a heartbeat)
+//! and the loss is safe. `relay.json` also carries `traceAgeSeconds`, the age of the newest trace file, which
 //! `check` bounds.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -269,6 +271,17 @@ struct CoverageLost {
 }
 
 /// The marker flysim writes when it stops a trace for want of a consumer.
+/// Whether trace file `a` started at or after `b` (by the start in its name; else by name).
+fn trace_not_before(a: &str, b: &str) -> bool {
+    match (
+        super::trace_start_ms(Path::new(a)),
+        super::trace_start_ms(Path::new(b)),
+    ) {
+        (Some(x), Some(y)) => x >= y,
+        _ => a >= b,
+    }
+}
+
 const NO_CONSUMER_MARKER: &[u8] = b"\"reason\":\"no-consumer\"";
 
 /// Whether `bytes` hold a whole `{"truncated":true,"reason":"no-consumer"}` line.
@@ -667,6 +680,26 @@ impl Relay {
         }
     }
 
+    /// Writes `coverageLost` into `relay.json` and syncs it (file and directory).
+    fn persist_coverage_lost(&self) {
+        let path = self.config.out_dir.join("relay.json");
+        let mut value = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .filter(|v| v["runId"].as_str() == Some(self.config.run_id.as_str()))
+            .unwrap_or_else(|| {
+                json!({"format": "fly-shadow-relay-v1", "runId": self.config.run_id, "healthy": false})
+            });
+        value["healthy"] = json!(false);
+        value["coverageLost"] = self.coverage_lost.as_ref().map_or(
+            Value::Null,
+            |c| json!({"trace": c.trace, "window": c.window, "at": c.at}),
+        );
+        if let Err(e) = verdict::write_json_durable(&path, &value) {
+            log(format!("could not write {}: {e}", path.display()));
+        }
+    }
+
     /// Looks for flysim's no-consumer stop in trace bytes about to be sent.
     fn scan_trace(&mut self, name: &str, offset: u64, chunk: &[u8]) {
         let mut buf = match self.scan_tail.remove(name) {
@@ -684,7 +717,9 @@ impl Relay {
                 window: self.window.clone(),
                 at: verdict::now_iso(),
             });
-            // Say so at the next tick, not in up to five seconds.
+            // Durable before the chunk that holds the stop is sent: a relay that dies after
+            // sending and before its next tick would otherwise resume past the stop unaware.
+            self.persist_coverage_lost();
             self.last_relay_json = Instant::now() - Duration::from_secs(60);
         }
         let keep = buf.len().saturating_sub(256);
@@ -987,16 +1022,19 @@ impl Relay {
             "unsyncedBytes": unsynced_bytes,
             "unsyncedTransitions": unsynced,
         });
-        // A new shadow window takes an earlier stop as history (the `trace-cap` skip).
-        let window = v["startedAt"].as_str().map(str::to_owned);
-        if let (Some(lost), Some(now)) = (&self.coverage_lost, &window)
-            && lost.window.as_ref().is_some_and(|w| w != now)
+        // The loss clears only once the box's verdict counts from after it: its window's last
+        // trace stop is the lost trace or a later one (SHADOW-02 B2). A verdict that has not
+        // reached the stop, or a restarted shadow's that replays the stopped trace before its
+        // stop line, still counts the time before the gap, so the loss stays.
+        if let Some(lost) = &self.coverage_lost
+            && let Some(stop) = v["window"]["lastStopTrace"].as_str()
+            && trace_not_before(stop, &lost.trace)
         {
-            log("the box's shadow started a new window: the earlier trace stop is history");
+            log("the box's verdict counts from after the trace stop: the coverage loss is closed");
             self.coverage_lost = None;
             self.last_relay_json = Instant::now() - Duration::from_secs(60);
         }
-        self.window = window;
+        self.window = v["startedAt"].as_str().map(str::to_owned);
         if v["status"] == "diverged" && self.diverged_at.is_none() {
             self.diverged_at = Some(Instant::now());
         }
