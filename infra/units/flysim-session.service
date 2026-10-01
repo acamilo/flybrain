@@ -51,6 +51,16 @@ Restart=always
 RestartSec=2
 Nice=-5
 CPUWeight=400
+# The sim's CPUs are the sim's alone (PERF-02 review N1). The session runtime pins its sweep
+# workers one per CPU, and a pinned worker cannot leave a CPU that something else is hogging:
+# measured 0.14x real time. So flysim runs in its own slice, flysim.slice, whose AllowedCPUs=
+# 05-deploy.sh writes (the same set as this unit's cpuset drop-in), and `fly-cpu-confine apply`
+# confines its siblings under the root cgroup (system.slice, user.slice, init.scope) to the other
+# CPUs. It must NOT sit under a slice that excludes its CPUs: a child's cpuset is bounded by its
+# parent's. The ExecStartPre refuses to confine anything while a sim unit is still outside the
+# slice, and a failure of it never blocks the start (the `-`); `+` runs it as root.
+Slice=flysim.slice
+ExecStartPre=-+/opt/fly/bin/fly-cpu-confine apply
 MemoryMax=4G
 # No [Install] section, deliberately: `systemctl enable flysim-session.service` has nothing to
 # do, so it can never be pulled in beside flysim.service by fly.target.

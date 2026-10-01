@@ -448,7 +448,7 @@ the CPU a thread runs on, never what an index of a parallel phase computes.
   `RAYON_NUM_THREADS - 1` spawned sweep workers one CPU of the unit's cpuset to itself and confines
   every other thread -- the dispatching runtime worker, the coordinator, the listeners, the
   checkpoint writer -- to the rest (the first CPU, plus any beyond the sweep's). Process mode and
-  the legacy loop are unchanged. `FLY_SESSION_PIN=0` keeps every thread floating, as before.
+  the legacy loop are unchanged. `FLY_SESSION_PIN=0` keeps every thread floating, as before. The infra keeps other processes off the pinned CPUs (`flysim.slice`, `fly-cpu-confine`) and sets it to `0` where it cannot.
 - Why: the session's host threads sleep and wake around every transition, so the sweep workers
   park and wake every transition too, and the scheduler often woke two of them onto one CPU while
   a host thread held another: each parallel phase of that transition then took two shares' time.

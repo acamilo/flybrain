@@ -488,7 +488,7 @@ sweep workers on one CPU, and the ticks ran about 35% slower than the legacy loo
 same work; with a spare CPU they matched). Fix: `flybrain_core::pool::place_workers`, called by
 `flysim-session` before any thread exists, pins each spawned sweep worker to a CPU of its own and
 keeps every other thread on the rest ([legacy-gameboy-v1](legacy-gameboy-v1.md) section 12,
-amended 2026-10-01). `FLY_SESSION_PIN=0` turns it off. The legacy loop and process mode are
+amended 2026-10-01). `FLY_SESSION_PIN=0` turns it off. Pinning is only safe in a cpuset that is the sim's alone (a pinned worker cannot leave a CPU that something else hogs: 0.14x real time): the deploy makes it so with `flysim.slice` and `fly-cpu-confine` and writes `FLY_SESSION_PIN=0` when it cannot (`infra/docs/runbook.md`). The legacy loop and process mode are
 unchanged; the compatibility string is unchanged. `flybrain-core/tests/placement.rs` runs pinned
 workers against the sequential kernel on the real connectome. The service's periodic profile
 line also prints the measurement spans (and the brain's phase split) when

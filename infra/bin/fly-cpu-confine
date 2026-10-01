@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# infra/bin/fly-cpu-confine — keep every process that is not the sim off the sim's CPUs.
+#
+# Usage (INSIDE the container, as root):
+#   fly-cpu-confine apply     confine system.slice, user.slice and init.scope to the non-sim CPUs
+#   fly-cpu-confine release   undo `apply` (those three go back to the container's whole cpuset)
+#   fly-cpu-confine status    what each of them is confined to, and where the sim runs
+#   fly-cpu-confine check     list every process that is not in flysim.slice but may run on a
+#                             sim CPU (exit 1 if there is one)
+#
+# Why. The session runtime pins its sweep workers one per CPU (PERF-02). A pinned worker cannot
+# leave its CPU, so any sustained CPU-bound process that may run there stalls every barrier:
+# measured 0.14x real time with a plain busy loop (0.68x at nice 19; SCHED_IDLE is harmless).
+# Priorities do not fix that; keeping the sim's CPUs to the sim does.
+#
+# How (cgroup v2). flysim.service and flysim-session.service run in flysim.slice, which has
+# AllowedCPUs= the sim's CPUs (a drop-in written by 05-deploy.sh). Its siblings under the root
+# cgroup are system.slice (every other service, cron, apt, sshd), user.slice (every login
+# session) and init.scope (PID 1 and what it forks). `apply` sets AllowedCPUs= the NON-sim CPUs
+# on those three, so nothing that systemd places anywhere else can reach a sim CPU. A child's
+# cpuset is bounded by its parent's, so the sim must never sit under a slice that excludes its
+# CPUs: that is why it has a slice of its own and is not left in system.slice.
+#
+# The CPU lists come from ${CPUSET_ENV} (written by 05-deploy.sh, from the same cpuset_partition
+# call as the AllowedCPUs= drop-ins). No file means no partition: nothing is confined.
+#
+# `apply` is runtime-only (systemctl set-property --runtime) and is run by flysim.service and
+# flysim-session.service's ExecStartPre, so it is re-applied after every boot and every restart
+# and can never run while the sim still sits in system.slice: shrinking system.slice under a
+# sim that has not been restarted into flysim.slice would silently make it float over the page
+# CPUs. `apply` refuses (exit 3, nothing changed) if a sim unit is outside flysim.slice.
+#
+# Not reachable from here: a process the host starts into the container with `pct exec`
+# (lxc-attach). Check where it lands with `check`; run long operator jobs with
+# `systemd-run --scope --slice=system.slice -- <cmd>` (or `... -- bash`).
+set -euo pipefail
+
+: "${CPUSET_ENV:=/etc/fly/cpuset.env}"
+: "${SYSTEMCTL:=systemctl}"
+: "${PROC_ROOT:=/proc}"
+: "${CGROUP_ROOT:=/sys/fs/cgroup}"
+: "${SIM_SLICE:=flysim.slice}"
+: "${SIM_UNITS:=flysim.service flysim-session.service}"
+CONFINED_UNITS="system.slice user.slice init.scope"
+
+log() { echo "fly-cpu-confine: $*" >&2; }
+
+# read_env — set SIM_CPUS and OTHER_CPUS from ${CPUSET_ENV}, or return 1 when there is no partition.
+# Parsed as KEY=VALUE lines, never sourced.
+read_env() {
+    SIM_CPUS="" OTHER_CPUS=""
+    [ -r "$CPUSET_ENV" ] || return 1
+    local k v
+    while IFS='=' read -r k v; do
+        case "$k" in
+            FLY_SIM_CPUS) SIM_CPUS="$v" ;;
+            FLY_OTHER_CPUS) OTHER_CPUS="$v" ;;
+        esac
+    done < "$CPUSET_ENV"
+    [ -n "$SIM_CPUS" ] && [ -n "$OTHER_CPUS" ]
+}
+
+# expand LIST — one cpu number per line for a list such as 1,3,5-7.
+expand() {
+    echo "$1" | tr ',' '\n' | awk -F- 'NF==1 && $1 != "" {print $1} NF==2 {for (i=$1;i<=$2;i++) print i}'
+}
+
+sim_outside_slice() {
+    local u cg
+    for u in $SIM_UNITS; do
+        cg="$("$SYSTEMCTL" show -p ControlGroup --value "$u" 2>/dev/null || true)"
+        [ -n "$cg" ] || continue
+        case "$cg" in
+            "/${SIM_SLICE}/"*) ;;
+            *) echo "$u ($cg)"; return 0 ;;
+        esac
+    done
+    return 1
+}
+
+cmd="${1:-}"
+case "$cmd" in
+    apply)
+        if ! read_env; then
+            log "no partition configured (${CPUSET_ENV} missing or empty): nothing confined"
+            exit 0
+        fi
+        if out="$(sim_outside_slice)"; then
+            log "REFUSING to confine: $out runs outside ${SIM_SLICE}; restart it first (it would float over the page cpus otherwise)"
+            exit 3
+        fi
+        for u in $CONFINED_UNITS; do
+            timeout 20 "$SYSTEMCTL" set-property --runtime "$u" "AllowedCPUs=${OTHER_CPUS}"
+        done
+        log "system.slice, user.slice and init.scope confined to ${OTHER_CPUS}; ${SIM_SLICE} keeps ${SIM_CPUS}"
+        ;;
+    release)
+        # Not `AllowedCPUs=` (empty): systemd leaves the cgroup's cpuset.cpus at its last value while
+        # the cpuset controller stays enabled for some other unit (here flysim.slice), so the slices
+        # would stay confined. Set the container's whole cpuset explicitly.
+        all_cpus="$(cat "${CGROUP_ROOT}/cpuset.cpus.effective" 2>/dev/null || true)"
+        for u in $CONFINED_UNITS; do
+            timeout 20 "$SYSTEMCTL" set-property --runtime "$u" "AllowedCPUs=${all_cpus}"
+        done
+        log "system.slice, user.slice and init.scope released to the container's whole cpuset (${all_cpus:-unknown})"
+        ;;
+    status)
+        for u in $CONFINED_UNITS $SIM_SLICE; do
+            echo "$u AllowedCPUs=$("$SYSTEMCTL" show -p AllowedCPUs --value "$u" 2>/dev/null || true)"
+        done
+        for u in $SIM_UNITS; do
+            echo "$u ControlGroup=$("$SYSTEMCTL" show -p ControlGroup --value "$u" 2>/dev/null || true)"
+        done
+        ;;
+    check)
+        if ! read_env; then
+            log "no partition configured: nothing to check"
+            exit 0
+        fi
+        sim="$(expand "$SIM_CPUS" | sort -n | tr '\n' ' ')"
+        bad=0
+        for d in "$PROC_ROOT"/[0-9]*; do
+            pid="${d##*/}"
+            [ -r "$d/status" ] || continue
+            cg="$(sed -n 's/^0:://p' "$d/cgroup" 2>/dev/null || true)"
+            case "$cg" in "/${SIM_SLICE}/"* | "/${SIM_SLICE}") continue ;; esac
+            # kernel threads have no cgroup of their own in this sense and are not a CPU hog
+            if [ -z "$(readlink "$d/exe" 2>/dev/null || true)" ]; then continue; fi
+            allowed="$(sed -n 's/^Cpus_allowed_list:[[:space:]]*//p' "$d/status")"
+            [ -n "$allowed" ] || continue
+            hit=""
+            for c in $(expand "$allowed"); do
+                for s in $sim; do [ "$c" = "$s" ] && hit="$hit$c,"; done
+            done
+            if [ -n "$hit" ]; then
+                echo "process $pid ($(cat "$d/comm" 2>/dev/null)) in ${cg:-?} may run on sim cpu ${hit%,}"
+                bad=1
+            fi
+        done
+        [ "$bad" -eq 0 ] && log "ok: only ${SIM_SLICE} can run on ${SIM_CPUS}"
+        exit "$bad"
+        ;;
+    *)
+        sed -n '2,12p' "$0" >&2
+        exit 2
+        ;;
+esac

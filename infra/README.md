@@ -267,6 +267,12 @@ refuses to write the drop-ins until the conf actually carries
 `CPUSET`, because an `AllowedCPUs=` outside the container's own cpuset leaves
 `cpuset.cpus.effective` empty and the unit unstartable.
 
+The sim's CPUs are also kept exclusive to it (PERF-02 review N1, `infra/docs/runbook.md` "The sim's
+CPUs are exclusive to the sim"): the sim units run in `flysim.slice`, and `bin/fly-cpu-confine`
+confines `system.slice`, `user.slice` and `init.scope` to the other CPUs when the sim starts.
+Without a partition (`CPUSET` unset) none of this applies and the deploy turns the session
+runtime's worker pinning off (`FLY_SESSION_PIN=0`).
+
 `CPUSET` is now eight WHOLE physical cores on one socket (node 0 for the release container, the GPU-local
 socket; node 1 for the platformer container), not the four-cores-plus-SMT-siblings set `docs/design/gpu.md`
 section 1 originally specified: a four-core set cannot be partitioned so that flysim owns three

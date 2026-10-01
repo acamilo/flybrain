@@ -850,6 +850,56 @@ not a constant, and live in the operator's infra repo
 ENCODER_CORES` reproduces the split from those three numbers; `infra/tests/lint.sh`
 checks it against both the current shape and the earlier, narrower one.
 
+### The sim's CPUs are exclusive to the sim (PERF-02 review N1)
+
+The session runtime pins its sweep workers one per CPU. A pinned worker cannot leave its CPU, so
+any sustained CPU-bound process that is allowed on a worker's CPU stalls every barrier: measured
+**0.14x real time** with a plain busy loop (0.68x at nice 19; `SCHED_IDLE` was harmless; the
+floating, unpinned runtimes held 0.86-0.94x under the same hog). Priorities cannot fix that, so
+the partition above is completed by making the sim's CPUs exclusive:
+
+- `flysim.service` and `flysim-session.service` run in **`flysim.slice`** (`units/flysim.slice`),
+  whose `AllowedCPUs=` is the sim's set (`flysim.slice.d/cpuset.conf`, written by `05-deploy.sh` from
+  `lib/common.sh`'s `cpuset_dropin_plan`, the same call that writes every other drop-in).
+- `bin/fly-cpu-confine apply` sets `AllowedCPUs=` the **non-sim** CPUs on `system.slice` (every
+  other service, cron, apt, sshd), `user.slice` (every login session) and `init.scope`. It runs as
+  both sim units' `ExecStartPre` (root, failure never blocks the start), so it is re-applied after
+  every boot and every restart. The lists come from `/etc/fly/cpuset.env`, which the deploy writes.
+- The slice is named without a dash on purpose: systemd nests `a-b.slice` under `a.slice`, and a
+  child's cpuset is bounded by its parent's (cgroup v2: effective cpus = own cpus intersected with
+  the parent's, and the parent's when that is empty). `flysim.slice` sits beside `system.slice`
+  under the root slice, so nothing above it excludes its CPUs.
+- **Ordering rule.** Shrinking `system.slice` under a flysim that still sits in `system.slice` (a
+  unit started before this change, not yet restarted) would leave its own `AllowedCPUs=` outside the
+  parent's set and silently make it float over the page CPUs. So `apply` refuses (exit 3, nothing
+  changed) while a sim unit's cgroup is not under `/flysim.slice/`. A deploy therefore changes
+  nothing on a running sim; the confinement starts with the next `flysim` (re)start, which is the
+  first moment it is safe. `fly-cpu-confine status` shows the result.
+- `fly-recap` and `fly-retention` also run at `CPUSchedulingPolicy=idle`, which the review measured
+  harmless beside the pinned workers (defence in depth for the batch jobs).
+- **No partition, no pinning.** With `CPUSET` unset (or the container conf not matching it) there
+  is no confinement, so `05-deploy.sh` writes `FLY_SESSION_PIN=0` to `/etc/fly/fly.env` and the
+  session runtime's threads float, as before PERF-02. With the partition in force it writes
+  `FLY_SESSION_PIN=1`. (The runtime treats exactly `0` as off.)
+- **Not reachable from inside:** a process the host starts into the container with `pct exec`
+  (`lxc-attach`) is not placed by systemd, so these two slices may not cover it (which cgroup it
+  lands in has not been verified on the release container). `fly-cpu-confine check` lists every
+  process outside `flysim.slice` that may run on a sim CPU (exit 1 if there is one): run it after
+  a deploy and after anything unusual. Run long operator jobs through
+  `pct exec <ctid> -- systemd-run --scope --slice=system.slice -- <command>`; the deploy itself
+  already pins its heavy steps to the page CPUs.
+- **If lag grows on the session runtime**: `fly-cpu-confine check`, then `top -H` for a stray hog on
+  the sim's CPUs. `FLY_SESSION_PIN=0` (a drop-in) restores floating.
+- `fly-cpu-confine release` undoes the runtime confinement (until the next sim start); it sets
+  the three back to the container's whole cpuset explicitly, because systemd keeps the old mask for
+  an empty `AllowedCPUs=` while the cpuset controller stays on for another unit.
+
+Verified on a real-systemd box (4 CPUs, the sim as a unit in `flysim.slice` on 3 of them, 3 sweep
+threads, paced at 0.55x): confined or not, with no hog the session holds 0.55; five busy loops (three
+as system services, two from a user shell) unconfined sit on the sim's CPUs and the session drops to
+0.37; confined by the unit's own `ExecStartPre`, every loop samples on CPU 0 only, the sim's threads
+keep their CPUs and the session holds 0.54-0.55.
+
 ### `FLY_LIF_CUDA` — the LIF tick on the GPU, and what it does to the partition
 
 `FLY_LIF_CUDA=1` in an env file makes `05-deploy.sh` write `FLY_LIF_CUDA=1` into
