@@ -19,7 +19,7 @@ use std::cell::UnsafeCell;
 use std::marker::PhantomData;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread::JoinHandle;
 
 /// `spin_loop` iterations before a worker starts yielding. Roughly a microsecond.
@@ -28,6 +28,11 @@ const SPINS: u32 = 4_096;
 const YIELDS: u32 = 256;
 
 type Job = dyn Fn(usize) + Sync;
+
+/// The CPUs the workers of every pool created after [`place_workers`] are pinned to: worker `i`
+/// (`1..workers`) runs on `WORKER_CPUS[i - 1]`. Unset -- the default, and always for the legacy
+/// loop -- the workers float over the process's CPUs as they always have.
+static WORKER_CPUS: OnceLock<Vec<usize>> = OnceLock::new();
 
 struct Shared {
     /// Bumped once per dispatch. A worker runs when this differs from what it last saw.
@@ -84,13 +89,22 @@ impl WorkerPool {
             signal: Condvar::new(),
             workers,
         });
+        // A placement covers a pool of at most its own size; a larger pool floats entirely.
+        let pinned = WORKER_CPUS.get().filter(|cpus| cpus.len() >= workers - 1);
         let mut threads = Vec::with_capacity(workers - 1);
         for index in 1..workers {
             let shared = Arc::clone(&shared);
+            let cpu = pinned.map(|cpus| cpus[index - 1]);
             threads.push(
                 std::thread::Builder::new()
                     .name(format!("{name}-{index}"))
-                    .spawn(move || worker_loop(&shared, index))?,
+                    .spawn(move || {
+                        if let Some(cpu) = cpu {
+                            // Best effort: a refused pin leaves the worker floating, as before.
+                            let _ = affinity::set_current(&[cpu]);
+                        }
+                        worker_loop(&shared, index)
+                    })?,
             );
         }
         Ok(Self { shared, threads })
@@ -226,6 +240,107 @@ fn worker_loop(shared: &Shared, index: usize) {
     }
 }
 
+/// Where [`place_workers`] put the process's threads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Placement {
+    /// One CPU per spawned worker, in worker order (worker 0 is the dispatching thread).
+    pub workers: Vec<usize>,
+    /// The CPUs every other thread of the process runs on, the dispatcher included.
+    pub host: Vec<usize>,
+}
+
+/// Splits `allowed` for a pool of `workers`: one CPU of its own for each of the `workers - 1`
+/// spawned workers, and the rest -- at least one CPU -- for everything else, the dispatching
+/// thread (worker 0) included. `None` when there are not `workers` distinct CPUs to split.
+pub fn split_cpus(allowed: &[usize], workers: usize) -> Option<Placement> {
+    let mut cpus = allowed.to_vec();
+    cpus.sort_unstable();
+    cpus.dedup();
+    if workers < 2 || cpus.len() < workers {
+        return None;
+    }
+    let mut host = vec![cpus[0]];
+    host.extend_from_slice(&cpus[workers..]);
+    Some(Placement {
+        workers: cpus[1..workers].to_vec(),
+        host,
+    })
+}
+
+/// Opt-in thread placement for a host whose threads share the sweep's CPUs (PERF-02).
+///
+/// A pool's workers spin between the phases of a tick and park between ticks that are
+/// milliseconds apart. A host that does milliseconds of work on other threads between two
+/// `step` calls (the session runtime's environment, task and commit, its async runtime, its
+/// listeners) makes the workers park and wake every transition, and the scheduler, placing each
+/// wake-up on whatever CPU looks free that instant, often stacks two workers on one CPU while
+/// another runs host threads: every parallel phase of that transition then takes the time of two
+/// shares. Measured on the release CPU model with a 4-CPU cpuset and 4 sweep threads: the
+/// session's ticks 35% slower than the legacy loop's, the same ticks as legacy with a spare CPU.
+///
+/// This confines the calling thread -- and so every thread it spawns afterwards -- to
+/// [`Placement::host`], and pins worker `i` of every pool created afterwards to
+/// `Placement::workers[i - 1]`. Call it once, early, before the process spawns any thread.
+/// `None` (and nothing changed) when there are fewer allowed CPUs than `workers`, when it was
+/// already called, or off Linux. Placement decides only which CPU a thread runs on: no result
+/// depends on it.
+pub fn place_workers(workers: usize) -> Option<Placement> {
+    if WORKER_CPUS.get().is_some() {
+        return None;
+    }
+    let placement = split_cpus(&affinity::allowed()?, workers)?;
+    if !affinity::set_current(&placement.host) {
+        return None;
+    }
+    WORKER_CPUS.set(placement.workers.clone()).ok()?;
+    Some(placement)
+}
+
+#[cfg(target_os = "linux")]
+mod affinity {
+    /// The CPUs the calling thread may run on.
+    pub fn allowed() -> Option<Vec<usize>> {
+        // SAFETY: a zeroed cpu_set_t is a valid empty set, and sched_getaffinity writes at most
+        // the size it is given.
+        unsafe {
+            let mut set: libc::cpu_set_t = std::mem::zeroed();
+            if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) != 0 {
+                return None;
+            }
+            let cpus: Vec<usize> = (0..libc::CPU_SETSIZE as usize)
+                .filter(|&cpu| libc::CPU_ISSET(cpu, &set))
+                .collect();
+            (!cpus.is_empty()).then_some(cpus)
+        }
+    }
+
+    /// Confines the calling thread to `cpus`; false (and unchanged) if the kernel refuses.
+    pub fn set_current(cpus: &[usize]) -> bool {
+        if cpus.is_empty() || cpus.iter().any(|&cpu| cpu >= libc::CPU_SETSIZE as usize) {
+            return false;
+        }
+        // SAFETY: as above; every index is below CPU_SETSIZE.
+        unsafe {
+            let mut set: libc::cpu_set_t = std::mem::zeroed();
+            for &cpu in cpus {
+                libc::CPU_SET(cpu, &mut set);
+            }
+            libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) == 0
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+mod affinity {
+    pub fn allowed() -> Option<Vec<usize>> {
+        None
+    }
+
+    pub fn set_current(_cpus: &[usize]) -> bool {
+        false
+    }
+}
+
 /// A mutable slice that workers may split between themselves.
 ///
 /// The kernel's parallel phases write disjoint contiguous ranges of the same array. The borrow
@@ -350,5 +465,44 @@ mod tests {
             ran.fetch_add(1, Ordering::Relaxed);
         });
         assert_eq!(ran.load(Ordering::Relaxed), 8);
+    }
+
+    #[test]
+    fn the_split_gives_each_worker_a_cpu_and_the_host_the_rest() {
+        // The release's flysim cpuset, four whole cores, four sweep threads.
+        assert_eq!(
+            split_cpus(&[7, 3, 1, 5], 4),
+            Some(Placement {
+                workers: vec![3, 5, 7],
+                host: vec![1],
+            })
+        );
+        // A spare CPU goes to the host.
+        assert_eq!(
+            split_cpus(&[1, 3, 5, 7, 9], 4),
+            Some(Placement {
+                workers: vec![3, 5, 7],
+                host: vec![1, 9],
+            })
+        );
+        // Too few CPUs (a stale cpuset), or no pool at all: nothing is placed.
+        assert_eq!(split_cpus(&[1, 3], 3), None);
+        assert_eq!(split_cpus(&[1, 1, 3], 3), None);
+        assert_eq!(split_cpus(&[1, 3, 5, 7], 1), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_pinned_thread_reports_its_cpu() {
+        // On a thread of its own, so the test runner's threads keep their mask.
+        std::thread::spawn(|| {
+            let allowed = affinity::allowed().expect("the allowed cpus");
+            let cpu = *allowed.last().expect("at least one cpu");
+            assert!(affinity::set_current(&[cpu]));
+            assert_eq!(affinity::allowed(), Some(vec![cpu]));
+            assert!(!affinity::set_current(&[]));
+        })
+        .join()
+        .expect("the pinning thread");
     }
 }

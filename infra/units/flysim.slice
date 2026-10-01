@@ -1,0 +1,11 @@
+# infra/units/flysim.slice — the sim's own slice (PERF-02 review N1).
+# Named without a dash on purpose: systemd nests a slice named a-b.slice under a.slice, and a child's
+# cpuset is bounded by its parent's; flysim.slice sits directly under the root slice, beside system.slice.
+# flysim.service and flysim-session.service run here. 05-deploy.sh writes the drop-in
+# flysim.slice.d/cpuset.conf (AllowedCPUs= the sim's CPUs) when the container has a cpuset
+# partition; bin/fly-cpu-confine keeps every other slice off those CPUs. Nothing else belongs in
+# this slice.
+[Unit]
+Description=The live sim (its CPUs are exclusive to it)
+
+[Slice]

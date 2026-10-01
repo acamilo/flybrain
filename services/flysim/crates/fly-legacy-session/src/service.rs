@@ -70,6 +70,10 @@ pub const SESSION_MODE_ENV: &str = "FLY_SESSION_MODE";
 /// `production` (the default, `gameboy-legacy-fafb-v783-v1`) or `toy` (tests only).
 pub const SESSION_PROFILE_ENV: &str = "FLY_SESSION_PROFILE";
 
+/// `0` keeps every thread floating over the cpuset; anything else, or unset, places them
+/// ([`place_threads`]).
+pub const SESSION_PIN_ENV: &str = "FLY_SESSION_PIN";
+
 /// How the service composes its session, beyond flysim's own [`Config`].
 #[derive(Clone, Debug)]
 pub struct ServiceOptions {
@@ -187,9 +191,42 @@ pub fn run(config: Config, options: ServiceOptions) -> Result<()> {
             tracing::warn!("{variable} is set, but {what} is a legacy-loop tool; ignored");
         }
     }
+    place_threads(&config, &options);
     flysim::serve(config, move |shared, snapshots, commands, notifier| {
         run_host(shared, snapshots, commands, notifier, &options)
     })
+}
+
+/// PERF-02: one CPU of its own for each spawned sweep worker, the rest of the cpuset for every
+/// other thread (the dispatching tokio worker, the coordinator, the listeners, the checkpoint
+/// writer), before any of them is spawned. The legacy loop's four busy threads keep their CPUs by
+/// themselves; the session's host threads sleep and wake around every transition, and without
+/// this the sweep workers' wake-ups often land two on one CPU (`flybrain_core::pool::
+/// place_workers`). In-process and thread modes only: a worker process would inherit the host's
+/// mask without the plan. Placement changes no result, trace or checkpoint.
+fn place_threads(config: &Config, options: &ServiceOptions) {
+    if std::env::var(SESSION_PIN_ENV).ok().as_deref() == Some("0") {
+        tracing::info!("{SESSION_PIN_ENV}=0: the threads float over the cpuset");
+        return;
+    }
+    if !matches!(
+        options.mode,
+        ExecutionMode::InProcess | ExecutionMode::Thread
+    ) {
+        return;
+    }
+    let workers = config.loop_.threads;
+    match flybrain_core::pool::place_workers(workers) {
+        Some(placement) => tracing::info!(
+            sweep_workers = ?placement.workers,
+            host = ?placement.host,
+            "sweep workers pinned one per cpu; every other thread on the host cpus"
+        ),
+        None => tracing::info!(
+            workers,
+            "threads not placed (fewer cpus than sweep threads, or no pool): they float"
+        ),
+    }
 }
 
 /// The runtime [`flysim::serve`] runs: boot a [`SessionHost`] on a session runtime of its own,
@@ -859,6 +896,19 @@ impl SessionHost {
             realtime_factor = self.realtime.factor(),
             "session profile (count x p50/p95/max ms):{line}"
         );
+        // The measurement spans (`fly_session::profile`, on only when the process started with
+        // its switch set): mean per call, so a profile run can see where a frame goes.
+        if fly_session::profile::enabled() {
+            let mut spans = String::new();
+            for (name, count, mean, max) in fly_session::profile::report_with_max() {
+                spans.push_str(&format!(
+                    " {name}={count}x{:.3}/{:.1}",
+                    mean.as_secs_f64() * 1e3,
+                    max.as_secs_f64() * 1e3
+                ));
+            }
+            tracing::info!("session spans (count x mean/max ms):{spans}");
+        }
     }
 
     /// `Sim::recovered`: the ticker, the metric, the `recovering` status and a durable save.

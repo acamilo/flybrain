@@ -13,3 +13,7 @@ ExecStart=/opt/fly/bin/fly-recap
 Nice=19
 IOSchedulingClass=idle
 CPUWeight=20
+# Batch work never competes with anything: idle policy (Nice and CPUWeight are moot under it). The
+# sim's CPUs are out of its reach anyway (fly-cpu-confine); this keeps it off the page's and the
+# encoder's too. SCHED_IDLE measured harmless beside the pinned sweep workers.
+CPUSchedulingPolicy=idle

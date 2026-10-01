@@ -479,6 +479,22 @@ in-process and process, and the compatibility string is unchanged.
   memory image (0.37 ms, 65,536 shim reads), the three domain calls' JSON, digests and cache
   (about 0.5 ms together) and the task's evaluation, which the legacy loop does too.
 
+### PERF-02 — The session's ticks on the release cpuset (port slice)
+
+**2026-10-01: built** on `port/perf-02` off `main` (v0.7.3 + two infra fixes), awaiting review.
+CUT-01's probation fell back at a median realtime factor of 0.959. Cause: with exactly as many
+CPUs as sweep threads, the session's sleeping and waking host threads let the scheduler stack two
+sweep workers on one CPU, and the ticks ran about 35% slower than the legacy loop's (same frames,
+same work; with a spare CPU they matched). Fix: `flybrain_core::pool::place_workers`, called by
+`flysim-session` before any thread exists, pins each spawned sweep worker to a CPU of its own and
+keeps every other thread on the rest ([legacy-gameboy-v1](legacy-gameboy-v1.md) section 12,
+amended 2026-10-01). `FLY_SESSION_PIN=0` turns it off. Pinning is only safe in a cpuset that is the sim's alone (a pinned worker cannot leave a CPU that something else hogs: 0.14x real time): the deploy makes it so with `flysim.slice` and `fly-cpu-confine` and writes `FLY_SESSION_PIN=0` when it cannot (`infra/docs/runbook.md`). The legacy loop and process mode are
+unchanged; the compatibility string is unchanged. `flybrain-core/tests/placement.rs` runs pinned
+workers against the sequential kernel on the real connectome. The service's periodic profile
+line also prints the measurement spans (and the brain's phase split) when
+`FLY_SESSION_PROFILE` is set at start; the service reads the same variable as its profile name, so
+a measured service sets it to `production`. The report `claude-perf-02` has the measurements.
+
 ### SHADOW-01 — The session runtime beside the live fly (port slice)
 
 **2026-09-29: built** on `port/shadow-01` off `port/task-01`, and awaiting review. It changes no

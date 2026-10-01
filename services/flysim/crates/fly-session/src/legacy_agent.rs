@@ -1159,6 +1159,7 @@ impl LegacyAgentWorker {
         // the two brains carry the same instrumentation (PERF-01).
         agent.network.profile = crate::profile::enabled();
         let phase_before = agent.network.timings().total_ns();
+        let phases_before = agent.network.timings();
         let ticks_span = crate::profile::span("agent.ticks");
         // One tick at a time is the loop `step(ticks)` runs; after each, the neurons it stamped
         // are its spike list, so the transition's bitset is their union.
@@ -1181,6 +1182,26 @@ impl LegacyAgentWorker {
             "agent.ticks.phase_clock",
             std::time::Duration::from_nanos(agent.network.timings().total_ns() - phase_before),
         );
+        if crate::profile::enabled() {
+            let now = agent.network.timings();
+            for (name, after, before) in [
+                ("agent.ticks.drive", now.drive_ns, phases_before.drive_ns),
+                ("agent.ticks.sweep", now.sweep_ns, phases_before.sweep_ns),
+                (
+                    "agent.ticks.observe",
+                    now.observe_ns,
+                    phases_before.observe_ns,
+                ),
+                (
+                    "agent.ticks.propagate",
+                    now.propagate_ns,
+                    phases_before.propagate_ns,
+                ),
+                ("agent.ticks.rates", now.rates_ns, phases_before.rates_ns),
+            ] {
+                crate::profile::record(name, std::time::Duration::from_nanos(after - before));
+            }
+        }
         if agent.network.ms != brain_ticks as f64 {
             return Err(applied(
                 ErrorCode::Internal,

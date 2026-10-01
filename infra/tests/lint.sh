@@ -147,7 +147,7 @@ check_exec_path() {
     # stripping a leading '-' (systemd's "failure is ok" marker) and any
     # /bin/sh -c '...' wrapper (checked as a shell built-in, always ok).
     local cmd
-    cmd="$(echo "$line" | sed -E 's/^Exec(Start|StartPre|StartPost)=//' | sed -E 's/^-//' | awk '{print $1}')"
+    cmd="$(echo "$line" | sed -E 's/^Exec(Start|StartPre|StartPost)=//' | sed -E 's/^[-+@!:]+//' | awk '{print $1}')"
     [ -z "$cmd" ] && return 0
 
     case "$cmd" in
@@ -824,11 +824,9 @@ grep -qF '[ -n "$from" ] || die "--from is required' "$SETUP" \
 grep -qF 'restrict,command=\"/opt/fly/current/fly-shadow ingest --root $ROOT\"' "$INFRA_DIR/box/fly-shadow-remote-setup" \
     && pass "fly-shadow-remote-setup limits the relay key to the ingest (restrict, forced command)" \
     || fail "fly-shadow-remote-setup must write restrict,command=\"/opt/fly/current/fly-shadow ingest --root \$ROOT\""
-if grep -qF 'flyshadow) cpus="${page_cpus},${encoder_cpus}" ;;' "$INFRA_DIR/05-deploy.sh"; then
-    pass "05-deploy.sh keeps flyshadow.service off flysim's CPUs"
-else
-    fail "05-deploy.sh must give flyshadow.service the page and encoder CPUs, never flysim's"
-fi
+grep -qF 'echo "flyshadow.service ${page},${enc}"' "$INFRA_DIR/lib/common.sh" \
+    && pass "cpuset_dropin_plan keeps flyshadow.service off flysim's CPUs (page + encoder; checked disjoint in section 3c2)" \
+    || fail "cpuset_dropin_plan must give flyshadow.service the page and encoder CPUs, never flysim's"
 if grep -qF 'FLY_FEED_VIA_EFFECTIVE="$(feed_via_normalize "${FLY_FEED_VIA:-}")"' "$INFRA_DIR/05-deploy.sh" \
     && grep -qF 'echo "FLY_FEED_VIA=${FLY_FEED_VIA_EFFECTIVE}"' "$INFRA_DIR/05-deploy.sh"; then
     pass "05-deploy.sh validates FLY_FEED_VIA and writes the normalized value"
@@ -844,11 +842,7 @@ if [ "$fv_out" = "empty=direct direct=direct DIRECT=direct bus=bus Bus=bus BUS=b
 else
     fail "feed_via_normalize: got '$fv_out'"
 fi
-if grep -qE '^[[:space:]]*for u in flysim .*\bflyedge\b.*; do$' "$INFRA_DIR/05-deploy.sh"; then
-    pass "05-deploy.sh writes a cpuset drop-in for flyedge.service"
-else
-    fail "05-deploy.sh cpuset loop must include flyedge (the page's CPUs, never flysim's)"
-fi
+# (the cpuset drop-ins for flyedge.service and flysim-session.service are checked from the plan, section 3c2)
 if grep -qE '^Environment=FLY_FEED_VIA' "$INFRA_DIR/units/flysim.service"; then
     fail "flysim.service pins FLY_FEED_VIA; it belongs to fly.env so a box can be switched by deploy"
 else
@@ -917,9 +911,6 @@ grep -qE '^d /run/fly/session +0700 fly +fly' "$INFRA_DIR/config/fly-tmpfiles.co
 grep -qE 'for name in .*\bfly-runtime\b.*; do$' "$INFRA_DIR/05-deploy.sh" \
     && pass "05-deploy.sh installs fly-runtime" \
     || fail "05-deploy.sh must converge bin/fly-runtime to /opt/fly/bin"
-grep -qE '^[[:space:]]*for u in flysim .*\bflysim-session\b.*; do$' "$INFRA_DIR/05-deploy.sh" \
-    && pass "05-deploy.sh writes flysim-session.service's cpuset drop-in" \
-    || fail "05-deploy.sh cpuset loop must include flysim-session (flysim's cores)"
 grep -qF 'flysim.service.d/10-runtime.conf' "$INFRA_DIR/05-deploy.sh" \
     && grep -qF '"${release_path}/flysim-session"' "$INFRA_DIR/05-deploy.sh" \
     && pass "05-deploy.sh refuses a release without flysim-session while the session runtime runs" \
@@ -1478,6 +1469,234 @@ check_cpuset_partition "the dev container 2026-09-16 with the CUDA backend (eigh
 check_cpuset_partition_refuses "RAYON_THREADS consumes the whole cpuset" "1,3" 2 2 "no cpus left over"
 check_cpuset_partition_refuses "not enough left for ENCODER_CORES plus a page cpu" "1,3,5,7" 2 2 "not enough for ENCODER_CORES"
 rm -f "$cpuset_partition_bin"
+
+# ---------------------------------------------------------------------------
+# 3c2. The sim's CPUs are the sim's alone (PERF-02 review N1): the drop-in plan, the units, the
+# deploy wiring and bin/fly-cpu-confine. A sustained CPU-bound process on a pinned sweep worker's
+# CPU collapses the session runtime to 0.14x real time, so every slice that is not flysim.slice
+# must be kept off its CPUs, and the session must not pin where that is not so.
+# ---------------------------------------------------------------------------
+echo "--- the sim's cpus are exclusive (flysim.slice, fly-cpu-confine) ---"
+plan_bin="$(mktemp "${TMPDIR:-/tmp}/fly-lint-plan.XXXXXX")"
+cat > "$plan_bin" <<PLANEOF
+#!/usr/bin/env bash
+set -euo pipefail
+. "$INFRA_DIR/lib/common.sh"
+"\$@"
+PLANEOF
+chmod +x "$plan_bin"
+check_plan() {
+    local label="$1" cpuset="$2" rayon="$3" encoder="$4" plan sim other u cpus bad=""
+    plan="$("$plan_bin" cpuset_dropin_plan "$cpuset" "$rayon" "$encoder" 2>&1)" || { fail "cpuset_dropin_plan: $label: died: $plan"; return 0; }
+    sim="$(awk '$1 == "flysim.slice" {print $2}' <<< "$plan")"
+    other="$(awk '$1 == "FLY_OTHER_CPUS=" {print $2}' <<< "$plan")"
+    [ "$sim" = "$(awk '$1 == "FLY_SIM_CPUS=" {print $2}' <<< "$plan")" ] || bad="$bad SIM-list-differs-from-slice"
+    for u in flysim.service flysim-session.service; do
+        [ "$(awk -v u="$u" '$1 == u {print $2}' <<< "$plan")" = "$sim" ] || bad="$bad $u-not-on-sim-cpus"
+    done
+    # every other unit, and the confinement list, is disjoint from the sim's cpus
+    while read -r u cpus; do
+        case "$u" in flysim.slice|flysim.service|flysim-session.service|FLY_SIM_CPUS=) continue ;; esac
+        if [ -n "$(comm -12 <(tr ',' '\n' <<< "$sim" | sort) <(tr ',' '\n' <<< "$cpus" | sort))" ]; then
+            bad="$bad $u-overlaps-sim"
+        fi
+    done <<< "$plan"
+    # sim + other is exactly CPUSET
+    [ "$(tr ',' '\n' <<< "$sim,$other" | sort -n | tr '\n' ' ')" = "$(tr ',' '\n' <<< "$cpuset" | sort -n | tr '\n' ' ')" ] || bad="$bad sim+other-is-not-CPUSET"
+    for u in xvfb flystage flystage-web pulse mediamtx flyedge flycast flyshadow; do
+        grep -q "^${u}.service " <<< "$plan" || bad="$bad $u-missing"
+    done
+    if [ -z "$bad" ]; then
+        pass "cpuset_dropin_plan: $label: sim=$sim, nothing else can reach it, sim+other = CPUSET"
+    else
+        fail "cpuset_dropin_plan: $label:$bad"
+    fi
+}
+check_plan "release shape (sixteen cpus, four sim, four encoder)" "1,3,5,7,9,11,13,15,29,31,33,35,17,19,37,39" 4 4
+check_plan "ten cpus, ENCODER_CORES=3" "1,3,5,7,9,11,13,15,17,19" 4 3
+check_plan "eight cpus, default encoder" "1,3,5,7,9,11,13,15" 4 ""
+check_plan "dev shape (RAYON_THREADS=2)" "0,2,4,6,8,10,12,14" 2 ""
+# the generated drop-ins: a slice gets [Slice], a service [Service], both AllowedCPUs=
+if [ "$("$plan_bin" cpuset_dropin_text flysim.slice 1,3,5,7 lint-env | grep -v '^#')" = "$(printf '[Slice]\nAllowedCPUs=1,3,5,7')" ] \
+    && [ "$("$plan_bin" cpuset_dropin_text xvfb.service 9,11 lint-env | grep -v '^#')" = "$(printf '[Service]\nAllowedCPUs=9,11')" ]; then
+    pass "cpuset_dropin_text: [Slice] for flysim.slice, [Service] for a unit, AllowedCPUs= the list"
+else
+    fail "cpuset_dropin_text: wrong drop-in text"
+fi
+rm -f "$plan_bin"
+
+# units
+for u in flysim flysim-session; do
+    if grep -qE '^Slice=flysim\.slice$' "$INFRA_DIR/units/$u.service" \
+        && grep -qE '^ExecStartPre=-\+/opt/fly/bin/fly-cpu-confine apply$' "$INFRA_DIR/units/$u.service"; then
+        pass "$u.service runs in flysim.slice and applies the confinement before it starts"
+    else
+        fail "$u.service must have Slice=flysim.slice and ExecStartPre=-+/opt/fly/bin/fly-cpu-confine apply"
+    fi
+done
+if [ -f "$INFRA_DIR/units/flysim.slice" ] && grep -q '^\[Slice\]' "$INFRA_DIR/units/flysim.slice"; then
+    pass "units/flysim.slice exists (no dash in the name: a-b.slice would nest under a.slice)"
+else
+    fail "units/flysim.slice is missing"
+fi
+if grep -rE '^Slice=' "$INFRA_DIR/units" | grep -vE '/flysim(-session)?\.service:Slice=flysim\.slice$'; then
+    fail "a unit other than flysim/flysim-session sets Slice= (flysim.slice is the sim's alone)"
+else
+    pass "only flysim.service and flysim-session.service set Slice="
+fi
+# systemd nests a-b.slice under a.slice, and a child's cpuset is bounded by its parent's: the sim's
+# slice (found as /fly.slice/fly-sim.slice/... in the N1 proof when it was named with a dash) must be
+# top-level, beside system.slice and user.slice
+for sl in "$INFRA_DIR"/units/*.slice; do
+    case "$(basename "$sl" .slice)" in
+        *-*) fail "$(basename "$sl"): a dash in a slice name nests it under the prefix slice" ;;
+        *) pass "$(basename "$sl"): top-level slice (no dash in the name)" ;;
+    esac
+done
+for u in fly-recap fly-retention; do
+    grep -qE '^CPUSchedulingPolicy=idle$' "$INFRA_DIR/units/$u.service" \
+        && pass "$u.service runs at SCHED_IDLE" || fail "$u.service must set CPUSchedulingPolicy=idle (N1: batch work never competes)"
+done
+
+# deploy wiring
+grep -qF 'cpuset_dropin_plan "$CPUSET"' "$INFRA_DIR/05-deploy.sh" \
+    && grep -qF '/etc/fly/cpuset.env' "$INFRA_DIR/05-deploy.sh" \
+    && grep -qF '"$INFRA_DIR"/units/*.slice' "$INFRA_DIR/05-deploy.sh" \
+    && grep -qE 'for name in .*\bfly-cpu-confine\b.*; do$' "$INFRA_DIR/05-deploy.sh" \
+    && pass "05-deploy.sh converges the plan, cpuset.env, the slice unit and fly-cpu-confine" \
+    || fail "05-deploy.sh must use cpuset_dropin_plan, write /etc/fly/cpuset.env, push units/*.slice and install fly-cpu-confine"
+grep -qE 'FLY_SESSION_PIN=0' "$INFRA_DIR/05-deploy.sh" && grep -qE 'PARTITION_ACTIVE=1' "$INFRA_DIR/05-deploy.sh" \
+    && pass "05-deploy.sh turns session pinning off (FLY_SESSION_PIN=0) when no partition is in force" \
+    || fail "05-deploy.sh must write FLY_SESSION_PIN=0 to fly.env unless the cpuset partition is in force"
+
+# bin/fly-cpu-confine against a stub systemctl and a fake /proc
+cc="$INFRA_DIR/bin/fly-cpu-confine"
+cc_dir="$(mktemp -d "${TMPDIR:-/tmp}/fly-lint-confine.XXXXXX")"
+mkdir -p "$cc_dir/bin" "$cc_dir/proc" "$cc_dir/cg/.lxc"
+echo 0-15 > "$cc_dir/cg/.lxc/cpuset.cpus"
+cat > "$cc_dir/bin/systemctl" <<'STUB'
+#!/usr/bin/env bash
+echo "systemctl $*" >> "$STUB_LOG"
+if [ "$1" = show ]; then
+    unit="${*: -1}"
+    case "$*" in
+        *ControlGroup*) var="CG_${unit%.service}"; var="${var//-/_}"; echo "${!var:-}" ;;
+    esac
+fi
+exit 0
+STUB
+cat > "$cc_dir/bin/timeout" <<'STUB'
+#!/usr/bin/env bash
+shift; exec "$@"
+STUB
+chmod +x "$cc_dir/bin/systemctl" "$cc_dir/bin/timeout"
+printf 'FLY_SIM_CPUS=1,3,5,7\nFLY_OTHER_CPUS=9,11,13-15\n' > "$cc_dir/cpuset.env"
+cc_run() {
+    PATH="$cc_dir/bin:$PATH" CPUSET_ENV="${CPUSET_ENV:-$cc_dir/cpuset.env}" PROC_ROOT="$cc_dir/proc" CGROUP_ROOT="${CGROUP_ROOT:-$cc_dir/cg}" STUB_LOG="$cc_dir/log" "$@"
+}
+: > "$cc_dir/log"
+out="$(cc_run "$cc" apply 2>&1)" && rc=0 || rc=$?
+if [ "$rc" -eq 0 ] && [ "$(grep -c 'set-property --runtime .* AllowedCPUs=9,11,13-15' "$cc_dir/log")" = 3 ] \
+    && grep -q 'set-property --runtime system.slice' "$cc_dir/log" && grep -q 'set-property --runtime user.slice' "$cc_dir/log" \
+    && grep -q 'set-property --runtime init.scope' "$cc_dir/log"; then
+    pass "fly-cpu-confine apply confines system.slice, user.slice and init.scope to the non-sim cpus"
+else
+    fail "fly-cpu-confine apply (rc=$rc): $out / $(cat "$cc_dir/log")"
+fi
+[ "$(cat "$cc_dir/cg/.lxc/cpuset.cpus")" = "9,11,13-15" ] \
+    && pass "fly-cpu-confine apply also confines /.lxc (where pct exec lands) to the non-sim cpus" \
+    || fail "fly-cpu-confine apply must write the non-sim cpus into /.lxc/cpuset.cpus (got $(cat "$cc_dir/cg/.lxc/cpuset.cpus"))"
+out="$(cc_run "$cc" status 2>&1)"
+grep -q '^/.lxc cpuset.cpus=9,11,13-15$' <<< "$out" \
+    && pass "fly-cpu-confine status shows /.lxc" \
+    || fail "fly-cpu-confine status must show /.lxc: $out"
+# unwritable /.lxc: warn, still exit 0, slices still confined; absent /.lxc: nothing created
+: > "$cc_dir/log"
+mkdir -p "$cc_dir/cg2/.lxc"
+mkdir "$cc_dir/cg2/.lxc/cpuset.cpus"   # a directory: the write fails, like a read-only cgroup file
+out="$(CGROUP_ROOT="$cc_dir/cg2" cc_run "$cc" apply 2>&1)" && rc=0 || rc=$?
+if [ "$rc" -eq 0 ] && grep -q 'WARNING: cannot write' <<< "$out" && [ "$(grep -c set-property "$cc_dir/log")" = 3 ]; then
+    pass "fly-cpu-confine apply warns, never fails, when /.lxc cannot be written (slices still confined)"
+else
+    fail "fly-cpu-confine apply with an unwritable /.lxc (rc=$rc): $out"
+fi
+mkdir -p "$cc_dir/cg3"
+CGROUP_ROOT="$cc_dir/cg3" cc_run "$cc" apply >/dev/null 2>&1
+[ -z "$(ls -A "$cc_dir/cg3")" ] \
+    && pass "fly-cpu-confine apply does not create /.lxc (lxc owns it)" \
+    || fail "fly-cpu-confine apply must not create cgroups under the root: $(ls -A "$cc_dir/cg3")"
+: > "$cc_dir/log"
+out="$(CG_flysim=/system.slice/flysim.service cc_run "$cc" apply 2>&1)" && rc=0 || rc=$?
+if [ "$rc" -eq 3 ] && ! grep -q set-property "$cc_dir/log"; then
+    pass "fly-cpu-confine apply refuses (exit 3, changes nothing) while flysim still runs outside flysim.slice"
+else
+    fail "fly-cpu-confine apply must refuse a sim outside flysim.slice (rc=$rc): $out"
+fi
+: > "$cc_dir/log"
+out="$(CG_flysim=/flysim.slice/flysim.service cc_run "$cc" apply 2>&1)" && rc=0 || rc=$?
+[ "$rc" -eq 0 ] && grep -q set-property "$cc_dir/log" \
+    && pass "fly-cpu-confine apply proceeds once flysim runs in flysim.slice" \
+    || fail "fly-cpu-confine apply should proceed for a sim in flysim.slice (rc=$rc): $out"
+: > "$cc_dir/log"
+out="$(CPUSET_ENV="$cc_dir/none" cc_run "$cc" apply 2>&1)" && rc=0 || rc=$?
+if [ "$rc" -eq 0 ] && ! grep -q set-property "$cc_dir/log"; then
+    pass "fly-cpu-confine apply is a no-op without /etc/fly/cpuset.env (no partition, no confinement)"
+else
+    fail "fly-cpu-confine apply without cpuset.env must change nothing (rc=$rc): $out $(cat "$cc_dir/log")"
+fi
+: > "$cc_dir/log"
+echo 0-15 > "$cc_dir/cg/cpuset.cpus.effective"
+CGROUP_ROOT="$cc_dir/cg" cc_run "$cc" release >/dev/null 2>&1
+[ "$(grep -c 'set-property --runtime .* AllowedCPUs=0-15$' "$cc_dir/log")" = 3 ] \
+    && [ "$(cat "$cc_dir/cg/.lxc/cpuset.cpus")" = "0-15" ] \
+    && pass "fly-cpu-confine release sets all three and /.lxc back to the container's whole cpuset (an empty AllowedCPUs= leaves the old mask in place)" \
+    || fail "fly-cpu-confine release: $(cat "$cc_dir/log") / lxc=$(cat "$cc_dir/cg/.lxc/cpuset.cpus")"
+# check: a fake /proc with a sim process in the slice, a clean neighbour, a kernel thread, then a hog
+mkproc() { # pid comm cgroup allowed
+    mkdir -p "$cc_dir/proc/$1"
+    printf 'Name:\t%s\nCpus_allowed_list:\t%s\n' "$2" "$4" > "$cc_dir/proc/$1/status"
+    echo "$2" > "$cc_dir/proc/$1/comm"
+    echo "0::$3" > "$cc_dir/proc/$1/cgroup"
+    ln -sfn /bin/true "$cc_dir/proc/$1/exe"
+}
+mkproc 10 flysim /flysim.slice/flysim.service 1,3,5,7
+mkproc 11 ffmpeg /system.slice/fly-recap.service 9,11,13-15
+mkproc 12 kthreadd /init.scope 0-15
+rm -f "$cc_dir/proc/12/exe"
+if cc_run "$cc" check >/dev/null 2>&1; then
+    pass "fly-cpu-confine check: clean when only flysim.slice can reach the sim's cpus (kernel threads ignored)"
+else
+    fail "fly-cpu-confine check flagged a clean /proc: $(cc_run "$cc" check 2>&1)"
+fi
+mkproc 13 hog /system.slice/hog.service 0-15
+out="$(cc_run "$cc" check 2>&1)" && rc=0 || rc=$?
+if [ "$rc" -eq 1 ] && grep -q 'process 13 (hog).*sim cpu 1,3,5,7' <<< "$out"; then
+    pass "fly-cpu-confine check names a process that may run on a sim cpu"
+else
+    fail "fly-cpu-confine check must flag the hog (rc=$rc): $out"
+fi
+# the check's own process chain (a pct exec shell) is noted, not failed; a stranger in /.lxc still fails
+rm -rf "$cc_dir/proc/13"
+mkproc 20 pctexec /.lxc 0-15
+mkproc 21 bash /.lxc 0-15
+mkproc 22 fly-cpu-confine /.lxc 0-15
+printf 'Name:\tx\nPPid:\t21\nCpus_allowed_list:\t0-15\n' > "$cc_dir/proc/22/status"
+printf 'Name:\tx\nPPid:\t20\nCpus_allowed_list:\t0-15\n' > "$cc_dir/proc/21/status"
+printf 'Name:\tx\nPPid:\t1\nCpus_allowed_list:\t0-15\n' > "$cc_dir/proc/20/status"
+out="$(SELF_PID=22 cc_run "$cc" check 2>&1)" && rc=0 || rc=$?
+if [ "$rc" -eq 0 ] && grep -q 'own process chain' <<< "$out" && ! grep -q '^process' <<< "$out"; then
+    pass "fly-cpu-confine check exits 0 when the only process on a sim cpu is its own pct exec chain"
+else
+    fail "fly-cpu-confine check must not count its own process or ancestors (rc=$rc): $out"
+fi
+mkproc 23 tar /.lxc 0-15
+out="$(SELF_PID=22 cc_run "$cc" check 2>&1)" && rc=0 || rc=$?
+if [ "$rc" -eq 1 ] && grep -q '^process 23 (tar)' <<< "$out" && ! grep -q '^process 2[012] ' <<< "$out"; then
+    pass "fly-cpu-confine check still flags a different process in /.lxc"
+else
+    fail "fly-cpu-confine check must flag a stranger in /.lxc (rc=$rc): $out"
+fi
+rm -rf "$cc_dir"
 
 # ---------------------------------------------------------------------------
 # 3d. bin/fly-watchdog check 7 (process age guard) — flypush uptime above
