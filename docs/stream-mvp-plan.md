@@ -1011,3 +1011,8 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   user session and `pct exec` shell is confined off its CPUs (a hog there collapsed a pinned
   session). Results, traces and the compatibility string are unchanged. Reviews: two rounds,
   APPROVE-WITH-NOTES; notes addressed.
+- 2026-10-01 20:07Z (CUT-01, milestone M4): the stream runs on the session runtime. v0.7.5's remote
+  shadow compared 3 h of live brain time (645,560 transitions, 2,161 identical checkpoints) with
+  zero divergence; `check` allowed the switch; the 30-minute speed probation passed at a median
+  1.000x real time with no lag growth. Legacy stays one command away (`fly-runtime legacy`);
+  RETIRE-01 after a clean week.
