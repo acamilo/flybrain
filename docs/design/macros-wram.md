@@ -1077,3 +1077,29 @@ report their cursor (and its `max`) as the entry the same way. The offset is add
 list is on screen, because the byte outlives every list. Purchases still use only the first three
 rows (`MART_CURSOR_ROWS`, section 7).
 
+## 17. The hidden-event tables (2026-10-02, `docs/design/macros.md` 12.35)
+
+Row 73. Two ROM tables, read through `MemoryReader::read_rom` from the cartridge image the process
+already holds, never through the bus and never by switching banks. Pinned the way
+`ItemUsePtrTable` is, and read back from the code that uses them by
+`row73_the_hidden_event_table_is_the_cartridges_and_bills_pc_is_in_it` (FLY_ROM).
+
+| name | where | what reads it |
+| --- | --- | --- |
+| `HiddenEventMaps` | `$11:$6A40` | one map id per byte to a `$ff` (85 maps at the pinned commit); the operand of `CheckForHiddenEvent`'s `ld hl, HiddenEventMaps`, followed by `ld a, [hli] / ld b, a / cp $ff` |
+| `HiddenEventPointers` | `$11:$6A96` | one little-endian pointer per map of the list above, into the same bank; the operand of the routine's `ld hl, HiddenEventPointers`, followed by `add hl, de` |
+
+Both are in `SECTION "Hidden Events Core"`, which `layout.link` places in bank `$11`. Each map's
+list is six bytes an entry to a `$ff` (`hidden_event`): y, x, the routine's argument, and the
+routine as `dba` (bank, then a little-endian address). The coordinates are in the same tile space as
+`wXCoord`/`wYCoord`, like a sign's.
+
+**`state::hidden_events`** answers the current map's entries as `HiddenEvent { x, y, index,
+facing }`: `index` is the entry's position in the map's list, which is how `wHiddenEventIndex`
+counts and the talked ledger's key (`TalkTarget::Hidden`); `facing` is the argument when it is a
+`SPRITE_FACING_*` value (`$00`, `$04`, `$08`, `$0C`), the side a routine such as `BillsHousePC`
+checks. It answers nothing for a map list with no end within 128 entries or an id above `$f7`, a
+pointer outside `$4000..$8000`, a list longer than 64 entries (the Game Corner's 48 are the longest), a tile off the loaded map or a
+routine address at `$8000` or above. Bill's house (`$58`) has one entry: (1, 4), argument `$04`,
+`BillsHousePC` at `$07:$6B6E`.
+

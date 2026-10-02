@@ -40,7 +40,8 @@ use super::super::maps;
 use super::plan;
 use super::state::{
     Battle, BattleKind, BattleMenu, Connections, Cursor, EnemyMon, Facing, GameState, MapSize,
-    Mon, Move, Naming, Npc, Party, Pc, Player, Scene, Shop, ShopScreen, Sign, StartMenu, Status, TextBox,
+    HiddenEvent, Mon, Move, Naming, Npc, Party, Pc, Player, Scene, Shop, ShopScreen, Sign, StartMenu,
+    Status, TextBox,
     Walkable, Warp,
 };
 
@@ -95,6 +96,8 @@ struct World {
     /// Sprites the cartridge is not drawing only because they are off the screen (row 58).
     offscreen: Vec<Npc>,
     signs: Vec<Sign>,
+    /// The map's hidden events, as the cartridge's own table lists them (row 73).
+    hidden: Vec<HiddenEvent>,
 
     list: List,
     cursor: u8,
@@ -276,6 +279,7 @@ impl World {
             npcs: Vec::new(),
             offscreen: Vec::new(),
             signs: Vec::new(),
+            hidden: Vec::new(),
             list: List::None,
             cursor: 0,
             cursor_max: 0,
@@ -789,6 +793,10 @@ impl GameState for World {
 
     fn signs(&mut self) -> Vec<Sign> {
         self.signs.clone()
+    }
+
+    fn hidden_events(&mut self) -> Vec<HiddenEvent> {
+        self.hidden.clone()
     }
 
     fn walkable(&mut self, x: u8, y: u8) -> Walkable {
@@ -6614,4 +6622,100 @@ fn row69_confirm_on_a_keyboard_that_does_not_close_is_blocked() {
     world.naming = Some(keyboard(10, 10));
     world.glue_naming = true;
     assert_eq!(run(&mut world, MacroKind::Confirm).unwrap(), MacroAbort::Blocked);
+}
+
+/// Bill's house on the step the live ring never got past (row 73): the fly on the doormat, Bill
+/// (a Pokémon, a person sprite) at (6, 5), the cell separator's PC a hidden event at (1, 4) that is
+/// pressed facing up, and rung 16's place the house as an errand.
+fn bills_house() -> World {
+    let mut world = World::room().at(2, 7);
+    world.map = maps::BILLS_HOUSE;
+    world.size = MapSize { width: 8, height: 8 };
+    world.facing = Facing::Up;
+    // The back wall, the PC's own tile with it.
+    world = world.wall(&[(0, 3), (1, 3), (2, 3), (3, 3), (4, 3), (5, 3), (6, 3), (7, 3), (1, 4)]);
+    world.warps = vec![
+        Warp { x: 2, y: 7, destination_warp: 0, destination_map: LAST_MAP },
+        Warp { x: 3, y: 7, destination_warp: 0, destination_map: LAST_MAP },
+    ];
+    world.npcs = vec![Npc { slot: 1, picture: 0x2a, x: 6, y: 5, facing: Facing::Down }];
+    world.hidden = vec![HiddenEvent { x: 1, y: 4, index: 0, facing: Some(Facing::Up) }];
+    world.objective = Some(Objective {
+        map: world.map,
+        tile: None,
+        warp: None,
+        edge: None,
+        target: Some(PlaceKind::Errand),
+    });
+    world
+}
+
+#[test]
+fn an_errand_is_its_people_first_and_the_room_is_not_left_while_one_is_waiting() {
+    // Row 73, live on v0.7.5: rung 16 was `at(ROUTE_25)`, so inside Bill's house `GO OBJECTIVE`
+    // and `GO OUT` were both the door, 30 to 60 times per ten brain minutes. As an errand, Bill is
+    // the target and the ways out are withheld while he is waiting (12.5's rule).
+    let mut world = bills_house();
+    assert_eq!(super::palette::objective_targets(&mut world), vec![(Tile::new(6, 5), TalkTarget::Sprite(1))]);
+    assert!(on_the_pad(&mut world, MacroKind::GoObjective));
+    assert!(!on_the_pad(&mut world, MacroKind::GoOut), "the house is not left while Bill is waiting");
+
+    // The PC is not the errand's step yet: faced out of turn it is not `TALK`'s, because a PC
+    // pressed before Bill has asked prints the monitor and would be in the talked ledger for good.
+    let mut world = bills_house().at(1, 5);
+    world.facing = Facing::Up;
+    assert!(!on_the_pad(&mut world, MacroKind::Talk));
+    assert_eq!(super::palette::facing_target(&mut world), None);
+}
+
+#[test]
+fn a_hidden_event_is_the_errands_next_step_once_no_person_is_left_and_it_is_faced_from_its_side() {
+    // Bill has asked and walked into the machine: the cartridge has hidden his sprite and nobody
+    // else is in the room. The next step is the cell separator's PC, which no sprite or sign
+    // stands for -- the hidden event the scout pressed by hand on the cartridge (row 73).
+    let mut world = bills_house().at(3, 5);
+    world.npcs.clear();
+    world.talked.insert(TalkTarget::Sprite(1));
+    assert_eq!(super::palette::objective_targets(&mut world), vec![(Tile::new(1, 4), TalkTarget::Hidden(0))]);
+    assert!(!on_the_pad(&mut world, MacroKind::GoOut), "still not left: the PC is waiting");
+    // `BillsHousePC` answers only a player facing up, so the walk's one aim is the tile below it.
+    let aims: Vec<(Tile, Option<Facing>)> =
+        objective_goals(&mut world).iter().map(|aim| (aim.tile, aim.face)).collect();
+    assert_eq!(aims, vec![(Tile::new(1, 5), Some(Facing::Up))]);
+
+    // Beside it, facing it sideways, is not the arrival: nothing would answer the press.
+    let mut beside = bills_house().at(2, 4);
+    beside.npcs.clear();
+    beside.talked.insert(TalkTarget::Sprite(1));
+    beside.facing = Facing::Left;
+    assert!(!on_the_pad(&mut beside, MacroKind::Talk));
+    assert!(on_the_pad(&mut beside, MacroKind::GoObjective));
+
+    // Below it, facing up: `TALK` is the press and the walk is done.
+    let mut below = bills_house().at(1, 5);
+    below.npcs.clear();
+    below.talked.insert(TalkTarget::Sprite(1));
+    below.facing = Facing::Up;
+    assert_eq!(super::palette::facing_target(&mut below), Some(TalkTarget::Hidden(0)));
+    assert!(on_the_pad(&mut below, MacroKind::Talk));
+    assert!(!on_the_pad(&mut below, MacroKind::GoObjective));
+
+    // Pressed: Bill steps out of the machine, and he is the errand's last step.
+    below.talked.insert(TalkTarget::Hidden(0));
+    below.npcs = vec![Npc { slot: 2, picture: 0x13, x: 4, y: 4, facing: Facing::Down }];
+    assert_eq!(super::palette::objective_targets(&mut below), vec![(Tile::new(4, 4), TalkTarget::Sprite(2))]);
+}
+
+#[test]
+fn a_hidden_event_is_nobody_elses_target() {
+    // A hidden event is every PC, poster and trash can in Kanto. Outside the errand that names it
+    // no macro aims at one and `TALK` is not dealt in front of one: `GO ITEM` is what it was.
+    let mut world = bills_house().at(1, 5);
+    world.npcs.clear();
+    world.facing = Facing::Up;
+    world.objective = Some(Objective { map: maps::ROUTE_25, tile: None, warp: None, edge: None, target: None });
+    assert!(super::palette::untalked_objects(&mut world).is_empty());
+    assert!(!on_the_pad(&mut world, MacroKind::GoItem));
+    assert!(!on_the_pad(&mut world, MacroKind::Talk));
+    assert_eq!(super::palette::facing_target(&mut world), None);
 }

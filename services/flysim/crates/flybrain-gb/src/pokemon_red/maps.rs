@@ -84,12 +84,22 @@ pub const MT_MOON_1F: u8 = 0x3b;
 pub const MT_MOON_B1F: u8 = 0x3c;
 pub const MT_MOON_B2F: u8 = 0x3d;
 pub const CERULEAN_POKECENTER: u8 = 0x40;
+/// The house the Rockets robbed (row 73): the id before `CERULEAN_TRADE_HOUSE` and
+/// `CERULEAN_POKECENTER` `$40`, and confirmed by the cartridge rather than by counting -- Cerulean
+/// City's warp table names `$3e` at (27, 11) and at (27, 9), its front door and the hole in its
+/// back wall.
+pub const CERULEAN_TRASHED_HOUSE: u8 = 0x3e;
 pub const CERULEAN_GYM: u8 = 0x41;
 pub const CERULEAN_MART: u8 = 0x43;
 /// Route 4's Pokémon Center, the one beside Mt. Moon's mouth: the id straight after
 /// `CERULEAN_MART` `$43`, and confirmed by the cartridge rather than by counting -- Route 4's warp
 /// table names `$44` at (11, 5) (`tests/rom_macros_mode.rs`, row 59's door survey).
 pub const MT_MOON_POKECENTER: u8 = 0x44;
+/// Bill's house on Route 25, where rung 16 (the S.S. Ticket) is earned (row 73). Confirmed by the
+/// cartridge rather than by counting: Route 25's warp table names `$58` at (45, 3), and the
+/// cartridge's own hidden-event map list (`HiddenEventMaps`) carries `$58` at the position the
+/// disassembly lists `BILLS_HOUSE` in (`tests/rom_macros_mode.rs`, row 73).
+pub const BILLS_HOUSE: u8 = 0x58;
 pub const ROCK_TUNNEL_1F: u8 = 0x52;
 pub const INDIGO_PLATEAU_LOBBY: u8 = 0xae;
 /// The house beside Cerulean's west road whose back door is the one way into the closed yard at

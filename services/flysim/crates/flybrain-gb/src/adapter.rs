@@ -202,6 +202,15 @@ pub enum PlaceKind {
     Person,
     /// Something to press A at: the starter's Pokéball, an item ball, a sign.
     Object,
+    /// An errand in one room, step by step: its people first, and once none is left to talk to,
+    /// the things in it -- objects, signs, and the cartridge's own hidden events, such as the PC
+    /// a Bill's-house cell separator is started from (row 73, `docs/design/macros.md` 12.35).
+    ///
+    /// Not a list of steps, and no step is named: the room's state says which step is next, because
+    /// the cartridge shows and hides the people as the errand moves on. A person who has had their
+    /// conversation is in the talked ledger; a thing pressed is too; and what is left is the next
+    /// step.
+    Errand,
 }
 
 impl MapPlace {
@@ -223,6 +232,11 @@ impl MapPlace {
     /// A place that is an object somewhere on this map.
     pub const fn object(map: u8) -> Self {
         Self { map, tile: None, warp: None, edge: None, target: Some(PlaceKind::Object) }
+    }
+
+    /// A place that is an errand in one room: its people, then its things ([`PlaceKind::Errand`]).
+    pub const fn errand(map: u8) -> Self {
+        Self { map, tile: None, warp: None, edge: None, target: Some(PlaceKind::Errand) }
     }
 }
 

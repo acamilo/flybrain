@@ -286,6 +286,8 @@ pub enum TalkTarget {
     Sprite(u8),
     /// A sign, by its text id.
     Sign(u8),
+    /// A hidden event of the cartridge's own table, by its position in this map's list (row 73).
+    Hidden(u8),
 }
 
 /// One thing a macro can be *aimed at*, as the session's target ledgers name it.

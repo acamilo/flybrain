@@ -33,7 +33,7 @@ use super::macros::geography::Amenity;
 use super::mapgrid::{self, MapGrids};
 use super::macros::state::{
     BagItem, Battle, BattleKind, BattleMenu, Connections, Cursor, EnemyMon, Facing, GameState,
-    MapGrid, MapSize, Mon, Move, Naming, Npc, Party, Pc, Player, Scene, Shop, ShopScreen, Sign, StartMenu,
+    HiddenEvent, MapGrid, MapSize, Mon, Move, Naming, Npc, Party, Pc, Player, Scene, Shop, ShopScreen, Sign, StartMenu,
     Status, TextBox, Walkable, Warp,
 };
 use super::symbols::ram;
@@ -350,6 +350,31 @@ pub mod poke {
 
     /// The cartridge's item-use dispatch and the ids that name its routines (row 63,
     /// `docs/design/macros.md` 12.27).
+    /// The cartridge's hidden-event tables (row 73, `docs/design/macros.md` 12.35).
+    ///
+    /// `engine/overworld/hidden_events.asm`: `CheckForHiddenEvent` walks `HiddenEventMaps`, one
+    /// map id per byte to a `$ff`, and with the index it found there reads a little-endian pointer
+    /// out of `HiddenEventPointers` to that map's list. Both tables and every list are in the
+    /// routine's own `SECTION "Hidden Events Core"`, which `layout.link` places in ROM bank `$11`.
+    /// At the pinned commit the two tables are at `$11:$6A40` and `$11:$6A96`: read from the
+    /// operands of the routine's `ld hl, HiddenEventMaps` and `ld hl, HiddenEventPointers` on the
+    /// cartridge, and pinned by the ROM-gated test that reads them back from there. A list entry is
+    /// six bytes (`hidden_event`): y, x, the routine's argument, and the routine as `dba`.
+    pub mod hidden {
+        pub const TABLE_BANK: u8 = 0x11;
+        pub const MAPS_ADDRESS: u16 = 0x6a40;
+        pub const POINTERS_ADDRESS: u16 = 0x6a96;
+        pub const ENTRY_BYTES: u16 = 6;
+        /// More maps than the table has (85 at the pinned commit), and more entries than any one
+        /// map's list (the Game Corner's 48 slot machines and coins are the longest): a walk that
+        /// runs past either is not walking the table the disassembly describes, and answers
+        /// nothing.
+        pub const MAX_MAPS: u16 = 128;
+        pub const MAX_ENTRIES: u16 = 64;
+        /// `SPRITE_FACING_DOWN`, `_UP`, `_LEFT`, `_RIGHT` (`constants/sprite_data_constants.asm`).
+        pub const FACINGS: [u8; 4] = [0x00, 0x04, 0x08, 0x0c];
+    }
+
     pub mod items {
         /// `engine/items/item_effects.asm`: `UseItem_` jumps through `ItemUsePtrTable`, one
         /// little-endian pointer per item id from `MASTER_BALL` (1) to `MAX_ELIXER` (`$53`), in
@@ -2055,6 +2080,60 @@ pub fn signs(memory: &mut dyn MemoryReader) -> Vec<Sign> {
     signs
 }
 
+/// The current map's hidden events, read from the cartridge's own table ([`poke::hidden`]).
+///
+/// Empty on a map the table does not list, when the seam has no cartridge image behind it, and
+/// when the bytes are not the shape the disassembly describes -- a map list with no end, a pointer
+/// outside the bank's window, a list longer than any map's, a tile off the loaded map. A table
+/// this module cannot read is not one it reports, so a wrong address narrows (`GO OBJECTIVE` has
+/// one less thing to aim at) and never invents a tile.
+pub fn hidden_events(memory: &mut dyn MemoryReader) -> Vec<HiddenEvent> {
+    hidden_events_inner(memory).unwrap_or_default()
+}
+
+fn hidden_events_inner(memory: &mut dyn MemoryReader) -> Option<Vec<HiddenEvent>> {
+    use poke::hidden::*;
+    let size = map_size(memory)?;
+    let map = read(memory, ram::wCurMap);
+    let mut index = None;
+    for position in 0..MAX_MAPS {
+        let id = memory.read_rom(TABLE_BANK, MAPS_ADDRESS + position)?;
+        if id == 0xff {
+            break;
+        }
+        if id > poke::MAX_MAP_ID || position + 1 == MAX_MAPS {
+            return None;
+        }
+        if id == map && index.is_none() {
+            index = Some(position);
+        }
+    }
+    let Some(position) = index else { return Some(Vec::new()) };
+    let at = POINTERS_ADDRESS + 2 * position;
+    let list = u16::from_le_bytes([memory.read_rom(TABLE_BANK, at)?, memory.read_rom(TABLE_BANK, at + 1)?]);
+    if !(0x4000..0x8000).contains(&list) {
+        return None;
+    }
+    let mut out = Vec::new();
+    for entry in 0..MAX_ENTRIES {
+        let base = list.checked_add(entry * ENTRY_BYTES)?;
+        let y = memory.read_rom(TABLE_BANK, base)?;
+        if y == 0xff {
+            return Some(out);
+        }
+        let x = memory.read_rom(TABLE_BANK, base + 1)?;
+        let argument = memory.read_rom(TABLE_BANK, base + 2)?;
+        let routine =
+            u16::from_le_bytes([memory.read_rom(TABLE_BANK, base + 4)?, memory.read_rom(TABLE_BANK, base + 5)?]);
+        if x >= size.width || y >= size.height || routine >= 0x8000 {
+            return None;
+        }
+        let facing = FACINGS.contains(&argument).then(|| facing_from(argument));
+        out.push(HiddenEvent { x, y, index: entry as u8, facing });
+    }
+    None
+}
+
 /// Which of the current map's edges lead to another map, from `wCurMapConnections`.
 pub fn connections(memory: &mut dyn MemoryReader) -> Connections {
     let bits = read(memory, ram::wCurMapConnections);
@@ -2243,6 +2322,10 @@ impl GameState for PokeState<'_> {
 
     fn signs(&mut self) -> Vec<Sign> {
         signs(self.memory)
+    }
+
+    fn hidden_events(&mut self) -> Vec<HiddenEvent> {
+        hidden_events(self.memory)
     }
 
     fn walkable(&mut self, x: u8, y: u8) -> Walkable {
