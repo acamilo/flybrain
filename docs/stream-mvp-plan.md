@@ -1028,3 +1028,9 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   bus threads). Over the first 20 minutes the sim's mean work per frame fell from 15.2 to about
   14.5 ms and its p99 from 46 to about 21 ms (the publisher left the sim's shared cpu); realtime
   factor unchanged at about 1.0. Rollback: `fly-feed direct`.
+- 2026-10-02 07:41Z: the control API runs over flybus too (`FLY_CONTROL_VIA=bus`): `:7401` is
+  served by the control edge calling flysim's RPC services under per-client grants. First 15
+  minutes: bus connected, calls flowing, no failures, no restarts, realtime factor about 1.0.
+  Both switches are in the host env, so a deploy keeps them. The session's agent and world stay
+  on the in-process lane: over the router they cost 2.5 to 3.5 ms a frame, more than the
+  release box's headroom (live work about 14.5 of 16.74 ms); the GPU brain is the way there.
