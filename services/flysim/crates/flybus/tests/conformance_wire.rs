@@ -590,6 +590,70 @@ both_transports!(
 );
 
 // -------------------------------------------------------------------------------------------
+// Review note N3 (BUS-01): the SDK refuses a router whose contract digest is not its own, at
+// Hello, with the explicit version-mismatch error. The wire change that added `readLocation`
+// moved the digest, so a client and router built from different sources must not talk.
+
+/// Serves one Hello on `server` the way the router does, announcing `digest`.
+async fn answer_hello_with(server: tokio::io::DuplexStream, digest: String) {
+    let (mut rd, mut wr) = tokio::io::split(server);
+    let bytes = read_frame(&mut rd).await.unwrap().expect("a hello frame");
+    let hello = Envelope::decode(&bytes).unwrap();
+    assert_eq!(hello.op, "bus.hello");
+    let value = json!({
+        "routerId": "router-1", "connectionId": "conn-1",
+        "selectedMajor": 1, "selectedMinor": 0,
+        "contractDigest": digest,
+        "limits": Limits::default().to_json(),
+    });
+    let mut body = Map::new();
+    body.insert("ok".into(), json!(true));
+    body.insert("value".into(), value);
+    let mut reply = Envelope::new("bus-1".into(), Kind::Reply, "bus.hello", body);
+    reply.reply_to = Some(hello.id);
+    write_frame(&mut wr, &reply.encode().unwrap()).await.unwrap();
+    // Keep the connection open until the client has decided.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_client_refuses_a_router_with_a_different_contract_digest_at_hello() {
+    let dir = tempfile::tempdir().unwrap();
+    let wrong = "0".repeat(64);
+    assert_ne!(wrong, contract_digest());
+    let (client_end, server_end) = tokio::io::duplex(64 * 1024);
+    tokio::spawn(answer_hello_with(server_end, wrong));
+    let refused = within(
+        "hello",
+        flybus::Client::connect(
+            flybus::Transport::from_stream(client_end),
+            flybus::ClientConfig::new("digest-client", dir.path()),
+        ),
+    )
+    .await;
+    let err = refused.err().expect("a mismatched digest must be refused");
+    assert_eq!(err.code, flybus::ErrorCode::VersionMismatch);
+    assert_eq!(err.message, "router speaks a different contract");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_same_fake_router_with_the_right_digest_is_accepted() {
+    let dir = tempfile::tempdir().unwrap();
+    let (client_end, server_end) = tokio::io::duplex(64 * 1024);
+    tokio::spawn(answer_hello_with(server_end, contract_digest()));
+    let client = within(
+        "hello",
+        flybus::Client::connect(
+            flybus::Transport::from_stream(client_end),
+            flybus::ClientConfig::new("digest-client", dir.path()),
+        ),
+    )
+    .await
+    .expect("a matching digest is accepted");
+    assert_eq!(client.info().contract_digest, contract_digest());
+}
+
+// -------------------------------------------------------------------------------------------
 // bus-v1 §11 acceptance test 1: "In-memory transport must pass the same tests as Unix
 // sockets." Every test above already runs on both (that is what `both_transports!` is for);
 // this one drives the identical raw script over both side by side in a single test, so a
