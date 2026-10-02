@@ -6707,6 +6707,27 @@ fn a_hidden_event_is_the_errands_next_step_once_no_person_is_left_and_it_is_face
 }
 
 #[test]
+fn a_one_sided_target_whose_only_stand_tile_is_pushed_is_not_waited_for() {
+    // Row 73 review N4. The PC answers only from below; if the cartridge pushes the fly off
+    // that tile the walk has no aim, so no walk ever ends `blocked`, and while a target waited the
+    // exits were withheld for good. The target leaves the list and the way out is back.
+    let mut world = bills_house().at(3, 5);
+    world.npcs.clear();
+    world.talked.insert(TalkTarget::Sprite(1));
+    assert_eq!(super::palette::objective_targets(&mut world).len(), 1);
+    assert!(!on_the_pad(&mut world, MacroKind::GoOut));
+    world.pushes.insert(Tile::new(1, 5));
+    assert!(super::palette::objective_targets(&mut world).is_empty(), "nobody can stand in front of it");
+    assert!(on_the_pad(&mut world, MacroKind::GoOut), "so the room is not a trap");
+    // A pushed tile somewhere else changes nothing.
+    let mut other = bills_house().at(3, 5);
+    other.npcs.clear();
+    other.talked.insert(TalkTarget::Sprite(1));
+    other.pushes.insert(Tile::new(2, 5));
+    assert_eq!(super::palette::objective_targets(&mut other).len(), 1);
+}
+
+#[test]
 fn a_hidden_event_is_nobody_elses_target() {
     // A hidden event is every PC, poster and trash can in Kanto. Outside the errand that names it
     // no macro aims at one and `TALK` is not dealt in front of one: `GO ITEM` is what it was.

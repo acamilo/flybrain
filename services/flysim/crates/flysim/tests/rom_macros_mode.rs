@@ -5276,6 +5276,60 @@ fn row73_the_cell_separator_pc_is_pressed_and_bill_hands_over_the_ticket() {
     row73_drive_to_the_ticket(&mut run, 36_000);
 }
 
+/// Row 73 review N3: the errand is recoverable inside one session. The talked ledger is the
+/// session's and the cartridge re-shows Bill once the fly has left (Route 25's script resets his
+/// event), so a conversation had on the last visit must not retire this one's: the room's talked
+/// entries are forgotten when the fly leaves it with the errand still the objective.
+///
+/// From the door checkpoint, over the stub rotation: wait for the first `TALK` in the house, then
+/// walk the fly out by hand (the macros withhold the exits while the errand waits, which is the
+/// point), and the stub earns the ticket from there, in the same session.
+#[test]
+fn row73_the_errand_survives_leaving_the_house_mid_conversation() {
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = row73_checkpoint("FLY_ROW73_DOOR_CHECKPOINT") else {
+        eprintln!("skipped: no FLY_ROW73_DOOR_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert_eq!(run.map(), BILLS_HOUSE, "the checkpoint is inside Bill's house");
+    let mut talked = false;
+    for _ in 0..24_000 {
+        run.frame();
+        if run.talk_starts_by_map.get(&BILLS_HOUSE).copied().unwrap_or(0) > 0 {
+            talked = true;
+            break;
+        }
+    }
+    assert!(talked, "no TALK in the house: {:?}", run.talk_starts_by_map);
+    assert!(!run.event(EVENT_GOT_SS_TICKET), "the ticket is not earned by the first conversation");
+    // Out by hand: along the room to the doormat's columns (2 and 3) and down, pressing B between
+    // the cartridge's own text.
+    let mut out = false;
+    let mut last = None;
+    for frame in 0..4_800u32 {
+        let here = flybrain_gb::pokemon_red::state::player(&mut run.gb);
+        last = here.map(|player| (player.map, player.x, player.y));
+        let heading = match here {
+            Some(player) if player.x < 2 => flybrain_gb::buttons::RIGHT,
+            Some(player) if player.x > 3 => flybrain_gb::buttons::LEFT,
+            _ => flybrain_gb::buttons::DOWN,
+        };
+        run.gb.set_buttons(if frame % 16 < 12 { heading } else { flybrain_gb::buttons::B });
+        run.gb.run_frame().expect("a frame should complete");
+        run.ms += MS_PER_FRAME;
+        run.adapter.sample(&mut run.gb, run.ms);
+        if run.map() != BILLS_HOUSE && run.map() != u32::MAX {
+            out = true;
+            break;
+        }
+    }
+    assert!(out, "the fly could not be walked out of the house, last at {last:?}");
+    run.gb.set_buttons(0);
+    // Back to the macros, in the same session: the errand is Bill's again, and the ticket is earned.
+    row73_drive_to_the_ticket(&mut run, 120_000);
+}
+
 /// Drive the stub rotation until the ticket's flag is set, counting the house's doors on the way:
 /// `(into, out)`.
 fn row73_drive_to_the_ticket(run: &mut Run, budget: u32) -> (u32, u32) {
