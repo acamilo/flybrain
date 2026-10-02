@@ -222,6 +222,10 @@ const RUNG_PLACES: [Option<MapPlace>; RANK_LADDER.len()] = {
     const fn object(map: u8) -> Option<MapPlace> {
         Some(MapPlace::object(map))
     }
+    /// A rung earned by an errand in one room: its people, then its things.
+    const fn errand(map: u8) -> Option<MapPlace> {
+        Some(MapPlace::errand(map))
+    }
     [
         None,                             // 0 BOOT: nowhere.
         at(maps::REDS_HOUSE_2F),          // 1 BEDROOM
@@ -244,7 +248,12 @@ const RUNG_PLACES: [Option<MapPlace>; RANK_LADDER.len()] = {
         at(maps::CERULEAN_CITY),          // 13 CERULEAN CITY
         person(maps::CERULEAN_GYM),       // 14 CASCADE BADGE, likewise
         at(maps::ROUTE_24),               // 15 NUGGET BRIDGE, north out of Cerulean
-        at(maps::ROUTE_25),               // 16 MET BILL, whose house is on Route 25
+        // 16 MET BILL: the S.S. Ticket is Bill's thanks for an errand in his house -- talk to
+        // him (he is a Pokémon), press the cell separator's PC (a hidden event, not a sprite),
+        // talk to him again. One room, people then things: an errand (row 73). It was
+        // `at(ROUTE_25)`, and a fly on Route 25 was already "there", so inside the house
+        // `GO OBJECTIVE` was the door out to the route.
+        errand(maps::BILLS_HOUSE),
         at(maps::VERMILION_CITY),         // 17 VERMILION CITY
         at(maps::VERMILION_CITY),         // 18 HM CUT, on the S.S. Anne at Vermilion's dock
         None,                             // 19 THUNDER BADGE: Vermilion Gym, id not derived

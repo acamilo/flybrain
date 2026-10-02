@@ -413,6 +413,31 @@ pub struct Sign {
     pub text_id: u8,
 }
 
+/// One hidden event on the current map: a tile the cartridge answers an A press at from its own
+/// ROM table (`HiddenEventMaps` / `HiddenEventPointers`, `data/events/hidden_events.asm`) rather
+/// than from a sprite or a sign (row 73, `docs/design/macros.md` 12.35).
+///
+/// Bill's cell-separator PC, the Pokémon Center PCs, posters, bookshelves of one room, trash cans
+/// and hidden items are all this. Nothing about one reaches WRAM until it has been pressed
+/// (`CheckForHiddenEvent` searches the table on every A in the overworld), so the tile is read from
+/// the cartridge image and the tile named here is the one to *face*, like a [`Sign`]'s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HiddenEvent {
+    pub x: u8,
+    pub y: u8,
+    /// The entry's position in this map's list, which is the identity the cartridge gives it
+    /// (`wHiddenEventIndex` counts the same way) and nothing more.
+    pub index: u8,
+    /// The one side the cartridge answers the press from, when the entry names one.
+    ///
+    /// The table's third byte is the routine's argument, and where it is a `SPRITE_FACING_*`
+    /// value it is the side the routine checks before it does anything (`BillsHousePC` returns at
+    /// once unless the player faces up). `None` for any other argument -- an item id, a text id,
+    /// `ANY_FACING` -- which leaves all four sides. An argument that is an item or a text id and
+    /// happens to equal a facing value only narrows the approach to one side; it never adds one.
+    pub facing: Option<Facing>,
+}
+
 /// Whether a tile can be walked onto.
 ///
 /// `Unknown` is load-bearing: the tile ids a walkability test needs live in the screen buffer, so
@@ -773,6 +798,14 @@ pub trait GameState {
     /// implementation that cannot answer should say "no signs" in its own words, where the reason
     /// is visible, and not inherit it from here.
     fn signs(&mut self) -> Vec<Sign>;
+
+    /// The current map's hidden events, from the cartridge's own table (row 73).
+    ///
+    /// Defaulted to none, which narrows: a seam with no cartridge image behind it knows the
+    /// sprites and the signs and nothing more, which is what every reader had before row 73.
+    fn hidden_events(&mut self) -> Vec<HiddenEvent> {
+        Vec::new()
+    }
 
     /// Whether the player could stand on this tile of the current map.
     fn walkable(&mut self, x: u8, y: u8) -> Walkable;

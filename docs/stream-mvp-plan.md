@@ -1024,3 +1024,7 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   is unchanged until each is switched on with its rollback. Also: the multi-seed behavioural
   scorecard (nightly), two stale ROM tests fixed and every ROM suite mapped (row 72), and the
   parity test's idle-header race.
+- 2026-10-02 07:13Z: the stream's video feed runs over flybus (`fly-feed bus`, one aux cpu for the
+  bus threads). Over the first 20 minutes the sim's mean work per frame fell from 15.2 to about
+  14.5 ms and its p99 from 46 to about 21 ms (the publisher left the sim's shared cpu); realtime
+  factor unchanged at about 1.0. Rollback: `fly-feed direct`.

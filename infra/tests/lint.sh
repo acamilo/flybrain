@@ -867,6 +867,23 @@ if command -v python3 >/dev/null 2>&1; then
     else
         fail "fly-shadow-run check --bus must pass --require-arm bus/process to fly-shadow check ($(cat "$cb_tmp/args" 2>/dev/null))"
     fi
+    # BUS-01 review N1: `check` (plain and --bus) refuses while the live fly runs the session
+    # runtime, which writes no trace for the shadow to follow, and never asks fly-shadow.
+    printf '[Service]\nExecStart=/opt/fly/current/flysim-session\n' > "$cb_tmp/10-runtime.conf"
+    for ck_args in "" "--bus"; do
+        rm -f "$cb_tmp/args"
+        ck_rc=0
+        # shellcheck disable=SC2086
+        ck_out="$(PATH="$cb_tmp/bin:$PATH" FLY_SHADOW_DIR="$cb_tmp/shadow" FLY_SHADOW_BIN="$cb_tmp/fly-shadow" \
+            FLY_SHADOW_REMOTE_DROPIN_DIR="$cb_tmp/none.d" FLY_ENV_FILE="$cb_tmp/none.env" \
+            FLY_RUNTIME_DROPIN="$cb_tmp/10-runtime.conf" \
+            "$INFRA_DIR/bin/fly-shadow-run" check $ck_args 2>&1)" || ck_rc=$?
+        if [ "$ck_rc" -ne 0 ] && echo "$ck_out" | grep -q 'runs the session runtime' && [ ! -e "$cb_tmp/args" ]; then
+            pass "fly-shadow-run check${ck_args:+ $ck_args} refuses while the live fly runs the session runtime"
+        else
+            fail "fly-shadow-run check${ck_args:+ $ck_args} must refuse while the session runtime drop-in exists (rc=$ck_rc): $ck_out"
+        fi
+    done
     rm -rf "$cb_tmp"
 fi
 # SHADOW-02: `check` in remote mode also needs the relay healthy now (relay.json under a minute

@@ -2021,6 +2021,9 @@ pub fn facing_target(state: &mut dyn MacroState) -> Option<TalkTarget> {
     if let Some(target) = path::target_at(state, ahead) {
         return Some(target);
     }
+    if let Some(target) = objective_hidden_ahead(state, ahead, player.facing) {
+        return Some(target);
+    }
     // **Over a counter**, which is the symmetric half of [`counter_aims`] and was missing from it
     // (2026-09-17, measured on the cartridge in the Viridian mart). The game doubles its own
     // talking range over the tileset's counter tiles, so a fly standing at a counter facing the
@@ -2111,7 +2114,17 @@ pub fn objective_goals(state: &mut dyn MacroState) -> Vec<Aim> {
             // to walk to: `GO OBJECTIVE` walked to him, then back to the leader, and `TALK` was
             // the one press it never made room for. A fly facing a person the rung is waiting on
             // has nothing left for a walk to do.
-            if targets.iter().any(|(tile, _)| Some(*tile) == ahead) {
+            // A hidden event is faced only from the side it answers (row 73): beside Bill's PC
+            // facing it sideways is not the arrival, and the walk goes on to the tile below it.
+            let mut arrived = false;
+            for (tile, target) in &targets {
+                if Some(*tile) == ahead
+                    && required_facing(state, *target).is_none_or(|need| need == player.facing)
+                {
+                    arrived = true;
+                }
+            }
+            if arrived {
                 return Vec::new();
             }
             let mut ranked: Vec<(u32, Tile, TalkTarget)> = targets
@@ -2120,8 +2133,12 @@ pub fn objective_goals(state: &mut dyn MacroState) -> Vec<Aim> {
                 .collect();
             ranked.sort_unstable();
             let Some((_, tile, target)) = ranked.first().copied() else { return Vec::new() };
+            let need = required_facing(state, target);
             let mut aims = Vec::with_capacity(4);
             for facing in FACINGS {
+                if need.is_some_and(|need| need != opposite(facing)) {
+                    continue;
+                }
                 let Some(stand) = tile.step(facing) else { continue };
                 // Not a tile a script pushes the fly off (row 37); `approach` excludes the same.
                 if state.pushed_tile(stand.x, stand.y) {
@@ -2235,13 +2252,71 @@ pub fn objective_targets(state: &mut dyn MacroState) -> Vec<(Tile, TalkTarget)> 
         // Not objects: every item ball in the game is a toggleable object, so a ball the run has
         // picked up and one out of sight read alike from outside the window.
         PlaceKind::Object => path::interactable_targets(state),
+        // Row 73: an errand in one room is its people first, and its things -- sprites, signs and
+        // the cartridge's hidden events -- once no person is left to talk to. Bill's house is the
+        // case: Bill (a Pokémon) asks for the cell separator and walks into the machine, the
+        // separator is a PC no sprite or sign stands for, and Bill comes out of the machine to
+        // hand over the ticket. The cartridge hides and shows the people as the errand moves, so
+        // the room's own state says which step is next; nothing here names a step.
+        //
+        // People first, because a thing pressed out of turn is in the talked ledger for the
+        // session: Bill's PC pressed before Bill has asked prints "the monitor" and does nothing,
+        // and a PC recorded as talked to would never be the errand's next step again.
+        PlaceKind::Errand => {
+            let mut people = path::person_targets(state);
+            people.extend(path::offscreen_person_targets(state));
+            let people = open_targets(state, people);
+            if !people.is_empty() {
+                return people;
+            }
+            let mut things = path::interactable_targets(state);
+            things.extend(path::hidden_targets(state).into_iter().map(|(tile, target, _)| (tile, target)));
+            things
+        }
     };
+    open_targets(state, targets)
+}
+
+/// Whichever of `targets` the objective is still waiting on: not talked to, and not resting in
+/// the blocked ledger. [`objective_targets`]' own filter, for each list it builds.
+fn open_targets(state: &mut dyn MacroState, targets: Vec<(Tile, TalkTarget)>) -> Vec<(Tile, TalkTarget)> {
     targets
         .into_iter()
         .filter(|(_, target)| {
             !state.talked(*target) && !state.blocked(TargetKey::Thing(*target))
         })
         .collect()
+}
+
+/// The one side the objective's `target` is pressed from, when the cartridge names one: a hidden
+/// event whose routine checks the player's facing (row 73, Bill's PC). `None` for every sprite and
+/// sign, which answer from any side.
+fn required_facing(state: &mut dyn MacroState, target: TalkTarget) -> Option<Facing> {
+    let TalkTarget::Hidden(_) = target else { return None };
+    path::hidden_targets(state)
+        .into_iter()
+        .find(|(_, hidden, _)| *hidden == target)
+        .and_then(|(_, _, facing)| facing)
+}
+
+/// The objective's hidden event on the tile ahead, faced from the side it answers (row 73).
+///
+/// The half of [`facing_target`] that is not the map's sprites and signs. Only the objective's
+/// own next step is reported, never any other hidden event: a poster faced on the way past is not
+/// a reason for `TALK`, and a PC pressed out of turn would retire the errand's own step
+/// ([`objective_targets`]).
+fn objective_hidden_ahead(state: &mut dyn MacroState, ahead: Tile, facing: Facing) -> Option<TalkTarget> {
+    // Most tiles of most maps are no hidden event's, and this is asked on every overworld frame.
+    if !path::hidden_targets(state).iter().any(|(tile, _, _)| *tile == ahead) {
+        return None;
+    }
+    let (_, target) = objective_targets(state)
+        .into_iter()
+        .find(|(tile, target)| *tile == ahead && matches!(target, TalkTarget::Hidden(_)))?;
+    match required_facing(state, target) {
+        Some(need) if need != facing => None,
+        _ => Some(target),
+    }
 }
 
 /// The exits the ledger has already recorded, for the log line.

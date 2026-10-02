@@ -548,6 +548,32 @@ pub fn default_worker_program() -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Makes `command`'s child die with its parent (BUS-01 review N2): the kernel sends it SIGKILL when
+/// the parent *thread* that spawned it exits, so a worker never outlives its coordinator even outside
+/// systemd's cgroup kill (a hung worker used to survive a killed parent, once for 47 hours).
+///
+/// Linux delivers the signal when the spawning thread ends, not the whole process, so spawn from a
+/// thread that lives as long as the process: a runtime worker or the main thread, never a
+/// short-lived blocking-pool thread. Setting the signal races a parent that already died; the child
+/// checks its parent id after setting it and exits if it was already re-parented.
+pub fn die_with_parent(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    let parent = std::process::id() as libc::pid_t;
+    // SAFETY: the closure runs between fork and exec and calls only async-signal-safe functions
+    // (prctl, getppid, _exit); it allocates nothing and takes no locks.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != parent {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+}
+
 impl Launcher {
     /// Connects the supervisor and prepares the launcher. Nothing is started yet.
     pub async fn start(
@@ -1011,6 +1037,7 @@ impl Launcher {
             }
         }
         command.stdin(std::process::Stdio::null());
+        die_with_parent(&mut command);
         let child = command.spawn().map_err(|e| {
             DomainError::new(
                 ErrorCode::BackendFailure,
