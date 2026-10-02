@@ -1,0 +1,24 @@
+diff --git a/services/flysim/crates/fly-legacy-session/src/task.rs b/services/flysim/crates/fly-legacy-session/src/task.rs
+index f85694e..2cd14c2 100644
+--- a/services/flysim/crates/fly-legacy-session/src/task.rs
++++ b/services/flysim/crates/fly-legacy-session/src/task.rs
+@@ -368,6 +368,19 @@ impl PokeredTask {
+         )
+     }
+ 
++    /// Read the committed boundary's memory image through the cartridge, as the macro engine
++    /// reads it, for a harness that measures play (the scorecard). `None` before the first
++    /// observation. Changes nothing.
++    pub fn with_reader<R>(
++        &self,
++        f: impl FnOnce(&mut dyn flybrain_gb::MemoryReader) -> R,
++    ) -> Option<R> {
++        let inner = self.lock();
++        let (_, image) = inner.current.as_ref()?;
++        let mut reader = ImageReader::new(image, &inner.cartridge);
++        Some(f(&mut reader))
++    }
++
+     /// The brain time of the last transition (its Prepare's clock), in ms: `network.ms`.
+     pub fn brain_ms(&self) -> f64 {
+         self.lock().ms
