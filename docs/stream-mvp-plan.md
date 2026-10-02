@@ -1034,3 +1034,12 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   Both switches are in the host env, so a deploy keeps them. The session's agent and world stay
   on the in-process lane: over the router they cost 2.5 to 3.5 ms a frame, more than the
   release box's headroom (live work about 14.5 of 16.74 ms); the GPU brain is the way there.
+- 2026-10-02 (v0.7.7, loop review): row 73. The scout found rung 16 unreachable: its place was
+  "on Route 25", so inside Bill's house the walks just left again, and Bill's PC is a hidden
+  object no macro could press. Rung 16 is now Bill's errand inside the house (people first, then
+  things; exits off the pad while the errand waits), and hidden objects are read from the
+  cartridge's own table and become a target only as that errand's next step. Cerulean's north half
+  joins the map graph through the trashed house. Trap hunts: rung 16 in 0 of 6 seeds before, 6 of 6
+  after; Route 5 from the ticket 0 of 6 before, 5 of 6 after. Review: APPROVE-WITH-NOTES; notes
+  fixed. Also: bus worker children die with their parent; the feed test asserts structure, not a
+  wall-clock rate.
