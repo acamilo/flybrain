@@ -366,10 +366,11 @@ pub mod poke {
         pub const POINTERS_ADDRESS: u16 = 0x6a96;
         pub const ENTRY_BYTES: u16 = 6;
         /// More maps than the table has (85 at the pinned commit), and more entries than any one
-        /// map's list (Silph Co.'s and the Game Corner's are the long ones): a walk that runs past
-        /// either is not walking the table the disassembly describes, and answers nothing.
+        /// map's list (the Game Corner's 48 slot machines and coins are the longest): a walk that
+        /// runs past either is not walking the table the disassembly describes, and answers
+        /// nothing.
         pub const MAX_MAPS: u16 = 128;
-        pub const MAX_ENTRIES: u16 = 32;
+        pub const MAX_ENTRIES: u16 = 64;
         /// `SPRITE_FACING_DOWN`, `_UP`, `_LEFT`, `_RIGHT` (`constants/sprite_data_constants.asm`).
         pub const FACINGS: [u8; 4] = [0x00, 0x04, 0x08, 0x0c];
     }

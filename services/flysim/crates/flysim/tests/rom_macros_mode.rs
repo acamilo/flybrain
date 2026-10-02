@@ -5180,6 +5180,19 @@ fn row73_the_hidden_event_table_is_the_cartridges_and_bills_pc_is_in_it() {
     let pointers_at =
         at(&pointers_load).expect("CheckForHiddenEvent loads HiddenEventPointers from the pinned address");
     assert!(pointers_at > maps_at && pointers_at - maps_at < 32, "one routine: {maps_at:#x} {pointers_at:#x}");
+    // Every map's list ends inside the bounds `state::hidden_events` holds the table to, so no map's
+    // events are refused for being long (the Game Corner's 48 are the longest).
+    let byte = |address: u16| bank[usize::from(address - 0x4000)];
+    let mut maps = 0u16;
+    while byte(hidden::MAPS_ADDRESS + maps) != 0xff {
+        assert!(maps < hidden::MAX_MAPS, "the map list ends");
+        let at = hidden::POINTERS_ADDRESS + 2 * maps;
+        let list = u16::from_le_bytes([byte(at), byte(at + 1)]);
+        let entries = (0..).take_while(|entry| byte(list + entry * hidden::ENTRY_BYTES) != 0xff).count();
+        assert!(entries < usize::from(hidden::MAX_ENTRIES), "map {:#04x}: {entries}", byte(hidden::MAPS_ADDRESS + maps));
+        maps += 1;
+    }
+    assert_eq!(maps, 85, "the pinned commit's 85 maps with hidden events");
 
     let Some(checkpoint) = row73_checkpoint("FLY_ROW73_DOOR_CHECKPOINT") else {
         eprintln!("skipped: no FLY_ROW73_DOOR_CHECKPOINT");
