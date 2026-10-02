@@ -991,6 +991,11 @@ impl LegacyRig {
         self.launch(agent_id).await
     }
 
+    /// GPU failures so far that moved a worker's LIF tick to the CPU ([`Launcher::gpu_fallbacks`]).
+    pub fn gpu_fallbacks(&self) -> u64 {
+        self.launcher.gpu_fallbacks()
+    }
+
     pub async fn stop(mut self) {
         self.launcher.reap_all(&id("done")).await;
     }
@@ -1577,12 +1582,53 @@ pub async fn run_on_worker_from_then_capture(
     Ok((records, captured.expect("a capture was asked for")))
 }
 
+/// [`run_on_worker`] with the coordinator's recovery for a failed frame (GPU-02): the agent is
+/// Failed, so the last checkpoint (the script's `checkpoints`) is restored into a replacement
+/// worker, and the script goes on from the step after it. Returns the records and, for each
+/// recovery, the index of the step whose checkpoint was restored. The restore resets the
+/// readout's transients by design, so the matching CPU reference is the script with a
+/// `ScriptStep::Restore` after that step ([`script_with_restore_after`]).
+pub async fn run_on_worker_recovering(
+    rig: &mut LegacyRig,
+    agent_id: &Id,
+    script: &LegacyScript,
+) -> Result<(Vec<ParityRecord>, Vec<usize>), String> {
+    let mut recovered = Vec::new();
+    let (records, _) = run_script_with(rig, agent_id, script, None, false, Some(&mut recovered)).await?;
+    Ok((records, recovered))
+}
+
+/// `script` with a restore into a fresh agent right after step `at` (an index into `steps`), and
+/// its checkpoints moved onto the steps' new positions: the CPU reference for a run that
+/// recovered from the checkpoint at `at`.
+pub fn script_with_restore_after(script: &LegacyScript, at: usize) -> LegacyScript {
+    let mut alt = script.clone();
+    alt.steps.insert(at + 1, ScriptStep::Restore);
+    alt.checkpoints = script
+        .checkpoints
+        .iter()
+        .map(|&i| if i > at { i + 1 } else { i })
+        .collect();
+    alt
+}
+
 async fn run_script(
     rig: &mut LegacyRig,
     agent_id: &Id,
     script: &LegacyScript,
     start: Option<(&flybrain_core::agent::AgentState, u64)>,
     capture_at_end: bool,
+) -> Result<(Vec<ParityRecord>, Option<Vec<u8>>), String> {
+    run_script_with(rig, agent_id, script, start, capture_at_end, None).await
+}
+
+async fn run_script_with(
+    rig: &mut LegacyRig,
+    agent_id: &Id,
+    script: &LegacyScript,
+    start: Option<(&flybrain_core::agent::AgentState, u64)>,
+    capture_at_end: bool,
+    mut recovered: Option<&mut Vec<usize>>,
 ) -> Result<(Vec<ParityRecord>, Option<Vec<u8>>), String> {
     let mut driver = rig.driver(agent_id, script);
     let first = match start {
@@ -1594,7 +1640,12 @@ async fn run_script(
         }
     };
     let mut records = vec![first];
-    for (index, step) in script.steps.iter().enumerate() {
+    // The last checkpoint, for a recovery: (step, records so far, the capture, and the driver
+    // state a restore returns to).
+    let mut last_checkpoint: Option<(usize, usize, Captured, u64, TypedValue, RationalNs)> = None;
+    let mut index = 0usize;
+    while index < script.steps.len() {
+        let step = &script.steps[index];
         let mut record = match step {
             ScriptStep::Frame {
                 sugar,
@@ -1602,9 +1653,31 @@ async fn run_script(
                 rewards,
                 next_context,
             } => {
-                driver
+                match driver
                     .frame(index + 1, sugar, *frame, rewards, next_context)
-                    .await?
+                    .await
+                {
+                    Ok(record) => record,
+                    Err(e) if recovered.is_some() && last_checkpoint.is_some() => {
+                        let (at, kept, captured, boundary, context, remainder) =
+                            last_checkpoint.take().expect("checked");
+                        eprintln!(
+                            "recovery: step {} failed ({e}); restoring the checkpoint after step {at} into a replacement",
+                            index + 1
+                        );
+                        driver.boundary = boundary;
+                        driver.context = context.clone();
+                        driver.remainder = remainder;
+                        let target = rig.replace(agent_id).await?;
+                        driver.restore_into(target, &captured).await?;
+                        records.truncate(kept);
+                        recovered.as_mut().expect("checked").push(at);
+                        last_checkpoint = Some((at, kept, captured, boundary, context, remainder));
+                        index = at + 1;
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                }
             }
             ScriptStep::Rollback { frame, context } => {
                 driver.rollback(index + 1, *frame, context).await?
@@ -1632,8 +1705,20 @@ async fn run_script(
         if script.checkpoints.contains(&index) {
             let captured = driver.capture().await?;
             record.state = Some(payload_state_digest(&captured.bytes)?);
+            records.push(record);
+            last_checkpoint = Some((
+                index,
+                records.len(),
+                captured,
+                driver.boundary,
+                driver.context.clone(),
+                driver.remainder,
+            ));
+            index += 1;
+            continue;
         }
         records.push(record);
+        index += 1;
     }
     let captured = if capture_at_end {
         Some(driver.capture().await?.bytes)

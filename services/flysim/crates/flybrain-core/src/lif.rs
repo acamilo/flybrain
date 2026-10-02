@@ -21,6 +21,9 @@ use crate::version::version_for;
 #[cfg(feature = "cuda")]
 pub mod cuda;
 
+/// Whether the GPU may still be used in this process, and the fallback record.
+pub mod health;
+
 /// Version of the default configuration; kept verbatim so existing checkpoints stay loadable.
 pub const NEURAL_KERNEL_VERSION: &str = "lif-1ms-f64-v2";
 
@@ -56,6 +59,64 @@ pub struct Stimulation {
     pub role: String,
     pub drive: f64,
 }
+
+/// Which hardware runs the per-millisecond tick.
+///
+/// A deployment choice, like the sweep's thread count, and never part of the compatibility
+/// string: the GPU tick is bit-exact with the CPU one (`lif/cuda.rs`), so a checkpoint moves
+/// between the two in either direction. The CUDA variant needs the `cuda` feature; asking for it
+/// in a build without the feature is an error from [`LifNetwork::set_backend`], never a silent CPU
+/// run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LifBackend {
+    #[default]
+    Cpu,
+    /// The CUDA backend on device ordinal `device`, with device-owned state.
+    Cuda { device: usize },
+}
+
+impl LifBackend {
+    /// `FLY_LIF_CUDA=1` asks for the GPU, on device `FLY_LIF_CUDA_DEVICE` (an ordinal, default 0).
+    /// Any other value of `FLY_LIF_CUDA`, or none, is the CPU, as it always was.
+    pub fn from_env() -> std::result::Result<LifBackend, String> {
+        Self::from_values(
+            std::env::var("FLY_LIF_CUDA").ok().as_deref(),
+            std::env::var("FLY_LIF_CUDA_DEVICE").ok().as_deref(),
+        )
+    }
+
+    /// [`LifBackend::from_env`] over explicit values. A device that is not an ordinal is refused
+    /// rather than read as 0.
+    pub fn from_values(
+        cuda: Option<&str>,
+        device: Option<&str>,
+    ) -> std::result::Result<LifBackend, String> {
+        if cuda.map(str::trim) != Some("1") {
+            return Ok(LifBackend::Cpu);
+        }
+        let device = match device.map(str::trim) {
+            None | Some("") => 0,
+            Some(text) => text.parse::<usize>().map_err(|_| {
+                format!("FLY_LIF_CUDA_DEVICE={text}: expected a device ordinal (0, 1, ...)")
+            })?,
+        };
+        Ok(LifBackend::Cuda { device })
+    }
+
+    /// `cpu` or `cuda:<device>`, for logs.
+    pub fn label(&self) -> String {
+        match self {
+            LifBackend::Cpu => "cpu".to_string(),
+            LifBackend::Cuda { device } => format!("cuda:{device}"),
+        }
+    }
+
+    /// Whether this build carries the CUDA backend at all.
+    pub const fn cuda_compiled() -> bool {
+        cfg!(feature = "cuda")
+    }
+}
+
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LifConfig {
@@ -275,7 +336,12 @@ pub struct LifNetwork {
     /// Version string of this configuration; pin it in checkpoints.
     pub version: String,
     pub plasticity: RewardModulatedStdp,
+    /// Membrane potentials. **Stale while a device-owned GPU backend is attached** and
+    /// `cuda().is_some_and(|b| b.host_stale())`: the device holds the current copy until
+    /// [`LifNetwork::sync_host`]. Read it only after a `sync_host`, or use
+    /// [`LifNetwork::export_state`], which reads the device itself.
     pub membrane: Vec<f32>,
+    /// Refractory counters; stale on the same terms as `membrane`.
     pub refractory: Vec<u8>,
     pub baseline: Vec<f32>,
     pub last_spike_ms: Vec<f64>,
@@ -311,6 +377,8 @@ pub struct LifNetwork {
     visual_drive: Vec<f32>,
     reward_remaining: f64,
     sweep: SweepPlan,
+    /// Why the GPU backend was detached mid-run, until [`LifNetwork::take_backend_fault`].
+    backend_fault: Option<String>,
     /// When set, [`LifNetwork::step`] runs steps 1-4 and 6 on the GPU; see [`cuda`].
     #[cfg(feature = "cuda")]
     cuda: Option<Box<cuda::CudaLif>>,
@@ -423,6 +491,7 @@ impl LifNetwork {
             timings: PhaseTimings::default(),
             data,
             sweep: SweepPlan::sequential(),
+            backend_fault: None,
             #[cfg(feature = "cuda")]
             cuda: None,
         })
@@ -435,18 +504,87 @@ impl LifNetwork {
 
     /// Choose how the per-tick parallel phases are partitioned. Results do not depend on this.
     pub fn set_sweep_plan(&mut self, sweep: SweepPlan) {
+        self.configure_sweep(sweep);
+        // Test hook: with the `cuda` feature compiled in *and* `FLY_LIF_CUDA=1` in the
+        // environment, configuring a sweep plan also attaches the GPU backend, syncing the host
+        // arrays every batch. That is how the existing golden suite is run through the GPU
+        // without editing a single test. Both conditions are off by default, and with the
+        // feature absent this line does not exist. A host that picks its backend itself (the
+        // session runtime) calls `configure_sweep` and `set_backend` instead.
+        #[cfg(feature = "cuda")]
+        self.attach_cuda_if_requested();
+    }
+
+    /// [`LifNetwork::set_sweep_plan`] without the `FLY_LIF_CUDA` test hook.
+    pub fn configure_sweep(&mut self, sweep: SweepPlan) {
         let threads = sweep.threads();
         self.target_shards = target_shards(&self.data, threads);
         self.slot_shards = self.plasticity.slot_shards(threads);
         self.rows_ascending = threads > 1 && rows_are_target_ascending(&self.data);
         self.sweep_counts = (0..threads).map(|_| AtomicUsize::new(0)).collect();
         self.sweep = sweep;
-        // Spike hook: with the `cuda` feature compiled in *and* `FLY_LIF_CUDA=1` in the
-        // environment, configuring a sweep plan also attaches the GPU backend. That is how the
-        // existing golden suite is run through the GPU without editing a single test. Both
-        // conditions are off by default, and with the feature absent this line does not exist.
+    }
+
+    /// Run the tick on `backend` from now on. Results do not depend on this.
+    ///
+    /// [`LifBackend::Cuda`] attaches the GPU backend with device-owned state (or switches one the
+    /// test hook attached to it): the host's `membrane` and `refractory` then lag the device
+    /// until [`LifNetwork::sync_host`], and [`LifNetwork::export_state`] reads the device itself
+    /// while they do. [`LifBackend::Cpu`] syncs and detaches. A build without the `cuda` feature
+    /// refuses `Cuda` rather than running the CPU kernel under a GPU label.
+    pub fn set_backend(&mut self, backend: LifBackend) -> Result<()> {
+        match backend {
+            LifBackend::Cpu => {
+                #[cfg(feature = "cuda")]
+                if self.cuda.is_some() {
+                    self.sync_host()?;
+                    self.cuda = None;
+                }
+                Ok(())
+            }
+            #[cfg(feature = "cuda")]
+            LifBackend::Cuda { device } => self.attach_device_owned(device),
+            #[cfg(not(feature = "cuda"))]
+            LifBackend::Cuda { device } => bail!(
+                "the CUDA LIF backend (device {device}) was requested, but this build has no \
+                 `cuda` feature"
+            ),
+        }
+    }
+
+    /// The backend the tick runs on now.
+    pub fn backend(&self) -> LifBackend {
         #[cfg(feature = "cuda")]
-        self.attach_cuda_if_requested();
+        if let Some(backend) = self.cuda.as_deref() {
+            return LifBackend::Cuda {
+                device: backend.ordinal(),
+            };
+        }
+        LifBackend::Cpu
+    }
+
+    /// Why the GPU backend detached itself during a step, once; `None` if it never did.
+    pub fn take_backend_fault(&mut self) -> Option<String> {
+        self.backend_fault.take()
+    }
+
+    /// Whether the host's `membrane` and `refractory` are current. Always true on the CPU.
+    pub fn host_state_current(&self) -> bool {
+        #[cfg(feature = "cuda")]
+        if let Some(backend) = self.cuda.as_deref() {
+            return !backend.host_stale();
+        }
+        true
+    }
+
+    /// Bring the host's `membrane` and `refractory` up to date with the device: a no-op on the
+    /// CPU or when they already are. The session calls it before a capture, so the full state
+    /// crosses PCIe only at checkpoints.
+    pub fn sync_host(&mut self) -> Result<()> {
+        #[cfg(feature = "cuda")]
+        return self.sync_host_from_cuda();
+        #[cfg(not(feature = "cuda"))]
+        Ok(())
     }
 
     pub fn sweep_plan(&self) -> &SweepPlan {
@@ -508,11 +646,10 @@ impl LifNetwork {
         self.stimulate(duration_ms);
     }
 
-    /// Run `milliseconds` ticks and return the total spike count.
     /// The neurons the last CPU tick emitted, when `count` is what that one-tick
     /// [`LifNetwork::step`] returned: exactly the neurons whose `last_spike_ms` it stamped, in the
     /// sweep's order. `None` while the GPU backend runs the ticks, whose host copy of the list is
-    /// not kept per tick. A read-only view; it changes nothing a tick computes.
+    /// not kept per tick ([`LifNetwork::step_frame`] gathers the lists either way). A read-only view; it changes nothing a tick computes.
     pub fn tick_spikes(&self, count: usize) -> Option<&[u32]> {
         #[cfg(feature = "cuda")]
         if self.cuda.is_some() {
@@ -521,18 +658,77 @@ impl LifNetwork {
         self.spikes.get(..count)
     }
 
+    /// Run `milliseconds` ticks and return the total spike count.
+    ///
+    /// Panics if the GPU backend fails in a way the network cannot continue from; see
+    /// [`LifNetwork::try_step`].
     pub fn step(&mut self, milliseconds: u64) -> u64 {
         // The GPU backend runs the same ticks in batches and replays the host-side phases; with the
         // feature off this compiles to nothing and the loop below is the whole method.
         #[cfg(feature = "cuda")]
         if self.cuda.is_some() {
-            return self.step_on_cuda(milliseconds);
+            return self
+                .step_on_cuda(milliseconds, None)
+                .unwrap_or_else(|error| panic!("CUDA LIF batch failed: {error}"));
         }
         let mut total = 0u64;
         for _ in 0..milliseconds {
             total += self.step_one() as u64;
         }
         total
+    }
+
+    /// [`LifNetwork::step`], returning a GPU failure the network cannot continue from instead of
+    /// panicking. On the CPU it cannot fail.
+    pub fn try_step(&mut self, milliseconds: u64) -> Result<u64> {
+        #[cfg(feature = "cuda")]
+        if self.cuda.is_some() {
+            return self.step_on_cuda(milliseconds, None);
+        }
+        Ok(self.step(milliseconds))
+    }
+
+    /// One frame's `ticks` ticks in one call, with every neuron that spiked in any of them OR-ed
+    /// into `spiked` (bit `n % 8` of byte `n / 8` for neuron `n`, the legacy feed's layout; the
+    /// caller zeroes it). Returns the total spike count.
+    ///
+    /// On the CPU this is exactly `ticks` one-tick [`LifNetwork::step`] calls with each tick's
+    /// [`LifNetwork::tick_spikes`] gathered, which is what the session runtime did per frame. On
+    /// the GPU it is one batch: the inputs go up once, the spike lists come down once, and
+    /// `membrane` and `refractory` stay on the device (with device-owned state). An error means
+    /// the backend failed and the device held the only current state: the network has been
+    /// moved to the CPU kernel and must be restored from a checkpoint before it steps again. A
+    /// failure it could continue from on the CPU is not an error; see
+    /// [`LifNetwork::take_backend_fault`].
+    pub fn step_frame(&mut self, ticks: u64, spiked: &mut [u8]) -> Result<u64> {
+        let neurons = self.data.meta.neurons;
+        if spiked.len() < neurons.div_ceil(8) {
+            bail!(
+                "a spike bitset of {} bytes cannot hold {neurons} neurons",
+                spiked.len()
+            );
+        }
+        #[cfg(feature = "cuda")]
+        if self.cuda.is_some() {
+            return self.step_on_cuda(ticks, Some(spiked));
+        }
+        let mut total = 0u64;
+        for _ in 0..ticks {
+            total += self.step_one_into(Some(&mut *spiked)) as u64;
+        }
+        Ok(total)
+    }
+
+    /// One CPU tick, with its spike list OR-ed into `spiked` when given.
+    #[inline]
+    fn step_one_into(&mut self, spiked: Option<&mut [u8]>) -> usize {
+        let count = self.step_one();
+        if let Some(bits) = spiked {
+            for &neuron in &self.spikes[..count] {
+                bits[neuron as usize >> 3] |= 1 << (neuron & 7);
+            }
+        }
+        count
     }
 
     fn step_one(&mut self) -> usize {
@@ -797,10 +993,15 @@ impl LifNetwork {
         total
     }
 
+    /// A copy of the whole state. With a device-owned GPU backend whose host arrays are stale,
+    /// `membrane` and `refractory` are downloaded for the copy (and the host left as it is); a
+    /// caller that can handle the failure calls [`LifNetwork::sync_host`] first. Panics if that
+    /// download fails, because a checkpoint of stale arrays would be silently wrong.
     pub fn export_state(&self) -> LifState {
+        let (membrane, refractory) = self.current_arrays();
         LifState {
-            membrane: self.membrane.clone(),
-            refractory: self.refractory.clone(),
+            membrane,
+            refractory,
             last_spike_ms: self.last_spike_ms.clone(),
             visual_drive: self.visual_drive.clone(),
             rng: self.rng.state(),
@@ -810,6 +1011,18 @@ impl LifNetwork {
             rates: self.rates.clone(),
             plasticity: self.plasticity.export_state(),
         }
+    }
+
+    /// Copies of `membrane` and `refractory` as they are now: the host's, or the device's while
+    /// the host's are stale.
+    fn current_arrays(&self) -> (Vec<f32>, Vec<u8>) {
+        #[cfg(feature = "cuda")]
+        if let Some(downloaded) = self.stale_device_state() {
+            return downloaded.unwrap_or_else(|error| {
+                panic!("the device state cannot be read back for export: {error}")
+            });
+        }
+        (self.membrane.clone(), self.refractory.clone())
     }
 
     /// Import plasticity first, then validate before writing anything.

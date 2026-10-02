@@ -417,6 +417,10 @@ struct Endpoints {
     own: Via,
     store_root: PathBuf,
     sockets: PathBuf,
+    /// The GPU fallback record the worker processes share (`flybrain_core::lif::health`): a
+    /// replacement worker that is a new process must not re-attach a GPU that failed in an
+    /// earlier one. Emptied when this launcher starts.
+    gpu_marker: PathBuf,
     next_socket: AtomicU64,
     listeners: Mutex<Vec<UnixListenerHandle>>,
 }
@@ -575,6 +579,13 @@ pub fn die_with_parent(command: &mut std::process::Command) {
 }
 
 impl Launcher {
+    /// GPU failures that moved the LIF tick to the CPU under this launcher: its worker
+    /// processes' (the marker) and, for workers in this process, this process's.
+    pub fn gpu_fallbacks(&self) -> u64 {
+        flybrain_core::lif::health::marker_fallbacks(&self.endpoints.gpu_marker)
+            .max(flybrain_core::lif::health::fallbacks())
+    }
+
     /// Connects the supervisor and prepares the launcher. Nothing is started yet.
     pub async fn start(
         router: Router,
@@ -588,6 +599,8 @@ impl Launcher {
         std::fs::create_dir_all(&sockets).map_err(|e| {
             flybus::BusError::new(flybus::ErrorCode::StoreFailure, format!("sockets: {e}"))
         })?;
+        let gpu_marker = sockets.join("lif-gpu-fallbacks");
+        flybrain_core::lif::health::reset_marker(&gpu_marker);
         let endpoints = Endpoints {
             router,
             via: mode.transport(via),
@@ -597,6 +610,7 @@ impl Launcher {
             },
             store_root: store_root.into(),
             sockets,
+            gpu_marker,
             next_socket: AtomicU64::new(0),
             listeners: Mutex::new(Vec::new()),
         };
@@ -1036,6 +1050,7 @@ impl Launcher {
                     .arg(flybrain_core::pool::format_cpu_list(&cpus.sweep));
             }
         }
+        command.env(flybrain_core::lif::health::MARKER_ENV, &self.endpoints.gpu_marker);
         command.stdin(std::process::Stdio::null());
         die_with_parent(&mut command);
         let child = command.spawn().map_err(|e| {
@@ -1698,6 +1713,9 @@ pub(crate) fn legacy_agent_config(spec: &LegacyAgentLaunch, worker_threads: usiz
         dataset_dir: spec.dataset_dir.clone(),
         profile: spec.profile,
         macro_channels: spec.macro_channels.clone(),
+        // The deployment's switch, read where the worker runs: a thread, or a child process
+        // that inherited the launcher's environment.
+        lif_backend: flybrain_core::lif::LifBackend::from_env(),
     }
 }
 

@@ -220,8 +220,10 @@ impl NeuralAgent {
             bail!("Agent is already warmed up");
         }
         self.network.plasticity.enabled = false;
-        self.network.step(self.warmup_ms);
+        // `try_step`, so a GPU backend that fails here is an error, not a panic; the CPU cannot.
+        let stepped = self.network.try_step(self.warmup_ms);
         self.network.plasticity.enabled = true;
+        stepped?;
         let rates = self.network.rates.clone();
         self.decoder.calibrate(&rates);
         if let Some(frame) = first_frame {

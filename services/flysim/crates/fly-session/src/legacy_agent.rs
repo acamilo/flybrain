@@ -42,7 +42,8 @@ use flybrain_core::envelope::{
     agent_from_chunks, agent_to_chunks, decode_envelope, encode_envelope,
 };
 use flybrain_core::json::JsonValue;
-use flybrain_core::lif::{LifConfig, SweepPlan, kernel_version};
+use flybrain_core::lif::health as lif_health;
+use flybrain_core::lif::{LifBackend, LifConfig, SweepPlan, kernel_version};
 use serde_json::{Value, json};
 
 use crate::clock::TickAccumulator;
@@ -460,6 +461,10 @@ pub struct LegacyAgentConfig {
     pub profile: LegacyProfileKind,
     /// The composition's `executor.macroChannels`, in composition order; empty in raw mode.
     pub macro_channels: Vec<String>,
+    /// Where the LIF tick runs (GPU-02): `FLY_LIF_CUDA` / `FLY_LIF_CUDA_DEVICE` as the launcher
+    /// read them, or why they could not be read. Never identity: the GPU tick is bit-exact, so
+    /// the compatibility digest and every checkpoint are the CPU's.
+    pub lif_backend: Result<LifBackend, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -511,9 +516,9 @@ pub struct LegacyAgentWorker {
     /// The brain time before the in-flight transition's ticks: the spike window's start.
     transition_start_ms: f64,
     /// The in-flight transition's spike bitset, gathered tick by tick from the kernel's spike
-    /// lists during Prepare (PERF-01). It is the bitset `spike_bitset` would scan out of
-    /// `last_spike_ms` for the same window, without the 139,255-neuron scan. `None` when the
-    /// kernel keeps no per-tick list (the GPU backend): Commit scans as before.
+    /// lists during Prepare (PERF-01; on the GPU too since GPU-02). It is the bitset
+    /// `spike_bitset` would scan out of `last_spike_ms` for the same window, without the
+    /// 139,255-neuron scan. `None` only before a Prepare: Commit then scans.
     tick_spikes: Option<Vec<u8>>,
     staged: Option<StagedAgent>,
     activated: BTreeSet<Id>,
@@ -869,6 +874,63 @@ impl LegacyAgentWorker {
 
     /// Builds a network and readout over `dataset`, before any state is installed, and checks
     /// every identity the profile pins: kernel and plasticity versions, frame size, rate roles.
+    /// The backend this agent runs on, attached. A GPU that already failed in this process is
+    /// not tried again, and one that cannot be attached now (a lost device, a failed CUDA init
+    /// after a restart) is a fallback to the CPU with a warning, never a failed worker
+    /// (operator decision, 2026-10-02): the stream keeps going from the same checkpoint, which
+    /// is backend-neutral. A build without the `cuda` feature that is asked for the GPU is a
+    /// misconfiguration and still fails `Agent.Initialize`.
+    ///
+    /// Each attach builds a new backend (about 57 MiB of device memory) while the agent it
+    /// replaces may still be alive; harmless on a 24 GB card, to be budgeted when GPU-03 batches
+    /// flies onto an 8 GB one.
+    fn attach_backend(
+        &self,
+        agent: &mut NeuralAgent,
+        wanted: LifBackend,
+    ) -> Result<LifBackend, DomainError> {
+        let LifBackend::Cuda { .. } = wanted else {
+            agent.network.set_backend(LifBackend::Cpu).map_err(|e| {
+                DomainError::before(ErrorCode::BackendFailure, format!("LIF backend cpu: {e}"))
+            })?;
+            return Ok(LifBackend::Cpu);
+        };
+        if LifBackend::cuda_compiled() {
+            if lif_health::gpu_unusable() {
+                eprintln!(
+                    "legacy agent {}: LIF backend cpu (the GPU failed earlier in this process: {})",
+                    self.config.agent_id,
+                    lif_health::last_reason().unwrap_or_default()
+                );
+                return Ok(LifBackend::Cpu);
+            }
+            return match agent.network.set_backend(wanted) {
+                Ok(()) => Ok(wanted),
+                Err(e) => {
+                    lif_health::record_fallback(&format!(
+                        "agent {}: attaching {} failed: {e}",
+                        self.config.agent_id,
+                        wanted.label()
+                    ));
+                    Ok(LifBackend::Cpu)
+                }
+            };
+        }
+        agent.network.set_backend(wanted).map_err(|e| {
+            DomainError::before(
+                ErrorCode::BackendFailure,
+                format!("LIF backend {}: {e}", wanted.label()),
+            )
+        })?;
+        Ok(wanted)
+    }
+
+    /// A GPU failure in this worker: the GPU is out for the process, and the metric says so.
+    fn gpu_failed(config: &LegacyAgentConfig, reason: &str) {
+        lif_health::record_fallback(&format!("agent {}: {reason}", config.agent_id));
+        lif_health::write_textfile(LifBackend::Cpu, config.lif_backend.clone().unwrap_or_default());
+    }
+
     fn build_agent(
         &self,
         dataset: Arc<BrainDataset>,
@@ -933,8 +995,21 @@ impl LegacyAgentWorker {
         if self.config.worker_threads > 1 {
             let plan = SweepPlan::with_threads(self.config.worker_threads)
                 .map_err(|e| DomainError::invalid(format!("sweep plan: {e}")))?;
-            agent.set_sweep_plan(plan);
+            // Without the core's `FLY_LIF_CUDA` test hook: the backend is this worker's choice.
+            agent.network.configure_sweep(plan);
         }
+        let wanted = self.config.lif_backend.clone().map_err(|e| {
+            DomainError::before(ErrorCode::BackendFailure, format!("LIF backend: {e}"))
+        })?;
+        let backend = self.attach_backend(&mut agent, wanted)?;
+        if backend != LifBackend::Cpu {
+            eprintln!(
+                "legacy agent {}: LIF backend {} attached, device-owned state",
+                self.config.agent_id,
+                backend.label()
+            );
+        }
+        lif_health::write_textfile(backend, wanted);
         let fingerprint = self.profile.dataset_fingerprint.clone();
         let graph = AgentGraph {
             dataset_digest: dataset_digest(&fingerprint),
@@ -1169,22 +1244,27 @@ impl LegacyAgentWorker {
         let phase_before = agent.network.timings().total_ns();
         let phases_before = agent.network.timings();
         let ticks_span = crate::profile::span("agent.ticks");
-        // One tick at a time is the loop `step(ticks)` runs; after each, the neurons it stamped
-        // are its spike list, so the transition's bitset is their union.
+        // The frame's ticks in one call (GPU-02): on the CPU the one-tick loop `step(ticks)`
+        // runs, on the GPU one batch with the state left on the device. Either way each tick's
+        // spike list is OR-ed into the transition's bitset, which is the window `spike_bitset`
+        // would scan out of `last_spike_ms`.
         let mut bits = vec![0u8; agent.network.last_spike_ms.len().div_ceil(8)];
-        let mut listed = true;
-        for _ in 0..ticks {
-            let count = agent.network.step(1) as usize;
-            match agent.network.tick_spikes(count) {
-                Some(list) if listed => {
-                    for &neuron in list {
-                        bits[neuron as usize >> 3] |= 1 << (neuron & 7);
-                    }
-                }
-                _ => listed = false,
-            }
+        if let Err(e) = agent.network.step_frame(ticks, &mut bits) {
+            // The device state was the only current copy, so this worker cannot go on: it fails
+            // and the replacement restores the last checkpoint on the CPU (the GPU is out for
+            // the process).
+            Self::gpu_failed(&self.config, &format!("{e}; the agent fails, a replacement restores the last checkpoint on the CPU"));
+            return Err(applied(
+                ErrorCode::BackendFailure,
+                format!("the brain ticks failed: {e}"),
+            ));
         }
-        self.tick_spikes = listed.then_some(bits);
+        if let Some(fault) = agent.network.take_backend_fault() {
+            // The host state was current: the frame finished on the CPU in this call, and this
+            // worker continues there.
+            Self::gpu_failed(&self.config, &fault);
+        }
+        self.tick_spikes = Some(bits);
         drop(ticks_span);
         crate::profile::record(
             "agent.ticks.phase_clock",
@@ -1551,6 +1631,19 @@ impl LegacyAgentWorker {
             ));
         }
         let params: CaptureParams = ctx.params()?;
+        // With a device-owned GPU backend this is where `membrane` and `refractory` come back
+        // over PCIe: at checkpoints only (GPU-02). A no-op on the CPU.
+        {
+            let _span = crate::profile::span("agent.capture.sync_host");
+            let agent = self.agent.as_mut().expect("initialized");
+            if let Err(e) = agent.network.sync_host() {
+                Self::gpu_failed(&self.config, &format!("device state read-back: {e}"));
+                return Err(applied(
+                    ErrorCode::BackendFailure,
+                    format!("the device state cannot be read back: {e}"),
+                ));
+            }
+        }
         // The boundary's state, taken under the endpoint's lock: a copy, as the legacy loop's
         // `export_state` is. Encoding, digesting and sealing it -- milliseconds on the full
         // connectome -- run after the lock is released (`HandlerReply::deferred`), so the next

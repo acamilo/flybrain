@@ -38,10 +38,19 @@
 //! # State ownership
 //!
 //! Between batches the device owns `membrane` and `refractory`. With
-//! [`CudaLif::sync_host_each_batch`] set (the default) they are copied back at the end of every
-//! batch, which keeps `export_state`, the status endpoints and every existing test correct with no
-//! further changes. Clear it for throughput work and call [`CudaLif::sync_to_host`] explicitly
-//! before a checkpoint.
+//! [`CudaLif::sync_host_each_batch`] set (the default for a backend built with [`CudaLif::new`])
+//! they are copied back at the end of every batch, which keeps direct reads of the network's host
+//! arrays correct with no further changes: that is what `examples/cuda_exact`'s per-tick mode and
+//! the `FLY_LIF_CUDA=1` golden-suite hook rely on.
+//!
+//! Cleared (what [`LifNetwork::set_backend`] attaches, and what the session runtime runs), the
+//! device is the only up-to-date copy between host syncs and the host arrays are *stale*
+//! ([`CudaLif::host_stale`]). Per frame only the batch's inputs go up (the noise draws, the visual
+//! drive, the plastic gains) and its spike lists come down; [`LifNetwork::sync_host`] copies the
+//! two arrays back before a checkpoint, and [`LifNetwork::export_state`] downloads them itself
+//! when the host is stale, so a capture can never read old values. That is the difference between
+//! about 24 MB and about 0.2 MB over PCIe per frame when the caller steps one tick per call
+//! (GPU-01, section 2), and about 1.4 MB vs 0.2 MB when it steps a frame per call.
 
 use std::sync::Arc;
 
@@ -54,6 +63,88 @@ use cudarc::nvrtc::Ptx;
 use crate::error::{Error, Result};
 
 use super::LifNetwork;
+
+/// Fault injection for the failure path: a CUDA error raised where a real one would surface, so
+/// the fallback can be tested and drilled without breaking a card. Off unless armed. Armed by
+/// `FLY_LIF_CUDA_FAULT` (read once, by the first backend built) or by the setters; a comma list of
+/// `init` (every attach fails, as with a lost device), `batch=N` (the N-th batch of this process,
+/// counted from 0, fails after its kernels ran) and `sync=N` (the N-th device download).
+pub mod inject {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::OnceLock;
+
+    const NEVER: u64 = u64::MAX;
+    static INIT: AtomicBool = AtomicBool::new(false);
+    static BATCH_AT: AtomicU64 = AtomicU64::new(NEVER);
+    static SYNC_AT: AtomicU64 = AtomicU64::new(NEVER);
+    static BATCHES: AtomicU64 = AtomicU64::new(0);
+    static SYNCS: AtomicU64 = AtomicU64::new(0);
+    static ENV: OnceLock<()> = OnceLock::new();
+
+    pub(super) fn load_env() {
+        ENV.get_or_init(|| {
+            let Ok(spec) = std::env::var("FLY_LIF_CUDA_FAULT") else {
+                return;
+            };
+            for item in spec.split(',').map(str::trim) {
+                match item.split_once('=') {
+                    None if item == "init" => INIT.store(true, Ordering::SeqCst),
+                    Some(("batch", n)) => BATCH_AT.store(n.parse().unwrap_or(NEVER), Ordering::SeqCst),
+                    Some(("sync", n)) => SYNC_AT.store(n.parse().unwrap_or(NEVER), Ordering::SeqCst),
+                    _ => eprintln!("FLY_LIF_CUDA_FAULT: ignoring {item:?}"),
+                }
+            }
+        });
+    }
+
+    /// Every attach fails from now on (a lost device), or stops failing.
+    pub fn fail_attach(on: bool) {
+        INIT.store(on, Ordering::SeqCst);
+    }
+    /// The batch that is `after` batches from now fails, once.
+    pub fn fail_batch_after(after: u64) {
+        BATCH_AT.store(BATCHES.load(Ordering::SeqCst) + after, Ordering::SeqCst);
+    }
+    /// The device download that is `after` downloads from now fails, once.
+    pub fn fail_sync_after(after: u64) {
+        SYNC_AT.store(SYNCS.load(Ordering::SeqCst) + after, Ordering::SeqCst);
+    }
+    /// Batches this process has launched so far (a warm-up is many; a game frame is one).
+    pub fn batches() -> u64 {
+        BATCHES.load(Ordering::SeqCst)
+    }
+    /// Disarms everything.
+    pub fn clear() {
+        INIT.store(false, Ordering::SeqCst);
+        BATCH_AT.store(NEVER, Ordering::SeqCst);
+        SYNC_AT.store(NEVER, Ordering::SeqCst);
+    }
+
+    pub(super) fn attach() -> super::Result<()> {
+        load_env();
+        if INIT.load(Ordering::SeqCst) {
+            return Err(super::Error::new(
+                "CUDA init failed: injected fault (CUDA_ERROR_NO_DEVICE)",
+            ));
+        }
+        Ok(())
+    }
+    fn hit(counter: &AtomicU64, at: &AtomicU64, what: &str) -> super::Result<()> {
+        let n = counter.fetch_add(1, Ordering::SeqCst);
+        if n == at.load(Ordering::SeqCst) {
+            return Err(super::Error::new(format!(
+                "CUDA {what} failed: injected fault #{n} (CUDA_ERROR_LAUNCH_FAILED)"
+            )));
+        }
+        Ok(())
+    }
+    pub(super) fn batch() -> super::Result<()> {
+        hit(&BATCHES, &BATCH_AT, "batch")
+    }
+    pub(super) fn sync() -> super::Result<()> {
+        hit(&SYNCS, &SYNC_AT, "download")
+    }
+}
 
 /// Threads per block, and therefore neurons per block in the sweep and the compaction. Must match
 /// `LIF_BLOCK` in `cuda/lif.cu`, because the spike bitset words are per-warp ballots.
@@ -88,6 +179,12 @@ const DEFAULT_MAX_TICKS: usize = 32;
 /// PTX for `sm_75` (Turing), compiled from `cuda/lif.cu` by `cuda/build-ptx.sh` and committed, so
 /// neither the build nor the run needs a CUDA toolkit.
 const LIF_PTX: &str = include_str!("../../cuda/lif.ptx");
+
+/// A failed batch, and whether the host phases had already been replayed when it failed.
+struct BatchFailure {
+    error: Error,
+    replayed: bool,
+}
 
 fn driver_error(what: &str, error: impl std::fmt::Display) -> Error {
     Error::new(format!("CUDA {what} failed: {error}"))
@@ -149,6 +246,7 @@ pub struct CudaLif {
     bucket_rebase_kernel: CudaFunction,
     bucket_apply_kernel: CudaFunction,
 
+    ordinal: usize,
     neurons: usize,
     blocks: u32,
     max_ticks: usize,
@@ -201,7 +299,14 @@ pub struct CudaLif {
     host_tick_counts: Vec<u32>,
     host_spikes: Vec<u32>,
     stimulation_schedule: Vec<bool>,
+    /// The host arrays were overwritten (an import); upload them before the next batch.
     host_dirty: bool,
+    /// The device ran ticks the host arrays have not seen: `membrane` and `refractory` on the
+    /// host are older than the device's. Never set while `sync_host_each_batch` holds.
+    host_stale: bool,
+    /// Bytes copied host to device and device to host by the batches, for the PCIe budget.
+    pub uploaded_bytes: u64,
+    pub downloaded_bytes: u64,
 
     /// Copy `membrane` and `refractory` back at the end of every batch. On by default, so the rest
     /// of the crate sees the same host state it would have seen from the CPU kernel.
@@ -239,6 +344,7 @@ impl CudaLif {
     }
 
     pub fn with_max_ticks(network: &LifNetwork, ordinal: usize, max_ticks: usize) -> Result<Self> {
+        inject::attach()?;
         let max_ticks = max_ticks.max(1);
         let neurons = network.data.meta.neurons;
         if neurons == 0 {
@@ -389,6 +495,7 @@ impl CudaLif {
             bucket_rebase_kernel: function("lif_bucket_rebase")?,
             bucket_apply_kernel: function("lif_bucket_apply")?,
 
+            ordinal,
             neurons,
             blocks,
             max_ticks,
@@ -403,6 +510,9 @@ impl CudaLif {
             host_spikes: Vec::new(),
             stimulation_schedule: vec![false; max_ticks],
             host_dirty: false,
+            host_stale: false,
+            uploaded_bytes: 0,
+            downloaded_bytes: 0,
             batch_start: context
                 .new_event(Some(CUevent_flags::CU_EVENT_DEFAULT))
                 .map_err(|error| driver_error("event creation", error))?,
@@ -429,19 +539,33 @@ impl CudaLif {
         Ok(backend)
     }
 
+    /// The device ordinal this backend runs on.
+    pub fn ordinal(&self) -> usize {
+        self.ordinal
+    }
+
     /// Ticks this backend accepts per call.
     pub fn max_ticks(&self) -> usize {
         self.max_ticks
     }
 
     /// The host copies of `membrane` and `refractory` have been written; re-upload them before the
-    /// next batch. Called by [`LifNetwork::import_state`].
+    /// next batch. Called by [`LifNetwork::import_state`], which overwrites both arrays whole, so
+    /// the host is the current copy again.
     pub fn mark_host_dirty(&mut self) {
         self.host_dirty = true;
+        self.host_stale = false;
+    }
+
+    /// Whether the device holds ticks the network's host `membrane` and `refractory` have not
+    /// seen. [`LifNetwork::sync_host`] clears it.
+    pub fn host_stale(&self) -> bool {
+        self.host_stale
     }
 
     /// Copy `membrane` and `refractory` from the device into the network's host arrays.
     pub fn sync_to_host(&mut self, network: &mut LifNetwork) -> Result<()> {
+        inject::sync()?;
         self.stream
             .memcpy_dtoh(&self.membrane, &mut network.membrane[..])
             .map_err(|error| driver_error("membrane download", error))?;
@@ -450,7 +574,28 @@ impl CudaLif {
             .map_err(|error| driver_error("refractory download", error))?;
         self.stream
             .synchronize()
-            .map_err(|error| driver_error("synchronize", error))
+            .map_err(|error| driver_error("synchronize", error))?;
+        self.downloaded_bytes += (self.neurons * 5) as u64;
+        self.host_stale = false;
+        Ok(())
+    }
+
+    /// The device's `membrane` and `refractory`, copied out without touching the network: what
+    /// [`LifNetwork::export_state`] reads while the host arrays are stale.
+    pub fn download_state(&self) -> Result<(Vec<f32>, Vec<u8>)> {
+        inject::sync()?;
+        let mut membrane = vec![0.0f32; self.neurons];
+        let mut refractory = vec![0u8; self.neurons];
+        self.stream
+            .memcpy_dtoh(&self.membrane, &mut membrane[..])
+            .map_err(|error| driver_error("membrane download", error))?;
+        self.stream
+            .memcpy_dtoh(&self.refractory, &mut refractory[..])
+            .map_err(|error| driver_error("refractory download", error))?;
+        self.stream
+            .synchronize()
+            .map_err(|error| driver_error("synchronize", error))?;
+        Ok((membrane, refractory))
     }
 
     fn upload_state(&mut self, network: &LifNetwork) -> Result<()> {
@@ -460,12 +605,61 @@ impl CudaLif {
         self.stream
             .memcpy_htod(&network.refractory[..], &mut self.refractory)
             .map_err(|error| driver_error("refractory upload", error))?;
+        self.uploaded_bytes += (self.neurons * 5) as u64;
         self.host_dirty = false;
         Ok(())
     }
 
-    /// Run `ticks` GPU ticks and replay the host-side phases against the spike lists they produce.
-    fn run_batch(&mut self, network: &mut LifNetwork, ticks: usize) -> Result<usize> {
+    /// Run `ticks` GPU ticks and replay the host-side phases against the spike lists they produce,
+    /// OR-ing every tick's spikes into `spiked` (bit `n` of byte `n / 8` for neuron `n`) when given.
+    ///
+    /// Every fallible step comes before the replay. A failure therefore leaves the host-side state
+    /// exactly as it was at the start of the batch except for the RNG and the stimulation
+    /// countdown, which the caller saved ([`BatchFailure::replayed`] is false); only a failed
+    /// end-of-batch download in `sync_host_each_batch` mode comes after it.
+    fn run_batch(
+        &mut self,
+        network: &mut LifNetwork,
+        ticks: usize,
+        spiked: Option<&mut [u8]>,
+    ) -> std::result::Result<usize, BatchFailure> {
+        let before = |error: Error| BatchFailure {
+            error,
+            replayed: false,
+        };
+        let spikes = self.run_device(network, ticks).map_err(before)?;
+
+        // The host phases, per tick, in the sequential kernel's order. From here on the device
+        // is ahead of the host arrays until the next sync.
+        self.host_stale = true;
+        let mut at = 0usize;
+        let mut spiked = spiked;
+        for tick in 0..ticks {
+            let count = self.host_tick_counts[tick] as usize;
+            let list = &self.host_spikes[at..at + count];
+            network.spikes[..count].copy_from_slice(list);
+            if let Some(bits) = spiked.as_deref_mut() {
+                for &neuron in list {
+                    bits[neuron as usize >> 3] |= 1 << (neuron & 7);
+                }
+            }
+            at += count;
+            network.replay_host_phases(count);
+        }
+
+        if self.sync_host_each_batch {
+            self.sync_to_host(network).map_err(|error| BatchFailure {
+                error,
+                replayed: true,
+            })?;
+        }
+        Ok(spikes)
+    }
+
+    /// The fallible half of [`CudaLif::run_batch`]: draw, upload, launch, download the spike
+    /// lists. Touches nothing on the host but the RNG, the stimulation countdown and this
+    /// backend's own staging buffers.
+    fn run_device(&mut self, network: &mut LifNetwork, ticks: usize) -> Result<usize> {
         debug_assert!(ticks <= self.max_ticks);
         let neurons = self.neurons;
 
@@ -508,7 +702,9 @@ impl CudaLif {
         // Uploads: the batch's noise groups, this frame's visual drive, the plastic gains permuted
         // into the transposed array's rank order.
         let used = ticks * self.noise_kicks;
+        let mut uploaded = 0usize;
         if used > 0 {
+            uploaded += used * 8;
             let mut view = self.noise_neuron.slice_mut(0..used);
             self.stream
                 .memcpy_htod(&self.host_noise_neuron[..used], &mut view)
@@ -519,12 +715,14 @@ impl CudaLif {
                 .map_err(|error| driver_error("noise upload", error))?;
         }
         if !network.visual_drive.is_empty() {
+            uploaded += network.visual_drive.len() * 4;
             let mut view = self.visual_drive.slice_mut(0..network.visual_drive.len());
             self.stream
                 .memcpy_htod(&network.visual_drive[..], &mut view)
                 .map_err(|error| driver_error("visual drive upload", error))?;
         }
         if !network.plasticity.gains.is_empty() {
+            uploaded += network.plasticity.gains.len() * 4;
             let mut view = self.gains.slice_mut(0..network.plasticity.gains.len());
             self.stream
                 .memcpy_htod(&network.plasticity.gains[..], &mut view)
@@ -546,6 +744,7 @@ impl CudaLif {
         self.stream
             .synchronize()
             .map_err(|error| driver_error("synchronize", error))?;
+        inject::batch()?;
         self.kernel_ms += f64::from(
             self.batch_start
                 .elapsed_ms(&self.batch_end)
@@ -583,22 +782,9 @@ impl CudaLif {
         self.stream
             .synchronize()
             .map_err(|error| driver_error("synchronize", error))?;
-
-        // The host phases, per tick, in the sequential kernel's order.
-        let mut at = 0usize;
-        let mut spikes = 0usize;
-        for tick in 0..ticks {
-            let count = self.host_tick_counts[tick] as usize;
-            network.spikes[..count].copy_from_slice(&self.host_spikes[at..at + count]);
-            at += count;
-            spikes += count;
-            network.replay_host_phases(count);
-        }
-
-        if self.sync_host_each_batch {
-            self.sync_to_host(network)?;
-        }
-        Ok(spikes)
+        self.uploaded_bytes += uploaded as u64;
+        self.downloaded_bytes += ((ticks + total) * 4) as u64;
+        Ok(total)
     }
 
     /// Record phase mark `index` when phase profiling is on.
@@ -839,37 +1025,110 @@ impl LifNetwork {
 
     /// Attach a backend when `FLY_LIF_CUDA=1`, on device `FLY_LIF_CUDA_DEVICE` (default 0).
     ///
+    /// The test hook behind [`LifNetwork::set_sweep_plan`]: it attaches in
+    /// `sync_host_each_batch` mode, so every existing test that reads the host arrays directly runs
+    /// through the GPU unchanged. A host that chooses its backend itself uses
+    /// [`LifNetwork::configure_sweep`] and [`LifNetwork::set_backend`] instead.
+    ///
     /// Panics on a CUDA failure rather than falling back to the CPU: a run that asked for the GPU
     /// and silently got the CPU would report a bit-exactness pass that means nothing.
     pub(super) fn attach_cuda_if_requested(&mut self) {
-        if self.cuda.is_some() || std::env::var("FLY_LIF_CUDA").as_deref() != Ok("1") {
+        if self.cuda.is_some() {
             return;
         }
-        let ordinal = std::env::var("FLY_LIF_CUDA_DEVICE")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(0);
-        match CudaLif::new(self, ordinal) {
+        let Ok(super::LifBackend::Cuda { device }) = super::LifBackend::from_env() else {
+            return;
+        };
+        match CudaLif::new(self, device) {
             Ok(backend) => self.attach_cuda(backend),
             Err(error) => panic!("FLY_LIF_CUDA=1 but the CUDA backend would not start: {error}"),
         }
     }
 
-    /// The batched GPU path behind [`LifNetwork::step`].
-    pub(super) fn step_on_cuda(&mut self, milliseconds: u64) -> u64 {
+    /// Attach a device-owned backend on `device`, or switch an attached one to device-owned state.
+    pub(super) fn attach_device_owned(&mut self, device: usize) -> Result<()> {
+        if self.cuda.is_none() {
+            let backend = CudaLif::new(self, device)?;
+            self.attach_cuda(backend);
+        }
+        let backend = self.cuda.as_deref_mut().expect("attached");
+        backend.sync_host_each_batch = false;
+        Ok(())
+    }
+
+    /// Copy the device's `membrane` and `refractory` into the host arrays if they are stale.
+    pub(super) fn sync_host_from_cuda(&mut self) -> Result<()> {
+        let Some(mut backend) = self.cuda.take() else {
+            return Ok(());
+        };
+        let outcome = if backend.host_stale() {
+            backend.sync_to_host(self)
+        } else {
+            Ok(())
+        };
+        self.cuda = Some(backend);
+        outcome
+    }
+
+    /// The device arrays when the host's are stale; `None` when the host is current.
+    pub(super) fn stale_device_state(&self) -> Option<Result<(Vec<f32>, Vec<u8>)>> {
+        let backend = self.cuda.as_deref()?;
+        backend.host_stale().then(|| backend.download_state())
+    }
+
+    /// The batched GPU path behind [`LifNetwork::try_step`] and [`LifNetwork::step_frame`].
+    ///
+    /// On a CUDA failure the backend is detached and the network is on the CPU kernel from then
+    /// on. If the host arrays were current when the failing batch started (the backend syncs
+    /// every batch, or nothing ran since the last sync or import), the RNG and the stimulation
+    /// countdown are put back and the remaining ticks run on the CPU: the result is bit-identical
+    /// to a run that never had a GPU, and the reason is left in
+    /// [`LifNetwork::take_backend_fault`]. Otherwise the device held the only current copy of
+    /// `membrane` and `refractory`, so the network is not resumable and the error is returned:
+    /// the caller restores it from its last checkpoint.
+    pub(super) fn step_on_cuda(
+        &mut self,
+        milliseconds: u64,
+        mut spiked: Option<&mut [u8]>,
+    ) -> Result<u64> {
         let mut backend = self.cuda.take().expect("a CUDA backend is attached");
         let mut total = 0u64;
         let mut left = milliseconds;
         while left > 0 {
             let ticks = left.min(backend.max_ticks() as u64) as usize;
-            match backend.run_batch(self, ticks) {
+            let host_current = !backend.host_stale();
+            let (rng, reward_remaining) = (self.rng.state(), self.reward_remaining);
+            match backend.run_batch(self, ticks, spiked.as_deref_mut()) {
                 Ok(spikes) => total += spikes as u64,
-                Err(error) => panic!("CUDA LIF batch failed: {error}"),
+                Err(failure) => {
+                    drop(backend);
+                    if host_current && !failure.replayed {
+                        self.rng.set_state(rng);
+                        self.reward_remaining = reward_remaining;
+                        self.backend_fault = Some(format!(
+                            "CUDA batch failed ({}); the backend is detached and the network \
+                             continues on the CPU from the current host state",
+                            failure.error
+                        ));
+                        for _ in 0..left {
+                            total += self.step_one_into(spiked.as_deref_mut()) as u64;
+                        }
+                        return Ok(total);
+                    }
+                    let message = format!(
+                        "CUDA batch failed ({}); the backend is detached, and the device held the \
+                         only current membrane since the last host sync, so this network must be \
+                         restored from a checkpoint",
+                        failure.error
+                    );
+                    self.backend_fault = Some(message.clone());
+                    return Err(Error::new(message));
+                }
             }
             left -= ticks as u64;
         }
         self.cuda = Some(backend);
-        total
+        Ok(total)
     }
 
     /// Steps 5, 6 (the spike stamp and role tally only), 7 and 8 of `step_one`, against a spike
