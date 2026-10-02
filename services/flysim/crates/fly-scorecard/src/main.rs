@@ -21,6 +21,7 @@ use flysim::snapshot::MacroMode;
 
 use fly_scorecard::compare::compare;
 use fly_scorecard::runner::{Runtime, RunSpec, build_info, run_legacy, run_session};
+use fly_scorecard::tally::RunReport;
 use fly_scorecard::suite::{
     CheckpointSet, ChildArgs, Job, SCHEMA, SuiteConfig, SuiteReport, note, run_jobs,
 };
@@ -56,7 +57,7 @@ enum Cmd {
         runtime: String,
         #[arg(long, default_value = "macros")]
         mode: String,
-        #[arg(long, default_value_t = 4)]
+        #[arg(long, default_value_t = 1)]
         threads: usize,
         #[arg(long, default_value_t = 120.0)]
         probe_s: f64,
@@ -86,11 +87,13 @@ enum Cmd {
         runtime: String,
         #[arg(long, default_value = "macros")]
         mode: String,
-        /// Sweep threads per run.
-        #[arg(long, default_value_t = 4)]
+        /// Sweep threads per run. One: a run's pool spins at its barriers, so on a box shared with
+        /// other jobs one-thread runs lose far less than four-thread ones, and the result does
+        /// not depend on the count.
+        #[arg(long, default_value_t = 1)]
         threads: usize,
         /// Runs at a time.
-        #[arg(long, default_value_t = 2)]
+        #[arg(long, default_value_t = 8)]
         jobs: usize,
         #[arg(long, default_value_t = 120.0)]
         probe_s: f64,
@@ -109,6 +112,9 @@ enum Cmd {
         /// Fail instead of running a smaller set when a checkpoint of the set is missing.
         #[arg(long)]
         strict: bool,
+        /// Keep the runs an earlier invocation finished (`<out>.runs.jsonl`) and run the rest.
+        #[arg(long)]
+        resume: bool,
     },
     /// Release A against release B. Exit 1 when a metric regressed.
     Compare {
@@ -258,7 +264,7 @@ fn real_main() -> Result<()> {
         }
         Cmd::Suite {
             set, extra, only, seeds, minutes, runtime, mode, threads, jobs, probe_s, window_s, label, out, md,
-            dataset, strict,
+            dataset, strict, resume,
         } => {
             Runtime::parse(&runtime)?;
             mode_of(&mode)?;
@@ -266,11 +272,32 @@ fn real_main() -> Result<()> {
             let resolved = resolve(&set, &extra, &only, strict)?;
             let exe = std::env::current_exe().context("finding this executable")?;
             let seed_list: Vec<u32> = (1..=seeds).collect();
+            // Every finished run is appended to `<out>.runs.jsonl` at once, so a suite that dies
+            // (a box that reboots, a job that is killed) keeps what it finished.
+            let runs_log = out.with_extension("runs.jsonl");
+            let mut prior: Vec<RunReport> = Vec::new();
+            if resume {
+                if let Ok(text) = std::fs::read_to_string(&runs_log) {
+                    prior = text
+                        .lines()
+                        .filter_map(|line| serde_json::from_str::<RunReport>(line).ok())
+                        .filter(|run| run.runtime == runtime && run.mode == mode && run.minutes >= minutes - 0.01)
+                        .collect();
+                }
+            } else {
+                let _ = std::fs::remove_file(&runs_log);
+            }
             let mut queue = Vec::new();
             for r in &resolved {
                 for seed in &seed_list {
+                    if prior.iter().any(|run| run.checkpoint == r.id && run.seed == *seed) {
+                        continue;
+                    }
                     queue.push(Job { id: r.id.clone(), path: r.path.clone(), seed: *seed });
                 }
+            }
+            if !prior.is_empty() {
+                eprintln!("scorecard: resuming with {} finished runs, {} to go", prior.len(), queue.len());
             }
             let child = ChildArgs {
                 runtime: runtime.clone(),
@@ -304,8 +331,13 @@ fn real_main() -> Result<()> {
                 };
                 eprintln!("{line}");
                 note(&progress, &line);
+                if let Ok(run) = outcome
+                    && let Ok(text) = serde_json::to_string(run)
+                {
+                    note(&runs_log, &text);
+                }
             });
-            let mut runs = Vec::new();
+            let mut runs = prior;
             let mut failed_runs = Vec::new();
             for outcome in outcomes {
                 match outcome {
@@ -313,6 +345,9 @@ fn real_main() -> Result<()> {
                     Err(failed) => failed_runs.push(failed),
                 }
             }
+            let order: BTreeMap<&str, usize> =
+                resolved.iter().enumerate().map(|(i, r)| (r.id.as_str(), i)).collect();
+            runs.sort_by_key(|run| (order.get(run.checkpoint.as_str()).copied().unwrap_or(usize::MAX), run.seed));
             let suite = SuiteReport {
                 schema: SCHEMA.to_owned(),
                 label,

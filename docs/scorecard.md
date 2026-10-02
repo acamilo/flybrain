@@ -94,14 +94,16 @@ minute are reported, never judged: healing more can follow losing more.
 
 ## Cost and size
 
-On the ten-core build box a session run costs about 15 to 20 wall seconds per brain minute of
-throughput, whatever the split: one job of five threads, two of four and three of three were
-within 20% of each other (two jobs of four threads was best, and is the default; the legacy loop
-is about a quarter faster). The default suite, twelve checkpoints by three seeds by ten brain
-minutes, is 360 brain minutes: about an hour and a half on a quiet box. The box is shared: a
-compile storm beside it triples the wall time and changes no number. More seeds tighten the
-test; longer runs let rungs climb. Three seeds is the smallest suite whose pair count (36) can
-reach p < 0.001.
+A run's brain minute costs about 75 CPU seconds however it is split, and the result does not
+depend on the thread count (the same seed gives an identical report at one thread and at four).
+The split matters for wall time, because a run's sweep pool spins at its barriers: on a quiet
+ten-core box two jobs of four threads are fine, but on a box shared with compiles and tests one
+job of four threads ran five times slower per brain minute than one-thread jobs did. So the
+default is one thread per run and eight runs at a time. The default suite, twelve checkpoints by
+three seeds by ten brain minutes, is 360 brain minutes: about three quarters of an hour of ten
+quiet cores, about twice that when the box is busy. More seeds tighten the test; longer runs let
+rungs climb. Three seeds is the smallest suite whose pair count (36) can reach p < 0.001.
+`--resume` keeps the runs an interrupted suite had finished (`<out>.runs.jsonl`).
 
 ## What it does not do
 
