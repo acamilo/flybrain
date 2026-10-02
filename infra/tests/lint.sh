@@ -1720,6 +1720,26 @@ else
     fail "fly-feed status wrong: $ff_out"
 fi
 
+# `fly-feed status | head -1` (a human reading a single line) closes stdout after the first
+# line. Subsequent writes would fail with EPIPE; bash's builtins report "write error:
+# Broken pipe" to stderr even with `trap '' PIPE`, so fly-feed routes every status_report
+# write through a helper that exits 0 on the first EPIPE. The test runs the real fly-feed
+# under the same stubbed state, captures fly-feed's stderr to a file, and asserts that
+# nothing is written there. The test's stdout is not the script's stdout (it goes to a
+# pipe closed by head -1), so suppress the SC2260 "this redirection overrides the
+# output pipe" warning: the override is the point of the test.
+ff_reset direct direct
+FF_ARGS=(status)
+: > /tmp/ff-status-pipe.err
+# shellcheck disable=SC2260
+fly_feed 2>/tmp/ff-status-pipe.err >/dev/null | head -1 || true
+if [ ! -s /tmp/ff-status-pipe.err ]; then
+    pass "fly-feed status | head -1: nothing written to stderr on a closed stdout"
+else
+    fail "fly-feed status | head -1 wrote to stderr: $(cat /tmp/ff-status-pipe.err)"
+fi
+rm -f /tmp/ff-status-pipe.err
+
 ff_reset direct direct
 FF_ARGS=(bus)
 if fly_feed && [ "$(grep -c '^FLY_FEED_VIA=' "$ff_env")" = 1 ] && grep -qx 'FLY_FEED_VIA=bus' "$ff_env" \

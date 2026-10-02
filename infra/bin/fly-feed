@@ -129,6 +129,15 @@ page_on_feed() {
 page_unit_active() { systemctl is-active --quiet "$FLY_PAGE_SERVICE" 2>/dev/null; }
 
 old_invocation=""
+# Print to stdout, exiting quietly if the pipe is closed (e.g. `fly-feed status | head -1`).
+# bash's builtins report "write error: Broken pipe" on a failed write even with `trap '' PIPE`,
+# so we check the write result ourselves and exit 0 on EPIPE: the reader is gone, nothing
+# useful is left to do, and `set -e` must not trip on the failing printf.
+say() {
+    if ! printf '%s\n' "$*"; then
+        exit 0
+    fi
+}
 # Wait for a NEW flysim invocation to be healthy and the feed to be flowing in `via` mode.
 healthy() {
     local via="$1" deadline
@@ -195,24 +204,24 @@ status_report() {
     local conf run edge_state url
     conf="$(configured)"
     run="$(running)"
-    echo "configured: ${conf}"
-    echo "running:    ${run}"
+    say "configured: ${conf}"
+    say "running:    ${run}"
     if [ "$run" != stopped ] && [ "$run" != unknown ] && [ "$conf" != "$run" ] && [[ "$conf" != invalid:* ]]; then
-        echo "  fly.env and the running flysim disagree: the next start of ${FLY_SERVICE} applies ${conf} (fly-feed ${conf} does it now)"
+        say "  fly.env and the running flysim disagree: the next start of ${FLY_SERVICE} applies ${conf} (fly-feed ${conf} does it now)"
     fi
     edge_state="$(systemctl is-active "$FLY_EDGE_SERVICE" 2>/dev/null || true)"
-    echo "${FLY_EDGE_SERVICE}: ${edge_state:-unknown}"
+    say "${FLY_EDGE_SERVICE}: ${edge_state:-unknown}"
     url="$(metrics_url "$run")"
     if [ "$run" = bus ]; then
         if curl -fsS -o /dev/null --max-time 5 "${FLY_EDGE_METRICS_URL}/healthz" 2>/dev/null; then
-            echo "edge healthz: ok"
+            say "edge healthz: ok"
         else
-            echo "edge healthz: NOT OK ($(curl -sS --max-time 5 "${FLY_EDGE_METRICS_URL}/healthz" 2>&1 | head -c 100))"
+            say "edge healthz: NOT OK ($(curl -sS --max-time 5 "${FLY_EDGE_METRICS_URL}/healthz" 2>&1 | head -c 100))"
         fi
-        echo "edge snapshot age: $(metric "$url" fly_edge_snapshot_age_seconds) s; bus lost: $(metric "$url" fly_edge_bus_lost_total); bind failures: $(metric "$url" fly_edge_bind_failures_total); decode failures: $(metric "$url" fly_edge_decode_failures_total)"
+        say "edge snapshot age: $(metric "$url" fly_edge_snapshot_age_seconds) s; bus lost: $(metric "$url" fly_edge_bus_lost_total); bind failures: $(metric "$url" fly_edge_bind_failures_total); decode failures: $(metric "$url" fly_edge_decode_failures_total)"
     fi
-    echo "feed clients: $(metric "$url" fly_feed_clients) (counters of the ${run} server); frames sent: $(metric "$url" fly_frames_sent_total)"
-    if [ -f "$FEED_LOG" ]; then echo "last switch: $(tail -n1 "$FEED_LOG")"; fi
+    say "feed clients: $(metric "$url" fly_feed_clients) (counters of the ${run} server); frames sent: $(metric "$url" fly_frames_sent_total)"
+    if [ -f "$FEED_LOG" ]; then say "last switch: $(tail -n1 "$FEED_LOG")"; fi
 }
 
 [ $# -ge 1 ] || usage
