@@ -186,6 +186,14 @@ let kept = frame.retain().await?;              // an independent explicit hold
 - Sealing copies staging into a fresh read-only (0444) file and unlinks staging. A descriptor
   the producer kept or duplicated afterwards writes only to the unlinked staging inode. Sealing
   therefore needs quota for both copies while it runs.
+- **Sealing sends** (bus-v1 section 12, amendment 2026-10-02). `writer.into_unsealed()` ends
+  writing and returns an `Unsealed` whose `artifact()` is the handle the sealed artifact will have
+  (its first `written()` bytes, on the hold the writer becomes). Attach that handle to
+  `responder.reply_sealing(outcome, attachments, unsealed, recycle)`: the router seals it as it
+  admits the reply, with no `artifact.seal` round trip, and with `recycle` hands each staging
+  allocation back as a fresh writer (`SealedReply::writers`), with no `artifact.allocate` either.
+  The handle is valid once the reply is admitted. The router accepts sealing attachments on
+  `rpc.call` and `publish` too; the SDK exposes them for replies.
 
 ### Errors
 
@@ -332,6 +340,13 @@ before admission are `not-dispatched`. A command in flight when the connection i
     `rpc.request`, `rpc.result` or `topic.message` delivery carries `readLocation`, the location
     `artifact.open` would return under that delivery's ownership; a client attachment that carries
     one is refused as an unknown field. `wire::CONTRACT` (and so `contractDigest`) says so.
+12. **Sealing sends** (amendment 2026-10-02, BUS-02). An `rpc.call`, `rpc.reply` or `publish`
+    attachment may name the sender's own unsealed writer (`ref.byteLength` at most its
+    allocation, digest null); the router seals that prefix before admitting the command and the
+    writer becomes the sender's hold. A body `recycle: true` reissues each sealed writer's
+    staging file as a new writer, listed in the reply value's `writers`. A refused sealing send
+    releases every writer it named. The SDK no longer sends `rpc.responder.release` after a
+    reply the router admitted (it was a no-op). `wire::CONTRACT` says so.
 
 ## Limitations
 
@@ -369,6 +384,8 @@ before admission are `not-dispatched`. A command in flight when the connection i
 cargo test -p flybus                                              # unit + integration
 cargo test --release -p flybus --test perf -- --ignored --nocapture  # the measurement above
 cargo run -p flybus --example demo                                # counter RPC, observer, held frame
+cargo run --release -p flybus --example rtt -- --spawned [--reply-artifact 92160 --read --sealing]
+                                                                  # one RPC round trip's latency
 ```
 
 Every integration test runs twice, once over the in-memory transport and once over a Unix
@@ -391,6 +408,10 @@ socket, through the same router code:
   fan-out and collected after the last consumer; extracted artifacts and holds; atomic
   admission; release watermarks; connection-scoped owners; abandoned futures; disconnects; and
   router restarts.
+- `tests/sealing.rs`: sealing sends (amendment 2026-10-02): a reply that seals a writer's
+  written prefix and recycles its allocation three times over one staging file, the caller's
+  and the responder's handles reading the same bytes; refusals before and after the seal that
+  release every writer named; `recycle` validation; a recycled writer sealing normally.
 - `tests/integration.rs`: two agents called in parallel with a forwarded frame, an environment
   service, committed snapshot publication, a slow latest consumer and a bounded recorder.
 - `tests/bus_acceptance.rs`: the implementation guide's BUS-01/02/03 acceptance bullets that the
