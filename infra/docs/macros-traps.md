@@ -3736,3 +3736,62 @@ Trap hunt, 10 brain minutes with the real connectome from the trap checkpoint:
 The watchdog and the ladder flagged the trap correctly. The restart could not help, because the
 trap is in the game state and the hot checkpoint is inside it (row 70's lesson again). Only a reset
 or the fix ends it.
+
+## 2026-10-02, row 73: Route 25 and Bill's house, a PC no macro could press, and Cerulean's south
+
+### What was live
+
+v0.7.5, rung 15 (NUGGET BRIDGE), Route 24/25. After row 71's battle trap was fixed the fly kept a
+busy ring with no progress: `GO ROUTE` into Bill's house (`$58`, door (45, 3)), `GO OBJECTIVE` or
+`GO OUT` straight back out. Scout B3 measured it from the live checkpoint: on six seeds (2.8
+brain hours) the pad in the house was always `GO OBJECTIVE, GO OUT, GO NPC, GO FRONTIER`, `GO OUT`
+16-51 and `GO OBJECTIVE` 16-60 starts per ten brain minutes, `GO NPC` 0 in about 600 starts, and
+new tiles 2527 to 2531 in 35 minutes. Rung 16 was never earned.
+
+### Mechanism
+
+- **Rung 16's place was the route.** `RUNG_PLACES[16]` was `at(ROUTE_25)`. A fly on Route 25 was
+  already there, so in the house `GO OBJECTIVE` was an exit into the objective's map: the same
+  door as `GO OUT`.
+- **The errand's middle step was unpressable.** The ticket is Bill's errand
+  (`scripts/BillsHouse.asm`): talk to Bill as a Pokémon, press the cell separator's PC at (1, 4)
+  facing up, talk to Bill when he steps out. The PC is a hidden event (`wNumSigns` 0, one sprite),
+  and no macro aimed at hidden events or dealt `TALK` in front of one. Scout B3 confirmed the
+  press on the cartridge by hand.
+- **After the ticket, the town is two pieces.** Cerulean's town ground ends at row 28; Route 5 is
+  on the ground behind the trashed house (`$3e`), in by its front door and out by the hole in its
+  back wall. The house was off the map graph, so `GO OBJECTIVE` toward Vermilion ended `blocked`
+  at (17, 28) and the fly rang between the town and its houses (scout: 0 of 6 seeds past row 28 in
+  43 brain minutes each, from a carry-forward made by scripted presses).
+
+| # | trap | trigger | test | fix, or why it is left |
+| --- | --- | --- | --- | --- |
+| 73 | rung 16's place was Route 25, so inside Bill's house `GO OBJECTIVE` and `GO OUT` were both the door; the errand's PC is a hidden event no macro could press; after the ticket, Cerulean's south was off the graph | rung 15 on Route 25 (live), and any fly with the ticket in Cerulean | `an_errand_is_its_people_first_and_the_room_is_not_left_while_one_is_waiting`, `a_hidden_event_is_the_errands_next_step_once_no_person_is_left_and_it_is_faced_from_its_side`, `a_hidden_event_is_nobody_elses_target`, `the_road_south_out_of_cerulean_is_through_the_trashed_house`; `row73_*` in `rom_macros_mode.rs` (`FLY_ROW73_DOOR_CHECKPOINT`, `FLY_ROW73_PC_CHECKPOINT`, `FLY_ROW71_CHECKPOINT`, `FLY_ROW73_SOUTH_CHECKPOINT`, `FLY_ROW73_TRASHED_CHECKPOINT`, `FLY_ROW73_TICKET_CHECKPOINT`) | **fixed**: rung 16 is `errand(BILLS_HOUSE)`, people then things; hidden events read from the cartridge's own table (`$11:$6A40`/`$6A96`), only ever as the errand's next step, faced from the side the entry names (`docs/design/macros.md` 12.35, `macros-wram.md` 17); Cerulean's third piece and the trashed house on the graph |
+| 73a | the road from Route 5 to Vermilion is plain map edges through Saffron, whose gates are guarded until the drink; the Underground Path's houses are off the graph | a fly on Route 5 with rung 17 next | none yet | **left**: predicted, not reached by the scout; the branch hunt's flies reach Route 5's gate (`$46`) and the Underground Path house (`$47`). Needs its own checkpoint and row |
+
+| test (stub rotation) | 74a3c12 | branch |
+| --- | --- | --- |
+| `row73_the_fly_earns_the_ss_ticket_from_inside_the_ring_at_bills_door` | no ticket in 36,000 frames, out of the house and the Route 24/25 ring. **Fails** | ticket at 4,743 frames, never out of the house. Passes |
+| `row73_the_cell_separator_pc_is_pressed_and_bill_hands_over_the_ticket` | no ticket in 36,000 frames. **Fails** | ticket at 2,116 frames. Passes |
+| `row73_the_fly_walks_from_the_live_route_25_checkpoint_to_the_ss_ticket` | no ticket in 216,000 frames (60 brain minutes), 1,019 times into the house and 1,019 out. **Fails** | ticket at 9,876 frames. Passes |
+| `row73_the_objective_south_of_cerulean_is_the_trashed_houses_two_doors` | aims at the town's bottom row (unreachable). **Fails** | the house's front door, then the hole in its back wall. Passes |
+| `row73_the_fly_takes_the_trashed_house_south_to_route_5` | trashed house 54,442; ticket carry-forward not in 48,000 (63,880). **Fails** | 52,081 and 27,067. Passes |
+| `row73_the_hidden_event_table_is_the_cartridges_and_bills_pc_is_in_it` | does not compile (new seam) | passes |
+
+Trap hunt, real connectome, 15 brain minutes per seed, six seeds per arm. The palette seed does not
+make runs differ (row 68), so the seeds are the game run 0, 7, 19, 41, 97 and 211 frames ahead of
+the brain before the first hold (scout B3's `FLY_TRAP_AHEAD`, a scratch patch, not committed):
+
+| from | arm | rung 16 | distinct (map, tile) | Bill's-house ring (`GO ROUTE` / `GO OUT` / `GO OBJECTIVE` at net 0) | reached Route 5 |
+| --- | --- | --- | --- | --- | --- |
+| live row-71 checkpoint (rung 15, Route 25) | 74a3c12 | 0 of 6 | 83-105 | 36-47 / 18-22 / 18-27 per seed | 0 of 6 |
+| live row-71 checkpoint | branch | **6 of 6**, at 2.0-2.3 brain minutes | 200-517 | 2-24 / 3-30 / none at net 0 (the walks go somewhere) | 3 of 6 inside the 15 minutes |
+| ticket carry-forward (rung 16, Bill's house) | 74a3c12 | (has it) | 328-400 | -- | 0 of 6 (ends in the town, the bike shop or the centre) |
+| ticket carry-forward | branch | (has it) | 273-439 | -- | **5 of 6**; four of them on into Route 5's gate (`$46`) or the Underground Path house (`$47`) |
+
+The two-minute window flags do not measure this trap: the ring crosses more than four tiles, so
+the base arm flags only the opening battle text (1 of 53), and the branch arm's flags (28-49 of 53)
+are `NEXT` runs inside long battles it now reaches -- the Rocket in the yard behind the trashed
+house and Route 24/5 trainers (one battle 23,954 frames and 462 macros; the base's ticket seed 19
+has the same 17,235-frame battle). Every one ended; none is a ring. Route 5 is counted from the
+hunt's text-box maps and its final map, so it is a floor.
