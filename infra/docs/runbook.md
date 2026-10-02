@@ -518,6 +518,26 @@ pct exec $CTID -- /opt/fly/bin/fly-runtime legacy     # the one-command rollback
   (flysim's limits, cpuset and environment; `Conflicts=flysim.service`; no `[Install]`, so it
   cannot be enabled). It is for a rehearsal or a soak on a container whose `flysim.service` is
   stopped, not for switching the stream.
+- **The session on the bus (BUS-01).** `fly-runtime session --bus` (or `session-bus`) runs the
+  session's participants on the flybus router over Unix sockets: `flysim-session` (the router, the
+  coordinator, the listeners) starts `fly-session legacy-agent` and `fly-session legacy-environment`
+  as children of the same unit, in `flysim.slice`, on flysim's CPUs. The drop-in gains
+  `Environment=FLY_SESSION_TRANSPORT=bus`; `fly-runtime status` prints `session` and then
+  `  transport: bus`. `fly-runtime session` without a flag (05-deploy's refresh) keeps the transport
+  the drop-in has; `fly-runtime session --local` goes back to the in-process lane, and
+  `fly-runtime legacy` to legacy. The fallback, the probation, the watchdog and the unstick rule's
+  restart are the same on either transport: one unit, restarted as a whole, children included
+  (`ps -o pid,args --ppid $(systemctl show -p MainPID --value flysim)` lists them). A deploy
+  refuses a release without `fly-session` while the drop-in says `bus`. **Before switching onto the
+  bus, run a shadow of it** (Shadow run below): with the live fly on legacy (`fly-runtime legacy`),
+  `fly-shadow-run start --bus`, three hours, then `fly-shadow-run check --bus && fly-runtime
+  session --bus`. Watch `fly_frame_work_mean_ms` and `fly_frame_work_p99_ms` on `/metrics` (the
+  loop's compute time per frame, without its pacing sleep, over the last 3,600 frames; the budget
+  at real time is 16.74 ms): they show the headroom that a realtime factor of 1.0 hides.
+- **Per-frame compute time, both runtimes.** `/metrics` exports `fly_frame_work_mean_ms`,
+  `fly_frame_work_p99_ms`, `fly_frame_work_max_ms` and `fly_frame_work_frames` for the legacy loop
+  and the session runtime alike: everything one running iteration does except the pacing sleep.
+  Headroom is `1 - mean / 16.74` at real time.
 
 ## Shadow run (SHADOW-01)
 
@@ -532,6 +552,12 @@ pct exec <ctid> -- /opt/fly/bin/fly-shadow-run status    # the verdict, the rela
 pct exec <ctid> -- /opt/fly/bin/fly-shadow-run check     # CUT-01's hook: exit 0 = cutover allowed
 pct exec <ctid> -- /opt/fly/bin/fly-shadow-run stop --restart-flysim   # shadow, guard and trace off
 ```
+
+- **A shadow of the bus topology (BUS-01).** `start --bus` runs the box's shadow session with its
+  agent and world as child processes on its router's sockets (`FLY_SHADOW_MODE=bus/process`, which
+  the relay forwards); `check --bus` also requires that the verdict ran that topology
+  (`candidate.transport` `bus`, `executionMode` `process`). The live fly must be on the legacy
+  runtime for any shadow: only the legacy loop writes the trace, and `start` refuses otherwise.
 
 - **Where it runs (SHADOW-02).** On a build box, not on the release container: there it cost the
   live fly real time (2026-09-30: the realtime factor fell from 0.9998 to 0.93-0.98 and came back

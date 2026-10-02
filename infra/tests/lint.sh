@@ -818,7 +818,60 @@ rs_start "no remote file (the shadow runs on a build box; --local to override)" 
 rs_start "a remote file without its key" "FLY_SHADOW_REMOTE=user@box
 FLY_SHADOW_REMOTE_KEY=$cs_tmp/missing-key
 FLY_SHADOW_REMOTE_KNOWN_HOSTS=$cs_tmp/missing-known"
+# BUS-01: only the legacy loop writes the trace, so `start` refuses while flysim.service runs the
+# session runtime; `--bus` needs the release's fly-session worker beside fly-shadow.
+bs_start() { # name, expect (refuse|proceed), runtime drop-in (yes|no), worker (yes|no), args...
+    local name="$1" expect="$2" rt="$3" worker="$4" rc=0 out
+    shift 4
+    : > "$cs_tmp/systemctl.log"
+    rm -f "$cs_tmp/10-runtime.conf" "$cs_tmp/fly-session"
+    [ "$rt" = yes ] && printf '[Service]\nExecStart=/opt/fly/current/flysim-session\n' > "$cs_tmp/10-runtime.conf"
+    [ "$worker" = yes ] && { printf '#!/bin/sh\nexit 0\n' > "$cs_tmp/fly-session"; chmod +x "$cs_tmp/fly-session"; }
+    out="$(PATH="$cs_tmp/bin:$PATH" CS_DIR="$cs_tmp" CS_SHADOW_CPUS="0 2" CS_SIM_CPUS="1 3" \
+        FLY_SHADOW_DIR="$cs_tmp/shadow" FLY_SHADOW_BIN="$cs_tmp/fly-shadow" \
+        FLY_SHADOW_CPUSET_DROPIN="$cs_tmp/dropin.conf" FLY_SHADOW_REMOTE_ENV="$cs_tmp/no-remote.env" \
+        FLY_SHADOW_REMOTE_DROPIN_DIR="$cs_tmp/flyshadow.d" FLY_RUNTIME_DROPIN="$cs_tmp/10-runtime.conf" \
+        FLY_SHADOW_BASELINE_SECONDS=30 FLY_METRICS_URL=http://127.0.0.1:1 \
+        "$INFRA_DIR/bin/fly-shadow-run" start "$@" 2>&1)" || rc=$?
+    case "$expect" in
+        refuse)
+            if [ "$rc" -ne 0 ] && ! grep -qE '^(start|restart|daemon-reload)' "$cs_tmp/systemctl.log" \
+                && [ ! -e "$cs_tmp/flyshadow.d/mode.conf" ]; then
+                pass "fly-shadow-run start refuses, $name: ${out#fly-shadow-run: }"
+            else
+                fail "fly-shadow-run start must refuse and start nothing, $name (rc=$rc): $out"
+            fi ;;
+        proceed)
+            if echo "$out" | grep -q 'stub install reached'; then
+                pass "fly-shadow-run start proceeds, $name"
+            else
+                fail "fly-shadow-run start must proceed, $name (rc=$rc): $out"
+            fi ;;
+    esac
+}
+bs_start "the live fly on the session runtime (no trace to follow)" refuse yes yes --local
+bs_start "--bus without fly-session in the release" refuse no no --local --bus
+bs_start "--bus with fly-session, live on legacy" proceed no yes --local --bus
 rm -rf "$cs_tmp"
+# BUS-01: `check --bus` asks fly-shadow for a verdict that ran the bus topology.
+if command -v python3 >/dev/null 2>&1; then
+    cb_tmp="$(mktemp -d "${TMPDIR:-/tmp}/fly-lint-checkbus.XXXXXX")"
+    mkdir -p "$cb_tmp/bin" "$cb_tmp/shadow"
+    printf '#!/bin/sh\ncase "$1" in is-active) exit 0 ;; esac\nexit 0\n' > "$cb_tmp/bin/systemctl"
+    printf '#!/bin/sh\necho "$*" > "%s/args"\n' "$cb_tmp" > "$cb_tmp/fly-shadow"
+    chmod +x "$cb_tmp/bin/systemctl" "$cb_tmp/fly-shadow"
+    printf '{"rtfMean":1,"rtfSd":0,"lagRate":0,"samples":60,"margin":0.05}\n' > "$cb_tmp/shadow/baseline.json"
+    printf '{"status":"pass"}\n' > "$cb_tmp/shadow/verdict.json"
+    PATH="$cb_tmp/bin:$PATH" FLY_SHADOW_DIR="$cb_tmp/shadow" FLY_SHADOW_BIN="$cb_tmp/fly-shadow" \
+        FLY_SHADOW_REMOTE_DROPIN_DIR="$cb_tmp/none.d" FLY_ENV_FILE="$cb_tmp/none.env" \
+        "$INFRA_DIR/bin/fly-shadow-run" check --bus >/dev/null 2>&1 || true
+    if grep -q -- '--binary flysim-session --require-arm bus/process$' "$cb_tmp/args" 2>/dev/null; then
+        pass "fly-shadow-run check --bus requires a verdict that ran bus/process (fly-shadow check --require-arm)"
+    else
+        fail "fly-shadow-run check --bus must pass --require-arm bus/process to fly-shadow check ($(cat "$cb_tmp/args" 2>/dev/null))"
+    fi
+    rm -rf "$cb_tmp"
+fi
 # SHADOW-02: `check` in remote mode also needs the relay healthy now (relay.json under a minute
 # old), of this run (the drop-in's id, the verdict's too), without coverageLost (review B1: flysim
 # stopped its trace for want of a consumer) and with a live trace written in the last 90 s.
@@ -1088,6 +1141,50 @@ if fly_runtime && [ ! -f "$rt_dropin" ]; then
 else
     fail "fly-runtime legacy must remove the drop-in and succeed"
 fi
+# BUS-01: the bus transport. `session-bus` (= `session --bus`) adds FLY_SESSION_TRANSPORT=bus to
+# the drop-in and needs the release's fly-session worker; a flag-less `session` (05-deploy's
+# refresh) keeps the transport; `session --local` is the way back; status says which.
+rt_status() { env RT_DIR="$rt_dir" PATH="$rt_dir/bin:$PATH" FLY_SYSTEMD_DIR="$rt_dir/systemd" bash "$INFRA_DIR/bin/fly-runtime" status 2>/dev/null; }
+RT_ARGS=(session-bus)
+if ! fly_runtime && [ ! -f "$rt_dropin" ]; then
+    pass "fly-runtime session-bus refuses a release without the fly-session worker"
+else
+    fail "fly-runtime session-bus must refuse without \$FLY_RELEASE_DIR/fly-session and write nothing"
+fi
+printf '#!/usr/bin/env bash\nexit 0\n' > "$rt_dir/release/fly-session"
+chmod +x "$rt_dir/release/fly-session"
+if fly_runtime && grep -qx 'Environment=FLY_SESSION_TRANSPORT=bus' "$rt_dropin" \
+    && grep -qx "ExecStart=$rt_dir/release/flysim-session" "$rt_dropin" \
+    && grep -qx 'OnFailure=fly-runtime-fallback.service' "$rt_dropin" \
+    && [ "$(rt_status | head -n1)" = session ] \
+    && rt_status | grep -qx '  transport: bus' \
+    && tail -n1 "$rt_dir/runtime.log" | grep -q 'session-bus (was legacy)'; then
+    pass "fly-runtime session-bus: the drop-in adds FLY_SESSION_TRANSPORT=bus (fallback and probation unchanged); status: session, transport bus"
+else
+    fail "fly-runtime session-bus: drop-in/status/log wrong ($(tr '\n' ' ' < "$rt_dropin" 2>/dev/null); $(tail -n1 "$rt_dir/runtime.log"))"
+fi
+RT_ARGS=(session --no-restart)
+if fly_runtime && grep -qx 'Environment=FLY_SESSION_TRANSPORT=bus' "$rt_dropin"; then
+    pass "fly-runtime session --no-restart (05-deploy's refresh) keeps the bus transport"
+else
+    fail "fly-runtime session --no-restart must keep the drop-in's transport"
+fi
+RT_ARGS=(session --local)
+if fly_runtime && [ -f "$rt_dropin" ] && ! grep -q 'FLY_SESSION_TRANSPORT' "$rt_dropin" \
+    && rt_status | grep -qx '  transport: local' \
+    && tail -n1 "$rt_dir/runtime.log" | grep -q 'session (was session-bus)'; then
+    pass "fly-runtime session --local takes the session off the bus (status: transport local)"
+else
+    fail "fly-runtime session --local must drop FLY_SESSION_TRANSPORT from the drop-in"
+fi
+RT_ARGS=(legacy --bus)
+if ! fly_runtime && [ -f "$rt_dropin" ]; then
+    pass "fly-runtime legacy --bus is refused (usage)"
+else
+    fail "fly-runtime legacy --bus must be refused"
+fi
+rm -f "$rt_dir/release/fly-session"
+RT_ARGS=(legacy); fly_runtime || fail "fly-runtime legacy after the bus tests failed"
 RT_ARGS=(session)
 if ! fly_runtime RT_COMPAT_FLYSIM_SESSION=other && [ ! -f "$rt_dropin" ]; then
     pass "fly-runtime session refuses when the two compatibility strings differ"

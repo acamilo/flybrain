@@ -442,12 +442,21 @@ fn dedup(serials: Vec<u64>) -> Vec<u64> {
     serials.into_iter().filter(|s| seen.insert(*s)).collect()
 }
 
+/// A delivery's attachments, each with the read location its delivery ownership grants
+/// (bus-v1 section 12 amendment 2026-10-01): every attachment the router admitted is a sealed
+/// artifact of this store, read at its sealed path.
 fn attachments_with_owner(list: &[(String, ArtifactRef)], owner: &str) -> Vec<Attachment> {
     list.iter()
         .map(|(name, r)| Attachment {
             name: name.clone(),
             reference: r.clone(),
             owner_id: owner.to_owned(),
+            read_location: crate::wire::parse_serial_id("a", &r.artifact_id).map(|serial| {
+                crate::wire::Location {
+                    store_id: r.store_id.clone(),
+                    relative_path: sealed_rel(serial),
+                }
+            }),
         })
         .collect()
 }
@@ -458,10 +467,18 @@ fn frame_len(
     body: Map<String, Value>,
     attachments: Vec<Attachment>,
 ) -> usize {
-    let mut env = Envelope::new(serial_id("bus", MAX_SERIAL), kind, op, body);
-    env.attachments = attachments;
-    serde_json::to_vec(&env.to_value())
+    let id = serial_id("bus", MAX_SERIAL);
+    let head = crate::wire::EnvelopeHead {
+        major: crate::wire::MAJOR,
+        minor: crate::wire::MINOR,
+        id: &id,
+        reply_to: None,
+        kind,
+        op,
+    };
+    crate::wire::encode_parts(&head, &body, &attachments)
         .map(|b| b.len())
+        // Over the limit or unencodable: the caller refuses it either way.
         .unwrap_or(usize::MAX)
 }
 

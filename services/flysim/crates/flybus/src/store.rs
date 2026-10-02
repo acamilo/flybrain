@@ -32,6 +32,11 @@ pub(crate) fn staging_rel(serial: u64) -> String {
     format!("staging/a-{serial}")
 }
 
+/// Store file operations up to this size run in place on the async thread rather than on the
+/// blocking pool: creating or sealing a staging file, and reading a sealed one whole. The store is
+/// meant to be tmpfs, where such a copy takes microseconds and the pool hop costs more (BUS-01).
+pub const INLINE_IO_BYTES: u64 = 256 * 1024;
+
 pub(crate) fn sealed_rel(serial: u64) -> String {
     format!("sealed/a-{serial}")
 }

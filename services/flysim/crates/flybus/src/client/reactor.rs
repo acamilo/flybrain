@@ -20,7 +20,8 @@ use tokio::sync::{Notify, mpsc, oneshot, watch};
 
 use super::SessionInfo;
 use super::handles::{
-    CallGuard, Message, OwnerGuard, ReplyGuard, Request, RpcResult, ServiceGuard, SubscriptionGuard,
+    CallGuard, Delivered, Message, OwnerGuard, ReplyGuard, Request, RpcResult, ServiceGuard,
+    SubscriptionGuard,
 };
 use crate::error::{BusError, Dispatch, ErrorCode};
 use crate::transport::Transport;
@@ -388,9 +389,16 @@ fn next_outgoing(shared: &Shared) -> Next {
     };
     st.next_msg += 1;
     let n = st.next_msg;
-    let mut env = Envelope::new(serial_id("msg", n), Kind::Command, cmd.op, cmd.body.clone());
-    env.attachments = cmd.attachments.clone();
-    match env.encode() {
+    let id = serial_id("msg", n);
+    let head = crate::wire::EnvelopeHead {
+        major: crate::wire::MAJOR,
+        minor: crate::wire::MINOR,
+        id: &id,
+        reply_to: None,
+        kind: Kind::Command,
+        op: cmd.op,
+    };
+    match crate::wire::encode_parts(&head, &cmd.body, &cmd.attachments) {
         Ok(bytes) => {
             st.pending.insert(
                 n,
@@ -786,7 +794,7 @@ fn complete(
     Ok(())
 }
 
-fn attachments(env: &Envelope, delivery_id: &str) -> Result<Vec<(String, ArtifactRef)>, WireError> {
+fn attachments(env: &Envelope, delivery_id: &str) -> Result<Vec<Delivered>, WireError> {
     env.attachments
         .iter()
         .map(|a| {
@@ -795,7 +803,20 @@ fn attachments(env: &Envelope, delivery_id: &str) -> Result<Vec<(String, Artifac
                     "delivery attachment owner is not the delivery".into(),
                 ));
             }
-            Ok((a.name.clone(), a.reference.clone()))
+            if a
+                .read_location
+                .as_ref()
+                .is_some_and(|loc| loc.store_id != a.reference.store_id)
+            {
+                return Err(WireError(
+                    "delivery attachment read location names another store".into(),
+                ));
+            }
+            Ok(Delivered {
+                name: a.name.clone(),
+                reference: a.reference.clone(),
+                location: a.read_location.clone().map(Arc::new),
+            })
         })
         .collect()
 }

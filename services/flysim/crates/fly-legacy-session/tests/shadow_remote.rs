@@ -182,6 +182,7 @@ fn box_shadow(rom: &Path, root: &Path) -> ShadowConfig {
         // The live service's loop.speed (real time), which its saves record.
         speed: 1.0,
         mode: ExecutionMode::InProcess,
+        transport: Default::default(),
         agent_threads: 1,
         required_brain_seconds: 20.0,
         all_files: false,

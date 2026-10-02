@@ -52,22 +52,29 @@ pub(crate) fn attachment_list(
             name: (*name).to_owned(),
             reference: a.reference.as_ref().clone(),
             owner_id: owner.id.clone(),
+            read_location: None,
         });
         keep.push(owner.clone());
     }
     Ok((atts, keep))
 }
 
-fn find(
-    list: &[(String, ArtifactRef)],
-    guard: &Arc<OwnerGuard>,
-    name: &str,
-) -> Result<Artifact, BusError> {
+/// One attachment of a delivery, with the read location the router issued for it (bus-v1
+/// section 12 amendment 2026-10-01; `None` from a router that issues none).
+#[derive(Clone, Debug)]
+pub(crate) struct Delivered {
+    pub name: String,
+    pub reference: ArtifactRef,
+    pub location: Option<Arc<Location>>,
+}
+
+fn find(list: &[Delivered], guard: &Arc<OwnerGuard>, name: &str) -> Result<Artifact, BusError> {
     list.iter()
-        .find(|(n, _)| n == name)
-        .map(|(_, r)| Artifact {
-            reference: Arc::new(r.clone()),
+        .find(|d| d.name == name)
+        .map(|d| Artifact {
+            reference: Arc::new(d.reference.clone()),
             holder: Holder::Bus(guard.clone()),
+            location: d.location.clone(),
         })
         .ok_or_else(|| BusError::invalid(format!("no attachment named {name:?}")))
 }
@@ -88,6 +95,9 @@ fn find(
 pub struct Artifact {
     pub(crate) reference: Arc<ArtifactRef>,
     pub(crate) holder: Holder,
+    /// Where the bytes are, when the router said so in the delivery that granted this handle:
+    /// [`Artifact::open`] then needs no `artifact.open` round trip (BUS-01).
+    pub(crate) location: Option<Arc<Location>>,
 }
 
 /// What keeps an artifact's bytes alive.
@@ -129,6 +139,7 @@ impl Artifact {
                 digest: None,
             }),
             holder: Holder::Memory(bytes),
+            location: None,
         }
     }
 
@@ -154,12 +165,21 @@ impl Artifact {
         Ok(Artifact {
             reference: self.reference.clone(),
             holder: Holder::Memory(bytes.into()),
+            location: None,
         })
     }
 
     /// True for an [`Artifact::in_memory`] handle.
     pub fn is_in_memory(&self) -> bool {
         matches!(self.holder, Holder::Memory(_))
+    }
+
+    /// True when this handle's owner is an explicit hold of its own connection -- a sealed
+    /// writer or a [`Artifact::retain`] -- rather than a delivery. Keeping a clone of such a handle
+    /// keeps the bytes as long as a [`Artifact::retain`] would, and consumes no delivery credit,
+    /// so a holder that only needs the bytes to stay alive need not take another hold (BUS-01).
+    pub fn is_hold(&self) -> bool {
+        matches!(&self.holder, Holder::Bus(owner) if !owner.delivery)
     }
 
     /// The bytes of an in-memory artifact, without a copy; `None` for a sealed one.
@@ -190,20 +210,28 @@ impl Artifact {
                 });
             }
         };
-        let mut body = Map::new();
-        body.insert("ref".into(), self.reference.to_json());
-        body.insert("ownerId".into(), owner.id.clone().into());
         let shared = &owner.conn.shared;
-        let reply = shared
-            .command(
-                "artifact.open",
-                body,
-                Vec::new(),
-                vec![owner.clone()],
-                Hook::None,
-            )
-            .await?;
-        let loc = Location::from_json(Fields::of(&reply.value, "reply").value("readLocation")?)?;
+        // The delivery that granted this handle said where the bytes are (BUS-01); otherwise the
+        // router is asked. Either way the location is store-issued and resolved below the store
+        // root, and the owner this handle keeps holds the bytes while the file is open.
+        let loc = match &self.location {
+            Some(loc) => loc.as_ref().clone(),
+            None => {
+                let mut body = Map::new();
+                body.insert("ref".into(), self.reference.to_json());
+                body.insert("ownerId".into(), owner.id.clone().into());
+                let reply = shared
+                    .command(
+                        "artifact.open",
+                        body,
+                        Vec::new(),
+                        vec![owner.clone()],
+                        Hook::None,
+                    )
+                    .await?;
+                Location::from_json(Fields::of(&reply.value, "reply").value("readLocation")?)?
+            }
+        };
         if loc.store_id != self.reference.store_id {
             return Err(BusError::new(
                 ErrorCode::ArtifactGone,
@@ -229,12 +257,21 @@ impl Artifact {
         })
     }
 
-    /// Reads the whole artifact (on the blocking pool; an in-memory one is copied in place).
+    /// Reads the whole artifact: on the blocking pool, or in place up to
+    /// [`crate::store::INLINE_IO_BYTES`] (a tmpfs read of that size is cheaper than the pool hop);
+    /// an in-memory one is copied in place.
     pub async fn read_all(&self) -> Result<Vec<u8>, BusError> {
         if let Holder::Memory(bytes) = &self.holder {
             return Ok(bytes.to_vec());
         }
         let mut file = self.open().await?;
+        if file.len() <= crate::store::INLINE_IO_BYTES {
+            let mut out = Vec::with_capacity(file.len() as usize);
+            return file
+                .read_to_end(&mut out)
+                .map(|_| out)
+                .map_err(|e| BusError::new(ErrorCode::StoreFailure, e.to_string()));
+        }
         tokio::task::spawn_blocking(move || {
             let mut out = Vec::with_capacity(file.len() as usize);
             file.read_to_end(&mut out).map(|_| out)
@@ -268,6 +305,7 @@ impl Artifact {
             Extra::Owner(owner) => Ok(Artifact {
                 reference: self.reference.clone(),
                 holder: Holder::Bus(owner),
+                location: self.location.clone(),
             }),
             _ => Err(BusError::lost("retain reply without an owner")),
         }
@@ -365,6 +403,7 @@ impl ArtifactWriter {
         Ok(Artifact {
             reference: Arc::new(reference),
             holder: Holder::Bus(self.owner.clone()),
+            location: None,
         })
     }
 }
@@ -405,7 +444,7 @@ pub struct Message {
     pub(crate) topic_sequence: u64,
     pub(crate) replaced: u64,
     pub(crate) payload: Map<String, Value>,
-    pub(crate) attachments: Vec<(String, ArtifactRef)>,
+    pub(crate) attachments: Vec<Delivered>,
 }
 
 impl Message {
@@ -432,7 +471,7 @@ impl Message {
         &self.payload
     }
     pub fn attachment_names(&self) -> impl Iterator<Item = &str> {
-        self.attachments.iter().map(|(n, _)| n.as_str())
+        self.attachments.iter().map(|d| d.name.as_str())
     }
     /// An artifact handle sharing this delivery's guard.
     pub fn artifact(&self, name: &str) -> Result<Artifact, BusError> {
@@ -451,7 +490,7 @@ pub struct Request {
     pub(crate) service_incarnation: String,
     pub(crate) method: String,
     pub(crate) payload: Map<String, Value>,
-    pub(crate) attachments: Vec<(String, ArtifactRef)>,
+    pub(crate) attachments: Vec<Delivered>,
 }
 
 impl Request {
@@ -554,7 +593,7 @@ pub struct RpcResult {
     pub(crate) responder: Identity,
     pub(crate) service_incarnation: String,
     pub(crate) outcome: Map<String, Value>,
-    pub(crate) attachments: Vec<(String, ArtifactRef)>,
+    pub(crate) attachments: Vec<Delivered>,
 }
 
 impl RpcResult {

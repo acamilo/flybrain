@@ -413,6 +413,7 @@ async fn client_strictly_validates_hello_envelope() {
                         digest: None,
                     },
                     owner_id: "own-1".into(),
+                    read_location: None,
                 }),
                 _ => unreachable!(),
             }

@@ -160,6 +160,78 @@ pub struct HandlerCtx<'a> {
     pub request: &'a SessionRpcRequest,
     pub client: &'a flybus::Client,
     pub incoming: &'a Incoming,
+    /// Staging writers allocated ahead for the reply artifacts this worker seals every step.
+    pub(crate) writers: &'a WriterPool,
+}
+
+/// Staging writers allocated ahead of need (BUS-01). A bus worker seals the same shapes of reply
+/// artifact every step -- the environment a 92,160-byte frame, a 65,536-byte memory image and an
+/// audio chunk of one of two lengths, the agent a 17,407-byte spike bitset -- and allocating one
+/// is a router round trip on the step's critical path. The pool remembers the last few
+/// `(content type, length)` shapes [`HandlerCtx::seal`] asked for and, after each reply, allocates
+/// a writer for every remembered shape that has none, off the critical path. A seal that finds a
+/// ready writer of its exact shape writes and seals it; one that does not allocates as before. A
+/// writer is an artifact like any other: unsealed, it is released when dropped, and the bytes it
+/// seals are the bytes written, so nothing a caller sees depends on the pool.
+#[derive(Default)]
+pub struct WriterPool {
+    state: Mutex<PoolState>,
+}
+
+#[derive(Default)]
+struct PoolState {
+    /// The most recent distinct shapes, newest last.
+    recent: Vec<(String, u64)>,
+    ready: Vec<((String, u64), flybus::ArtifactWriter)>,
+    allocating: Vec<(String, u64)>,
+}
+
+/// Shapes the pool keeps writers for: an environment's three reply artifacts, with the audio
+/// chunk's two lengths, and an agent's one.
+const POOL_SHAPES: usize = 4;
+
+impl WriterPool {
+    fn take(&self, content_type: &str, len: u64) -> Option<flybus::ArtifactWriter> {
+        let mut st = self.state.lock().expect("never poisoned");
+        let shape = (content_type.to_owned(), len);
+        if let Some(at) = st.recent.iter().position(|s| *s == shape) {
+            st.recent.remove(at);
+        } else if st.recent.len() >= POOL_SHAPES {
+            let gone = st.recent.remove(0);
+            st.ready.retain(|(s, _)| *s != gone);
+        }
+        st.recent.push(shape.clone());
+        let at = st.ready.iter().position(|(s, _)| *s == shape)?;
+        Some(st.ready.swap_remove(at).1)
+    }
+
+    /// Allocates, in the background, a writer for every remembered shape that has none.
+    fn refill(self: &Arc<Self>, client: &flybus::Client) {
+        let wanted: Vec<(String, u64)> = {
+            let mut st = self.state.lock().expect("never poisoned");
+            let wanted: Vec<_> = st
+                .recent
+                .iter()
+                .filter(|s| !st.ready.iter().any(|(r, _)| r == *s) && !st.allocating.contains(s))
+                .cloned()
+                .collect();
+            st.allocating.extend(wanted.iter().cloned());
+            wanted
+        };
+        for shape in wanted {
+            let (pool, client) = (self.clone(), client.clone());
+            tokio::spawn(async move {
+                let writer = client.artifacts().allocate(shape.1, &shape.0).await;
+                let mut st = pool.state.lock().expect("never poisoned");
+                st.allocating.retain(|s| *s != shape);
+                if let Ok(writer) = writer
+                    && st.recent.contains(&shape)
+                {
+                    st.ready.push((shape, writer));
+                }
+            });
+        }
+    }
 }
 
 /// How a domain request reached the shell, and so where its attachments are.
@@ -224,7 +296,20 @@ impl HandlerCtx<'_> {
         if self.is_local() {
             return Ok(flybus::Artifact::in_memory(content_type, bytes));
         }
-        crate::media::seal_copy(self.client, content_type.to_owned(), &bytes).await
+        // A writer allocated ahead for this shape saves the allocation's round trip ([`WriterPool`]).
+        let Some(mut writer) = self.writers.take(content_type, bytes.len() as u64) else {
+            let _span = crate::profile::span("shell.seal.allocated");
+            return crate::media::seal_copy(self.client, content_type.to_owned(), &bytes).await;
+        };
+        let _span = crate::profile::span("shell.seal.pooled");
+        use std::io::Write as _;
+        writer
+            .write_all(&bytes)
+            .map_err(|e| crate::media::store_error("write", &e.to_string()))?;
+        writer
+            .seal()
+            .await
+            .map_err(|e| crate::media::store_error("seal", &e.message))
     }
 }
 
@@ -422,6 +507,8 @@ struct Shell<E> {
     closed: std::sync::atomic::AtomicBool,
     /// The admitted mutations' tasks, awaited when the shell stops.
     running: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// Reply writers allocated ahead (BUS-01).
+    writers: Arc<WriterPool>,
 }
 
 /// The local lane's hold on a shell.
@@ -492,6 +579,7 @@ pub fn serve<E: WorkerEndpoint>(
         admission: tokio::sync::Mutex::new(()),
         closed: std::sync::atomic::AtomicBool::new(false),
         running: Mutex::new(Vec::new()),
+        writers: Arc::default(),
     });
     let local = LocalLane(Arc::new(ShellRef(shell.clone())));
     let task = tokio::spawn(run(shell, service, common));
@@ -829,8 +917,24 @@ async fn execute<E: WorkerEndpoint>(
             request: &request,
             client: &shell.client,
             incoming: &incoming,
+            writers: &shell.writers,
         };
-        e.handle(ctx).await
+        if matches!(incoming, Incoming::Bus(_)) && long_method(&method) && blocking_allowed() {
+            // A long bus request's handler runs with this worker thread handed over to blocking
+            // work (BUS-01): the legacy agent's warm-up is seconds of synchronous computation, and
+            // a Tokio worker blocked that long strands the tasks queued on it -- the shell's own
+            // bus loop and its connection's reader among them -- so a duplicate arriving
+            // mid-execution could not be answered IN_PROGRESS and `ipc-v1` section 6's resolution
+            // of a slow Initialize ran out ("never resolved"). `block_in_place` moves those tasks
+            // to another thread first. A step's handlers (milliseconds) run in place: the hand-over
+            // is a thread wake-up of its own. The local lane's caller awaits the handler on its own
+            // task and is unchanged.
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(e.handle(ctx))
+            })
+        } else {
+            e.handle(ctx).await
+        }
     };
     // A deferred reply finishes here, with the endpoint's lock released.
     let outcome = match outcome {
@@ -851,7 +955,12 @@ async fn execute<E: WorkerEndpoint>(
                 .map(|(name, artifact)| {
                     let (name, artifact) = (name.clone(), artifact.clone());
                     async move {
-                        if artifact.is_in_memory() {
+                        // An in-memory artifact is its own hold, and so is a sealed one this
+                        // worker holds explicitly (its own seal): a clone keeps it as long as the
+                        // cache needs it, without another router round trip (BUS-01). Only a
+                        // delivery's handle -- a forwarded request attachment -- needs a hold of
+                        // its own, so the delivery can be consumed.
+                        if artifact.is_in_memory() || artifact.is_hold() {
                             return (name, artifact);
                         }
                         let task = tokio::spawn(async move {
@@ -868,6 +977,7 @@ async fn execute<E: WorkerEndpoint>(
             for retain in retains {
                 holds.push(retain.await);
             }
+            let cache_span = crate::profile::span("shell.record.cache");
             let cached = CachedReply::with_artifacts(outcome.clone(), holds);
             {
                 let mut c = cache.lock().await;
@@ -878,7 +988,15 @@ async fn execute<E: WorkerEndpoint>(
                 }
             }
             status.set_completed(request.request_id.clone());
+            drop(cache_span);
+            let reply_span = crate::profile::span("shell.reply");
             answer.send(outcome, &reply.artifacts).await;
+            drop(reply_span);
+            // The next step's writers, allocated while the caller goes on (bus requests only:
+            // the lane seals nothing into the store).
+            if matches!(incoming, Incoming::Bus(_)) {
+                shell.writers.refill(&shell.client);
+            }
         }
         Err(e) => {
             if e.mutation == MutationCertainty::None {
@@ -912,6 +1030,20 @@ async fn execute<E: WorkerEndpoint>(
             answer.send(outcome, &[]).await;
         }
     }
+}
+
+/// The methods whose handlers can run for seconds: the warm-ups, the restores and the captures.
+/// A step's methods (Prepare, Advance, Commit: milliseconds) are not among them; neither are the
+/// read-only extensions.
+fn long_method(method: &str) -> bool {
+    method.ends_with(".Initialize") || method.starts_with("State.") || method == "Agent.Rollback"
+}
+
+/// Whether this thread is a worker of a multi-thread Tokio runtime, where
+/// [`tokio::task::block_in_place`] is allowed.
+fn blocking_allowed() -> bool {
+    tokio::runtime::Handle::try_current()
+        .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
 }
 
 /// The retention class of every method name the contracts define.

@@ -12,8 +12,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use fly_legacy_session::composition::{LegacyConfig, LegacySession, channels_and_hold};
-use fly_session::ExecutionMode;
+use fly_legacy_session::composition::{
+    LegacyConfig, LegacySession, SessionArm, channels_and_hold,
+};
 use fly_session::legacy_agent::LegacyProfileKind;
 use fly_session::legacy_parity;
 use fly_session::types::id;
@@ -175,13 +176,16 @@ async fn session_against_legacy_per_frame() {
     );
 
     // ---- The session, unpaced then paced, in each mode.
-    for mode in [ExecutionMode::InProcess, ExecutionMode::Process] {
+    for arm in [SessionArm::LOCAL, SessionArm::BUS_PROCESS] {
+        let mode = arm.mode;
         for paced in [false, true] {
             let root = tempfile::tempdir().unwrap();
             let mut session = LegacySession::start(
                 root.path(),
                 LegacyConfig {
                     mode,
+                    transport: arm.transport,
+                    placements: Default::default(),
                     rom_path: rom_path.clone(),
                     dataset_dir: dataset.clone(),
                     profile: LegacyProfileKind::Production,
