@@ -495,6 +495,52 @@ line also prints the measurement spans (and the brain's phase split) when
 `FLY_SESSION_PROFILE` is set at start; the service reads the same variable as its profile name, so
 a measured service sets it to `production`. The report `claude-perf-02` has the measurements.
 
+### BUS-01 (port slice) — The live session's participants on the router
+
+Not the framework guide's BUS-01 above (the router itself); the port plan reuses the name.
+**2026-10-01: built** on `port/bus-01` off `main` (v0.7.5), awaiting review. Operator direction:
+run the live session over the flybus router on Unix sockets, one emulator and one fly, because
+multiplayer and more flies follow. The topology, its rules and the shadow procedure are
+[legacy-gameboy-v1](legacy-gameboy-v1.md) section 12 (amendment 2026-10-01) and section 18
+(amendment of the same date); the wire change is [bus-v1](bus-v1.md) section 12 (2026-10-01).
+
+- **Selecting it.** `FLY_SESSION_TRANSPORT=bus` / `flysim-session --transport bus` (process mode
+  by default; `FLY_SESSION_MODE=thread` and `in-process` too), `fly-runtime session --bus`
+  (`session-bus`) on the container, `fly-shadow --mode bus/process` and
+  `fly-shadow-run start --bus` / `check --bus` for its shadow. The local lane stays the default.
+  `SessionArm` names the four arms; `FLY_PARITY_ARMS` picks them for the parity suites (default
+  `local,bus/thread,bus/process`).
+- **What it took.** Per-process CPU placement (`Launcher::place_process`,
+  `--host-cpus`/`--sweep-cpus`, `flybrain_core::pool::apply_placement`), the launcher's own clients
+  in memory in thread and process modes, `block_in_place` for a bus request's handler (without it a
+  slow `Agent.Initialize` could not be resolved and a process-mode session failed to boot on a
+  loaded box: "never resolved"), delivered read locations (bus-v1 amendment), writers allocated
+  ahead (`WriterPool`), no second hold on a worker's own seals, small store I/O in place, the
+  envelope encoded without copying its body, and the agent's feed status attached to a bus Commit
+  (the host's 30 Hz `Legacy.FeedStatus` call was a round trip of its own).
+- **Identical.** Traces, checkpoints, feed snapshots and the compatibility string (648 B,
+  `7b940584`, as v0.7.5) are the same in every arm: the toy and FAFB parity suites
+  (`session_trace`, `service_parity`, `rollback_sequence`, `save_handoff`) ran `local`,
+  `bus/thread` and `bus/process`.
+- **Measured, and not fast enough to go live.** The report `claude-bus-01` has the tables. On a
+  build box with the release CPU model and the release cpuset's shape (four CPUs, four sweep
+  threads), same frames, interleaved, unpaced: legacy 16.1 ms a frame, the lane 17.4,
+  `bus/thread` 25.1, `bus/process` 25.7 (`main`'s process mode: 30.4, so this slice took about a
+  third off the bus's cost). Paced at real time the lane holds 1.00 and the bus 0.69 to 0.71, with a
+  neighbour CPU busy or not. Every round trip through the router is 0.5 to 1 ms there (the
+  synthetic `fly-session measure` puts a bare `Worker.Status` at 0.5 ms whether the processes
+  share one CPU or four), and a transition needs at least five in sequence: Prepare; Advance and
+  its seals; Commit and its seals. That is a realtime factor of roughly 0.7 on the release
+  container, so the lane stays live and nothing is switched. Moving the router, the coordinator
+  and the world to a fifth CPU (`FLY_SESSION_AUX_CPUS`) made it 1.5 to 2 ms slower. What would close
+  it is a cheaper round trip, not more CPUs: the router's own per-message work (strict JSON parsed
+  and re-encoded per hop, the state lock, about three task hops a direction), and sealing a reply's
+  media in the reply itself (one round trip fewer for Advance and for Commit).
+- **`fly_frame_work_*`** on `/metrics` (both runtimes): the loop's compute time per frame without
+  its pacing sleep, mean, p99 and max over the last 3,600 frames. It agrees with the unpaced
+  ms/frame within 1% on every arm measured, and it is the headroom a paced realtime factor of 1.0
+  hides.
+
 ### SHADOW-01 — The session runtime beside the live fly (port slice)
 
 **2026-09-29: built** on `port/shadow-01` off `port/task-01`, and awaiting review. It changes no
