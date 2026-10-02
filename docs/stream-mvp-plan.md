@@ -1043,3 +1043,10 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   after; Route 5 from the ticket 0 of 6 before, 5 of 6 after. Review: APPROVE-WITH-NOTES; notes
   fixed. Also: bus worker children die with their parent; the feed test asserts structure, not a
   wall-clock rate.
+- 2026-10-02 (v0.7.8, groundwork for the GPU and the bus): the GPU brain steps a whole frame per
+  call with its state resident on the card (about 230 KB a frame crosses PCIe instead of 24 MB),
+  bit-exact against the CPU through rollback, restore and checkpoints; a dead GPU makes the process
+  CPU-only and the replacement restores the last checkpoint on the CPU (cuda feature, off; operator
+  decision: the live brain moves to the release host's Quadro after a 3 h shadow). Cheaper flybus
+  round trips (seal on reply, recycled zero-filled staging writers, frames encoded once); the
+  session's own transport stays on the in-process lane. No behaviour change on the live stream.
