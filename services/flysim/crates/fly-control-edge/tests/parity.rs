@@ -296,6 +296,52 @@ async fn a_large_events_page_rides_as_an_artifact_and_still_matches() {
     assert_eq!(rig.bus.router.stats().artifacts, 0);
 }
 
+/// A request body over flybus's 65,536-byte envelope (N2): the edge carries it as an artifact and
+/// the answer is the one direct mode gives, whatever it is, for every body endpoint.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_request_body_over_the_envelope_gets_directs_answer() {
+    let rig = rig(|_| {}).await;
+    let mut cases = Vec::new();
+    for size in [49_000usize, 70_000, 300_000] {
+        let text = "x".repeat(size);
+        for uri in ["/chat", "/stimulate", "/reward"] {
+            cases.push(json_case(
+                Method::POST,
+                uri,
+                json!({"by": "viewer", "source": "points", "text": text, "message": text, "reason": text}),
+            ));
+        }
+    }
+    // Over the limit and not JSON at all: direct's 400 either way.
+    cases.push(raw(Method::POST, "/chat", &"{".repeat(100_000)));
+    let mut codes = Vec::new();
+    for (method, uri, content_type, body) in &cases {
+        let direct = exchange(rig.direct(), method, uri, *content_type, body).await;
+        let edge = exchange(rig.via_edge(), method, uri, *content_type, body).await;
+        assert_eq!(
+            direct,
+            edge,
+            "{method} {uri} ({} bytes): direct {} {:?} vs edge {} {:?}",
+            body.len(),
+            direct.status,
+            String::from_utf8_lossy(&direct.body),
+            edge.status,
+            String::from_utf8_lossy(&edge.body)
+        );
+        assert!(
+            !String::from_utf8_lossy(&edge.body).contains("INVALID_ENVELOPE"),
+            "{uri}: {:?}",
+            String::from_utf8_lossy(&edge.body)
+        );
+        codes.push(direct.status.as_u16());
+    }
+    eprintln!("large-body statuses: {codes:?}");
+    assert_eq!(rig.metrics.call_failures.load(Ordering::Relaxed), 0);
+    // Every request artifact was released once read.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(rig.bus.router.stats().artifacts, 0);
+}
+
 /// The running edge over real sockets: the whole HTTP/1.1 response equals flysim's own listener's,
 /// `date` aside, for a request of every kind.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

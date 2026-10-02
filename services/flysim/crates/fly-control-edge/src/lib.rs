@@ -18,6 +18,7 @@
 //! Failures on the bus side map onto the 503s direct mode answers for the same failure (the
 //! words are `flysim::control::unavailable`), so a client cannot tell which side was in trouble.
 
+use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -171,9 +172,26 @@ impl BusBackend {
         } else {
             Some(COMMAND_TIMEOUT + DEADLINE_MARGIN)
         };
-        let (family, method, payload) = controlbus::encode_request(&request);
+        let (family, method, mut payload) = controlbus::encode_request(&request);
         let service = self.service(family);
-        let mut pending = match self.client.call(&service, None, method, payload, &[]).await {
+        // A body over the envelope travels as an artifact, so a large request gets the answer
+        // direct mode gives it.
+        let sealed = match controlbus::take_out_of_line_request(&mut payload) {
+            None => None,
+            Some(bytes) => match seal(&self.client, &bytes, "application/json").await {
+                Ok(artifact) => Some(artifact),
+                Err(error) => return self.failed(&error),
+            },
+        };
+        let attachments: Vec<(&str, &flybus::Artifact)> = sealed
+            .iter()
+            .map(|artifact| (controlbus::REQUEST_ARTIFACT, artifact))
+            .collect();
+        let mut pending = match self
+            .client
+            .call(&service, None, method, payload, &attachments)
+            .await
+        {
             Ok(pending) => pending,
             Err(error) => return self.failed(&error),
         };
@@ -231,6 +249,21 @@ impl ControlBackend for BusBackend {
         let backend = self.clone();
         async move { backend.call(request).await }
     }
+}
+
+async fn seal(
+    client: &Client,
+    bytes: &[u8],
+    content_type: &str,
+) -> Result<flybus::Artifact, BusError> {
+    let mut writer = client
+        .artifacts()
+        .allocate(bytes.len() as u64, content_type)
+        .await?;
+    writer
+        .write_all(bytes)
+        .map_err(|error| BusError::new(ErrorCode::StoreFailure, error.to_string()))?;
+    writer.seal().await
 }
 
 /// The reply a client gets for a request the bus did not deliver, in the words direct mode uses

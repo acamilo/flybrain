@@ -517,7 +517,7 @@ fi
 # writes the default. The watchdog's use of FLY_CONTROL_VIA is driven for real
 # further down, next to check 2's.
 # ---------------------------------------------------------------------------
-echo "--- flycontrol-edge.service: off by default, after and bound to flysim ---"
+echo "--- flycontrol-edge.service: follows flysim in bus mode, skipped in direct mode ---"
 CEDGE_UNIT="$INFRA_DIR/units/flycontrol-edge.service"
 if [ ! -f "$CEDGE_UNIT" ]; then
     fail "units/flycontrol-edge.service is missing"
@@ -537,12 +537,41 @@ else
     grep -qE '^Environment=FLY_CONTROL_BIND=127\.0\.0\.1:7401$' "$CEDGE_UNIT" \
         && pass "flycontrol-edge.service binds the contract's loopback :7401" \
         || fail "flycontrol-edge.service FLY_CONTROL_BIND must be 127.0.0.1:7401 (docs/control-api.md)"
+    # N1 (review of CTRL-01): Requires= alone stops the edge with flysim but never starts it
+    # again, so fly-loop-reset's stop and start left :7401 dead. flysim Wants= it, and the
+    # unit's own ExecCondition= decides by FLY_CONTROL_VIA (EDGE-02's pattern for flyedge).
+    grep -qE '^Wants=.*\bflycontrol-edge\.service\b' "$INFRA_DIR/units/flysim.service" \
+        && pass "flysim.service Wants=flycontrol-edge.service (every flysim start brings the edge up in bus mode)" \
+        || fail "flysim.service must Want flycontrol-edge.service: a stop and start of flysim (fly-loop-reset) would leave :7401 dead"
+    if grep -qE '^\[Install\]' "$CEDGE_UNIT"; then
+        fail "flycontrol-edge.service has an [Install] section; flysim's Wants= is what starts it"
+    else
+        pass "flycontrol-edge.service has no [Install] section"
+    fi
+    cond="$(sed -nE "s/^ExecCondition=\/bin\/sh -c '(.*)'\$/\1/p" "$CEDGE_UNIT")"
+    if [ -z "$cond" ]; then
+        fail "flycontrol-edge.service needs an ExecCondition= on FLY_CONTROL_VIA"
+    else
+        # Run the condition as systemd would ($$ is systemd's escape for a literal $).
+        cond="${cond//\$\$/\$}"
+        cond_bad=""
+        for v in "" direct Direct junk; do
+            FLY_CONTROL_VIA="$v" sh -c "$cond" && cond_bad="$cond_bad [$v->runs]"
+        done
+        env -u FLY_CONTROL_VIA sh -c "$cond" && cond_bad="$cond_bad [unset->runs]"
+        for v in bus Bus BUS; do
+            FLY_CONTROL_VIA="$v" sh -c "$cond" || cond_bad="$cond_bad [$v->skipped]"
+        done
+        [ -z "$cond_bad" ] \
+            && pass "flycontrol-edge.service ExecCondition= runs only for FLY_CONTROL_VIA=bus (any case); direct, unset and junk skip" \
+            || fail "flycontrol-edge.service ExecCondition= wrong for:$cond_bad"
+    fi
     grep -qE '^Environment=FLY_CONTROL_EDGE_METRICS_ADDR=127\.0\.0\.1:' "$CEDGE_UNIT" \
         && pass "flycontrol-edge.service keeps its metrics on loopback" \
         || fail "flycontrol-edge.service FLY_CONTROL_EDGE_METRICS_ADDR must be a 127.0.0.1 address"
 fi
 if target_pulls "$INFRA_DIR/units/fly.target" | grep -qx 'flycontrol-edge.service'; then
-    fail "fly.target pulls flycontrol-edge.service in; it must stay off until the operator enables it"
+    fail "fly.target pulls flycontrol-edge.service in; flysim.service Wants= it, the condition decides"
 else
     pass "fly.target does not pull flycontrol-edge.service in"
 fi

@@ -821,11 +821,11 @@ box keeps serving `:7401` directly until step 2.
 pct exec $CTID -- grep -E '^FLY_(CONTROL|FEED)_VIA=' /etc/fly/fly.env   # FLY_CONTROL_VIA=bus
 pct exec $CTID -- curl -s 127.0.0.1:7401/status | jq '.frame, .status, .checkpoint'
 pct exec $CTID -- curl -s -X POST 127.0.0.1:7401/checkpoint            # a fresh generation to restart from
-# 2. The switch: flysim stops binding :7401 and registers the services; the edge binds :7401 once
-#    they answer. Between the two, :7401 refuses connections, exactly as during any flysim restart.
-pct exec $CTID -- systemctl enable flycontrol-edge.service
+# 2. The switch: flysim stops binding :7401 and registers the services; the edge (Wants= of
+#    flysim.service, started with it because fly.env says bus) binds :7401 once they answer.
+#    Between the two, :7401 refuses connections, exactly as during any flysim restart.
+#    There is nothing to enable: the unit has no [Install] section.
 pct exec $CTID -- systemctl restart flysim.service
-pct exec $CTID -- systemctl start flycontrol-edge.service
 # 3. Verify.
 pct exec $CTID -- ss -ltnp | grep ':7401'                            # users:(("fly-control-edg"...
 pct exec $CTID -- curl -s 127.0.0.1:7401/healthz                     # {"status":"ok"}
@@ -843,16 +843,18 @@ pct exec $CTID -- curl -s 127.0.0.1:7410/health | jq .               # the bridg
 - **Watchdog.** With `FLY_CONTROL_VIA=bus`, check 1 reads flysim's own `/healthz` on `:9101`, so a
   dead edge never restarts the fly. Check 1b restarts `flycontrol-edge` alone when `:7401` fails
   while flysim is healthy (the sudoers file grants exactly that restart).
-- **Restarts.** `systemctl restart flysim.service` (the unstick rule, `fly-runtime`, the ladder)
-  restarts the edge with it (`Requires=`). A crash-restart of flysim needs nothing: the edge
+- **Restarts.** `flysim.service` has `Wants=flycontrol-edge.service` and the edge has `Requires=`
+  on flysim plus an `ExecCondition=` on `FLY_CONTROL_VIA`, so the edge follows flysim in bus mode
+  and stays off ("skipped", not failed) in direct mode. A `restart`, and a `stop` then `start`
+  (`fly-loop-reset`, `fly-reset-to-milestone`, the milestone-reset rung of the unstick rule) all
+  bring `:7401` back with flysim; nothing needs a separate `start` of the edge. A crash-restart of flysim needs nothing: the edge
   unbinds `:7401`, reconnects every 500 ms and binds again once the new services answer.
 
 **Rollback** (any time, no release change):
 
 ```
 pct exec $CTID -- sed -i 's/^FLY_CONTROL_VIA=.*/FLY_CONTROL_VIA=direct/' /etc/fly/fly.env
-pct exec $CTID -- systemctl disable --now flycontrol-edge.service
-pct exec $CTID -- systemctl restart flysim.service                   # binds :7401 itself again
+pct exec $CTID -- systemctl restart flysim.service                   # binds :7401 itself; the edge is skipped
 pct exec $CTID -- curl -s 127.0.0.1:7401/healthz
 # then set FLY_CONTROL_VIA=direct in the env file too, or the next 05-deploy.sh writes bus back.
 ```
@@ -865,6 +867,9 @@ pct exec $CTID -- curl -s 127.0.0.1:7401/healthz
 - **If the edge cannot bind** (`fly_control_edge_bind_failures_total` rising, "the control port
   cannot be bound" in its journal), flysim is still in direct mode. `fly.env` says bus but flysim
   was not restarted after the deploy. Restart flysim (step 2).
+- **Upgrading a container that had the edge enabled** (before this wiring): an
+  old `fly.target.wants/flycontrol-edge.service` symlink is harmless (the condition decides), but
+  run `systemctl disable flycontrol-edge.service` once so `systemctl is-enabled` says what is true.
 
 ## CPU partition (cpuset)
 

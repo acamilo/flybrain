@@ -247,7 +247,9 @@ agent (fly) of it. Each method's payload and outcome:
   code is the outcome's vocabulary, not transport. A bus caller reads `429 {retryAfterMs}` as an
   HTTP caller does, so the edge needs no table of its own.
 - **Requests** carry the body as the caller sent it (`request` is absent when it was empty or
-  not JSON), so validation stays in `control::handle`. An unknown payload field is a 400. A
+  not JSON), so validation stays in `control::handle`. A `request` over 48 KiB of JSON travels as
+  a sealed `request` artifact with `requestArtifact: true` in the payload, so a large body gets
+  the answer direct mode gives it, not an envelope error (`tests/parity.rs`). An unknown payload field is a 400. A
   method the service does not have is a 404. Neither reaches the loop.
 - **Concurrency.** Each service has 16 queued and 16 in flight (`controlbus::SERVICE_CONFIG`).
   The router dispatches FIFO per service. The host answers each request in a task of its own, so
@@ -375,8 +377,10 @@ above are already addressed per agent, so the amendments are to the HTTP shapes,
 - `bus_dir` (`FLY_BUS_DIR`, `/run/fly/bus`) as for the feed. Sockets are `control-edge.sock` and
   `control/{stage,bridge,watchdog,operator}.sock`. Stale sockets are removed at start. With
   control on the bus, the router's `max_clients` and `max_services` are the feed's plus 8.
-- `flycontrol-edge.service` is off by default and in no target. It is `After=` and
-  `Requires=flysim.service`, gets the page's CPUs from the cpuset plan, and exports its own
+- `flycontrol-edge.service` has no `[Install]` section: `flysim.service` `Wants=` it, and its
+  `ExecCondition=` on `FLY_CONTROL_VIA` skips it in direct mode (EDGE-02's pattern for
+  `flyedge`), so every start of flysim, `fly-loop-reset`'s stop and start included, brings
+  `:7401` back. It is `After=` and `Requires=flysim.service`, gets the page's CPUs from the cpuset plan, and exports its own
   counters on loopback `:9103` (`fly_control_edge_bus_connected`, `_calls_total`,
   `_call_failures_total`, `_cancelled_total`, `_bus_lost_total`, `_bind_failures_total`).
 - The edge binds `:7401` only once the services answer. When the bus goes away it unbinds and

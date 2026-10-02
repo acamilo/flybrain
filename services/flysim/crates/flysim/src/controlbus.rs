@@ -56,6 +56,10 @@ pub const PREFIX: &str = "fly.control.";
 pub const INLINE_MAX: usize = 48 * 1024;
 /// The attachment name of an out-of-line body.
 pub const BODY_ARTIFACT: &str = "body";
+/// The attachment name of an out-of-line request body: a `request` JSON value larger than
+/// [`INLINE_MAX`] travels as this artifact, and the payload says so with `requestArtifact: true`.
+/// The direct API takes bodies up to the HTTP layer's own limit, so the bus must too.
+pub const REQUEST_ARTIFACT: &str = "request";
 /// Per-service bounds. A full service refuses with `BACKPRESSURE` (the edge's 503 "queue is
 /// full") instead of queueing without limit; each family has its own, so a stuck checkpoint
 /// cannot hold up `/status`.
@@ -443,6 +447,18 @@ pub fn encode_request(request: &ControlRequest) -> (Family, &'static str, Map<St
     (family, method, payload)
 }
 
+/// Move a `request` body larger than [`INLINE_MAX`] out of `payload` and return its JSON bytes,
+/// leaving `requestArtifact: true` behind. `None` (payload untouched) when it fits.
+pub fn take_out_of_line_request(payload: &mut Map<String, Value>) -> Option<Vec<u8>> {
+    let bytes = serde_json::to_vec(payload.get("request")?).ok()?;
+    if bytes.len() <= INLINE_MAX {
+        return None;
+    }
+    payload.remove("request");
+    payload.insert("requestArtifact".to_owned(), Value::Bool(true));
+    Some(bytes)
+}
+
 /// Why a bus request could not be read: answered as a control-API reply.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Undecodable(pub ControlReply);
@@ -635,10 +651,32 @@ pub async fn serve(router: &Router, state: AppState, scope: &Scope) -> Result<Co
     })
 }
 
+/// The request's payload with an out-of-line `request` body put back in place.
+async fn request_payload(request: &Request) -> Result<Map<String, Value>, ControlReply> {
+    let mut payload = request.payload().clone();
+    if payload.remove("requestArtifact").is_none() {
+        return Ok(payload);
+    }
+    let bytes = match request.artifact(REQUEST_ARTIFACT) {
+        Ok(artifact) => artifact.read_all().await,
+        Err(error) => Err(error),
+    }
+    .map_err(|error| {
+        ControlReply::error(400, format!("the request body could not be read: {error}"))
+    })?;
+    let value = serde_json::from_slice(&bytes)
+        .map_err(|error| ControlReply::error(400, format!("the request body is not JSON: {error}")))?;
+    payload.insert("request".to_owned(), value);
+    Ok(payload)
+}
+
 async fn answer(client: &Client, state: &AppState, family: Family, request: Request) {
-    let reply = match decode_request(family, request.method(), request.payload()) {
-        Ok(decoded) => crate::control::handle(state, decoded).await,
-        Err(Undecodable(reply)) => reply,
+    let reply = match request_payload(&request).await {
+        Err(reply) => reply,
+        Ok(payload) => match decode_request(family, request.method(), &payload) {
+            Ok(decoded) => crate::control::handle(state, decoded).await,
+            Err(Undecodable(reply)) => reply,
+        },
     };
     let (outcome, out_of_line) = encode_reply(&reply);
     let result = match out_of_line {
