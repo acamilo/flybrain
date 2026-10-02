@@ -14,6 +14,8 @@
 #   fly-edge              (the feed-bus edge, mode 0755, when build-flysim.sh
 #                          left one beside FLYSIM_BIN; flyedge.service stays
 #                          inactive on a release without it)
+#   fly-control-edge      (the control-bus edge, CTRL-01, likewise;
+#                          flycontrol-edge.service stays inactive without it)
 #   flysim-session        (the session runtime, SERVE-01, and fly-session, its
 #   fly-shadow             worker program; mode 0755, when build-flysim.sh left
 #   fly-session            them beside FLYSIM_BIN. `fly-runtime session` refuses
@@ -87,6 +89,13 @@ if [ -x "$EDGE_BIN" ]; then
     chmod 0755 "${release_dir}/fly-edge"
 else
     log "no fly-edge beside $FLYSIM_BIN; packaging without it (FLY_FEED_VIA=bus unavailable in this release)"
+fi
+CONTROL_EDGE_BIN="$(dirname "$FLYSIM_BIN")/fly-control-edge"
+if [ -x "$CONTROL_EDGE_BIN" ]; then
+    cp "$CONTROL_EDGE_BIN" "${release_dir}/fly-control-edge"
+    chmod 0755 "${release_dir}/fly-control-edge"
+else
+    log "no fly-control-edge beside $FLYSIM_BIN; packaging without it (FLY_CONTROL_VIA=bus unavailable in this release)"
 fi
 for extra in flysim-session fly-shadow fly-session; do
     EXTRA_BIN="$(dirname "$FLYSIM_BIN")/${extra}"

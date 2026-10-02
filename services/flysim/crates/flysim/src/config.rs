@@ -9,7 +9,7 @@
 //! - the `FLY_*` names the systemd units already set (`FLY_GAME`, `FLY_ROM`, `FLY_DATASET`,
 //!   `FLY_STATE`, `FLY_STATE_HOT`, `FLY_FEED_BIND`, `FLY_CONTROL_BIND`, `FLY_METRICS_ADDR`,
 //!   `FLY_ROM_SHA256`, `FLY_ROM_PLATFORMER_SHA256`, `FLY_CHAT_ENABLED`, `FLY_CHAT_DENY_LIST`,
-//!   `FLY_MACRO_MODE`, `FLY_FEED_VIA`, `FLY_BUS_DIR`, `RAYON_NUM_THREADS`);
+//!   `FLY_MACRO_MODE`, `FLY_FEED_VIA`, `FLY_CONTROL_VIA`, `FLY_BUS_DIR`, `RAYON_NUM_THREADS`);
 //! - `FLYSIM_<SECTION>_<KEY>` for everything, e.g. `FLYSIM_LOOP_SPEED=0`.
 //!
 //! Nothing here is secret (`docs/control-api.md`: "No secrets live in this service or its
@@ -139,6 +139,8 @@ impl FeedVia {
 #[serde(default, deny_unknown_fields)]
 pub struct Control {
     pub bind: SocketAddr,
+    /// Who serves `control.bind` (`docs/design/flybus.md`, "Control over the bus").
+    pub via: ControlVia,
     /// Optional extra read-only listener carrying `/metrics`, `/status`, `/status.json` and
     /// `/healthz` only (`infra/units/flysim.service` sets `FLY_METRICS_ADDR=0.0.0.0:9101`).
     pub metrics_bind: Option<SocketAddr>,
@@ -150,6 +152,31 @@ pub struct Control {
     /// SHA-256 the ROM is expected to have. Only logged; the adapter decides whether semantic
     /// rewards are enabled, and an unexpected cartridge runs with them off rather than failing.
     pub expect_rom_sha256: Option<String>,
+}
+
+/// Where the control API is served from (CTRL-01).
+///
+/// `direct` is the default and the behaviour that predates the bus: flysim binds
+/// `control.bind` itself. `bus` registers the control services on the embedded flybus router
+/// (under `feed.bus_dir`, shared with the feed when that is on the bus too) and leaves
+/// `control.bind` to the `fly-control-edge` process, which serves the same HTTP bytes by calling
+/// them. The read-only `control.metrics_bind` listener stays in flysim in both modes. Outside the
+/// simulation loop and outside the compatibility string.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ControlVia {
+    #[default]
+    Direct,
+    Bus,
+}
+
+impl ControlVia {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Bus => "bus",
+        }
+    }
 }
 
 /// `[macros]` (`docs/design/macros.md` sections 1 and 4): what the fly's channels mean.
@@ -236,6 +263,7 @@ impl Default for Control {
     fn default() -> Self {
         Self {
             bind: "127.0.0.1:7401".parse().expect("literal address"),
+            via: ControlVia::Direct,
             metrics_bind: None,
             allow_reward: false,
             sugar_default_ms: 400.0,
@@ -294,6 +322,9 @@ impl Config {
         }
         if let Some(value) = get("FLY_CONTROL_BIND") {
             self.control.bind = parse_addr("FLY_CONTROL_BIND", value)?;
+        }
+        if let Some(value) = get("FLY_CONTROL_VIA") {
+            self.control.via = parse_control_via("FLY_CONTROL_VIA", value)?;
         }
         if let Some(value) = get("FLY_METRICS_ADDR") {
             self.control.metrics_bind = Some(parse_addr("FLY_METRICS_ADDR", value)?);
@@ -375,6 +406,9 @@ impl Config {
         }
         if let Some(value) = get("FLYSIM_CONTROL_BIND") {
             self.control.bind = parse_addr("FLYSIM_CONTROL_BIND", value)?;
+        }
+        if let Some(value) = get("FLYSIM_CONTROL_VIA") {
+            self.control.via = parse_control_via("FLYSIM_CONTROL_VIA", value)?;
         }
         if let Some(value) = get("FLYSIM_CONTROL_METRICS_BIND") {
             self.control.metrics_bind = Some(parse_addr("FLYSIM_CONTROL_METRICS_BIND", value)?);
@@ -522,6 +556,14 @@ fn parse_feed_via(name: &str, value: &str) -> Result<FeedVia> {
         "direct" => Ok(FeedVia::Direct),
         "bus" => Ok(FeedVia::Bus),
         _ => bail!("{name}: {value:?} is not a feed path; expected \"direct\" or \"bus\""),
+    }
+}
+
+fn parse_control_via(name: &str, value: &str) -> Result<ControlVia> {
+    match value.to_ascii_lowercase().as_str() {
+        "direct" => Ok(ControlVia::Direct),
+        "bus" => Ok(ControlVia::Bus),
+        _ => bail!("{name}: {value:?} is not a control path; expected \"direct\" or \"bus\""),
     }
 }
 
@@ -769,6 +811,28 @@ mod tests {
         let error = Config::default().apply_env(&env(&[("FLY_FEED_VIA", "buss")])).unwrap_err();
         assert!(error.to_string().contains("FLY_FEED_VIA"), "{error}");
         assert_eq!(toml::from_str::<Config>("[feed]\nvia = \"bus\"\n").unwrap().feed.via, FeedVia::Bus);
+    }
+
+    #[test]
+    fn the_control_path_is_direct_unless_the_environment_says_bus() {
+        assert_eq!(Config::default().control.via, ControlVia::Direct);
+
+        let mut config = Config::default();
+        config.apply_env(&env(&[("FLY_CONTROL_VIA", "Bus")])).unwrap();
+        assert_eq!(config.control.via, ControlVia::Bus);
+        // Independent of the feed's switch.
+        assert_eq!(config.feed.via, FeedVia::Direct);
+
+        let mut config = Config::default();
+        config.apply_env(&env(&[("FLYSIM_CONTROL_VIA", "direct")])).unwrap();
+        assert_eq!(config.control.via, ControlVia::Direct);
+
+        let error = Config::default().apply_env(&env(&[("FLY_CONTROL_VIA", "http")])).unwrap_err();
+        assert!(error.to_string().contains("FLY_CONTROL_VIA"), "{error}");
+        assert_eq!(
+            toml::from_str::<Config>("[control]\nvia = \"bus\"\n").unwrap().control.via,
+            ControlVia::Bus
+        );
     }
 
     #[test]

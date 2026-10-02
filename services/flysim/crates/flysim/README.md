@@ -96,7 +96,10 @@ snapshot is consistent; the write and the fsyncs happen on the store thread.
 | `pacing` | absolute frame deadlines, `loop.speed`, the lag accounting, the realtime window |
 | `snapshot` | the feed protocol types, the exact framing, the spike bitset, the audio conversion |
 | `feed` | the WebSocket listener and the client hello |
-| `api` | the control routes, built from one route table |
+| `api` | the control routes, built from one route table, over a `ControlBackend` |
+| `control` | what each control request does: validation, the command, the status code (both transports) |
+| `controlbus` | the control API as flybus services, the grant table, the encoding (`FLY_CONTROL_VIA=bus`) |
+| `bus` | the embedded router shared by the feed and control when either rides the bus |
 | `ratelimit` | the per-minute sugar budget and the no-overlap rule |
 | `store` | the `FLYSIM01` envelope, atomic commits, generations, milestone archives, restore order |
 | `eventlog` | append-only JSONL plus the in-memory tail the feed and `/events` read |
@@ -201,6 +204,11 @@ The decoder is the only writer of joypad state. `api::ROUTES` is the whole contr
 router is built from it, and `tests/api.rs` asserts both over the table and against the live
 router for thirteen spellings of such a route. The prototype's `manualButtons` field and its
 `learn: false` suppression are dropped, not disabled.
+
+On the bus (`FLY_CONTROL_VIA=bus`) the same guarantee is a grant table: no control service has
+an input method, every grant is an exact call on a control service, only the in-process host
+registers, and the policy is closed (`controlbus`, `crates/fly-control-edge/tests/grants.rs`,
+`docs/design/flybus.md` "Control over the bus").
 
 ## Tests
 

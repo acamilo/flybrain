@@ -123,6 +123,9 @@ need pct
 # /opt/fly/current, rather than half way through the deploy or at flysim's boot.
 FLY_FEED_VIA_EFFECTIVE="$(feed_via_normalize "${FLY_FEED_VIA:-}")" \
     || die "05-deploy: FLY_FEED_VIA must be 'direct' or 'bus', got '${FLY_FEED_VIA}'"
+# Who serves the control API (docs/design/flybus.md, "Control over the bus"): the same.
+FLY_CONTROL_VIA_EFFECTIVE="$(control_via_normalize "${FLY_CONTROL_VIA:-}")" \
+    || die "05-deploy: FLY_CONTROL_VIA must be 'direct' or 'bus', got '${FLY_CONTROL_VIA}'"
 
 # CHROMIUM_PROFILE is validated here, not left to the launcher: a typo or a
 # `vgl` on a container that never had VirtualGL installed would only show up as
@@ -585,6 +588,14 @@ trap 'rm -f "$tmp_fly_env" "$tmp_flypush_env"' EXIT
     # feed counters (flysim's :9101, or flyedge's loopback :9102).
     # Validated and lowercased above (feed_via_normalize).
     echo "FLY_FEED_VIA=${FLY_FEED_VIA_EFFECTIVE}"
+    # Who serves the control API on :7401 (docs/design/flybus.md, "Control over
+    # the bus"). "direct" is the default: flysim binds it. "bus" makes flysim
+    # register the control services on its embedded router and leave :7401 to
+    # flycontrol-edge.service, which this script never enables (runbook,
+    # "Control over the bus"). Written unconditionally; the watchdog reads it
+    # to know whose /healthz is flysim's own (check 1) and whether to watch
+    # the edge (check 1b). Validated and lowercased above.
+    echo "FLY_CONTROL_VIA=${FLY_CONTROL_VIA_EFFECTIVE}"
     # How long a macro leaves a target alone after a walk to it aborted
     # (macros.md section 12.1, the Viridian stall). Only written when it is set,
     # because the default lives in the crate and a box that has not tuned it
@@ -722,7 +733,8 @@ if [ -n "${CPUSET:-}" ]; then
         log "05-deploy: cpuset partition — $(echo "$plan" | awk '$1 !~ /=$/ {printf "%s%s=%s", sep, $1, $2; sep=", "}')"
         tmp_dropin="$(mktemp)"
         # flyedge is off by default, but its drop-in is written with the rest so that the day
-        # it is enabled it serves the page from the page's CPUs, never from flysim's.
+        # it is enabled it serves the page from the page's CPUs, never from flysim's; likewise
+        # flycontrol-edge (CTRL-01).
         # flysim-session (SERVE-01) is the session runtime's standalone unit: flysim's cores.
         # (`fly-runtime session` runs it AS flysim.service, which already has them.)
         # flyshadow (SHADOW-01) is off by default too; when started it gets every CPU that is not

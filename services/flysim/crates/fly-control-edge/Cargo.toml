@@ -1,0 +1,35 @@
+[package]
+name = "fly-control-edge"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "The control API (:7401) served from flysim's control services on the bus (FLY_CONTROL_VIA=bus)."
+
+[lib]
+name = "fly_control_edge"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fly-control-edge"
+path = "src/main.rs"
+
+[dependencies]
+# The HTTP layer, the request/reply types and the bus encoding are flysim's own modules (`api`,
+# `control`, `controlbus`), so the edge writes the :7401 bytes with the code flysim uses in direct
+# mode and cannot disagree with the services about the encoding.
+flysim = { path = "../flysim" }
+flybus = { path = "../flybus" }
+
+anyhow = "1.0"
+axum = "0.8"
+clap = { version = "4.5", features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "signal", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

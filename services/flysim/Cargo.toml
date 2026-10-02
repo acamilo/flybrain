@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/fly-control-edge",
     "crates/fly-edge",
     "crates/fly-legacy-session",
     "crates/fly-session",

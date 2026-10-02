@@ -20,10 +20,17 @@
 //!
 //! There is deliberately **no endpoint that presses buttons**. The decoder is the only writer of
 //! joypad state; `api::ROUTES` is the whole surface and `tests/api.rs` asserts on it.
+//!
+//! With `FLY_CONTROL_VIA=bus` the control API is not bound here: `control` answers the same
+//! requests as RPC services on the embedded router (`controlbus`, `bus`), and `fly-control-edge`
+//! serves `:7401` with this crate's own `api` router calling them.
 
 pub mod api;
+pub mod bus;
 pub mod chat;
 pub mod config;
+pub mod control;
+pub mod controlbus;
 pub mod eventlog;
 pub mod feed;
 pub mod feedbus;
@@ -46,7 +53,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tokio::sync::{mpsc, watch};
 
-use crate::config::{Config, FeedVia};
+use crate::config::{Config, ControlVia, FeedVia};
 use crate::eventlog::{EventRing, now_wall_ms};
 use crate::simloop::{COMMAND_QUEUE, Command, Shared, Sim, booting_snapshot};
 use crate::snapshot::Snapshot;
@@ -129,6 +136,7 @@ where
     let control_addr = config.control.bind;
     let metrics_addr = config.control.metrics_bind;
     let via = config.feed.via;
+    let control_via = config.control.via;
     let listeners = runtime.block_on(async {
         // In bus mode the feed port belongs to `fly-edge`; binding it here would take it away.
         let feed = match via {
@@ -139,9 +147,15 @@ where
             ),
             FeedVia::Bus => None,
         };
-        let control = tokio::net::TcpListener::bind(control_addr)
-            .await
-            .with_context(|| format!("binding the control listener on {control_addr}"))?;
+        // Likewise the control port belongs to `fly-control-edge` when control rides the bus.
+        let control = match control_via {
+            ControlVia::Direct => Some(
+                tokio::net::TcpListener::bind(control_addr)
+                    .await
+                    .with_context(|| format!("binding the control listener on {control_addr}"))?,
+            ),
+            ControlVia::Bus => None,
+        };
         let metrics = match metrics_addr {
             Some(addr) => Some(
                 tokio::net::TcpListener::bind(addr)
@@ -157,6 +171,7 @@ where
         feed = %feed_addr,
         feed_via = via.as_str(),
         control = %control_addr,
+        control_via = control_via.as_str(),
         metrics = ?metrics_addr,
         "listening"
     );
@@ -171,25 +186,38 @@ where
     }
     // The bus gets a runtime of its own, so neither its router nor the artifact copies can take
     // a worker from the control API; and it is fed from the watch slot, never from the sim thread.
-    let bus_runtime = match via {
-        FeedVia::Direct => None,
-        FeedVia::Bus => {
-            let bus_runtime = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .thread_name("flysim-bus")
-                .enable_all()
-                .build()
-                .context("building the bus runtime")?;
-            let bus = bus_runtime.block_on(feedbus::start_router(&config.feed.bus_dir))?;
+    // One router for whatever rides the bus (`bus`): the feed publisher and the control
+    // services are two participants on it.
+    let uses = bus::Uses {
+        feed: via == FeedVia::Bus,
+        control: control_via == ControlVia::Bus,
+    };
+    let bus_runtime = if uses.feed || uses.control {
+        let bus_runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("flysim-bus")
+            .enable_all()
+            .build()
+            .context("building the bus runtime")?;
+        let scope = controlbus::Scope::live();
+        let bus = bus_runtime.block_on(bus::start(&config.feed.bus_dir, uses, &scope))?;
+        if uses.feed {
             bus_runtime.spawn(feedbus::run_publisher(
                 bus.router.clone(),
                 state.snapshots.clone(),
                 Arc::clone(&state.shared.metrics),
             ));
-            Some((bus_runtime, bus))
         }
+        let control_host = if uses.control {
+            Some(bus_runtime.block_on(controlbus::serve(&bus.router, state.clone(), &scope))?)
+        } else {
+            None
+        };
+        Some((bus_runtime, bus, control_host))
+    } else {
+        None
     };
-    {
+    if let Some(control_listener) = control_listener {
         let state = state.clone();
         runtime.spawn(async move {
             if let Err(error) = axum::serve(control_listener, api::router(state)).await {
@@ -210,10 +238,11 @@ where
 
     let notifier = sdnotify::Notifier::from_env();
     let result = sim(shared, snapshots_tx, command_rx, &notifier);
-    if let Some((bus_runtime, bus)) = bus_runtime {
+    if let Some((bus_runtime, bus, control_host)) = bus_runtime {
         // The publisher ends by itself once the watch sender is gone; stopping the runtime under
         // it, rather than the router first, keeps a last in-flight publish from being logged as
-        // a refusal. The edge sees the socket close either way.
+        // a refusal. The edges see their sockets close either way.
+        drop(control_host);
         drop(bus);
         bus_runtime.shutdown_timeout(std::time::Duration::from_secs(1));
     }
