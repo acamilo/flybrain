@@ -1462,3 +1462,23 @@ fn the_naming_screen_reads_unknown_in_a_battle_and_title_before_the_game() {
     wram.naming_screen(0, 7);
     assert_eq!(crate::pokemon_red::scene::detect(&mut wram), Scene::Title);
 }
+
+#[test]
+fn an_off_map_hidden_event_is_skipped_and_the_maps_other_entries_are_kept() {
+    // Row 73 review N1. The Safari Zone gate lists a nugget at (10, 1) on an 8 x 6 map, and the
+    // rest houses a copied Pokecenter PC at (13, 3) on 8 x 8 maps: one entry off its own map used
+    // to void the list.
+    let mut wram = Wram::new();
+    // Two blocks by two is a 4 x 4 tile map.
+    wram.map(0x5d, 2, 2, 1, 1).hidden_table(0x5d, &[(1, 10, 0x00), (2, 1, 0x04), (9, 1, 0x08), (0, 3, 0x17)]);
+    let events = hidden_events(&mut wram);
+    assert_eq!(
+        events.iter().map(|event| (event.x, event.y, event.index)).collect::<Vec<_>>(),
+        vec![(1, 2, 1), (3, 0, 3)],
+        "the entries on the map, under their own list positions"
+    );
+    // A list with nothing wrong in it is what it was.
+    let mut wram = Wram::new();
+    wram.map(0x5d, 2, 2, 1, 1).hidden_table(0x5d, &[(2, 1, 0x04)]);
+    assert_eq!(hidden_events(&mut wram).len(), 1);
+}

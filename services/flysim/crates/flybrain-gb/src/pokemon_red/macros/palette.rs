@@ -2282,10 +2282,25 @@ pub fn objective_targets(state: &mut dyn MacroState) -> Vec<(Tile, TalkTarget)> 
 fn open_targets(state: &mut dyn MacroState, targets: Vec<(Tile, TalkTarget)>) -> Vec<(Tile, TalkTarget)> {
     targets
         .into_iter()
-        .filter(|(_, target)| {
-            !state.talked(*target) && !state.blocked(TargetKey::Thing(*target))
+        .filter(|(tile, target)| {
+            !state.talked(*target)
+                && !state.blocked(TargetKey::Thing(*target))
+                && servable(state, *tile, *target)
         })
         .collect()
+}
+
+/// Whether some tile the objective's `target` can be pressed from is not one a script pushes the
+/// fly off (row 37). Only a one-sided hidden event can fail this: its single stand tile is the
+/// only door in, and with that tile pushed the walk has no aim, so it never ends in a refusal
+/// that earns a blocked entry -- and while a target waits the exits are withheld, so the room
+/// became a trap. A target nobody can stand in front of is not one the rung is waiting on, and
+/// it leaves the list at once: the exits are back the frame the pushed tile is learned.
+fn servable(state: &mut dyn MacroState, tile: Tile, target: TalkTarget) -> bool {
+    let Some(need) = required_facing(state, target) else { return true };
+    FACINGS.into_iter().filter(|facing| need == opposite(*facing)).any(|facing| {
+        tile.step(facing).is_some_and(|stand| !state.pushed_tile(stand.x, stand.y))
+    })
 }
 
 /// The one side the objective's `target` is pressed from, when the cartridge names one: a hidden

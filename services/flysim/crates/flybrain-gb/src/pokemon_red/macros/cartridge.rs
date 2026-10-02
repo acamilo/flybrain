@@ -691,6 +691,13 @@ impl Talked {
         self.0.insert((map, target));
     }
 
+    /// Forget everything talked to on `map` (row 73's errand: the cartridge shows the room's
+    /// people again after the fly leaves, and a conversation had on the last visit is not this
+    /// one's).
+    pub fn forget_map(&mut self, map: u8) {
+        self.0.retain(|(at, _)| *at != map);
+    }
+
     /// How many things this session has talked to, for a log line and the tests.
     pub fn len(&self) -> usize {
         self.0.len()

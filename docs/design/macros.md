@@ -2209,6 +2209,22 @@ What changed, all of it knowledge inside macros:
   so the walk's one aim is the tile on that side and only facing it from there is the arrival and
   `TALK`'s precondition. An argument that is an item or a text id and happens to equal a facing
   value only narrows the approach.
+- **An errand is recoverable inside one session (row 73 review).** The talked ledger is the
+  session's and never forgot, but the cartridge re-shows people: Route 25's script resets Bill's
+  event once the fly has left, and a Bill whose bag was full never handed over the ticket. A
+  conversation had on the last visit then retired this one's and the rung was unreachable until a
+  restart. The palette now notes the room while the errand is the objective and, on the first
+  frame the fly stands anywhere else with that errand still the objective, forgets that room's
+  talked entries (`Talked::forget_map`). Other rooms' entries and a room that is not the errand
+  keep theirs. The bag-full case needs no extra rule: nothing is left to aim at, the exits return,
+  and the fly leaves and comes back.
+- **A one-sided target nobody can stand in front of is not waited for.** If every tile a hidden
+  event can be pressed from is one the cartridge pushes the fly off (the pushed ledger, row 37),
+  the walk had no aim, so no walk ended `blocked` and the ways out stayed withheld for good. Such
+  a target leaves the errand's list at once (`palette::servable`), which returns the exits.
+- **A hidden-event entry off its own map is skipped.** The Safari Zone gate lists a nugget
+  "inaccessible" at (10, 1) on an 8 x 6 map, and the rest houses a copied Pokecenter PC; one such
+  entry no longer voids the rest of the map's list.
 
 The fly still chooses every press: `GO OBJECTIVE` to walk, `TALK` to press A, `YES`, `NO` or
 `NEXT` in Bill's boxes. Nothing presses for it, no button is added to any pad, and the readout, the

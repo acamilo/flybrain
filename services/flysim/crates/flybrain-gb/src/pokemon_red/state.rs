@@ -348,8 +348,6 @@ pub mod poke {
         pub const TYPE_ELECTRIC: u8 = 0x17;
     }
 
-    /// The cartridge's item-use dispatch and the ids that name its routines (row 63,
-    /// `docs/design/macros.md` 12.27).
     /// The cartridge's hidden-event tables (row 73, `docs/design/macros.md` 12.35).
     ///
     /// `engine/overworld/hidden_events.asm`: `CheckForHiddenEvent` walks `HiddenEventMaps`, one
@@ -375,6 +373,8 @@ pub mod poke {
         pub const FACINGS: [u8; 4] = [0x00, 0x04, 0x08, 0x0c];
     }
 
+    /// The cartridge's item-use dispatch and the ids that name its routines (row 63,
+    /// `docs/design/macros.md` 12.27).
     pub mod items {
         /// `engine/items/item_effects.asm`: `UseItem_` jumps through `ItemUsePtrTable`, one
         /// little-endian pointer per item id from `MASTER_BALL` (1) to `MAX_ELIXER` (`$53`), in
@@ -2084,7 +2084,7 @@ pub fn signs(memory: &mut dyn MemoryReader) -> Vec<Sign> {
 ///
 /// Empty on a map the table does not list, when the seam has no cartridge image behind it, and
 /// when the bytes are not the shape the disassembly describes -- a map list with no end, a pointer
-/// outside the bank's window, a list longer than any map's, a tile off the loaded map. A table
+/// outside the bank's window, a list longer than any map's. An entry whose tile is off the loaded map is skipped, not fatal. A table
 /// this module cannot read is not one it reports, so a wrong address narrows (`GO OBJECTIVE` has
 /// one less thing to aim at) and never invents a tile.
 pub fn hidden_events(memory: &mut dyn MemoryReader) -> Vec<HiddenEvent> {
@@ -2125,8 +2125,14 @@ fn hidden_events_inner(memory: &mut dyn MemoryReader) -> Option<Vec<HiddenEvent>
         let argument = memory.read_rom(TABLE_BANK, base + 2)?;
         let routine =
             u16::from_le_bytes([memory.read_rom(TABLE_BANK, base + 4)?, memory.read_rom(TABLE_BANK, base + 5)?]);
-        if x >= size.width || y >= size.height || routine >= 0x8000 {
+        if routine >= 0x8000 {
             return None;
+        }
+        // The cartridge has entries off their own map (the Safari Zone gate's inaccessible
+        // nugget, the rest houses' copied Pokecenter PC): the map's other entries are still
+        // good, so only the bad one is skipped. The entry index stays the list position.
+        if x >= size.width || y >= size.height {
+            continue;
         }
         let facing = FACINGS.contains(&argument).then(|| facing_from(argument));
         out.push(HiddenEvent { x, y, index: entry as u8, facing });
