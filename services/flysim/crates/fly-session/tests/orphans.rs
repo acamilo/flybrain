@@ -41,10 +41,11 @@ fn a_killed_parent_takes_its_workers_with_it() {
         let mut worker = Command::new("sleep");
         worker.arg("300");
         fly_session::launcher::die_with_parent(&mut worker);
-        let worker = worker.spawn().unwrap();
-        let control = Command::new("sleep").arg("300").spawn().unwrap();
+        let mut worker = worker.spawn().unwrap();
+        let mut control = Command::new("sleep").arg("300").spawn().unwrap();
         println!("{} {}", worker.id(), control.id());
-        std::thread::sleep(Duration::from_secs(600));
+        let _ = worker.wait();
+        let _ = control.wait();
         return;
     }
     let mut parent = Command::new(std::env::current_exe().unwrap())

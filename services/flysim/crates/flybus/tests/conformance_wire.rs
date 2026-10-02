@@ -631,7 +631,9 @@ async fn a_client_refuses_a_router_with_a_different_contract_digest_at_hello() {
         ),
     )
     .await;
-    let err = refused.err().expect("a mismatched digest must be refused");
+    let Err(err) = refused else {
+        panic!("a mismatched digest must be refused");
+    };
     assert_eq!(err.code, flybus::ErrorCode::VersionMismatch);
     assert_eq!(err.message, "router speaks a different contract");
 }
