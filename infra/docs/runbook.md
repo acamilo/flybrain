@@ -596,8 +596,9 @@ waits for the edge's `/healthz` (subscribed to the bus, a snapshot within 15 s) 
 `flystage.service` is active, for the page: `fly_feed_clients >= 1` on the edge's counters with
 `fly_frames_sent_total` advancing. Anything short of that within the timeout puts `FLY_FEED_VIA`
 back to `direct`, restarts flysim again, checks it the same way and exits 1 (`--no-rollback`
-leaves the failed switch in place for the operator; an interrupted switch, ssh dropped or INT, TERM
-or HUP, rolls back too). Every switch is in the journal (`journalctl -t fly-feed`) and
+leaves the failed switch in place for the operator; an interrupted `bus`, ssh dropped or INT, TERM
+or HUP, rolls back too). `direct` is the safe terminal state and is never rolled back: an interrupted
+`fly-feed direct` leaves `FLY_FEED_VIA=direct` and restarts flysim so the running process matches. Every switch is in the journal (`journalctl -t fly-feed`) and
 `/var/lib/fly/feed.log`.
 
 ### What to watch
@@ -607,7 +608,7 @@ or HUP, rolls back too). Every switch is in the journal (`journalctl -t fly-feed
 | `fly-feed status` | `configured: bus`, `running: bus`, `edge healthz: ok`, snapshot age under a second, `bus lost` and `bind failures` not growing | `running` differs from `configured` (a deploy wrote a new value; the next flysim start applies it); `edge healthz: NOT OK` |
 | edge `:9102/metrics` (loopback for the watchdog; the same address answers on the container's network for the dashboard) | `fly_edge_bus_connected 1`, `fly_edge_snapshot_age_seconds` under 1, `fly_feed_clients 1` (the page; the bridge or a test adds more), `fly_frames_sent_total` rising about 30 a second, `fly_edge_decode_failures_total 0`, `fly_edge_bind_failures_total 0` | `bus_connected 0` (flysim down, or restarting), `bind_failures_total` rising (something else holds :7400: a flysim still in direct mode, a stale process), `decode_failures_total` rising (a mismatched flysim and fly-edge: deploy one release) |
 | flysim `:9101/metrics` | `fly_bus_published_total` rising at the snapshot rate, `fly_bus_publish_failures_total` flat 0; `fly_feed_clients` and `fly_frames_sent_total` read **0 here in bus mode** (the counters belong to the edge) | publish failures rising: the store is full or the edge's seat is stuck; read `journalctl -u flysim -g "feed bus"` |
-| `fly_realtime_factor`, `fly_lag_seconds` | the same as the baseline from step 1, within the usual noise: the publisher is one 6% thread on the host CPU, and the websocket writes it replaces were on that CPU in direct mode | a drop that persists for the hour: switch back (`fly-feed direct`) and compare |
+| `fly_realtime_factor`, `fly_lag_seconds` | the same as the baseline from step 1, within the usual noise: the publisher is about 2 ms of CPU per snapshot (10x the direct websocket write), so with `SESSION_AUX_CPUS=1` it runs on its own CPU and the number is unchanged; without it, expect a loss of 1 to 2 ms of the 3.7 to 5.7 ms of headroom per frame | a drop that persists for the hour: switch back (`fly-feed direct`) and compare |
 | `ps -L -o pid,psr,comm -p $(pidof fly-edge)` / `grep Cpus_allowed_list /proc/$(pidof fly-edge)/status` | the page CPUs (`flyedge.service.d/cpuset.conf`, written by the deploy), never the sim's | an edge on the sim's CPUs: the cpuset drop-in is missing; re-run the deploy |
 | `ls -R /run/fly/bus/store | wc -l`, `du -sk /run/fly/bus` | a few files, under 1 MB, flat for days (the router keeps one retained snapshot and what the edge is still reading) | growth: report it, restart flysim, switch back |
 | `journalctl -u flyedge -u flysim -g "bus|feed|edge"`, `journalctl -t fly-watchdog -g flyedge` | `serving the feed from the bus` once per flysim start | `the feed bus went away` outside a flysim restart; a watchdog line `flyedge: ... failures` |
@@ -651,7 +652,7 @@ not move much. The live switch is the real A/B: take the step 1 baseline and com
 | --- | --- | --- |
 | WebSocket content, speed 0.25 so every frame is published, 4,261 and 5,406 frames compared | reference | frame, audio and spike attachments byte-equal on every frame; headers equal except a wall-clock "checkpoint saved" event that lands on different frames in any two runs |
 | Latency, snapshot stamped by the sim to received by a local client (median / p95) | 1 / 3 ms | 7 / 14 ms (two hops: seal into the store, read out) |
-| CPU per snapshot | 0.24 ms (flysim's websocket thread, on the host CPU) | 2.4 ms in flysim (`flysim-bus` publisher, on the host CPU, about 7% of a CPU at 30 Hz) and 1.1 ms in the edge (page CPUs) |
+| CPU per snapshot | 0.24 ms (flysim's websocket thread, on the host CPU) | 2.4 ms in flysim (`flysim-bus` publisher: on the aux CPU with `SESSION_AUX_CPUS`, else on the host CPU with the sim's dispatcher, about 7% of a CPU at 30 Hz and on the critical path) and 1.1 ms in the edge (page CPUs) |
 | Edge CPU and placement | n/a | 1.3% mean, 2.8% p95, only on the page CPUs |
 | Router store | n/a | 116 KB steady (median), 238 KB peak, 6 to 9 files, flat over the run |
 | Memory over 35 min plus the restarts | flysim 72 to 78 MB | flysim 65 to 69 MB, edge 8.3 to 9.6 MB; the page grows the same in both |
@@ -677,8 +678,15 @@ restore and warm-up; use the unstick rule's usual time.
   series); the metrics address is on every interface, as `:9101` is, and exposes nothing but
   counters.
 - **CPUs.** `flyedge.service` is confined to the page CPUs by the deploy's drop-in; the router and
-  the publisher run inside flysim, on its `flysim-bus` runtime (two threads on the host CPU, with
-  the listeners, not on a pinned sweep CPU).
+  the publisher run inside flysim, on its `flysim-bus` runtime: two threads plus tokio's blocking
+  pool, which does the artifact copies. **Give it a CPU of its own** (`SESSION_AUX_CPUS=1` in the
+  operator's env file, a page CPU added to `flysim.slice`; the deploy writes it to `fly.env` as
+  `FLY_SESSION_AUX_CPUS`, and the session pins the bus runtime there and the sweep and dispatcher to
+  the rest). Without it the runtime shares the host CPU with the sim's dispatcher, which costs about
+  1 ms per frame measured (the publisher is 1.3 to 2.5 ms of CPU per snapshot, 30 a second, on the
+  critical path; the barrier stalls behind it). Check: `grep Cpus_allowed_list /proc/$(pidof
+  flysim-session)/task/*/status` for the `flysim-bus` threads shows the aux CPU alone. Set it, run the
+  deploy, restart flysim, and only then `fly-feed bus`.
 - **The store** is `/run/fly/bus` (tmpfs, `fly` 0700, 32 MiB cap, in practice under 0.5 MB). A
   reboot empties it; a crashed flysim's directory is removed by the next one.
 - **Control (`:7401`)** stays in flysim and is not part of this switch.

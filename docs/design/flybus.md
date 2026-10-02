@@ -201,8 +201,11 @@ Accepted for now and written down rather than fixed:
   common to be identical (header minus the wall-clock fields, frame, audio and spike bytes), then
   stops the binary and starts a new one under the same edge, which must unbind, reconnect and
   serve. In the session runtime the router and publisher (`flysim-bus`, two threads) inherit the
-  host mask of `place_workers` (PERF-02), so they run on the host CPU with the listeners, never on
-  a pinned sweep CPU.
+  host mask of `place_workers` (PERF-02): on the host CPU with the listeners and the sim's dispatcher,
+  never on a pinned sweep CPU. That shared CPU costs the sim about a millisecond a frame (review
+  N1), so `FLY_SESSION_AUX_CPUS` moves them: `place_workers_aux` takes the aux CPUs out of the
+  sim's set and the `flysim-bus` runtime pins itself to them (`SESSION_AUX_CPUS` in the deploy puts
+  one page CPU into `flysim.slice` for it).
 - **One switch.** `FLY_FEED_VIA` in `fly.env` decides everything: `flyedge.service` has an
   `ExecCondition=` on it (skipped, not failed, in direct mode) and no `[Install]`;
   `flysim.service` has `Wants=flyedge.service`, so every start of flysim, including the stop and
@@ -210,8 +213,8 @@ Accepted for now and written down rather than fixed:
   mode. Checked on systemd 257 with the repo's own units: crash, restart and stop/start of flysim
   all end with the edge serving; direct mode never starts it. `infra/bin/fly-feed bus|direct`
   rewrites the line, restarts flysim, waits for a new invocation, the edge's `/healthz` and the
-  page on the feed (frames moving), and rolls itself back (to `direct`) when that does not happen
-  or when it is interrupted. It works on either runtime and survives `fly-runtime` changes.
+  page on the feed (frames moving), and rolls a `bus` switch back (to `direct`) when that does not happen
+  or when it is interrupted; `direct` is never rolled back. It works on either runtime and survives `fly-runtime` changes.
 - **Edge health.** `/healthz` is 503 unless the edge is subscribed **and** has taken a snapshot off
   the bus within 15 s (`fly_edge_snapshot_age_seconds`): a loop publishes at least the 2 Hz idle
   header, so silence means a wedged subscription, which `Subscription::next` alone would never
@@ -219,7 +222,7 @@ Accepted for now and written down rather than fixed:
 - **Watchdog.** `feed_via` follows the *running* flysim's environment (a deploy that rewrote
   fly.env but has not restarted flysim is not an outage). New check 2a judges the edge only while
   flysim answers: second failed pass restarts it, third adds the page and the encoder, fourth
-  switches the feed back to flysim (`fly-feed direct --no-wait`, sudoers for exactly that line).
+  switches the feed back to flysim (`fly-feed direct --no-wait`, sudoers for exactly that line), whatever the time the failures were spread over; an edge fault never reboots.
   Check 2 in bus mode leaves a silent edge to 2a instead of restarting a page with nothing to
   connect to.
 - **Deploy.** `05-deploy.sh` installs `fly-feed`, refuses a release without `fly-edge` while the

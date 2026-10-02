@@ -1836,6 +1836,26 @@ if grep -qx 'FLY_FEED_VIA=direct' "$ff_env" && grep -q 'interrupted or failed' "
 else
     fail "an interrupted fly-feed bus must roll back ($(grep FLY_FEED_VIA "$ff_env"); $(cat "$ff_dir/feed.log" 2>/dev/null | tr '\n' ';'))"
 fi
+# N2 (EDGE-02 notes): an interrupted `fly-feed direct` is never rolled back to bus: direct is the
+# safe terminal state, and flysim is restarted so the running process matches the line.
+ff_reset bus bus
+env FF_DIR="$ff_dir" FF_ENV="$ff_env" PATH="$ff_dir/bin:$PATH" FLY_ENV_FILE="$ff_env" \
+    FLY_RELEASE_DIR="$ff_dir/release" FLY_PROC_DIR="$ff_dir/proc" FLY_FEED_LOG="$ff_dir/feed.log" \
+    FLY_FEED_LOCK="$ff_dir/run/feed.lock" FLY_CONTROL_URL=http://control FLY_METRICS_URL=http://sim \
+    FLY_EDGE_METRICS_URL=http://edge FLY_FEED_HEALTH_TIMEOUT=30 FLY_FEED_SAMPLE_SECONDS=0 FF_CONTROL_OK=0 \
+    bash "$INFRA_DIR/bin/fly-feed" direct >/dev/null 2>&1 &
+ff_pid=$!
+sleep 2
+kill -TERM "$ff_pid" 2>/dev/null || true
+for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$ff_pid" 2>/dev/null || break; sleep 0.5; done
+(kill -0 "$ff_pid" 2>/dev/null && kill -KILL "$ff_pid" 2>/dev/null) || true
+wait "$ff_pid" 2>/dev/null || true
+if grep -qx 'FLY_FEED_VIA=direct' "$ff_env" && ! grep -q 'FLY_FEED_VIA=bus' "$ff_env" \
+    && grep -q 'kept: direct is the safe state' "$ff_dir/feed.log" 2>/dev/null && [ "$(ff_restarts)" -ge 2 ]; then
+    pass "fly-feed direct interrupted mid-switch stays on direct (never back to bus), flysim restarted to match"
+else
+    fail "an interrupted fly-feed direct must end on direct ($(grep FLY_FEED_VIA "$ff_env"); restarts $(ff_restarts); $(cat "$ff_dir/feed.log" 2>/dev/null | tr '\n' ';'))"
+fi
 rm -rf "$ff_dir"
 
 echo "--- fly-watchdog: check 2a (the edge) and check 2 in bus mode ---"
@@ -1912,6 +1932,21 @@ case "$(wd_acts)" in
     *"sudo /opt/fly/bin/fly-feed direct --no-wait;") pass "check 2a: the fourth failed pass puts the feed back on flysim (fly-feed direct --no-wait)" ;;
     *) fail "check 2a fourth failure must run fly-feed direct --no-wait: $(wd_acts)" ;;
 esac
+# N3 (EDGE-02 notes): failures spread over more than 15 minutes (passes are skipped while flysim is
+# down) still fall back to direct from the 4th, and a long run of edge failures never reboots.
+wd_reset; WD_CMDS='f="$(fails_file flyedge)"; for i in 1 2 3 4 5 6; do echo $(( $(now) - 7200 + i )) >> "$f"; done; check_flyedge'
+wd_edge bus WF_EDGE_OK=0
+case "$(wd_acts)" in
+    "sudo /opt/fly/bin/fly-feed direct --no-wait;") pass "check 2a: failures older than 15 minutes still fall back to direct, with no restart chain and no reboot" ;;
+    *) fail "check 2a with a stretched failure run must run fly-feed direct only: $(wd_acts)" ;;
+esac
+wd_reset; WD_CMDS='check_flyedge; check_flyedge; check_flyedge; check_flyedge; check_flyedge; check_flyedge; check_flyedge; check_flyedge'
+wd_edge bus WF_EDGE_OK=0
+if ! grep -q reboot "$wf_dir/actions.log" 2>/dev/null && [ ! -e "$wf_dir/state/last-reboot" ]; then
+    pass "check 2a: eight failed passes (fly-feed direct unable to fix it) never reboot the container"
+else
+    fail "an edge fault must never reboot: $(wd_acts)"
+fi
 wd_reset; WD_CMDS='check_flyedge; check_flyedge'
 wd_edge bus WF_EDGE_OK=1 WF_EDGE_ACTIVE=0
 case "$(wd_acts)" in
@@ -2032,8 +2067,8 @@ set -euo pipefail
 PLANEOF
 chmod +x "$plan_bin"
 check_plan() {
-    local label="$1" cpuset="$2" rayon="$3" encoder="$4" plan sim other u cpus bad=""
-    plan="$("$plan_bin" cpuset_dropin_plan "$cpuset" "$rayon" "$encoder" 2>&1)" || { fail "cpuset_dropin_plan: $label: died: $plan"; return 0; }
+    local label="$1" cpuset="$2" rayon="$3" encoder="$4" aux="${5:-0}" plan sim other u cpus bad=""
+    plan="$("$plan_bin" cpuset_dropin_plan "$cpuset" "$rayon" "$encoder" "$aux" 2>&1)" || { fail "cpuset_dropin_plan: $label: died: $plan"; return 0; }
     sim="$(awk '$1 == "flysim.slice" {print $2}' <<< "$plan")"
     other="$(awk '$1 == "FLY_OTHER_CPUS=" {print $2}' <<< "$plan")"
     [ "$sim" = "$(awk '$1 == "FLY_SIM_CPUS=" {print $2}' <<< "$plan")" ] || bad="$bad SIM-list-differs-from-slice"
@@ -2042,7 +2077,7 @@ check_plan() {
     done
     # every other unit, and the confinement list, is disjoint from the sim's cpus
     while read -r u cpus; do
-        case "$u" in flysim.slice|flysim.service|flysim-session.service|FLY_SIM_CPUS=) continue ;; esac
+        case "$u" in flysim.slice|flysim.service|flysim-session.service|FLY_SIM_CPUS=|FLY_AUX_CPUS=) continue ;; esac
         if [ -n "$(comm -12 <(tr ',' '\n' <<< "$sim" | sort) <(tr ',' '\n' <<< "$cpus" | sort))" ]; then
             bad="$bad $u-overlaps-sim"
         fi
@@ -2060,6 +2095,29 @@ check_plan() {
 }
 check_plan "release shape (sixteen cpus, four sim, four encoder)" "1,3,5,7,9,11,13,15,29,31,33,35,17,19,37,39" 4 4
 check_plan "ten cpus, ENCODER_CORES=3" "1,3,5,7,9,11,13,15,17,19" 4 3
+check_plan "release shape with one aux cpu (EDGE-02 N1)" "1,3,5,7,9,11,13,15,29,31,33,35,17,19,37,39" 4 4 1
+check_plan "release shape with two aux cpus" "1,3,5,7,9,11,13,15,29,31,33,35,17,19,37,39" 4 4 2
+# The aux cpu is the last page cpu, is in flysim.slice, is in FLY_SIM_CPUS (so fly-cpu-confine keeps every
+# other process off it), is named in FLY_AUX_CPUS and is in no page or encoder unit.
+aux_plan="$("$plan_bin" cpuset_dropin_plan "1,3,5,7,9,11,13,15,29,31,33,35,17,19,37,39" 4 4 1 2>&1)"
+if [ "$(awk '$1 == "flysim.slice" {print $2}' <<< "$aux_plan")" = "1,3,5,7,35" ] \
+    && [ "$(awk '$1 == "FLY_SIM_CPUS=" {print $2}' <<< "$aux_plan")" = "1,3,5,7,35" ] \
+    && [ "$(awk '$1 == "FLY_AUX_CPUS=" {print $2}' <<< "$aux_plan")" = "35" ] \
+    && [ "$(awk '$1 == "xvfb.service" {print $2}' <<< "$aux_plan")" = "9,11,13,15,29,31,33" ] \
+    && ! grep -q "FLY_AUX_CPUS=" <<< "$("$plan_bin" cpuset_dropin_plan "1,3,5,7,9,11,13,15,29,31,33,35,17,19,37,39" 4 4 2>&1)"; then
+    pass "cpuset_dropin_plan: the aux cpu (35) is flysim.slice's, in FLY_SIM_CPUS, off every page unit; none without SESSION_AUX_CPUS"
+else
+    fail "cpuset_dropin_plan: aux cpu wiring wrong: $aux_plan"
+fi
+if "$plan_bin" cpuset_dropin_plan "1,3,5,7,9,11,13,15,17,19" 4 3 3 >/dev/null 2>&1; then
+    fail "cpuset_dropin_plan: SESSION_AUX_CPUS that leaves no page cpu must be refused"
+else
+    pass "cpuset_dropin_plan: SESSION_AUX_CPUS that leaves no page cpu is refused"
+fi
+grep -q 'FLY_SESSION_AUX_CPUS=${SESSION_AUX_LIST}' "$INFRA_DIR/05-deploy.sh" \
+    && grep -q 'SESSION_AUX_EFFECTIVE")"' "$INFRA_DIR/05-deploy.sh" \
+    && pass "05-deploy.sh writes FLY_SESSION_AUX_CPUS and passes the aux count to the plan" \
+    || fail "05-deploy.sh must write FLY_SESSION_AUX_CPUS and pass SESSION_AUX_EFFECTIVE to cpuset_dropin_plan"
 check_plan "eight cpus, default encoder" "1,3,5,7,9,11,13,15" 4 ""
 check_plan "dev shape (RAYON_THREADS=2)" "0,2,4,6,8,10,12,14" 2 ""
 # the generated drop-ins: a slice gets [Slice], a service [Service], both AllowedCPUs=

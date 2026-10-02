@@ -24,7 +24,10 @@
 #      (a box that only serves the feed) the wait ends at 2.
 # If that does not happen, `bus` puts FLY_FEED_VIA back to what it was, restarts flysim and checks
 # the same way (--no-rollback leaves it to the operator); `direct` is already the way back, so it
-# only reports. A switch that is interrupted (ssh drops, INT/TERM/HUP) rolls back the same way.
+# only reports. `direct` is the safe terminal state: once the line says direct nothing, an
+# interrupted switch included (ssh drops, INT/TERM/HUP), puts bus back, and an interrupted
+# `direct` restarts flysim itself so the running process matches the line. An interrupted `bus`
+# rolls back the same way as a failed one.
 # `--no-restart` only rewrites the line (the next start of flysim applies it). `--no-wait` restarts
 # flysim without blocking and does not wait for health or roll anything back: it is what the
 # watchdog runs (as a sudoers-granted `fly-feed direct --no-wait`) when the edge cannot be kept up.
@@ -253,6 +256,9 @@ fi
 # way back is direct: the state that worked.
 back="$before"
 if [ "$before" = bus ] && [ "$command" = bus ]; then back=direct; fi
+# Direct is where a failed bus ends up, so a switch TO direct has nowhere safer to go: it is never
+# undone (it used to roll back to `before`, which sent an operator escaping a bad bus back onto it).
+if [ "$command" = direct ]; then back=direct; fi
 switching=0
 restarted=0
 # shellcheck disable=SC2317  # runs from the EXIT trap
@@ -262,7 +268,11 @@ on_exit() {
     if [ "$switching" -eq 1 ]; then
         switching=0
         set_via "$back" || true
-        record "${back} (switch to ${command} interrupted or failed (exit ${rc}); rolled back)"
+        if [ "$command" = direct ]; then
+            record "direct (switch to direct interrupted (exit ${rc}); kept: direct is the safe state, flysim restarted to match)"
+        else
+            record "${back} (switch to ${command} interrupted or failed (exit ${rc}); rolled back)"
+        fi
         if [ "$restarted" -eq 1 ]; then restart_flysim || true; fi
     fi
     exit "$rc"

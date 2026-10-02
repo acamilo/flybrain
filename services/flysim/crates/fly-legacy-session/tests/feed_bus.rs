@@ -121,6 +121,11 @@ struct Service {
 
 impl Service {
     fn start(config: Config, work: &Path, name: &str) -> Service {
+        Service::start_env(config, work, name, &[])
+    }
+
+    /// [`Service::start`] with extra environment, which wins over the test's defaults.
+    fn start_env(config: Config, work: &Path, name: &str, envs: &[(&str, &str)]) -> Service {
         let path = work.join(format!("{name}.toml"));
         std::fs::write(&path, toml::to_string(&config).unwrap()).unwrap();
         let log = std::fs::File::create(work.join(format!("{name}.log"))).unwrap();
@@ -136,6 +141,7 @@ impl Service {
             .env_remove("FLY_FEED_BIND")
             .env_remove("FLY_CONTROL_BIND")
             .env_remove("FLY_METRICS_ADDR")
+            .envs(envs.iter().copied())
             .stdout(Stdio::null())
             .stderr(log)
             .spawn()
@@ -399,4 +405,76 @@ fn the_session_runtime_serves_the_same_feed_over_the_bus() {
         bus.len()
     );
     assert!(compared >= FRAMES / 2, "only {compared} frames in common");
+}
+
+/// The cpus a `/proc/.../status` says a thread may run on.
+fn allowed_cpus(status: &Path) -> Vec<usize> {
+    let text = std::fs::read_to_string(status).unwrap_or_default();
+    let line = text
+        .lines()
+        .find_map(|l| l.strip_prefix("Cpus_allowed_list:"))
+        .unwrap_or("")
+        .trim()
+        .to_owned();
+    flybrain_core::pool::parse_cpu_list(&line).unwrap_or_default()
+}
+
+/// EDGE-02 review N1: with `FLY_SESSION_AUX_CPUS` the feed publisher's runtime (`flysim-bus`, its
+/// blocking pool included) runs on the aux cpu alone, and no other thread of the service may.
+/// Needs a toy store and three cpus (two sweep workers and one aux); no ROM.
+#[test]
+fn the_bus_threads_run_on_the_aux_cpu_and_nothing_else_does() {
+    let allowed = allowed_cpus(Path::new("/proc/self/status"));
+    if allowed.len() < 3 {
+        eprintln!("skipping: needs three cpus, have {allowed:?}");
+        return;
+    }
+    let Some(rom) = rom_path() else { return };
+    let aux = *allowed.last().unwrap();
+    let dataset = fly_session::legacy_parity::toy::dir();
+    let root = tempfile::tempdir().unwrap();
+    let seeded = root.path().join("seeded");
+    std::fs::create_dir_all(&seeded).unwrap();
+    seed_by_legacy_fresh_start(&rom, &dataset, &seeded);
+    let dir = fresh_dir(root.path(), &seeded, "aux");
+    let mut config = config(&rom, &dataset, &dir, FeedVia::Bus, &root.path().join("aux-bus"));
+    config.loop_.threads = 2;
+    let aux_text = aux.to_string();
+    let service = Service::start_env(
+        config,
+        root.path(),
+        "aux",
+        &[("FLY_SESSION_PIN", "1"), ("FLY_SESSION_AUX_CPUS", &aux_text)],
+    );
+    let task_dir = PathBuf::from(format!("/proc/{}/task", service.child.id()));
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let mut bus = 0;
+        let mut others = Vec::new();
+        for task in std::fs::read_dir(&task_dir).into_iter().flatten().flatten() {
+            let comm = std::fs::read_to_string(task.path().join("comm"))
+                .unwrap_or_default()
+                .trim()
+                .to_owned();
+            let cpus = allowed_cpus(&task.path().join("status"));
+            if comm == "flysim-bus" {
+                bus += 1;
+                assert_eq!(cpus, vec![aux], "a flysim-bus thread is on {cpus:?}, not on {aux}");
+            } else {
+                others.push((comm, cpus));
+            }
+        }
+        if bus >= 2 && others.len() >= 3 {
+            for (comm, cpus) in &others {
+                assert!(!cpus.contains(&aux), "thread {comm} may run on the aux cpu {aux}: {cpus:?}");
+            }
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "never saw the bus threads: {bus} bus, {} others",
+            others.len()
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }

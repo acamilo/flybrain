@@ -83,9 +83,13 @@ pub const SESSION_PROFILE_ENV: &str = "FLY_SESSION_PROFILE";
 /// `0` keeps every thread floating over the cpuset; anything else, or unset, places them
 /// ([`place_threads`]).
 pub const SESSION_PIN_ENV: &str = "FLY_SESSION_PIN";
-/// Process mode: a CPU list for the service process (router, coordinator, listeners, checkpoint
-/// writer) and the environment process, instead of the sweep's host CPU (BUS-01). It must lie in
-/// the unit's cpuset (on the containers, `flysim.slice`'s AllowedCPUs).
+/// A CPU list for the threads that are not the sim, instead of the sweep's host CPU. It must lie
+/// in the unit's cpuset (on the containers, `flysim.slice`'s AllowedCPUs, where 05-deploy.sh adds
+/// it with `SESSION_AUX_CPUS`) and is exclusive to those threads. Process mode (BUS-01): the
+/// service process (router, coordinator, listeners, checkpoint writer) and the environment
+/// process. In-process and thread modes (EDGE-02): the `flysim-bus` runtime, i.e. the feed
+/// publisher, the router and the control services; the sweep workers, the dispatcher and every
+/// other thread are placed on the rest.
 pub const SESSION_AUX_CPUS_ENV: &str = "FLY_SESSION_AUX_CPUS";
 
 /// How the service composes its session, beyond flysim's own [`Config`].
@@ -348,8 +352,29 @@ fn place_threads(config: &Config, options: &mut ServiceOptions) {
         );
         return;
     }
-    if std::env::var_os(SESSION_AUX_CPUS_ENV).is_some() {
-        tracing::warn!("{SESSION_AUX_CPUS_ENV} is for process mode; ignored");
+    // In-process and thread modes: FLY_SESSION_AUX_CPUS names cpus of the unit's cpuset that are
+    // not the sim's. The sweep and the dispatcher are placed on the rest, and the bus runtime
+    // (feed publisher, router, control services) on these (EDGE-02 review N1).
+    if let Some(value) = std::env::var(SESSION_AUX_CPUS_ENV).ok().filter(|v| !v.is_empty()) {
+        match flybrain_core::pool::parse_cpu_list(&value) {
+            None => tracing::warn!("{SESSION_AUX_CPUS_ENV}={value:?} is not a cpu list; ignored"),
+            Some(aux) => match flybrain_core::pool::place_workers_aux(workers, &aux) {
+                Some((placement, aux)) => {
+                    tracing::info!(
+                        sweep_workers = ?placement.workers,
+                        host = ?placement.host,
+                        bus_aux = ?aux,
+                        "sweep workers pinned one per cpu; the bus runtime on the aux cpus, every \
+                         other thread on the host cpus"
+                    );
+                    return;
+                }
+                None => tracing::warn!(
+                    "{SESSION_AUX_CPUS_ENV}={value:?} is not inside the cpuset, or leaves fewer \
+                     cpus than sweep threads; ignored (the bus runtime shares the host cpus)"
+                ),
+            },
+        }
     }
     match flybrain_core::pool::place_workers(workers) {
         Some(placement) => tracing::info!(

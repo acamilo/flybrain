@@ -197,6 +197,11 @@ NEED_RELOAD=0
 # ---------------------------------------------------------------------------
 RAYON_THREADS_EFFECTIVE="${RAYON_THREADS:-3}"
 ENCODER_CORES_EFFECTIVE="${ENCODER_CORES:-2}"
+# Page cpus given to flysim's bus threads (EDGE-02 review N1): added to flysim.slice, taken from the
+# page group, named to the session as FLY_SESSION_AUX_CPUS. 0 (the default) changes nothing.
+SESSION_AUX_EFFECTIVE="${SESSION_AUX_CPUS:-0}"
+case "$SESSION_AUX_EFFECTIVE" in ''|*[!0-9]*) die "SESSION_AUX_CPUS ('${SESSION_AUX_EFFECTIVE}') must be a number of cpus (0 = none)" ;; esac
+SESSION_AUX_LIST=""
 DEPLOY_CPUS=""
 # 1 once the cpuset partition is in force for this deploy (section 3b writes it); fly.env says so to
 # flysim-session, which pins its sweep workers only into a cpuset that is the sim's alone.
@@ -208,6 +213,10 @@ if [ -n "${CPUSET:-}" ]; then
         read -r _deploy_sim_cpus DEPLOY_CPUS _deploy_encoder_cpus \
             <<< "$(cpuset_partition "$CPUSET" "$RAYON_THREADS_EFFECTIVE" "$ENCODER_CORES_EFFECTIVE")"
         PARTITION_ACTIVE=1
+        if [ "$SESSION_AUX_EFFECTIVE" -gt 0 ]; then
+            _aux_split="$(cpuset_aux_split "$DEPLOY_CPUS" "$SESSION_AUX_EFFECTIVE")" || exit 1
+            read -r DEPLOY_CPUS SESSION_AUX_LIST <<< "$_aux_split"
+        fi
         log "05-deploy: heavy in-container steps pinned to the page cpus (${DEPLOY_CPUS}) so extraction/verification cannot compete with flysim"
     else
         log "05-deploy: NOT pinning the heavy in-container steps — the fly-cpuset block in" \
@@ -606,6 +615,10 @@ trap 'rm -f "$tmp_fly_env" "$tmp_flypush_env"' EXIT
     else
         echo "FLY_SESSION_PIN=0"
     fi
+    # EDGE-02 review N1: the bus threads' own cpu, in flysim.slice and in nobody else's set.
+    if [ "$PARTITION_ACTIVE" -eq 1 ] && [ -n "$SESSION_AUX_LIST" ]; then
+        echo "FLY_SESSION_AUX_CPUS=${SESSION_AUX_LIST}"
+    fi
     echo "FLY_MACRO_MODE=${FLY_MACRO_MODE:-raw}"
     # Who serves the feed WebSocket (docs/design/flybus.md, "Feed over the
     # bus"). "direct" is the default and is flysim binding :7400 itself, as
@@ -614,7 +627,7 @@ trap 'rm -f "$tmp_fly_env" "$tmp_flypush_env"' EXIT
     # never enables: see that unit's header for the switch. Written
     # unconditionally, like FLY_MACRO_MODE, so one grep says which a box runs.
     # Watchdog check 2 reads this line to know whose /metrics carries the
-    # feed counters (flysim's :9101, or flyedge's loopback :9102).
+    # feed counters (flysim's :9101, or flyedge's :9102 (all interfaces, counters only)).
     # Validated and lowercased above (feed_via_normalize).
     echo "FLY_FEED_VIA=${FLY_FEED_VIA_EFFECTIVE}"
     # Who serves the control API on :7401 (docs/design/flybus.md, "Control over
@@ -758,7 +771,7 @@ if [ -n "${CPUSET:-}" ]; then
             "Run 01-create-ct.sh first; an AllowedCPUs= outside the container's own cpuset" \
             "leaves cpuset.cpus.effective empty and the unit unstartable."
     else
-        plan="$(cpuset_dropin_plan "$CPUSET" "$RAYON_THREADS_EFFECTIVE" "$ENCODER_CORES_EFFECTIVE")"
+        plan="$(cpuset_dropin_plan "$CPUSET" "$RAYON_THREADS_EFFECTIVE" "$ENCODER_CORES_EFFECTIVE" "$SESSION_AUX_EFFECTIVE")"
         log "05-deploy: cpuset partition — $(echo "$plan" | awk '$1 !~ /=$/ {printf "%s%s=%s", sep, $1, $2; sep=", "}')"
         tmp_dropin="$(mktemp)"
         # flyedge is off by default, but its drop-in is written with the rest so that the day

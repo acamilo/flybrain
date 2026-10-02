@@ -454,7 +454,12 @@ check_flyedge() {
     record_fail flyedge
     local n
     n="$(fail_count flyedge)"
-    if [ "$n" -ge 4 ] && fails_within_minutes flyedge 15; then
+    # From the 4th consecutive failure on, whatever the time the failures were spread over (passes
+    # are skipped while flysim is down, so a flapping flysim stretches the run past any window): the
+    # fallback to direct comes first and a reboot is never the answer to an edge fault. Only
+    # n = 2 and 3 reach escalate (its reboot needs 5), and a failed `fly-feed direct` is retried on
+    # the next pass instead of falling through to it.
+    if [ "$n" -ge 4 ]; then
         log_err "flyedge: ${n} consecutive failures, restarts did not bring it back: switching the feed to direct (fly-feed direct)"
         inc_counter "escalations_total"
         sudo /opt/fly/bin/fly-feed direct --no-wait || log_err "fly-feed direct FAILED; the edge stays down"
