@@ -33,6 +33,9 @@ type Job = dyn Fn(usize) + Sync;
 /// (`1..workers`) runs on `WORKER_CPUS[i - 1]`. Unset -- the default, and always for the legacy
 /// loop -- the workers float over the process's CPUs as they always have.
 static WORKER_CPUS: OnceLock<Vec<usize>> = OnceLock::new();
+/// The CPUs of the process's auxiliary threads (the bus runtime), when [`place_workers_aux`]
+/// reserved some outside the sim's set.
+static AUX_CPUS: OnceLock<Vec<usize>> = OnceLock::new();
 
 struct Shared {
     /// Bumped once per dispatch. A worker runs when this differs from what it last saw.
@@ -296,6 +299,56 @@ pub fn place_workers(workers: usize) -> Option<Placement> {
     Some(placement)
 }
 
+/// Splits `allowed` like [`split_cpus`], after taking `aux` out of it: `aux` must be a non-empty
+/// subset of `allowed` and leave at least `workers` CPUs for the sim. Returns the sim's placement
+/// (sweep workers, dispatcher and host, never an `aux` CPU) and the aux list. `None` otherwise.
+pub fn split_cpus_aux(
+    allowed: &[usize],
+    workers: usize,
+    aux: &[usize],
+) -> Option<(Placement, Vec<usize>)> {
+    let mut aux = aux.to_vec();
+    aux.sort_unstable();
+    aux.dedup();
+    if aux.is_empty() || aux.iter().any(|c| !allowed.contains(c)) {
+        return None;
+    }
+    let rest: Vec<usize> = allowed.iter().copied().filter(|c| !aux.contains(c)).collect();
+    Some((split_cpus(&rest, workers)?, aux))
+}
+
+/// [`place_workers`] with `aux` CPUs reserved for the process's auxiliary threads (the feed
+/// publisher and the bus runtime): the sweep workers, the dispatcher and every ordinary thread
+/// stay off them, and [`confine_to_aux`] (the bus runtime's `on_thread_start`) puts a thread on
+/// them. `None`, and nothing changed, when `aux` is not a subset of the allowed CPUs, leaves too
+/// few for the sim, or a placement was already made. Placement decides only the CPU.
+pub fn place_workers_aux(workers: usize, aux: &[usize]) -> Option<(Placement, Vec<usize>)> {
+    if WORKER_CPUS.get().is_some() {
+        return None;
+    }
+    let (placement, aux) = split_cpus_aux(&affinity::allowed()?, workers, aux)?;
+    if !affinity::set_current(&placement.host) {
+        return None;
+    }
+    WORKER_CPUS.set(placement.workers.clone()).ok()?;
+    let _ = AUX_CPUS.set(aux.clone());
+    Some((placement, aux))
+}
+
+/// Confines the calling thread to the aux CPUs [`place_workers_aux`] reserved. A no-op (false)
+/// when none were: the thread keeps what it inherited.
+pub fn confine_to_aux() -> bool {
+    match AUX_CPUS.get() {
+        Some(aux) => affinity::set_current(aux),
+        None => false,
+    }
+}
+
+/// The aux CPUs reserved by [`place_workers_aux`], if any.
+pub fn aux_cpus() -> Option<&'static [usize]> {
+    AUX_CPUS.get().map(Vec::as_slice)
+}
+
 /// [`place_workers`] with a plan made elsewhere (BUS-01): a separate agent process is handed its
 /// placement by the launcher, which split the service's cpuset, instead of splitting its own mask.
 /// Confines the calling thread (and every thread it spawns afterwards) to `placement.host` and
@@ -447,6 +500,29 @@ impl<'a, T> SharedSlice<'a, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aux_cpus_are_taken_out_of_the_sim_set() {
+        // The release layout plus one page cpu: sweep 3,5,7, host 1, bus threads on 9.
+        let (placement, aux) = split_cpus_aux(&[1, 3, 5, 7, 9], 4, &[9]).expect("a plan");
+        assert_eq!(placement.workers, vec![3, 5, 7]);
+        assert_eq!(placement.host, vec![1]);
+        assert_eq!(aux, vec![9]);
+        // No aux cpu is ever a worker or host cpu, whatever its position.
+        let (p, a) = split_cpus_aux(&[1, 3, 5, 7, 9, 11], 4, &[3, 11, 3]).expect("a plan");
+        assert_eq!(a, vec![3, 11]);
+        assert!(p.workers.iter().chain(&p.host).all(|c| !a.contains(c)));
+        // Refused: not in the allowed set, empty, or too few left for the sim.
+        assert_eq!(split_cpus_aux(&[1, 3, 5, 7], 4, &[9]), None);
+        assert_eq!(split_cpus_aux(&[1, 3, 5, 7, 9], 4, &[]), None);
+        assert_eq!(split_cpus_aux(&[1, 3, 5, 7], 4, &[7]), None);
+    }
+
+    #[test]
+    fn confining_to_aux_without_a_reservation_is_a_no_op() {
+        assert!(aux_cpus().is_none());
+        assert!(!confine_to_aux());
+    }
 
     #[test]
     fn every_index_runs_exactly_once() {

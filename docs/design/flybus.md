@@ -1,8 +1,9 @@
 # flybus: the communications bus
 
 Status: **crate landed; the feed rides it behind `FLY_FEED_VIA=bus` and the control API behind
-`FLY_CONTROL_VIA=bus`, both off by default**. Written 2026-09-22, amended 2026-09-23 (EDGE-01)
-and 2026-10-01 (CTRL-01, "Control over the bus", below). Index only; the
+`FLY_CONTROL_VIA=bus`, both off by default; EDGE-02 (2026-10-01) made the feed switchable in
+production with one command, `fly-feed bus|direct`**. Written 2026-09-22, amended 2026-09-23
+(EDGE-01) and 2026-10-01 (EDGE-02 and CTRL-01, below). Index only; the
 authority for the API and the wire format is the crate's own
 [README](../../services/flysim/crates/flybus/README.md), and the audit of the crate against
 the draft is the [conformance report](session-framework/bus-conformance.md).
@@ -189,6 +190,50 @@ Accepted for now and written down rather than fixed:
   escalates. Switch back to `direct` first (the unit header's way back), then roll back.
 - **Old fixtures.** `cold-open`, `steady` and `big-moment` predate `game.scene` and cannot be a
   Rust `FeedHeader`, so fixture parity covers `macros`, `shop`, `center` and `bigpad`.
+
+### Amendment 2026-10-01: the feed in production (EDGE-02)
+
+- **The session runtime needed nothing.** `flysim-session` serves its listeners through
+  `flysim::serve`, the same function `flysim` does, so `FLY_FEED_VIA=bus` works on it as it was
+  written for legacy. It is now a test, not an inference: `fly-legacy-session/tests/feed_bus.rs`
+  runs the real `flysim-session` binary (toy connectome, the real cartridge) twice from copies of
+  one store, direct and bus, records both feeds over a WebSocket and requires every frame in
+  common to be identical (header minus the wall-clock fields, frame, audio and spike bytes), then
+  stops the binary and starts a new one under the same edge, which must unbind, reconnect and
+  serve. In the session runtime the router and publisher (`flysim-bus`, two threads) inherit the
+  host mask of `place_workers` (PERF-02): on the host CPU with the listeners and the sim's dispatcher,
+  never on a pinned sweep CPU. That shared CPU costs the sim about a millisecond a frame (review
+  N1), so `FLY_SESSION_AUX_CPUS` moves them: `place_workers_aux` takes the aux CPUs out of the
+  sim's set and the `flysim-bus` runtime pins itself to them (`SESSION_AUX_CPUS` in the deploy puts
+  one page CPU into `flysim.slice` for it).
+- **One switch.** `FLY_FEED_VIA` in `fly.env` decides everything: `flyedge.service` has an
+  `ExecCondition=` on it (skipped, not failed, in direct mode) and no `[Install]`;
+  `flysim.service` has `Wants=flyedge.service`, so every start of flysim, including the stop and
+  start of `fly-loop-reset` that `Requires=` alone left without an edge, brings the edge up in bus
+  mode. Checked on systemd 257 with the repo's own units: crash, restart and stop/start of flysim
+  all end with the edge serving; direct mode never starts it. `infra/bin/fly-feed bus|direct`
+  rewrites the line, restarts flysim, waits for a new invocation, the edge's `/healthz` and the
+  page on the feed (frames moving), and rolls a `bus` switch back (to `direct`) when that does not happen
+  or when it is interrupted; `direct` is never rolled back. It works on either runtime and survives `fly-runtime` changes.
+- **Edge health.** `/healthz` is 503 unless the edge is subscribed **and** has taken a snapshot off
+  the bus within 15 s (`fly_edge_snapshot_age_seconds`): a loop publishes at least the 2 Hz idle
+  header, so silence means a wedged subscription, which `Subscription::next` alone would never
+  report.
+- **Watchdog.** `feed_via` follows the *running* flysim's environment (a deploy that rewrote
+  fly.env but has not restarted flysim is not an outage). New check 2a judges the edge only while
+  flysim answers: second failed pass restarts it, third adds the page and the encoder, fourth
+  switches the feed back to flysim (`fly-feed direct --no-wait`, sudoers for exactly that line), whatever the time the failures were spread over; an edge fault never reboots.
+  Check 2 in bus mode leaves a silent edge to 2a instead of restarting a page with nothing to
+  connect to.
+- **Deploy.** `05-deploy.sh` installs `fly-feed`, refuses a release without `fly-edge` while the
+  env file or the container says `bus` (before `current` moves; `fly-feed direct` needs no
+  binary), and warns when the container's `FLY_FEED_VIA` differs from the env file's. flysim and
+  the edge both follow fly.env at their next start, so a disagreement never leaves the stage with
+  no feed.
+- **Known limits, revisited.** *Feed counters off the container*: the edge's `/metrics` now listens
+  on `0.0.0.0:9102` like flysim's `:9101`; a dashboard adds it as a second target (the watchdog
+  stays on loopback). *Rollback while in bus mode*: refused by the deploy and one command by
+  `fly-feed direct`. *Store quota per router* and *old fixtures*: unchanged, accepted as written.
 
 ## Control over the bus (2026-10-01, CTRL-01)
 
