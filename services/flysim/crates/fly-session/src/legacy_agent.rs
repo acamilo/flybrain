@@ -42,6 +42,7 @@ use flybrain_core::envelope::{
     agent_from_chunks, agent_to_chunks, decode_envelope, encode_envelope,
 };
 use flybrain_core::json::JsonValue;
+use flybrain_core::lif::health as lif_health;
 use flybrain_core::lif::{LifBackend, LifConfig, SweepPlan, kernel_version};
 use serde_json::{Value, json};
 
@@ -521,9 +522,6 @@ pub struct LegacyAgentWorker {
     tick_spikes: Option<Vec<u8>>,
     staged: Option<StagedAgent>,
     activated: BTreeSet<Id>,
-    /// Set once the GPU backend has failed in this worker: every agent it builds from then on
-    /// (a restore after the failure) runs on the CPU.
-    backend_fault: Option<String>,
     /// Every mutation this worker applied, reported as its progress counter.
     mutations: u64,
     /// Reinforcement calls applied since the fly's fresh start; captured.
@@ -722,7 +720,6 @@ impl LegacyAgentWorker {
             prepared: None,
             transition_start_ms: 0.0,
             tick_spikes: None,
-            backend_fault: None,
             staged: None,
             activated: BTreeSet::new(),
             mutations: 0,
@@ -877,6 +874,63 @@ impl LegacyAgentWorker {
 
     /// Builds a network and readout over `dataset`, before any state is installed, and checks
     /// every identity the profile pins: kernel and plasticity versions, frame size, rate roles.
+    /// The backend this agent runs on, attached. A GPU that already failed in this process is
+    /// not tried again, and one that cannot be attached now (a lost device, a failed CUDA init
+    /// after a restart) is a fallback to the CPU with a warning, never a failed worker
+    /// (operator decision, 2026-10-02): the stream keeps going from the same checkpoint, which
+    /// is backend-neutral. A build without the `cuda` feature that is asked for the GPU is a
+    /// misconfiguration and still fails `Agent.Initialize`.
+    ///
+    /// Each attach builds a new backend (about 57 MiB of device memory) while the agent it
+    /// replaces may still be alive; harmless on a 24 GB card, to be budgeted when GPU-03 batches
+    /// flies onto an 8 GB one.
+    fn attach_backend(
+        &self,
+        agent: &mut NeuralAgent,
+        wanted: LifBackend,
+    ) -> Result<LifBackend, DomainError> {
+        let LifBackend::Cuda { .. } = wanted else {
+            agent.network.set_backend(LifBackend::Cpu).map_err(|e| {
+                DomainError::before(ErrorCode::BackendFailure, format!("LIF backend cpu: {e}"))
+            })?;
+            return Ok(LifBackend::Cpu);
+        };
+        if LifBackend::cuda_compiled() {
+            if lif_health::gpu_unusable() {
+                eprintln!(
+                    "legacy agent {}: LIF backend cpu (the GPU failed earlier in this process: {})",
+                    self.config.agent_id,
+                    lif_health::last_reason().unwrap_or_default()
+                );
+                return Ok(LifBackend::Cpu);
+            }
+            return match agent.network.set_backend(wanted) {
+                Ok(()) => Ok(wanted),
+                Err(e) => {
+                    lif_health::record_fallback(&format!(
+                        "agent {}: attaching {} failed: {e}",
+                        self.config.agent_id,
+                        wanted.label()
+                    ));
+                    Ok(LifBackend::Cpu)
+                }
+            };
+        }
+        agent.network.set_backend(wanted).map_err(|e| {
+            DomainError::before(
+                ErrorCode::BackendFailure,
+                format!("LIF backend {}: {e}", wanted.label()),
+            )
+        })?;
+        Ok(wanted)
+    }
+
+    /// A GPU failure in this worker: the GPU is out for the process, and the metric says so.
+    fn gpu_failed(config: &LegacyAgentConfig, reason: &str) {
+        lif_health::record_fallback(&format!("agent {}: {reason}", config.agent_id));
+        lif_health::write_textfile(LifBackend::Cpu, config.lif_backend.clone().unwrap_or_default());
+    }
+
     fn build_agent(
         &self,
         dataset: Arc<BrainDataset>,
@@ -944,19 +998,10 @@ impl LegacyAgentWorker {
             // Without the core's `FLY_LIF_CUDA` test hook: the backend is this worker's choice.
             agent.network.configure_sweep(plan);
         }
-        let backend = self.config.lif_backend.clone().map_err(|e| {
+        let wanted = self.config.lif_backend.clone().map_err(|e| {
             DomainError::before(ErrorCode::BackendFailure, format!("LIF backend: {e}"))
         })?;
-        let backend = match (&self.backend_fault, backend) {
-            (Some(_), LifBackend::Cuda { .. }) => LifBackend::Cpu,
-            (_, backend) => backend,
-        };
-        agent.network.set_backend(backend).map_err(|e| {
-            DomainError::before(
-                ErrorCode::BackendFailure,
-                format!("LIF backend {}: {e}", backend.label()),
-            )
-        })?;
+        let backend = self.attach_backend(&mut agent, wanted)?;
         if backend != LifBackend::Cpu {
             eprintln!(
                 "legacy agent {}: LIF backend {} attached, device-owned state",
@@ -964,6 +1009,7 @@ impl LegacyAgentWorker {
                 backend.label()
             );
         }
+        lif_health::write_textfile(backend, wanted);
         let fingerprint = self.profile.dataset_fingerprint.clone();
         let graph = AgentGraph {
             dataset_digest: dataset_digest(&fingerprint),
@@ -1204,19 +1250,19 @@ impl LegacyAgentWorker {
         // would scan out of `last_spike_ms`.
         let mut bits = vec![0u8; agent.network.last_spike_ms.len().div_ceil(8)];
         if let Err(e) = agent.network.step_frame(ticks, &mut bits) {
-            eprintln!(
-                "legacy agent {}: {e}; the agent fails and the next restore runs on the CPU",
-                self.config.agent_id
-            );
-            self.backend_fault = Some(e.to_string());
+            // The device state was the only current copy, so this worker cannot go on: it fails
+            // and the replacement restores the last checkpoint on the CPU (the GPU is out for
+            // the process).
+            Self::gpu_failed(&self.config, &format!("{e}; the agent fails, a replacement restores the last checkpoint on the CPU"));
             return Err(applied(
                 ErrorCode::BackendFailure,
                 format!("the brain ticks failed: {e}"),
             ));
         }
         if let Some(fault) = agent.network.take_backend_fault() {
-            eprintln!("legacy agent {}: {fault}", self.config.agent_id);
-            self.backend_fault = Some(fault);
+            // The host state was current: the frame finished on the CPU in this call, and this
+            // worker continues there.
+            Self::gpu_failed(&self.config, &fault);
         }
         self.tick_spikes = Some(bits);
         drop(ticks_span);
@@ -1591,7 +1637,7 @@ impl LegacyAgentWorker {
             let _span = crate::profile::span("agent.capture.sync_host");
             let agent = self.agent.as_mut().expect("initialized");
             if let Err(e) = agent.network.sync_host() {
-                self.backend_fault = Some(e.to_string());
+                Self::gpu_failed(&self.config, &format!("device state read-back: {e}"));
                 return Err(applied(
                     ErrorCode::BackendFailure,
                     format!("the device state cannot be read back: {e}"),

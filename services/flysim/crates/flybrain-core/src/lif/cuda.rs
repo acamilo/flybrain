@@ -64,6 +64,88 @@ use crate::error::{Error, Result};
 
 use super::LifNetwork;
 
+/// Fault injection for the failure path: a CUDA error raised where a real one would surface, so
+/// the fallback can be tested and drilled without breaking a card. Off unless armed. Armed by
+/// `FLY_LIF_CUDA_FAULT` (read once, by the first backend built) or by the setters; a comma list of
+/// `init` (every attach fails, as with a lost device), `batch=N` (the N-th batch of this process,
+/// counted from 0, fails after its kernels ran) and `sync=N` (the N-th device download).
+pub mod inject {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::OnceLock;
+
+    const NEVER: u64 = u64::MAX;
+    static INIT: AtomicBool = AtomicBool::new(false);
+    static BATCH_AT: AtomicU64 = AtomicU64::new(NEVER);
+    static SYNC_AT: AtomicU64 = AtomicU64::new(NEVER);
+    static BATCHES: AtomicU64 = AtomicU64::new(0);
+    static SYNCS: AtomicU64 = AtomicU64::new(0);
+    static ENV: OnceLock<()> = OnceLock::new();
+
+    pub(super) fn load_env() {
+        ENV.get_or_init(|| {
+            let Ok(spec) = std::env::var("FLY_LIF_CUDA_FAULT") else {
+                return;
+            };
+            for item in spec.split(',').map(str::trim) {
+                match item.split_once('=') {
+                    None if item == "init" => INIT.store(true, Ordering::SeqCst),
+                    Some(("batch", n)) => BATCH_AT.store(n.parse().unwrap_or(NEVER), Ordering::SeqCst),
+                    Some(("sync", n)) => SYNC_AT.store(n.parse().unwrap_or(NEVER), Ordering::SeqCst),
+                    _ => eprintln!("FLY_LIF_CUDA_FAULT: ignoring {item:?}"),
+                }
+            }
+        });
+    }
+
+    /// Every attach fails from now on (a lost device), or stops failing.
+    pub fn fail_attach(on: bool) {
+        INIT.store(on, Ordering::SeqCst);
+    }
+    /// The batch that is `after` batches from now fails, once.
+    pub fn fail_batch_after(after: u64) {
+        BATCH_AT.store(BATCHES.load(Ordering::SeqCst) + after, Ordering::SeqCst);
+    }
+    /// The device download that is `after` downloads from now fails, once.
+    pub fn fail_sync_after(after: u64) {
+        SYNC_AT.store(SYNCS.load(Ordering::SeqCst) + after, Ordering::SeqCst);
+    }
+    /// Batches this process has launched so far (a warm-up is many; a game frame is one).
+    pub fn batches() -> u64 {
+        BATCHES.load(Ordering::SeqCst)
+    }
+    /// Disarms everything.
+    pub fn clear() {
+        INIT.store(false, Ordering::SeqCst);
+        BATCH_AT.store(NEVER, Ordering::SeqCst);
+        SYNC_AT.store(NEVER, Ordering::SeqCst);
+    }
+
+    pub(super) fn attach() -> super::Result<()> {
+        load_env();
+        if INIT.load(Ordering::SeqCst) {
+            return Err(super::Error::new(
+                "CUDA init failed: injected fault (CUDA_ERROR_NO_DEVICE)",
+            ));
+        }
+        Ok(())
+    }
+    fn hit(counter: &AtomicU64, at: &AtomicU64, what: &str) -> super::Result<()> {
+        let n = counter.fetch_add(1, Ordering::SeqCst);
+        if n == at.load(Ordering::SeqCst) {
+            return Err(super::Error::new(format!(
+                "CUDA {what} failed: injected fault #{n} (CUDA_ERROR_LAUNCH_FAILED)"
+            )));
+        }
+        Ok(())
+    }
+    pub(super) fn batch() -> super::Result<()> {
+        hit(&BATCHES, &BATCH_AT, "batch")
+    }
+    pub(super) fn sync() -> super::Result<()> {
+        hit(&SYNCS, &SYNC_AT, "download")
+    }
+}
+
 /// Threads per block, and therefore neurons per block in the sweep and the compaction. Must match
 /// `LIF_BLOCK` in `cuda/lif.cu`, because the spike bitset words are per-warp ballots.
 const BLOCK: u32 = 256;
@@ -262,6 +344,7 @@ impl CudaLif {
     }
 
     pub fn with_max_ticks(network: &LifNetwork, ordinal: usize, max_ticks: usize) -> Result<Self> {
+        inject::attach()?;
         let max_ticks = max_ticks.max(1);
         let neurons = network.data.meta.neurons;
         if neurons == 0 {
@@ -482,6 +565,7 @@ impl CudaLif {
 
     /// Copy `membrane` and `refractory` from the device into the network's host arrays.
     pub fn sync_to_host(&mut self, network: &mut LifNetwork) -> Result<()> {
+        inject::sync()?;
         self.stream
             .memcpy_dtoh(&self.membrane, &mut network.membrane[..])
             .map_err(|error| driver_error("membrane download", error))?;
@@ -499,6 +583,7 @@ impl CudaLif {
     /// The device's `membrane` and `refractory`, copied out without touching the network: what
     /// [`LifNetwork::export_state`] reads while the host arrays are stale.
     pub fn download_state(&self) -> Result<(Vec<f32>, Vec<u8>)> {
+        inject::sync()?;
         let mut membrane = vec![0.0f32; self.neurons];
         let mut refractory = vec![0u8; self.neurons];
         self.stream
@@ -659,6 +744,7 @@ impl CudaLif {
         self.stream
             .synchronize()
             .map_err(|error| driver_error("synchronize", error))?;
+        inject::batch()?;
         self.kernel_ms += f64::from(
             self.batch_start
                 .elapsed_ms(&self.batch_end)

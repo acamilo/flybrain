@@ -48,6 +48,8 @@ log_info() {
 # encoder actually opened (docs/design/gpu.md section 5).
 : "${FLY_ENCODER_METRIC:=${TEXTFILE_DIR}/fly_encoder.prom}"
 : "${FLY_ENV_FILE:=/etc/fly/fly.env}"
+# Written by the session worker (flybrain_core::lif::health): which hardware runs the LIF tick.
+: "${FLY_BRAIN_BACKEND_METRIC:=${TEXTFILE_DIR}/fly_brain_backend.prom}"
 : "${FLY_PROC_DIR:=/proc}"
 # --- check 9 (capture freeze) inputs, infra/docs/capture-freeze.md ---------
 : "${FLY_REC_DIR:=/srv/fly/media/rec}"       # flycast's 10-minute mpegts segments
@@ -175,6 +177,9 @@ write_textfile_metrics() {
         echo "# HELP fly_watchdog_encoder_degraded 1 when flycast is running on a different video encoder than /etc/fly/fly.env asked for (i.e. the nvenc -> x264 fallback fired). -1 when the encoder state could not be read at all."
         echo "# TYPE fly_watchdog_encoder_degraded gauge"
         echo "fly_watchdog_encoder_degraded $(cat "${WD_RUN_DIR}/encoder_degraded" 2>/dev/null || echo -1)"
+        echo "# HELP fly_watchdog_backend_degraded 1 when FLY_LIF_CUDA=1 asks for the GPU and the LIF tick runs on the CPU (the GPU fell back). -1 when no session worker has written fly_brain_backend."
+        echo "# TYPE fly_watchdog_backend_degraded gauge"
+        echo "fly_watchdog_backend_degraded $(cat "${WD_RUN_DIR}/backend_degraded" 2>/dev/null || echo -1)"
         # Check 9 (infra/docs/capture-freeze.md). fly_capture_identical_frames
         # is -1 until the first probe completes, the same "unknown, not
         # broken" convention fly_watchdog_encoder_degraded uses; a value at or
@@ -709,6 +714,39 @@ check_encoder() {
     log_err "encoder degraded: flycast is running '${live}' but /etc/fly/fly.env asks for '${want}' — the nvenc fallback fired." \
             "Not restarting (that would flap the stream while the neighbouring GPU container holds the VRAM). See docs/runbook.md 'GPU driver version lockstep'" \
             "and check: nvidia-smi --query-gpu=memory.used,utilization.encoder --format=csv"
+}
+
+# ============================================================================
+# Check 11: LIF backend (GPU-02 notes, runbook "FLY_LIF_CUDA"). Reads the
+# fly_brain_backend series the session worker writes: when FLY_LIF_CUDA=1 asks
+# for the card and the CPU is what runs, the GPU fell back (operator decision
+# 2026-10-02: automatic, the stream keeps going, logged here, no paging).
+#
+# Like check 8 this takes NO remediation. A restart cannot repair a dead card
+# and costs the run its in-memory state; the fallback is a CPU run from the
+# last checkpoint, which is bit-exact. It logs, exports a gauge and leaves the
+# card to a human. fly_brain_backend is not duplicated into this file's own
+# .prom, for the reason check 8 gives.
+# ============================================================================
+check_backend() {
+    local wanted live fallbacks
+    if [ ! -f "$FLY_BRAIN_BACKEND_METRIC" ]; then
+        # No session worker has written it (the legacy loop, a CPU deploy, or not started yet).
+        echo -1 > "${WD_RUN_DIR}/backend_degraded"
+        return 0
+    fi
+    wanted="$(awk '/^fly_brain_backend_wanted / { print $2; exit }' "$FLY_BRAIN_BACKEND_METRIC" 2>/dev/null || true)"
+    live="$(awk '/^fly_brain_backend\{/ && $NF == 1 {
+                 if (match($0, /backend="[^"]+"/)) { print substr($0, RSTART + 9, RLENGTH - 10); exit } }' \
+            "$FLY_BRAIN_BACKEND_METRIC" 2>/dev/null || true)"
+    fallbacks="$(awk '/^fly_brain_backend_fallbacks_total / { print $2; exit }' "$FLY_BRAIN_BACKEND_METRIC" 2>/dev/null || true)"
+    if [ "$wanted" = 1 ] && [ "$live" = cpu ]; then
+        echo 1 > "${WD_RUN_DIR}/backend_degraded"
+        log_err "GPU backend degraded: FLY_LIF_CUDA=1 asks for the card but the LIF tick runs on the CPU (${fallbacks:-?} fallback(s) since flysim started)." \
+                "Automatic and bit-exact, from the last checkpoint; not restarting. Reason: journalctl -u flysim | grep LIF_GPU_FALLBACK. See docs/runbook.md 'FLY_LIF_CUDA'"
+    else
+        echo 0 > "${WD_RUN_DIR}/backend_degraded"
+    fi
 }
 
 # ============================================================================
@@ -1333,6 +1371,7 @@ main() {
     check_flystage
     check_flycast
     check_encoder
+    check_backend
     check_mediamtx
     check_flypush
     check_disk

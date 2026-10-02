@@ -21,6 +21,9 @@ use crate::version::version_for;
 #[cfg(feature = "cuda")]
 pub mod cuda;
 
+/// Whether the GPU may still be used in this process, and the fallback record.
+pub mod health;
+
 /// Version of the default configuration; kept verbatim so existing checkpoints stay loadable.
 pub const NEURAL_KERNEL_VERSION: &str = "lif-1ms-f64-v2";
 
@@ -333,7 +336,12 @@ pub struct LifNetwork {
     /// Version string of this configuration; pin it in checkpoints.
     pub version: String,
     pub plasticity: RewardModulatedStdp,
+    /// Membrane potentials. **Stale while a device-owned GPU backend is attached** and
+    /// `cuda().is_some_and(|b| b.host_stale())`: the device holds the current copy until
+    /// [`LifNetwork::sync_host`]. Read it only after a `sync_host`, or use
+    /// [`LifNetwork::export_state`], which reads the device itself.
     pub membrane: Vec<f32>,
+    /// Refractory counters; stale on the same terms as `membrane`.
     pub refractory: Vec<u8>,
     pub baseline: Vec<f32>,
     pub last_spike_ms: Vec<f64>,

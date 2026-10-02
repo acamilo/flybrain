@@ -11,8 +11,9 @@
 //!
 //! An explicit job: `--features cuda`, `FLY_GPU02_CUDA=1`, a visible device and `data/fafb-v783`.
 //! `FLY_GPU02_FRAMES` sets the length (default 300 frames, about 5,000 ticks). The worker picks the
-//! GPU up from `FLY_LIF_CUDA=1`, set here before any worker starts; a build or a host that cannot
-//! attach the backend fails `Agent.Initialize` rather than passing on the CPU.
+//! GPU up from `FLY_LIF_CUDA=1`, set here before any worker starts. A host that cannot attach the
+//! backend now falls back to the CPU (GPU-02 notes, `cuda_fallback.rs`), so this test asserts that
+//! no fallback was recorded: a pass on the CPU would mean nothing.
 #![cfg(feature = "cuda")]
 
 use std::sync::Arc;
@@ -156,6 +157,12 @@ async fn the_gpu_worker_matches_the_cpu_reference_on_fafb() {
         let got = legacy_parity::run_on_worker(&mut rig, &id("fly-a"), &script)
             .await
             .unwrap_or_else(|e| panic!("{} x{threads}: {e}", mode.label()));
+        assert_eq!(
+            rig.gpu_fallbacks(),
+            0,
+            "{} x{threads}: the GPU did not attach, so this ran on the CPU",
+            mode.label()
+        );
         rig.stop().await;
         legacy_parity::compare(&want, &got)
             .unwrap_or_else(|e| panic!("{} x{threads}: {e}", mode.label()));

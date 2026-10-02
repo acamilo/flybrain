@@ -1190,15 +1190,40 @@ pct exec <ctid> -- journalctl -u flysim -b --no-pager | grep -i 'cuda\|lif backe
 ```
 
 The session runtime (`flysim-session`, `fly-shadow`, GPU-02) reads the same two variables
-(`FLY_LIF_CUDA`, `FLY_LIF_CUDA_DEVICE`, a device ordinal) in its agent worker and does **not**
-ignore them: without the feature, or when the backend cannot start, `Agent.Initialize` fails
-with `BACKEND_FAILURE`, and the worker logs `LIF backend cuda:<n> attached, device-owned state`
-when it starts. It steps one game frame per GPU call and keeps `membrane` and `refractory` on the
+(`FLY_LIF_CUDA`, `FLY_LIF_CUDA_DEVICE`, a device ordinal) in its agent worker. A build without
+the feature that is asked for the GPU is a misconfiguration and fails `Agent.Initialize` with
+`BACKEND_FAILURE`; a build with it logs `LIF backend cuda:<n> attached, device-owned state` when
+the worker starts. It steps one game frame per GPU call and keeps `membrane` and `refractory` on the
 card, copying them back only for a checkpoint, so per frame only the inputs (noise draws, visual
-drive, plastic gains, about 110 KB) go up and the spike lists come down. A CUDA failure mid-run
-fails the agent; a restore into that worker runs on the CPU from the last checkpoint (bit-exact, so nothing is
-migrated). Build all binaries with the feature: `FLY_CARGO_FEATURES=cuda` now reaches
-`flysim-session`, `fly-shadow` and `fly-session` too.
+drive, plastic gains, about 110 KB) go up and the spike lists come down. Build all binaries with the
+feature: `FLY_CARGO_FEATURES=cuda` now reaches `flysim-session`, `fly-shadow` and `fly-session` too.
+
+**A GPU failure falls back to the CPU and the stream keeps going** (operator, 2026-10-02; no
+paging). The first failure makes the GPU unusable for that process's lifetime, so nothing re-attaches
+a dead card in a loop:
+
+- A CUDA error on a frame whose host state was current (the first frame after a start or a
+  restore) finishes that frame on the CPU in place, bit-exact, and the agent goes on there.
+- Any other CUDA error mid-run fails the agent (the device held the only current copy of the
+  membrane). Recovery restores the last checkpoint into a **replacement worker, which is created on
+  the CPU**, and replays from there. Checkpoints are backend-neutral and the GPU tick is bit-exact,
+  so the CPU run equals one that never had a GPU.
+- A CUDA init that fails (a lost device, or a driver that is gone after a restart) is a warning and
+  a CPU worker, not a failed `Agent.Initialize`.
+- The fallback lasts until `flysim.service` restarts, which tries the card again; if it is still
+  dead, that attach is another fallback. Restart is therefore also the way back onto a repaired GPU.
+
+Where it shows: the journal line `LIF_GPU_FALLBACK: the GPU is unusable ...` (once per failure,
+with the reason); `fly_brain_backend{backend="cpu|cuda"}` (1 on the backend that runs),
+`fly_brain_backend_wanted` and `fly_brain_backend_fallbacks_total`, written by the worker to the
+textfile `FLY_BRAIN_BACKEND_PROM` points at (the deploy sets it beside `fly_encoder.prom`); and
+`fly-watchdog` check 11, which logs `GPU backend degraded:` and raises
+`fly_watchdog_backend_degraded` when `FLY_LIF_CUDA=1` asks for the card and the CPU is running. It
+takes no remediation and pages no one (a restart cannot fix a dead card and would cost the
+run a rollback); look at `journalctl -u flysim | grep LIF_GPU_FALLBACK`, `nvidia-smi` on the host,
+and the driver-lockstep section below. The CPU run is slower per thread count, so `RAYON_THREADS=2`
+(see below) is below real time on the CPU: after a fallback, set it back to 3 with `FLY_LIF_CUDA=0`
+and redeploy if the card is not coming back soon.
 
 It needs `GPU=1` (the `/dev/nvidia*` device block plus the userspace driver in the
 container — `docs/design/gpu.md` sections 1 and 2) and the card the committed PTX

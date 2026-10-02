@@ -589,6 +589,10 @@ trap 'rm -f "$tmp_fly_env" "$tmp_flypush_env"' EXIT
     # so FLY_ENCODER-style flipping between backends across restarts keeps the
     # checkpoint: the compatibility string this script gates on does not move.
     echo "FLY_LIF_CUDA=${FLY_LIF_CUDA:-0}"
+    # Where the session worker writes fly_brain_backend (which hardware runs the
+    # LIF tick, and the GPU fallback count): the same textfile directory as
+    # fly_encoder.prom, read by fly-watchdog check 11 (runbook, "FLY_LIF_CUDA").
+    echo "FLY_BRAIN_BACKEND_PROM=${TEXTFILE_DIR:-/var/lib/node_exporter/textfile}/fly_brain_backend.prom"
     # On-screen chat (docs/control-api.md [chat]). FLY_CHAT_ENABLED=0 is the
     # kill switch: POST /chat answers 403 and the feed header omits `chat`, so
     # the CHAT panel blanks without touching flybridge or the page. flysim reads
