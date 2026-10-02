@@ -327,9 +327,30 @@ is_enabled() {
 # ============================================================================
 # Check 1: flysim — /healthz 200 and hot-state mtime age < 30s.
 # ============================================================================
+# FLY_CONTROL_VIA from fly.env, lowercased ("direct" when absent).
+control_via() {
+    local via=""
+    if [ -f "$FLY_ENV_FILE" ]; then
+        via="$(awk -F= '/^FLY_CONTROL_VIA=/ { print $2; exit }' "$FLY_ENV_FILE" 2>/dev/null | tr -d ' \r"' | tr '[:upper:]' '[:lower:]' || true)"
+    fi
+    echo "${via:-direct}"
+}
+
+# flysim's own /healthz: :7401 when flysim serves it, and with FLY_CONTROL_VIA=bus
+# (docs/design/flybus.md, "Control over the bus") flysim's read-only listener,
+# which flysim serves itself in both modes -- so an edge that is down is check
+# 1b's business and never restarts the fly.
+flysim_health_url() {
+    if [ "$(control_via)" = "bus" ]; then
+        echo "${FLY_METRICS_URL}/healthz"
+    else
+        echo "${FLY_CONTROL_URL}/healthz"
+    fi
+}
+
 check_flysim() {
     local ok=1
-    if ! curl -fsS -o /dev/null "${FLY_CONTROL_URL}/healthz"; then
+    if ! curl -fsS -o /dev/null "$(flysim_health_url)"; then
         ok=0
     fi
     if [ -e "$FLY_STATE_HOT" ]; then
@@ -344,6 +365,24 @@ check_flysim() {
     else
         record_fail flysim
         escalate flysim flystage flycast
+    fi
+}
+
+# ============================================================================
+# Check 1b: flycontrol-edge -- only with FLY_CONTROL_VIA=bus. :7401/healthz
+# answered by the edge while flysim's own /healthz is fine; when the edge does
+# not answer, restart the edge (never flysim, never a reboot: the fly is fine
+# and the edge holds no state). With flysim itself down, check 1 owns it.
+# ============================================================================
+check_control_edge() {
+    [ "$(control_via)" = "bus" ] || return 0
+    curl -fsS -o /dev/null "${FLY_METRICS_URL}/healthz" || return 0
+    if curl -fsS -o /dev/null "${FLY_CONTROL_URL}/healthz"; then
+        record_ok flycontrol-edge
+    else
+        record_fail flycontrol-edge
+        log_err "flycontrol-edge: :7401 does not answer while flysim is healthy; restarting the edge"
+        restart_unit flycontrol-edge
     fi
 }
 
@@ -1285,6 +1324,7 @@ check_loop() {
 main() {
     check_flysim
     check_flyedge
+    check_control_edge
     check_flystage
     check_flycast
     check_encoder

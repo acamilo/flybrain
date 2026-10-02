@@ -174,7 +174,13 @@ let kept = frame.retain().await?;              // an independent explicit hold
 ```
 
 - `Artifact` is a read-only, cloneable handle on one owner: a delivery or an explicit hold.
-  Its last clone (including any `ArtifactFile`) releases that owner.
+  Its last clone (including any `ArtifactFile`) releases that owner. `is_hold()` is true for an
+  explicit hold (a sealed writer, a `retain`): keeping a clone of one keeps the bytes, and costs
+  no delivery credit.
+- A handle that came in a delivery opens and reads without a router round trip: the delivery
+  names each attachment's read location (bus-v1 section 12, amendment 2026-10-01). Any other
+  handle asks the router (`artifact.open`) first. Up to 256 KiB, `read_all()` reads in place
+  rather than on the blocking pool.
 - `ArtifactWriter` is unique. Dropping it unsealed releases the staging storage. Writes past
   the allocated length fail. Unwritten bytes read as zeros.
 - Sealing copies staging into a fresh read-only (0444) file and unlinks staging. A descriptor
@@ -272,7 +278,8 @@ before admission are `not-dispatched`. A command in flight when the connection i
   call returns `routed:false` and creates no roots. Unregistering a service fails its queued
   calls; dispatched calls can still be answered while a `Request` or `Responder` retains reply
   capability. Both cancel/consume orderings retire cleanly.
-- **Seals** copy (and hash, when a digest was given) on Tokio's blocking pool, alongside the
+- **Seals** copy (and hash, when a digest was given) on Tokio's blocking pool (up to 256 KiB in
+  place on the reader, which on the store's tmpfs is cheaper than the hop), alongside the
   connection's reader, so a large copy does not hold up that client's releases. If the writer is released or disconnects
   mid-seal, the copy is discarded and the artifact is never published.
 
@@ -321,6 +328,10 @@ before admission are `not-dispatched`. A command in flight when the connection i
     final release atomically retires the correlation and caller slot and emits `call.failed`
     with dispatch `dispatched`: `CALL_GONE` while the route remains live, or `NO_SERVICE` after
     route loss.
+11. **Read locations in deliveries** (amendment 2026-10-01, BUS-01). Every attachment of an
+    `rpc.request`, `rpc.result` or `topic.message` delivery carries `readLocation`, the location
+    `artifact.open` would return under that delivery's ownership; a client attachment that carries
+    one is refused as an unknown field. `wire::CONTRACT` (and so `contractDigest`) says so.
 
 ## Limitations
 

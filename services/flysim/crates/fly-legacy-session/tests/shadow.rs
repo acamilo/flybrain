@@ -203,6 +203,7 @@ fn config(
         macro_mode: MacroMode::Raw,
         speed: 0.0,
         mode: ExecutionMode::InProcess,
+        transport: Default::default(),
         agent_threads: 1,
         required_brain_seconds: 30.0,
         all_files: true,

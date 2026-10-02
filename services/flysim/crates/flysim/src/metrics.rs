@@ -7,7 +7,9 @@
 //!   is dead or frozen even though Chromium is alive (watchdog check 2);
 //! - `/healthz` plus the hot-checkpoint mtime cover flysim itself (watchdog check 1).
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::time::Duration;
 
 use crate::snapshot::{FeedStatus, Snapshot};
 
@@ -47,6 +49,83 @@ pub struct Metrics {
     pub bus_published: AtomicU64,
     /// Snapshots the feed bus refused or could not take; each one is skipped, never retried.
     pub bus_publish_failures: AtomicU64,
+    /// The loop's compute time per frame, its pacing sleep excluded (BUS-01).
+    pub frame_work: FrameWork,
+}
+
+/// Frames in [`FrameWork`]'s window: a minute at real time.
+pub const FRAME_WORK_WINDOW: usize = 3_600;
+
+/// The loop's compute time per frame over the last [`FRAME_WORK_WINDOW`] frames: everything one
+/// iteration of a running loop does -- commands, the transition, the publish, the checkpoint
+/// hand-off, the event log -- and not the pacing sleep after it, so the headroom against the
+/// 16.74 ms real-time budget is visible while the loop is paced (the realtime factor then reads
+/// 1.0 whatever the margin). A paused loop records nothing. Both runtimes record it the same way.
+#[derive(Debug, Default)]
+pub struct FrameWork {
+    ring: Mutex<FrameWorkRing>,
+}
+
+#[derive(Debug, Default)]
+struct FrameWorkRing {
+    /// Milliseconds, oldest overwritten first once the window is full.
+    samples: Vec<f32>,
+    next: usize,
+    total: u64,
+}
+
+/// [`FrameWork`] summarised for `/metrics`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FrameWorkSummary {
+    /// Frames in the window (at most [`FRAME_WORK_WINDOW`]).
+    pub frames: usize,
+    /// Frames ever recorded by this process.
+    pub total: u64,
+    pub mean_ms: f64,
+    pub p99_ms: f64,
+    pub max_ms: f64,
+}
+
+impl FrameWork {
+    /// One frame's work. A lock the loop takes once a frame and a scrape takes once in a while.
+    pub fn record(&self, work: Duration) {
+        let ms = work.as_secs_f64() * 1000.0;
+        let mut ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
+        if ring.samples.len() < FRAME_WORK_WINDOW {
+            if ring.samples.capacity() == 0 {
+                ring.samples.reserve_exact(FRAME_WORK_WINDOW);
+            }
+            ring.samples.push(ms as f32);
+        } else {
+            let next = ring.next;
+            ring.samples[next] = ms as f32;
+        }
+        ring.next = (ring.next + 1) % FRAME_WORK_WINDOW;
+        ring.total += 1;
+    }
+
+    /// Mean, 99th percentile (nearest rank) and maximum over the window; zeros when empty.
+    pub fn summary(&self) -> FrameWorkSummary {
+        let (mut samples, total) = {
+            let ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
+            (ring.samples.clone(), ring.total)
+        };
+        let frames = samples.len();
+        if frames == 0 {
+            return FrameWorkSummary::default();
+        }
+        let mean_ms = samples.iter().map(|&v| f64::from(v)).sum::<f64>() / frames as f64;
+        let max_ms = samples.iter().fold(0.0f32, |a, &b| a.max(b));
+        let rank = (frames * 99).div_ceil(100).max(1) - 1;
+        let (_, p99, _) = samples.select_nth_unstable_by(rank, f32::total_cmp);
+        FrameWorkSummary {
+            frames,
+            total,
+            mean_ms,
+            p99_ms: f64::from(*p99),
+            max_ms: f64::from(max_ms),
+        }
+    }
 }
 
 impl Metrics {
@@ -166,6 +245,35 @@ pub fn render(metrics: &Metrics, snapshot: &Snapshot, now_wall_ms: u64) -> Strin
         "gauge",
         "Simulated milliseconds per wall millisecond over the last second.",
         header.realtime_factor,
+    );
+    let work = metrics.frame_work.summary();
+    metric(
+        &mut out,
+        "fly_frame_work_mean_ms",
+        "gauge",
+        "Mean compute time per frame over the last 3600 frames, pacing sleep excluded; 0 before the first.",
+        work.mean_ms,
+    );
+    metric(
+        &mut out,
+        "fly_frame_work_p99_ms",
+        "gauge",
+        "99th percentile compute time per frame over the same window.",
+        work.p99_ms,
+    );
+    metric(
+        &mut out,
+        "fly_frame_work_max_ms",
+        "gauge",
+        "Longest compute time of one frame over the same window.",
+        work.max_ms,
+    );
+    metric(
+        &mut out,
+        "fly_frame_work_frames",
+        "gauge",
+        "Frames in the compute-time window (at most 3600).",
+        work.frames,
     );
     metric(
         &mut out,
@@ -416,6 +524,34 @@ mod tests {
         assert!(text.contains("fly_chat_accepted_total 3"));
         // The boot snapshot has no ring yet, and the gauge says 0 rather than going missing.
         assert!(text.contains("fly_chat_ring_lines 0"));
+    }
+
+    #[test]
+    fn frame_work_is_the_mean_p99_and_max_of_the_last_window() {
+        let work = FrameWork::default();
+        assert_eq!(work.summary(), FrameWorkSummary::default());
+        // 100 frames of 1..=100 ms: nearest-rank p99 is 99, the mean 50.5.
+        for ms in 1..=100u64 {
+            work.record(Duration::from_millis(ms));
+        }
+        let s = work.summary();
+        assert_eq!((s.frames, s.total), (100, 100));
+        assert!((s.mean_ms - 50.5).abs() < 1e-9, "{s:?}");
+        assert_eq!((s.p99_ms, s.max_ms), (99.0, 100.0));
+        // The window keeps the newest FRAME_WORK_WINDOW frames: 3600 frames of 2 ms push every
+        // older one out.
+        for _ in 0..FRAME_WORK_WINDOW {
+            work.record(Duration::from_millis(2));
+        }
+        let s = work.summary();
+        assert_eq!((s.frames, s.total), (FRAME_WORK_WINDOW, 100 + FRAME_WORK_WINDOW as u64));
+        assert_eq!((s.mean_ms, s.p99_ms, s.max_ms), (2.0, 2.0, 2.0));
+        let metrics = Metrics::default();
+        metrics.frame_work.record(Duration::from_micros(12_500));
+        let text = render(&metrics, &crate::simloop::booting_snapshot(0, 0, crate::snapshot::MacroMode::Raw), 0);
+        assert!(text.contains("fly_frame_work_mean_ms 12.5\n"), "{text}");
+        assert!(text.contains("fly_frame_work_p99_ms 12.5\n"));
+        assert!(text.contains("fly_frame_work_frames 1\n"));
     }
 
     #[test]

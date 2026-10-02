@@ -229,6 +229,8 @@ pub struct Verdict {
     pub release: String,
     pub compatibility: String,
     pub execution_mode: String,
+    /// `local` or `bus` (BUS-01): with `execution_mode`, the topology the shadow ran.
+    pub transport: String,
     pub agent_threads: usize,
     pub required_brain_seconds: f64,
     pub agreement: Agreement,
@@ -324,6 +326,7 @@ impl Verdict {
                 "compatibility": self.compatibility,
                 "compatibilitySha256": crate::shadow::sha256_hex(self.compatibility.as_bytes()),
                 "executionMode": self.execution_mode,
+                "transport": self.transport,
                 "agentThreads": self.agent_threads,
             },
             "required": {"brainSeconds": self.required_brain_seconds},
@@ -422,6 +425,36 @@ pub fn saves_suffice(brain_seconds: f64, compared: u64, unavailable: u64) -> Res
 pub struct Release<'a> {
     pub dir: &'a str,
     pub binaries: &'a std::collections::BTreeMap<String, String>,
+}
+
+/// The topology a verdict's shadow ran, named as [`crate::composition::SessionArm::label`] names
+/// it: `local`, `bus/in-process`, `bus/thread` or `bus/process`. A verdict from before BUS-01 has
+/// no `transport`: its in-process shadow ran the local lane, a thread or a process the bus.
+pub fn shadowed_arm(verdict: &Value) -> String {
+    let candidate = &verdict["candidate"];
+    let mode = candidate["executionMode"].as_str().unwrap_or("in-process");
+    let transport = match candidate["transport"].as_str() {
+        Some(transport) => transport,
+        None if mode == "in-process" => "local",
+        None => "bus",
+    };
+    if transport == "local" {
+        "local".to_owned()
+    } else {
+        format!("{transport}/{mode}")
+    }
+}
+
+/// `fly-shadow check --require-arm`: the cutover is into a topology, so the shadow must have run
+/// that one (BUS-01). `required` is a [`crate::composition::SessionArm`] name.
+pub fn ran_arm(verdict: &Value, required: &str) -> Result<(), String> {
+    let required = crate::composition::SessionArm::parse(required)?.label();
+    let ran = shadowed_arm(verdict);
+    if ran == required {
+        Ok(())
+    } else {
+        Err(format!("the shadow ran {ran}, not {required}"))
+    }
 }
 
 /// How far ahead of the clock a verdict's `updatedAt` may be before it is refused.
@@ -571,6 +604,7 @@ mod tests {
             release: "/opt/fly/releases/test".to_owned(),
             compatibility: "c".to_owned(),
             execution_mode: "in-process".to_owned(),
+            transport: "local".to_owned(),
             agent_threads: 2,
             required_brain_seconds: 10_800.0,
             agreement: Agreement::default(),
@@ -607,6 +641,7 @@ mod tests {
             release: String::new(),
             compatibility: String::new(),
             execution_mode: String::new(),
+            transport: String::new(),
             agent_threads: 1,
             required_brain_seconds: 10_800.0,
             agreement: Agreement::default(),
@@ -631,6 +666,27 @@ mod tests {
             cost: Cost::default(),
             run_id: None,
         }
+    }
+
+    #[test]
+    fn the_arm_a_verdict_ran_is_checked_by_name() {
+        // BUS-01: a cutover onto the bus needs a shadow that ran the bus.
+        let mut v = verdict(Status::Pass, 10_800_000.0);
+        assert_eq!(shadowed_arm(&v), "local");
+        assert!(ran_arm(&v, "local").is_ok());
+        assert!(ran_arm(&v, "bus/process").is_err());
+        v["candidate"]["executionMode"] = json!("process");
+        v["candidate"]["transport"] = json!("bus");
+        assert_eq!(shadowed_arm(&v), "bus/process");
+        assert!(ran_arm(&v, "bus").is_ok());
+        assert!(ran_arm(&v, "process").is_ok());
+        assert!(ran_arm(&v, "bus/thread").is_err());
+        assert!(ran_arm(&v, "nonsense").is_err());
+        // A verdict from before BUS-01: no transport.
+        v["candidate"].as_object_mut().expect("an object").remove("transport");
+        assert_eq!(shadowed_arm(&v), "bus/process");
+        v["candidate"]["executionMode"] = json!("in-process");
+        assert_eq!(shadowed_arm(&v), "local");
     }
 
     #[test]

@@ -12,7 +12,8 @@
 #                            restart; --restart-flysim restarts it now), remove trace and spool
 #   fly-shadow-run status    the verdict in one screen
 #   fly-shadow-run check     CUT-01's hook: exit 0 only if the verdict allows the automatic cutover
-#                            into the release /opt/fly/current points to, onto flysim-session
+#                            into the release /opt/fly/current points to, onto flysim-session.
+#                            --bus also requires that the shadow ran the bus topology (BUS-01)
 #   fly-shadow-run guard     (flyshadow-guard.timer, every 60 s) stop everything and restart flysim
 #                            without the trace if the live fly pays for the shadow
 #   fly-shadow-run simulate BASELINE.jsonl CHECKS.jsonl   the guard's rule over recorded samples
@@ -53,6 +54,17 @@
 # ActiveState inactive or failed (systemctl show), never activating: the shadow's 10-s crash-restart
 # delay must not switch the guard off. `check` also requires the guard timer active and baseline.json.
 #
+# THE BUS TOPOLOGY (BUS-01). `start --bus` runs the shadow's session the way `fly-runtime
+# session --bus` runs the live one: the router, the coordinator and the task in the shadow's own
+# process, the agent and the world as child processes (`fly-session legacy-agent`,
+# `fly-session legacy-environment`, from the same release) on the router's Unix sockets. It sets
+# FLY_SHADOW_MODE=bus/process in flyshadow.service's drop-in (mode.conf); a remote relay forwards it
+# to the box (live.env), whose shadow reads it. The verdict records the topology
+# (candidate.executionMode "process", candidate.transport "bus"), and `check --bus` refuses any
+# verdict that did not run it. The live fly must run the LEGACY runtime while a shadow runs: only
+# the legacy loop writes the trace (FLY_TRACE_DIR) the shadow follows, so `start` refuses while
+# flysim.service runs the session runtime (fly-runtime status: session).
+#
 # REMOTE (SHADOW-02). With /etc/fly/shadow-remote.env present (the operator's private file:
 # FLY_SHADOW_REMOTE=<user>@<box>, FLY_SHADOW_REMOTE_KEY, FLY_SHADOW_REMOTE_KNOWN_HOSTS, optional
 # FLY_SHADOW_REMOTE_PORT), `start` gives flyshadow.service a drop-in (remote.conf) that runs
@@ -85,6 +97,8 @@ DROPIN="$DROPIN_DIR/shadow-trace.conf"
 REMOTE_ENV="${FLY_SHADOW_REMOTE_ENV:-/etc/fly/shadow-remote.env}"
 REMOTE_DROPIN_DIR="${FLY_SHADOW_REMOTE_DROPIN_DIR:-/etc/systemd/system/flyshadow.service.d}"
 REMOTE_DROPIN="$REMOTE_DROPIN_DIR/remote.conf"
+MODE_DROPIN="$REMOTE_DROPIN_DIR/mode.conf"
+RUNTIME_DROPIN="${FLY_RUNTIME_DROPIN:-$DROPIN_DIR/10-runtime.conf}"
 # How long start waits for the first heartbeat (remote: at least 300 s, because the box's shadow
 # restarts for the new run and the ingest hashes the release first).
 HEARTBEAT_WAIT="${FLY_SHADOW_HEARTBEAT_WAIT_SECONDS:-60}"
@@ -275,14 +289,21 @@ check_remote() {
 
 start() {
     need_root
-    local mode=remote
+    local mode=remote arm=""
     for arg in "$@"; do
         case "$arg" in
             --local) mode=local ;;
+            --bus) arm=bus/process ;;
             *) die "start: unknown option $arg" ;;
         esac
     done
     [ -x "$BIN" ] || die "$BIN is missing: this release predates SHADOW-01"
+    # Only the legacy loop writes the trace the shadow follows (FLY_TRACE_DIR); the session runtime
+    # ignores it, and every process it ran would be a coverage divergence.
+    [ ! -f "$RUNTIME_DROPIN" ] || die "flysim.service runs the session runtime, which writes no trace for a shadow to follow. Switch the live fly to legacy for the shadow window first (fly-runtime legacy), then start the shadow"
+    if [ -n "$arm" ]; then
+        [ -x "$(dirname "$(readlink -f "$BIN")")/fly-session" ] || die "the bus topology needs fly-session beside $BIN"
+    fi
     systemctl is-active --quiet flyshadow.service && die "flyshadow.service is already running"
     if [ "$mode" = remote ]; then
         [ -f "$REMOTE_ENV" ] || die "no $REMOTE_ENV: the shadow runs on a build box (SHADOW-02; runbook). Pass --local to run it on this container instead, at the live fly's expense"
@@ -311,6 +332,17 @@ start() {
     chown fly:fly "$SHADOW_DIR/baseline.json" "$samples" "$SHADOW_DIR/guard-state.json"
     log "baseline: $base"
     mkdir -p "$DROPIN_DIR" "$REMOTE_DROPIN_DIR"
+    if [ -n "$arm" ]; then
+        cat > "$MODE_DROPIN" <<EOF
+# written by fly-shadow-run start --bus (BUS-01); removed by fly-shadow-run stop and by its guard.
+# The shadow's session runs the bus topology; a remote relay forwards this to the box.
+[Service]
+Environment=FLY_SHADOW_MODE=$arm
+EOF
+        log "the shadow runs the bus topology ($arm)"
+    else
+        rm -f "$MODE_DROPIN"
+    fi
     if [ "$mode" = remote ]; then
         local run_id
         run_id="$(date +%s%3N)"
@@ -360,7 +392,7 @@ EOF
 stop_all() {
     systemctl stop flyshadow-guard.timer 2>/dev/null || true
     systemctl stop flyshadow.service 2>/dev/null || true
-    rm -f "$DROPIN" "$REMOTE_DROPIN"
+    rm -f "$DROPIN" "$REMOTE_DROPIN" "$MODE_DROPIN"
     systemctl daemon-reload
     log "stopped the shadow: $1"
 }
@@ -476,6 +508,16 @@ PY
 }
 
 check() {
+    # `--bus` (BUS-01): the cutover goes onto the bus topology, so the shadow must have run it.
+    local -a pass=()
+    local arg
+    for arg in "$@"; do
+        case "$arg" in
+            --bus) pass+=(--require-arm bus/process) ;;
+            *) pass+=("$arg") ;;
+        esac
+    done
+    set -- "${pass[@]}"
     # A tripped guard, a shadow that is not running, or a run that no guard watched never allows a
     # cutover, whatever the verdict file says: the guard timer must be active and its baseline
     # present (G1-a).

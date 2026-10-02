@@ -304,17 +304,40 @@ async fn read_loop<R: AsyncRead + Unpin>(
                 return;
             }
         };
+        // A read location is the router's to issue, in a delivery (BUS-01 amendment): a client
+        // attachment that carries one is malformed.
+        if env.attachments.iter().any(|a| a.read_location.is_some()) {
+            inner.with_state(|s| {
+                s.reject_frame(c, "attachment: unknown field \"readLocation\"".into())
+            });
+            return;
+        }
         let was_hello = !negotiated && env.op == "bus.hello";
         match inner.with_state(|s| s.handle(c, env)) {
             Outcome::Done => {}
             Outcome::Close => return,
             Outcome::Allocate(job) => {
                 let (i, serial, len) = (inner.clone(), job.serial, job.len);
-                let created =
+                // A small staging file (a frame, a memory image) is created in place: on the
+                // store's tmpfs that is a few microseconds, less than the hop to the blocking pool
+                // and back, which an artifact-per-call protocol pays on its critical path
+                // (BUS-01). A large one still goes to the blocking pool.
+                let created = if len <= crate::store::INLINE_IO_BYTES {
+                    i.store.create_staging(serial, len)
+                } else {
                     tokio::task::spawn_blocking(move || i.store.create_staging(serial, len))
                         .await
-                        .unwrap_or_else(|e| Err(io::Error::other(e)));
+                        .unwrap_or_else(|e| Err(io::Error::other(e)))
+                };
                 inner.with_state(|s| s.finish_allocate(job, created));
+            }
+            Outcome::Seal(job) if job.len <= crate::store::INLINE_IO_BYTES => {
+                // A small seal copies in place, for the same reason; the connection's reader
+                // waits for it as it waits for any command (BUS-01). The outcome is the
+                // spawned path's, step for step.
+                let result = inner.store.seal(job.serial, job.len, job.digest.as_deref());
+                inner.store.remove(&crate::store::staging_rel(job.serial));
+                inner.with_state(|s| s.finish_seal(job, result));
             }
             Outcome::Seal(job) => {
                 let inner = inner.clone();

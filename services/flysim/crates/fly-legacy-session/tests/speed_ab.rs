@@ -12,8 +12,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use fly_legacy_session::composition::{LegacyConfig, LegacySession, channels_and_hold};
-use fly_session::ExecutionMode;
+use fly_legacy_session::composition::{
+    LegacyConfig, LegacySession, SessionArm, channels_and_hold,
+};
 use fly_session::legacy_agent::LegacyProfileKind;
 use fly_session::legacy_parity;
 use fly_session::types::id;
@@ -151,23 +152,24 @@ async fn run(workers: usize) {
     let bytes = std::fs::read(&checkpoint_path).unwrap();
     let checkpoint = flysim::store::decode(&bytes).unwrap();
     // PERF-01: `FLY_PERF_ARMS` picks the session arms, comma-separated: `local` (in-process
-    // over the local lane, the default in-process path), `bus` (in-process over the bus,
-    // `FLY_SESSION_LOCAL_LANE=0`, the TASK-01 path) and `process`. Default: all three.
-    let arms = std::env::var("FLY_PERF_ARMS").unwrap_or_else(|_| "local,bus,process".to_owned());
+    // over the local lane, the default in-process path), `memory` (in-process over the bus in
+    // memory, `FLY_SESSION_LOCAL_LANE=0`, the TASK-01 path), and the BUS-01 socket arms
+    // `bus/in-process`, `bus/thread`, `bus/process` (`process`). Default: local, memory, process.
+    let arms = std::env::var("FLY_PERF_ARMS").unwrap_or_else(|_| "local,memory,process".to_owned());
     // `FLY_PERF_SERVICE=1` adds the service host's per-frame reads (SERVE-01's
     // `flysim-session`): the spike bitset of every commit and the audio chunk of every boundary.
     let service = std::env::var_os("FLY_PERF_SERVICE").is_some();
     for arm in arms.split(',') {
-        let mode = match arm {
-            "local" | "bus" => ExecutionMode::InProcess,
-            "process" => ExecutionMode::Process,
-            other => panic!("unknown arm {other}"),
+        let parsed = match arm {
+            "memory" => SessionArm::LOCAL,
+            other => SessionArm::parse(other).unwrap_or_else(|e| panic!("FLY_PERF_ARMS: {e}")),
         };
+        let mode = parsed.mode;
         // SAFETY: set before the session's runtime reads it; nothing else reads the variable.
         unsafe {
             std::env::set_var(
                 fly_legacy_session::composition::LOCAL_LANE_ENV,
-                if arm == "bus" { "0" } else { "1" },
+                if arm == "memory" { "0" } else { "1" },
             );
         }
         let mut legacy = Legacy::new(&rom, &dataset, &checkpoint, threads);
@@ -176,6 +178,8 @@ async fn run(workers: usize) {
             root.path(),
             LegacyConfig {
                 mode,
+                transport: parsed.transport,
+                placements: Default::default(),
                 rom_path: rom_path.clone(),
                 dataset_dir: dataset.clone(),
                 profile: LegacyProfileKind::Production,

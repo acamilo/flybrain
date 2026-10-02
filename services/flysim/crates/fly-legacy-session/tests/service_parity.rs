@@ -11,13 +11,18 @@
 //! - **feed**: every running snapshot, header field by field and attachments byte for byte,
 //!   except the fields that are wall clock by definition (`wallMs`, `uptimeSeconds`,
 //!   `realtimeFactor`, `sugar.cooldownMs`, an event's or chat line's `wallMs`) and `seq`, which
-//!   counts the idle headers a pause publishes at 2 Hz of wall clock;
+//!   counts the idle headers a pause publishes at 2 Hz of wall clock (the script holds the
+//!   resume until the recorder has seen the first one, so each runtime must publish one);
 //! - **control**: status code and body of every request (`/stimulate` 202 and 429 with the same
 //!   `retryAfterMs`, `/reward` 403, `/chat` 202/422, `/checkpoint` the same generation,
 //!   `/pause`, `/resume`, `/events`, `/healthz`), `/status` minus its wall-clock fields, and the
 //!   `/metrics` series names;
 //! - **store**: the event log file, the journal lines (minus `wallMs`, the boot header's runtime
 //!   and wall clock), and the final durable checkpoint decoded (minus `wallMs`).
+//!
+//! The in-process session runs a second time with its control API on the bus (CTRL-01): the
+//! same script through `fly-control-edge`'s router and the control services on an embedded
+//! router, compared against the legacy run the same way.
 //!
 //! Gated on `FLY_ROM` (source `bin/rom-env.sh`). `toy_raw_*` uses the committed toy connectome and
 //! a store seeded by a legacy fresh start; `fafb_*` (also `FLY_SERVE01_FAFB`) the real connectome
@@ -29,8 +34,8 @@ use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::http::{Method, Request};
+use fly_legacy_session::composition::SessionArm;
 use fly_legacy_session::service::{ServiceOptions, run_host};
-use fly_session::launcher::ExecutionMode;
 use fly_session::legacy_agent::LegacyProfileKind;
 use flysim::AppState;
 use flysim::config::Config;
@@ -69,14 +74,21 @@ fn sha(bytes: &[u8]) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Runtime {
     Legacy,
-    Session(ExecutionMode),
+    Session(SessionArm),
+    /// The session runtime with its control API on the bus (`FLY_CONTROL_VIA=bus`, CTRL-01): the
+    /// script goes through `fly-control-edge`'s router, over the edge's Unix socket, to the
+    /// control services on the embedded router.
+    SessionOverBus(SessionArm),
 }
 
 impl Runtime {
     fn label(&self) -> String {
         match self {
             Runtime::Legacy => "legacy".to_owned(),
-            Runtime::Session(mode) => format!("session ({})", mode.label()),
+            Runtime::Session(arm) => format!("session ({})", arm.label()),
+            Runtime::SessionOverBus(arm) => {
+                format!("session ({}) over the control bus", arm.label())
+            }
         }
     }
 }
@@ -245,11 +257,13 @@ fn record(
                 let mut sim = Sim::boot(loop_shared, snapshots_tx, command_rx)?;
                 sim.run(&notifier)
             }
-            Runtime::Session(mode) => {
+            Runtime::Session(arm) | Runtime::SessionOverBus(arm) => {
                 let options = ServiceOptions {
-                    mode,
+                    mode: arm.mode,
+                    transport: arm.transport,
                     profile,
                     session_dir,
+                    placements: Default::default(),
                 };
                 run_host(loop_shared, snapshots_tx, command_rx, &notifier, &options)
             }
@@ -261,7 +275,23 @@ fn record(
         .enable_all()
         .build()
         .unwrap();
-    let router = flysim::api::router(state.clone());
+    let bus_dir = config.paths.save_dir.parent().unwrap().join("bus");
+    let (router, _control_bus) = match runtime {
+        Runtime::SessionOverBus(_) => driver.block_on(async {
+            let scope = flysim::controlbus::Scope::live();
+            let uses = flysim::bus::Uses { feed: false, control: true };
+            let bus = flysim::bus::start(&bus_dir, uses, &scope).await.unwrap();
+            let host = flysim::controlbus::serve(&bus.router, state.clone(), &scope)
+                .await
+                .unwrap();
+            let mut edge_config = fly_control_edge::EdgeConfig::from_flysim(&config, None);
+            edge_config.bus_dir = bus_dir.clone();
+            let metrics = Arc::new(fly_control_edge::EdgeMetrics::default());
+            let backend = fly_control_edge::connect(&edge_config, &metrics).await.unwrap();
+            (flysim::api::router_with(backend), Some((bus, host)))
+        }),
+        _ => (flysim::api::router(state.clone()), None),
+    };
     let metrics_router = flysim::api::metrics_router(state.clone());
     let recording = driver.block_on(async {
         let mut snapshots = snapshots;
@@ -315,6 +345,29 @@ fn record(
                     ));
                     // Sent now, in order, each drained before the next frame.
                     for action in actions.iter().filter(|a| a.at == index) {
+                        if action.path == "/resume" {
+                            // The pause is only observable as idle headers if the loop stays
+                            // paused until it has published one (a header-only publish is due
+                            // within the 2 Hz idle period). Resuming 2 ms after the pause let a
+                            // loaded box skip it in one runtime and not the other, so wait, bounded,
+                            // for the condition instead of racing it.
+                            let before = idle.len();
+                            let waited = Instant::now();
+                            while idle.len() == before {
+                                match tokio::time::timeout(Duration::from_secs(30), snapshots.changed()).await {
+                                    Ok(Ok(())) => {}
+                                    other => panic!(
+                                        "{}: no idle header within 30 s of the pause ({other:?})",
+                                        runtime.label()
+                                    ),
+                                }
+                                let snap = Arc::clone(&snapshots.borrow_and_update());
+                                if snap.header.status == FeedStatus::Paused {
+                                    idle.push(comparable(&snap));
+                                }
+                            }
+                            eprintln!("  {}: idle header after {:.1?} paused", runtime.label(), waited.elapsed());
+                        }
                         let router = router.clone();
                         let label = format!("{} {}", action_label(action), index);
                         let action = action.clone();
@@ -322,6 +375,18 @@ fn record(
                         // One at a time, so the loop drains them in script order.
                         tokio::time::sleep(Duration::from_millis(2)).await;
                         pending.push((label, handle));
+                    }
+                    // Requests sent at one frame must all be drained together (two sugars before
+                    // one commit): if the loop published another snapshot while they were being
+                    // sent, a loaded box split them across frames and the run cannot be compared.
+                    let group = actions.iter().filter(|a| a.at == index).count();
+                    let pauses = actions.iter().any(|a| a.at == index && a.path.starts_with("/pause"));
+                    if group > 1 && !pauses && snapshots.has_changed().unwrap_or(false) {
+                        eprintln!(
+                            "  {}: the loop moved on while {group} requests were sent at frame {index}; the run will be repeated",
+                            runtime.label()
+                        );
+                        complete = false;
                     }
                 }
                 FeedStatus::Paused => idle.push(comparable(&snapshot)),
@@ -491,9 +556,20 @@ fn compare(legacy: &Recording, session: &Recording, label: &str) {
             );
         }
     }
-    assert_eq!(legacy.idle.is_empty(), session.idle.is_empty(), "{label}: idle headers");
+    assert!(!legacy.idle.is_empty(), "{label}: the legacy pause published no idle header");
+    assert!(!session.idle.is_empty(), "{label}: the session pause published no idle header");
     if let (Some(a), Some(b)) = (legacy.idle.first(), session.idle.first()) {
-        same(&format!("{label}: the first idle header"), a, b);
+        // An idle header carries the events not yet published, and which publish that is (the
+        // pause's own or a later one, whichever the recorder saw first) is wall clock; the events
+        // themselves are compared in the running snapshots and the event log.
+        let strip = |v: &Value| {
+            let mut v = v.clone();
+            if let Some(map) = v.as_object_mut() {
+                map.remove("events");
+            }
+            v
+        };
+        same(&format!("{label}: the first idle header"), &strip(a), &strip(b));
     }
     assert_eq!(legacy.responses.len(), session.responses.len());
     for ((la, sa, ba), (lb, sb, bb)) in legacy.responses.iter().zip(&session.responses) {
@@ -580,15 +656,8 @@ fn seed(from: &Path, to: &Path) {
     }
 }
 
-fn modes() -> Vec<ExecutionMode> {
-    let mut modes = vec![ExecutionMode::InProcess];
-    let program = fly_session::launcher::default_worker_program();
-    if program.is_file() {
-        modes.push(ExecutionMode::Process);
-    } else {
-        eprintln!("process mode skipped: no worker program at {}", program.display());
-    }
-    modes
+fn modes() -> Vec<SessionArm> {
+    SessionArm::parity_arms()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -627,10 +696,22 @@ fn run_pair(
     let started = Instant::now();
     let legacy = run(Runtime::Legacy, "legacy");
     eprintln!("{label}: legacy {} running snapshots in {:.1?}", legacy.running.len(), started.elapsed());
-    for exec in modes() {
+    let runtimes = modes()
+        .into_iter()
+        .map(Runtime::Session)
+        .chain([Runtime::SessionOverBus(SessionArm::LOCAL)]);
+    for runtime in runtimes {
         let started = Instant::now();
-        let session = run(Runtime::Session(exec), &format!("session-{}", exec.label()));
-        let label = format!("{label}, {}", exec.label());
+        let exec = match runtime {
+            Runtime::Session(exec) | Runtime::SessionOverBus(exec) => exec,
+            Runtime::Legacy => unreachable!(),
+        };
+        let name = match runtime {
+            Runtime::SessionOverBus(_) => format!("session-bus-{}", exec.label()),
+            _ => format!("session-{}", exec.label()),
+        };
+        let session = run(runtime, &name);
+        let label = format!("{label}, {}", runtime.label());
         compare(&legacy, &session, &label);
         let rewards = legacy
             .events

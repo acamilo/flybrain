@@ -508,6 +508,89 @@ else
     pass "07-enable.sh and verify.sh leave flyedge.service alone"
 fi
 # ---------------------------------------------------------------------------
+# 3b2b. The control bus edge (CTRL-01, docs/design/flybus.md, "Control over the
+# bus"). flycontrol-edge.service is off unless the operator switches a
+# container to FLY_CONTROL_VIA=bus, follows flysim when on, and the deploy
+# writes the default. The watchdog's use of FLY_CONTROL_VIA is driven for real
+# further down, next to check 2's.
+# ---------------------------------------------------------------------------
+echo "--- flycontrol-edge.service: follows flysim in bus mode, skipped in direct mode ---"
+CEDGE_UNIT="$INFRA_DIR/units/flycontrol-edge.service"
+if [ ! -f "$CEDGE_UNIT" ]; then
+    fail "units/flycontrol-edge.service is missing"
+else
+    grep -qE '^After=.*\bflysim\.service\b' "$CEDGE_UNIT" \
+        && pass "flycontrol-edge.service orders itself After=flysim.service" \
+        || fail "flycontrol-edge.service must be After=flysim.service: flysim owns the router"
+    grep -qE '^Requires=.*\bflysim\.service\b' "$CEDGE_UNIT" \
+        && pass "flycontrol-edge.service Requires=flysim.service" \
+        || fail "flycontrol-edge.service must Require flysim.service"
+    grep -qE '^ExecStart=/opt/fly/current/fly-control-edge$' "$CEDGE_UNIT" \
+        && pass "flycontrol-edge.service runs the release's fly-control-edge" \
+        || fail "flycontrol-edge.service ExecStart must be /opt/fly/current/fly-control-edge"
+    grep -qE '^ConditionPathExists=/opt/fly/current/fly-control-edge$' "$CEDGE_UNIT" \
+        && pass "flycontrol-edge.service stays inactive on a release without fly-control-edge" \
+        || fail "flycontrol-edge.service needs ConditionPathExists=/opt/fly/current/fly-control-edge"
+    grep -qE '^Environment=FLY_CONTROL_BIND=127\.0\.0\.1:7401$' "$CEDGE_UNIT" \
+        && pass "flycontrol-edge.service binds the contract's loopback :7401" \
+        || fail "flycontrol-edge.service FLY_CONTROL_BIND must be 127.0.0.1:7401 (docs/control-api.md)"
+    # N1 (review of CTRL-01): Requires= alone stops the edge with flysim but never starts it
+    # again, so fly-loop-reset's stop and start left :7401 dead. flysim Wants= it, and the
+    # unit's own ExecCondition= decides by FLY_CONTROL_VIA (EDGE-02's pattern for flyedge).
+    grep -qE '^Wants=.*\bflycontrol-edge\.service\b' "$INFRA_DIR/units/flysim.service" \
+        && pass "flysim.service Wants=flycontrol-edge.service (every flysim start brings the edge up in bus mode)" \
+        || fail "flysim.service must Want flycontrol-edge.service: a stop and start of flysim (fly-loop-reset) would leave :7401 dead"
+    if grep -qE '^\[Install\]' "$CEDGE_UNIT"; then
+        fail "flycontrol-edge.service has an [Install] section; flysim's Wants= is what starts it"
+    else
+        pass "flycontrol-edge.service has no [Install] section"
+    fi
+    cond="$(sed -nE "s/^ExecCondition=\/bin\/sh -c '(.*)'\$/\1/p" "$CEDGE_UNIT")"
+    if [ -z "$cond" ]; then
+        fail "flycontrol-edge.service needs an ExecCondition= on FLY_CONTROL_VIA"
+    else
+        # Run the condition as systemd would ($$ is systemd's escape for a literal $).
+        cond="${cond//\$\$/\$}"
+        cond_bad=""
+        for v in "" direct Direct junk; do
+            FLY_CONTROL_VIA="$v" sh -c "$cond" && cond_bad="$cond_bad [$v->runs]"
+        done
+        env -u FLY_CONTROL_VIA sh -c "$cond" && cond_bad="$cond_bad [unset->runs]"
+        for v in bus Bus BUS; do
+            FLY_CONTROL_VIA="$v" sh -c "$cond" || cond_bad="$cond_bad [$v->skipped]"
+        done
+        [ -z "$cond_bad" ] \
+            && pass "flycontrol-edge.service ExecCondition= runs only for FLY_CONTROL_VIA=bus (any case); direct, unset and junk skip" \
+            || fail "flycontrol-edge.service ExecCondition= wrong for:$cond_bad"
+    fi
+    grep -qE '^Environment=FLY_CONTROL_EDGE_METRICS_ADDR=127\.0\.0\.1:' "$CEDGE_UNIT" \
+        && pass "flycontrol-edge.service keeps its metrics on loopback" \
+        || fail "flycontrol-edge.service FLY_CONTROL_EDGE_METRICS_ADDR must be a 127.0.0.1 address"
+fi
+if target_pulls "$INFRA_DIR/units/fly.target" | grep -qx 'flycontrol-edge.service'; then
+    fail "fly.target pulls flycontrol-edge.service in; flysim.service Wants= it, the condition decides"
+else
+    pass "fly.target does not pull flycontrol-edge.service in"
+fi
+if grep -E '^(ALWAYS_ON_UNITS|APP_UNITS)=' "$INFRA_DIR/07-enable.sh" "$INFRA_DIR/verify.sh" | grep -q 'flycontrol-edge'; then
+    fail "07-enable.sh or verify.sh lists flycontrol-edge.service as always-on"
+else
+    pass "07-enable.sh and verify.sh leave flycontrol-edge.service alone"
+fi
+grep -qE '^    echo "FLY_CONTROL_VIA=\$\{FLY_CONTROL_VIA_EFFECTIVE\}"$' "$INFRA_DIR/05-deploy.sh" \
+    && pass "05-deploy.sh writes FLY_CONTROL_VIA into fly.env" \
+    || fail "05-deploy.sh must write FLY_CONTROL_VIA (validated) into fly.env"
+grep -qE '^fly ALL=\(root\) NOPASSWD: /usr/bin/systemctl restart flycontrol-edge\.service$' "$INFRA_DIR/config/fly-sudoers" \
+    && pass "the watchdog may restart flycontrol-edge.service" \
+    || fail "config/fly-sudoers must let the watchdog restart flycontrol-edge.service (check 1b)"
+cv_out="$(bash -c "source '$INFRA_DIR/lib/common.sh' >/dev/null 2>&1; for v in '' direct Bus BUS http; do control_via_normalize \"\$v\" || echo refused; done" 2>&1)"
+if [ "$(echo $cv_out)" = "direct direct bus bus refused" ]; then
+    pass "control_via_normalize: empty/direct -> direct, Bus/BUS -> bus, anything else refused"
+else
+    fail "control_via_normalize: got '$(echo $cv_out)'"
+fi
+
+# ---------------------------------------------------------------------------
 # 3b3. The shadow run (SHADOW-01, infra/units/flyshadow.service).
 #
 # Report-only and off by default. What would break it is statically visible: the unit ending up
@@ -732,7 +815,60 @@ rs_start "no remote file (the shadow runs on a build box; --local to override)" 
 rs_start "a remote file without its key" "FLY_SHADOW_REMOTE=user@box
 FLY_SHADOW_REMOTE_KEY=$cs_tmp/missing-key
 FLY_SHADOW_REMOTE_KNOWN_HOSTS=$cs_tmp/missing-known"
+# BUS-01: only the legacy loop writes the trace, so `start` refuses while flysim.service runs the
+# session runtime; `--bus` needs the release's fly-session worker beside fly-shadow.
+bs_start() { # name, expect (refuse|proceed), runtime drop-in (yes|no), worker (yes|no), args...
+    local name="$1" expect="$2" rt="$3" worker="$4" rc=0 out
+    shift 4
+    : > "$cs_tmp/systemctl.log"
+    rm -f "$cs_tmp/10-runtime.conf" "$cs_tmp/fly-session"
+    [ "$rt" = yes ] && printf '[Service]\nExecStart=/opt/fly/current/flysim-session\n' > "$cs_tmp/10-runtime.conf"
+    [ "$worker" = yes ] && { printf '#!/bin/sh\nexit 0\n' > "$cs_tmp/fly-session"; chmod +x "$cs_tmp/fly-session"; }
+    out="$(PATH="$cs_tmp/bin:$PATH" CS_DIR="$cs_tmp" CS_SHADOW_CPUS="0 2" CS_SIM_CPUS="1 3" \
+        FLY_SHADOW_DIR="$cs_tmp/shadow" FLY_SHADOW_BIN="$cs_tmp/fly-shadow" \
+        FLY_SHADOW_CPUSET_DROPIN="$cs_tmp/dropin.conf" FLY_SHADOW_REMOTE_ENV="$cs_tmp/no-remote.env" \
+        FLY_SHADOW_REMOTE_DROPIN_DIR="$cs_tmp/flyshadow.d" FLY_RUNTIME_DROPIN="$cs_tmp/10-runtime.conf" \
+        FLY_SHADOW_BASELINE_SECONDS=30 FLY_METRICS_URL=http://127.0.0.1:1 \
+        "$INFRA_DIR/bin/fly-shadow-run" start "$@" 2>&1)" || rc=$?
+    case "$expect" in
+        refuse)
+            if [ "$rc" -ne 0 ] && ! grep -qE '^(start|restart|daemon-reload)' "$cs_tmp/systemctl.log" \
+                && [ ! -e "$cs_tmp/flyshadow.d/mode.conf" ]; then
+                pass "fly-shadow-run start refuses, $name: ${out#fly-shadow-run: }"
+            else
+                fail "fly-shadow-run start must refuse and start nothing, $name (rc=$rc): $out"
+            fi ;;
+        proceed)
+            if echo "$out" | grep -q 'stub install reached'; then
+                pass "fly-shadow-run start proceeds, $name"
+            else
+                fail "fly-shadow-run start must proceed, $name (rc=$rc): $out"
+            fi ;;
+    esac
+}
+bs_start "the live fly on the session runtime (no trace to follow)" refuse yes yes --local
+bs_start "--bus without fly-session in the release" refuse no no --local --bus
+bs_start "--bus with fly-session, live on legacy" proceed no yes --local --bus
 rm -rf "$cs_tmp"
+# BUS-01: `check --bus` asks fly-shadow for a verdict that ran the bus topology.
+if command -v python3 >/dev/null 2>&1; then
+    cb_tmp="$(mktemp -d "${TMPDIR:-/tmp}/fly-lint-checkbus.XXXXXX")"
+    mkdir -p "$cb_tmp/bin" "$cb_tmp/shadow"
+    printf '#!/bin/sh\ncase "$1" in is-active) exit 0 ;; esac\nexit 0\n' > "$cb_tmp/bin/systemctl"
+    printf '#!/bin/sh\necho "$*" > "%s/args"\n' "$cb_tmp" > "$cb_tmp/fly-shadow"
+    chmod +x "$cb_tmp/bin/systemctl" "$cb_tmp/fly-shadow"
+    printf '{"rtfMean":1,"rtfSd":0,"lagRate":0,"samples":60,"margin":0.05}\n' > "$cb_tmp/shadow/baseline.json"
+    printf '{"status":"pass"}\n' > "$cb_tmp/shadow/verdict.json"
+    PATH="$cb_tmp/bin:$PATH" FLY_SHADOW_DIR="$cb_tmp/shadow" FLY_SHADOW_BIN="$cb_tmp/fly-shadow" \
+        FLY_SHADOW_REMOTE_DROPIN_DIR="$cb_tmp/none.d" FLY_ENV_FILE="$cb_tmp/none.env" \
+        "$INFRA_DIR/bin/fly-shadow-run" check --bus >/dev/null 2>&1 || true
+    if grep -q -- '--binary flysim-session --require-arm bus/process$' "$cb_tmp/args" 2>/dev/null; then
+        pass "fly-shadow-run check --bus requires a verdict that ran bus/process (fly-shadow check --require-arm)"
+    else
+        fail "fly-shadow-run check --bus must pass --require-arm bus/process to fly-shadow check ($(cat "$cb_tmp/args" 2>/dev/null))"
+    fi
+    rm -rf "$cb_tmp"
+fi
 # SHADOW-02: `check` in remote mode also needs the relay healthy now (relay.json under a minute
 # old), of this run (the drop-in's id, the verdict's too), without coverageLost (review B1: flysim
 # stopped its trace for want of a consumer) and with a live trace written in the last 90 s.
@@ -1002,6 +1138,50 @@ if fly_runtime && [ ! -f "$rt_dropin" ]; then
 else
     fail "fly-runtime legacy must remove the drop-in and succeed"
 fi
+# BUS-01: the bus transport. `session-bus` (= `session --bus`) adds FLY_SESSION_TRANSPORT=bus to
+# the drop-in and needs the release's fly-session worker; a flag-less `session` (05-deploy's
+# refresh) keeps the transport; `session --local` is the way back; status says which.
+rt_status() { env RT_DIR="$rt_dir" PATH="$rt_dir/bin:$PATH" FLY_SYSTEMD_DIR="$rt_dir/systemd" bash "$INFRA_DIR/bin/fly-runtime" status 2>/dev/null; }
+RT_ARGS=(session-bus)
+if ! fly_runtime && [ ! -f "$rt_dropin" ]; then
+    pass "fly-runtime session-bus refuses a release without the fly-session worker"
+else
+    fail "fly-runtime session-bus must refuse without \$FLY_RELEASE_DIR/fly-session and write nothing"
+fi
+printf '#!/usr/bin/env bash\nexit 0\n' > "$rt_dir/release/fly-session"
+chmod +x "$rt_dir/release/fly-session"
+if fly_runtime && grep -qx 'Environment=FLY_SESSION_TRANSPORT=bus' "$rt_dropin" \
+    && grep -qx "ExecStart=$rt_dir/release/flysim-session" "$rt_dropin" \
+    && grep -qx 'OnFailure=fly-runtime-fallback.service' "$rt_dropin" \
+    && [ "$(rt_status | head -n1)" = session ] \
+    && rt_status | grep -qx '  transport: bus' \
+    && tail -n1 "$rt_dir/runtime.log" | grep -q 'session-bus (was legacy)'; then
+    pass "fly-runtime session-bus: the drop-in adds FLY_SESSION_TRANSPORT=bus (fallback and probation unchanged); status: session, transport bus"
+else
+    fail "fly-runtime session-bus: drop-in/status/log wrong ($(tr '\n' ' ' < "$rt_dropin" 2>/dev/null); $(tail -n1 "$rt_dir/runtime.log"))"
+fi
+RT_ARGS=(session --no-restart)
+if fly_runtime && grep -qx 'Environment=FLY_SESSION_TRANSPORT=bus' "$rt_dropin"; then
+    pass "fly-runtime session --no-restart (05-deploy's refresh) keeps the bus transport"
+else
+    fail "fly-runtime session --no-restart must keep the drop-in's transport"
+fi
+RT_ARGS=(session --local)
+if fly_runtime && [ -f "$rt_dropin" ] && ! grep -q 'FLY_SESSION_TRANSPORT' "$rt_dropin" \
+    && rt_status | grep -qx '  transport: local' \
+    && tail -n1 "$rt_dir/runtime.log" | grep -q 'session (was session-bus)'; then
+    pass "fly-runtime session --local takes the session off the bus (status: transport local)"
+else
+    fail "fly-runtime session --local must drop FLY_SESSION_TRANSPORT from the drop-in"
+fi
+RT_ARGS=(legacy --bus)
+if ! fly_runtime && [ -f "$rt_dropin" ]; then
+    pass "fly-runtime legacy --bus is refused (usage)"
+else
+    fail "fly-runtime legacy --bus must be refused"
+fi
+rm -f "$rt_dir/release/fly-session"
+RT_ARGS=(legacy); fly_runtime || fail "fly-runtime legacy after the bus tests failed"
 RT_ARGS=(session)
 if ! fly_runtime RT_COMPAT_FLYSIM_SESSION=other && [ ! -f "$rt_dropin" ]; then
     pass "fly-runtime session refuses when the two compatibility strings differ"
@@ -1394,6 +1574,27 @@ else
     feed_url_case "BUS" "FLY_FEED_VIA=BUS" "" "http://edge"
     feed_url_case "quoted bus" 'FLY_FEED_VIA="bus"' "" "http://edge"
     feed_url_case "explicit override wins" "FLY_FEED_VIA=bus" "http://other" "http://other"
+    # Check 1 reads flysim's own /healthz: :7401 when flysim serves it, flysim's read-only
+    # listener when the control edge does (FLY_CONTROL_VIA=bus), so an edge outage never
+    # restarts the fly (CTRL-01).
+    health_url_case() {
+        local label="$1" env_line="$2" want="$3" got
+        printf '%s\n' "$env_line" > "$fe_fixture/fly.env"
+        got="$(FLY_ENV_FILE="$fe_fixture/fly.env" FLY_CONTROL_URL=http://control \
+            FLY_METRICS_URL=http://sim \
+            WD_RUN_DIR="$fe_fixture/run" WD_STATE_DIR="$fe_fixture/state" \
+            TEXTFILE_DIR="$fe_fixture/textfile" \
+            bash -c "source '$fe_fixture/wd.sh'; flysim_health_url" 2>&1 || true)"
+        if [ "$got" = "$want" ]; then
+            pass "check 1 flysim health: $label -> $got"
+        else
+            fail "check 1 flysim health: $label: got '$got', want '$want'"
+        fi
+    }
+    health_url_case "direct" "FLY_CONTROL_VIA=direct" "http://control/healthz"
+    health_url_case "no FLY_CONTROL_VIA line" "FLY_FEED_VIA=bus" "http://control/healthz"
+    health_url_case "bus" "FLY_CONTROL_VIA=bus" "http://sim/healthz"
+    health_url_case "Bus" 'FLY_CONTROL_VIA="Bus"' "http://sim/healthz"
     rm -rf "$fe_fixture"
 fi
 

@@ -18,7 +18,7 @@
 //! | `--out DIR` | `$FLY_SHADOW_DIR`: `verdict.json`, `divergence.json` |
 //! | `--spool DIR` | `<out>/spool` |
 //! | `--work DIR` | `$FLY_SHADOW_WORK`, else `<out>/work`: sockets and artifact stores |
-//! | `--mode in-process\|thread\|process` | `in-process` |
+//! | `--mode local\|bus/in-process\|bus/thread\|bus/process` | `$FLY_SHADOW_MODE`, else `local` (in-process over the local lane); `in-process`, `thread`, `process` and `bus` are accepted (BUS-01) |
 //! | `--threads N` | `$FLY_SHADOW_THREADS`, else 2: the shadow agent's sweep threads |
 //! | `--required-brain-seconds S` | 10800 |
 //! | `--lag-guard-margin S` | 0.05 s/s; the shadow pauses 60 s while the live `fly_lag_seconds` grows faster than `fly-shadow-run`'s baseline rate (`<out>/baseline.json`) plus this margin (the baseline's own margin wins), and stops pausing for 10 minutes when a pause did not help (0 disables) |
@@ -46,7 +46,9 @@
 //! and writes nothing outside DIR; N bounds the mirrored saves (3072).
 //!
 //! `check --verdict FILE [--current DIR] [--binary NAME] [--compatibility STRING]
-//! [--max-age-seconds N]`: the cutover rule of `fly_legacy_session::shadow::verdict`. `--current`
+//! [--max-age-seconds N] [--require-arm ARM]`: the cutover rule of
+//! `fly_legacy_session::shadow::verdict`, and with `--require-arm` (BUS-01: `bus/process`, ...) also
+//! that the shadow ran that topology. `--current`
 //! is the release link CUT-01 switches into (default `/opt/fly/current`): the verdict must be for
 //! the directory it resolves to, with every shadowed binary unchanged there. `--binary` is the
 //! file name of the session-runtime binary CUT-01 switches to (default `flysim-session`,
@@ -160,6 +162,8 @@ fn main() {
                 .unwrap_or_else(|| "flysim-session".to_owned());
             let compatibility = args.value("--compatibility");
             let max_age: i64 = args.parsed("--max-age-seconds").unwrap_or(300);
+            // BUS-01: the topology the cutover goes into, which the shadow must have run.
+            let require_arm = args.value("--require-arm");
             args.done();
             let compatibility = compatibility.unwrap_or_else(|| {
                 let config = flysim::config::Config::load(None).unwrap_or_else(|e| die(e));
@@ -179,7 +183,12 @@ fn main() {
                 dir: &dir_text,
                 binaries: &binaries,
             };
-            match verdict::allows_cutover(&value, &binary, &release, &compatibility, now, max_age) {
+            let allowed = verdict::allows_cutover(&value, &binary, &release, &compatibility, now, max_age)
+                .and_then(|()| match &require_arm {
+                    Some(arm) => verdict::ran_arm(&value, arm),
+                    None => Ok(()),
+                });
+            match allowed {
                 Ok(()) => println!("cutover allowed: {}", value["reason"]),
                 Err(reason) => {
                     println!("cutover refused: {reason}");
@@ -212,12 +221,18 @@ fn run(mut args: Args) {
         .map(PathBuf::from)
         .or_else(|| env_path("FLY_SHADOW_WORK"))
         .unwrap_or_else(|| out_dir.join("work"));
-    let mode = match args.value("--mode").as_deref() {
-        None | Some("in-process") => ExecutionMode::InProcess,
-        Some("thread") => ExecutionMode::Thread,
-        Some("process") => ExecutionMode::Process,
-        Some(other) => die(format!("--mode {other:?}")),
-    };
+    // BUS-01: `--mode` (else `FLY_SHADOW_MODE`, which the remote relay forwards to the box) names
+    // the topology: `local` (= `in-process`, the default), `bus/in-process`, `bus/thread`,
+    // `bus/process` (= `bus`, = `process`), `thread`.
+    let arm = args
+        .value("--mode")
+        .or_else(|| std::env::var("FLY_SHADOW_MODE").ok().filter(|v| !v.is_empty()))
+        .map(|value| {
+            fly_legacy_session::composition::SessionArm::parse(&value)
+                .unwrap_or_else(|e| die(format!("--mode / FLY_SHADOW_MODE: {e}")))
+        })
+        .unwrap_or(fly_legacy_session::composition::SessionArm::LOCAL);
+    let mode: ExecutionMode = arm.mode;
     let agent_threads: usize = args.parsed("--threads").unwrap_or_else(|| {
         std::env::var("FLY_SHADOW_THREADS")
             .ok()
@@ -292,6 +307,7 @@ fn run(mut args: Args) {
         macro_mode: config.macros.mode,
         speed: config.loop_.speed,
         mode,
+        transport: arm.transport,
         agent_threads,
         required_brain_seconds: required,
         all_files,
@@ -309,7 +325,8 @@ fn run(mut args: Args) {
         run_id_file,
     };
     eprintln!(
-        "fly-shadow: {} mode, {} threads, following {} (stores {} and {}, read only)",
+        "fly-shadow: {} ({} mode), {} threads, following {} (stores {} and {}, read only)",
+        arm.label(),
         mode.label(),
         agent_threads,
         shadow_config.trace_dir.display(),

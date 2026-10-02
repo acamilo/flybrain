@@ -417,6 +417,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "fly-control-edge"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "flybus",
+ "flysim",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "fly-edge"
 version = "0.1.1"
 dependencies = [
@@ -442,6 +459,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "fly-control-edge",
  "fly-session",
  "flybrain-core",
  "flybrain-gb",

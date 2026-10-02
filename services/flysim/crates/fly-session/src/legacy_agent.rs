@@ -95,6 +95,14 @@ pub const SPIKES_CONTENT_TYPE: &str = "application/x-fly-spike-bitset";
 /// declared extension of this one worker, not a `workers-v1` method: it changes nothing, is
 /// answered in any phase once initialized, and is not in any trace.
 pub const METHOD_FEED_STATUS: &str = "Legacy.FeedStatus";
+/// BUS-01: the same feed status, as of the boundary the Commit commits, attached to a Commit reply
+/// that reaches the agent over the bus (`application/json`, the [`METHOD_FEED_STATUS`] result's
+/// bytes). The service host reads it instead of calling [`METHOD_FEED_STATUS`] after the step, which
+/// over the bus is a round trip of its own; the bytes are the ones that call would return, since
+/// nothing changes the agent between its Commit and the host's publish. Over the local lane, where
+/// the call costs nothing, the reply does not carry it.
+pub const FEED_STATUS_ATTACHMENT: &str = "legacy.feed-status";
+pub const FEED_STATUS_CONTENT_TYPE: &str = "application/json";
 pub const FEED_STATUS_CAPABILITY: &str = "legacy-feed-status-v1";
 
 /// The one stimulus kind the profile supports.
@@ -1358,16 +1366,32 @@ impl LegacyAgentWorker {
             telemetry: self.telemetry(),
         };
         let _seal_span = crate::profile::span("agent.seal_spikes");
-        let artifact = ctx
-            .seal(SPIKES_CONTENT_TYPE, spikes)
-            .await
-            .map_err(|e| applied(e.code, e.message))?;
+        // Over the bus the feed status rides along, sealed beside the spikes (one round trip for
+        // both): the service host's publish then needs no call of its own.
+        let feed = match (ctx.is_local(), self.agent.as_ref()) {
+            (false, Some(agent)) => Some(
+                serde_json::to_vec(&feed_status_of(agent)).expect("a JSON value serializes"),
+            ),
+            _ => None,
+        };
+        let (artifact, feed) = tokio::join!(ctx.seal(SPIKES_CONTENT_TYPE, spikes), async {
+            match feed {
+                Some(bytes) => ctx.seal(FEED_STATUS_CONTENT_TYPE, bytes).await.map(Some),
+                None => Ok(None),
+            }
+        });
+        let artifact = artifact.map_err(|e| applied(e.code, e.message))?;
+        let feed = feed.map_err(|e| applied(e.code, e.message))?;
         self.status.set_state(WorkerState::Ready);
         self.status
             .set_scope(Some(scope_at(&scope.session_id, &scope.epoch, k + 1)));
+        let mut attachments = vec![(SPIKES_ATTACHMENT.to_owned(), artifact)];
+        if let Some(feed) = feed {
+            attachments.push((FEED_STATUS_ATTACHMENT.to_owned(), feed));
+        }
         Ok(HandlerReply::with_artifacts(
             object(result.to_json()),
-            vec![(SPIKES_ATTACHMENT.to_owned(), artifact)],
+            attachments,
         ))
     }
 

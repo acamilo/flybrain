@@ -36,7 +36,7 @@ pub const GENERATION: u64 = 1;
 pub const CONTRACT: &str = "flybus 1.0
 frame: u32le length, 1..=65536 bytes of strict UTF-8 JSON
 envelope: protocol major minor id replyTo kind op body attachments
-attachment: name ref ownerId
+attachment: name ref ownerId [readLocation(storeId relativePath): in a router delivery only]
 ref: storeId artifactId generation byteLength contentType digest
 reply: ok value | ok error{code message dispatch}
 bus.hello: clientId clientIncarnation supportedMajors -> routerId connectionId selectedMajor selectedMinor contractDigest limits
@@ -293,6 +293,12 @@ impl<'a> Fields<'a> {
         }
     }
 
+    /// A field that may be absent; read (so [`Fields::finish`] accepts it) when present.
+    pub fn optional(&mut self, key: &'static str) -> Option<&'a Value> {
+        self.seen.insert(key);
+        self.map.get(key)
+    }
+
     pub fn value(&mut self, key: &'static str) -> Result<&'a Value, WireError> {
         self.seen.insert(key);
         match self.map.get(key) {
@@ -472,6 +478,10 @@ pub struct Attachment {
     pub name: String,
     pub reference: ArtifactRef,
     pub owner_id: String,
+    /// In a router delivery only (amendment 2026-10-01, BUS-01): the read location the
+    /// delivery's ownership grants, so the recipient reads the bytes without an `artifact.open`
+    /// round trip. A client never sends one; the router refuses an attachment that carries it.
+    pub read_location: Option<Location>,
 }
 
 impl Attachment {
@@ -480,6 +490,9 @@ impl Attachment {
         m.insert("name".into(), self.name.clone().into());
         m.insert("ref".into(), self.reference.to_json());
         m.insert("ownerId".into(), self.owner_id.clone().into());
+        if let Some(location) = &self.read_location {
+            m.insert("readLocation".into(), location.to_json());
+        }
         Value::Object(m)
     }
 
@@ -488,11 +501,13 @@ impl Attachment {
         let name = f.id("name")?;
         let reference = ArtifactRef::from_json(f.value("ref")?)?;
         let owner_id = f.id("ownerId")?;
+        let read_location = f.optional("readLocation").map(Location::from_json).transpose()?;
         f.finish()?;
         Ok(Attachment {
             name,
             reference,
             owner_id,
+            read_location,
         })
     }
 }
@@ -640,7 +655,7 @@ impl Envelope {
             return err("envelope: op must be 1..=64 of [a-z.]");
         }
         let op = op.to_owned();
-        let body = f.object("body")?.clone();
+        f.object("body")?;
         let raw = f.array("attachments", 0, MAX_ATTACHMENTS)?;
         let mut attachments = Vec::with_capacity(raw.len());
         let mut names = HashSet::new();
@@ -652,6 +667,14 @@ impl Envelope {
             attachments.push(a);
         }
         f.finish()?;
+        // The body moves out of the parsed tree rather than being copied (BUS-01).
+        let body = match v {
+            Value::Object(mut m) => match m.remove("body") {
+                Some(Value::Object(body)) => body,
+                _ => return err("envelope: body must be an object"),
+            },
+            _ => return err("envelope must be an object"),
+        };
         Ok(Envelope {
             major,
             minor,
@@ -686,16 +709,74 @@ impl Envelope {
 
     /// Serializes, refusing anything over [`MAX_ENVELOPE_BYTES`].
     pub fn encode(&self) -> Result<Vec<u8>, WireError> {
-        let bytes = serde_json::to_vec(&self.to_value()).map_err(|e| WireError(e.to_string()))?;
-        if bytes.len() > MAX_ENVELOPE_BYTES {
-            return err(format!(
-                "envelope of {} bytes exceeds {MAX_ENVELOPE_BYTES}",
-                bytes.len()
-            ));
-        }
-        Ok(bytes)
+        encode_parts(
+            &EnvelopeHead {
+                major: self.major,
+                minor: self.minor,
+                id: &self.id,
+                reply_to: self.reply_to.as_deref(),
+                kind: self.kind,
+                op: &self.op,
+            },
+            &self.body,
+            &self.attachments,
+        )
     }
 }
+
+/// An envelope's scalar fields, borrowed, for [`encode_parts`].
+pub struct EnvelopeHead<'a> {
+    pub major: u64,
+    pub minor: u64,
+    pub id: &'a str,
+    pub reply_to: Option<&'a str>,
+    pub kind: Kind,
+    pub op: &'a str,
+}
+
+/// Serializes an envelope from borrowed parts -- the same bytes as [`Envelope::to_value`] in its
+/// field order -- without copying the body into a value tree first (BUS-01: the body is the one
+/// large part of a message, and it used to be copied twice on the way out). Refuses anything over
+/// [`MAX_ENVELOPE_BYTES`].
+pub fn encode_parts(
+    head: &EnvelopeHead<'_>,
+    body: &Map<String, Value>,
+    attachments: &[Attachment],
+) -> Result<Vec<u8>, WireError> {
+    #[derive(serde::Serialize)]
+    struct Out<'a> {
+        protocol: &'static str,
+        major: u64,
+        minor: u64,
+        id: &'a str,
+        #[serde(rename = "replyTo")]
+        reply_to: Option<&'a str>,
+        kind: &'static str,
+        op: &'a str,
+        body: &'a Map<String, Value>,
+        attachments: Vec<Value>,
+    }
+    let out = Out {
+        protocol: PROTOCOL,
+        major: head.major,
+        minor: head.minor,
+        id: head.id,
+        reply_to: head.reply_to,
+        kind: head.kind.as_str(),
+        op: head.op,
+        body,
+        attachments: attachments.iter().map(Attachment::to_json).collect(),
+    };
+    let bytes = serde_json::to_vec(&out).map_err(|e| WireError(e.to_string()))?;
+    if bytes.len() > MAX_ENVELOPE_BYTES {
+        return err(format!(
+            "envelope of {} bytes exceeds {MAX_ENVELOPE_BYTES}",
+            bytes.len()
+        ));
+    }
+    Ok(bytes)
+}
+
 
 // ---------------------------------------------------------------------------------------------
 // Framing

@@ -1,0 +1,56 @@
+# infra/units/flycontrol-edge.service — pushed to /etc/systemd/system/flycontrol-edge.service.
+#
+# The control API (http://127.0.0.1:7401, docs/control-api.md) served from
+# flysim's control services on the bus (docs/design/flybus.md, "Control over
+# the bus"; services/flysim/crates/fly-control-edge). Whether it runs is decided
+# by one line, FLY_CONTROL_VIA in /etc/fly/fly.env (05-deploy.sh writes it from
+# the env file's FLY_CONTROL_VIA, default `direct`):
+#
+#   direct  flysim binds 127.0.0.1:7401 itself. ExecCondition= below fails, so
+#           this unit starts as "skipped" (inactive, no failure, no restart).
+#   bus     flysim registers the control services on its router and leaves
+#           :7401 to this unit.
+#
+# flysim.service has Wants= on this unit, so EVERY start of flysim (the unstick
+# rule's restart, fly-loop-reset's stop and start, fly-reset-to-milestone, a
+# crash-restart, a reboot through fly.target) starts the edge in bus mode and
+# skips it in direct mode; fly.env alone decides, and flysim and the edge can
+# never disagree. This unit is in no target and has no [Install] section:
+# `systemctl enable` has nothing to do. The switch and the way back are
+# infra/docs/runbook.md, "Control over the bus": edit FLY_CONTROL_VIA, run
+# 05-deploy.sh, restart flysim.
+#
+# Ordering: flysim owns the router (/run/fly/bus, shared with the feed when
+# that rides the bus too), so it starts first and the edge follows it.
+# Requires= makes an explicit stop or restart of flysim stop or restart the
+# edge with it (and Wants= on the other side brings it back after a plain
+# start). A crash-restart of flysim is covered by the edge itself: it unbinds
+# :7401 and reconnects every 500 ms, so to every client it looks exactly like
+# flysim restarting. The edge holds no state.
+[Unit]
+Description=flycontrol-edge: the control API served from flysim's control services on the bus
+After=flysim.service
+Requires=flysim.service
+# A release that predates fly-control-edge has no binary; stay cleanly
+# inactive rather than restart-looping.
+ConditionPathExists=/opt/fly/current/fly-control-edge
+
+[Service]
+Type=simple
+User=fly
+# FLY_CONTROL_VIA, FLY_BUS_DIR and the rest of flysim's configuration: the
+# edge reads the same file, so the two cannot disagree about the port or the bus.
+EnvironmentFile=/etc/fly/fly.env
+Environment=FLY_CONTROL_BIND=127.0.0.1:7401
+Environment=FLY_BUS_DIR=/run/fly/bus
+# Its own /metrics and /healthz. Loopback only.
+Environment=FLY_CONTROL_EDGE_METRICS_ADDR=127.0.0.1:9103
+# Only in bus mode. EnvironmentFile= is the same fly.env flysim reads, so this is the value
+# flysim started with (flysim reads it case-insensitively, so does this). Exit 1 means
+# "skip": the unit goes inactive without failing and without being restarted.
+ExecCondition=/bin/sh -c 'case "$$FLY_CONTROL_VIA" in [Bb][Uu][Ss]) ;; *) exit 1;; esac'
+ExecStart=/opt/fly/current/fly-control-edge
+Restart=always
+RestartSec=2
+# Small JSON requests; an /events page is the largest thing it ever holds.
+MemoryMax=128M

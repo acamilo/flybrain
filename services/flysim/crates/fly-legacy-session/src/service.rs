@@ -35,8 +35,10 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use fly_session::fly_session_types::gameboy;
-use fly_session::launcher::ExecutionMode;
-use fly_session::legacy_agent::{LegacyProfileKind, METHOD_FEED_STATUS, SPIKES_ATTACHMENT};
+use fly_session::launcher::{ExecutionMode, ProcessCpus};
+use fly_session::legacy_agent::{
+    FEED_STATUS_ATTACHMENT, LegacyProfileKind, METHOD_FEED_STATUS, SPIKES_ATTACHMENT,
+};
 use fly_session::legacy_checkpoint::{RankChange, SaveKind, SaveReport, SaveTicket};
 use fly_session::types::*;
 use flybrain_gb::adapter::GameAdapter;
@@ -56,8 +58,13 @@ use flysim::snapshot::{
     PROTOCOL, RewardKind, Snapshot, f32_bytes, finite,
 };
 
-use crate::composition::{Boot, LegacyConfig, LegacySession, StoreConfig, boot_unsaved};
+use crate::composition::{
+    Boot, LegacyConfig, LegacySession, StoreConfig, Transport, boot_unsaved,
+};
 use crate::task::GAME;
+
+/// The service's one agent.
+const AGENT_ID: &str = "fly";
 
 /// The runtime name the sugar journal's boot header records.
 pub const RUNTIME: &str = "fly-session";
@@ -67,30 +74,83 @@ pub const SESSION_DIR_ENV: &str = "FLY_SESSION_DIR";
 pub const DEFAULT_SESSION_DIR: &str = "/run/fly/session";
 /// `in-process` (the default), `thread` or `process` (`fly-session`'s launcher modes).
 pub const SESSION_MODE_ENV: &str = "FLY_SESSION_MODE";
+/// `local` (the default: in-process over the local lane) or `bus` (every participant a socket
+/// client of the session's router; the mode defaults to `process`). BUS-01.
+pub const SESSION_TRANSPORT_ENV: &str = "FLY_SESSION_TRANSPORT";
 /// `production` (the default, `gameboy-legacy-fafb-v783-v1`) or `toy` (tests only).
 pub const SESSION_PROFILE_ENV: &str = "FLY_SESSION_PROFILE";
 
 /// `0` keeps every thread floating over the cpuset; anything else, or unset, places them
 /// ([`place_threads`]).
 pub const SESSION_PIN_ENV: &str = "FLY_SESSION_PIN";
+/// Process mode: a CPU list for the service process (router, coordinator, listeners, checkpoint
+/// writer) and the environment process, instead of the sweep's host CPU (BUS-01). It must lie in
+/// the unit's cpuset (on the containers, `flysim.slice`'s AllowedCPUs).
+pub const SESSION_AUX_CPUS_ENV: &str = "FLY_SESSION_AUX_CPUS";
 
 /// How the service composes its session, beyond flysim's own [`Config`].
 #[derive(Clone, Debug)]
 pub struct ServiceOptions {
     pub mode: ExecutionMode,
+    pub transport: Transport,
     pub profile: LegacyProfileKind,
     pub session_dir: PathBuf,
+    /// Process mode: each participant process's CPUs, by worker id ([`place_threads`]).
+    pub placements: std::collections::BTreeMap<Id, ProcessCpus>,
+}
+
+/// The mode and transport from their two settings: `FLY_SESSION_TRANSPORT` (or `--transport`)
+/// and `FLY_SESSION_MODE`. Unset, the transport follows the mode (thread and process modes have
+/// only the bus) and the mode follows the transport (`bus` runs one process per participant).
+/// `local` with a thread or a process is refused: those have no local lane.
+pub fn mode_and_transport(
+    mode: Option<&str>,
+    transport: Option<&str>,
+) -> Result<(ExecutionMode, Transport)> {
+    let mode = match mode.filter(|v| !v.is_empty()) {
+        None => None,
+        Some("in-process") => Some(ExecutionMode::InProcess),
+        Some("thread") => Some(ExecutionMode::Thread),
+        Some("process") => Some(ExecutionMode::Process),
+        Some(other) => bail!("{SESSION_MODE_ENV}={other}: in-process, thread or process"),
+    };
+    let transport = match transport.filter(|v| !v.is_empty()) {
+        None => None,
+        Some(value) => {
+            Some(Transport::parse(value).map_err(|e| anyhow!("{SESSION_TRANSPORT_ENV}: {e}"))?)
+        }
+    };
+    Ok(match (mode, transport) {
+        (None, None) | (None, Some(Transport::Local)) => {
+            (ExecutionMode::InProcess, Transport::Local)
+        }
+        (None, Some(Transport::Bus)) => (ExecutionMode::Process, Transport::Bus),
+        (Some(ExecutionMode::InProcess), transport) => {
+            (ExecutionMode::InProcess, transport.unwrap_or(Transport::Local))
+        }
+        (Some(mode), None | Some(Transport::Bus)) => (mode, Transport::Bus),
+        (Some(mode), Some(Transport::Local)) => bail!(
+            "{SESSION_MODE_ENV}={} has no local lane: its participants reach the router over \
+             sockets ({SESSION_TRANSPORT_ENV}=bus, or unset)",
+            mode.label()
+        ),
+    })
 }
 
 impl ServiceOptions {
-    /// From `FLY_SESSION_MODE`, `FLY_SESSION_PROFILE` and `FLY_SESSION_DIR`.
+    /// From `FLY_SESSION_MODE`, `FLY_SESSION_TRANSPORT`, `FLY_SESSION_PROFILE` and
+    /// `FLY_SESSION_DIR`.
     pub fn from_env() -> Result<ServiceOptions> {
-        let mode = match std::env::var(SESSION_MODE_ENV).ok().as_deref() {
-            None | Some("") | Some("in-process") => ExecutionMode::InProcess,
-            Some("thread") => ExecutionMode::Thread,
-            Some("process") => ExecutionMode::Process,
-            Some(other) => bail!("{SESSION_MODE_ENV}={other}: in-process, thread or process"),
-        };
+        Self::from_env_with(None)
+    }
+
+    /// [`ServiceOptions::from_env`], with `--transport` in place of `FLY_SESSION_TRANSPORT`.
+    pub fn from_env_with(transport: Option<&str>) -> Result<ServiceOptions> {
+        let env_transport = std::env::var(SESSION_TRANSPORT_ENV).ok();
+        let (mode, transport) = mode_and_transport(
+            std::env::var(SESSION_MODE_ENV).ok().as_deref(),
+            transport.or(env_transport.as_deref()),
+        )?;
         let profile = match std::env::var(SESSION_PROFILE_ENV).ok().as_deref() {
             None | Some("") | Some("production") => LegacyProfileKind::Production,
             Some("toy") => LegacyProfileKind::Toy,
@@ -101,8 +161,10 @@ impl ServiceOptions {
             .unwrap_or_else(|| PathBuf::from(DEFAULT_SESSION_DIR));
         Ok(ServiceOptions {
             mode,
+            transport,
             profile,
             session_dir,
+            placements: Default::default(),
         })
     }
 }
@@ -134,11 +196,13 @@ pub fn legacy_config(config: &Config, options: &ServiceOptions) -> Result<Legacy
     }
     Ok(LegacyConfig {
         mode: options.mode,
+        transport: options.transport,
+        placements: options.placements.clone(),
         rom_path: config.paths.rom.clone(),
         dataset_dir: config.paths.dataset.clone(),
         profile: options.profile,
         macro_mode: config.macros.mode,
-        agent_id: id("fly"),
+        agent_id: id(AGENT_ID),
         agent_threads: config.loop_.threads.max(1),
         record: false,
     })
@@ -179,7 +243,7 @@ pub fn service_config(mut config: Config) -> Config {
 }
 
 /// Run the service until a signal or a fatal error: [`flysim::serve`] around a [`SessionHost`].
-pub fn run(config: Config, options: ServiceOptions) -> Result<()> {
+pub fn run(config: Config, mut options: ServiceOptions) -> Result<()> {
     let config = service_config(config);
     // Refuse a configuration the session cannot run before any listener is bound.
     legacy_config(&config, &options)?;
@@ -191,7 +255,19 @@ pub fn run(config: Config, options: ServiceOptions) -> Result<()> {
             tracing::warn!("{variable} is set, but {what} is a legacy-loop tool; ignored");
         }
     }
-    place_threads(&config, &options);
+    place_threads(&config, &mut options);
+    tracing::info!(
+        transport = options.transport.label(),
+        mode = options.mode.label(),
+        "session participants: {}",
+        match (options.transport, options.mode) {
+            (Transport::Local, _) => "in process, over the local lane",
+            (Transport::Bus, ExecutionMode::InProcess) => "in process, socket clients of the router",
+            (Transport::Bus, ExecutionMode::Thread) => "on threads, socket clients of the router",
+            (Transport::Bus, ExecutionMode::Process) =>
+                "one process each, socket clients of the router",
+        }
+    );
     flysim::serve(config, move |shared, snapshots, commands, notifier| {
         run_host(shared, snapshots, commands, notifier, &options)
     })
@@ -202,20 +278,79 @@ pub fn run(config: Config, options: ServiceOptions) -> Result<()> {
 /// writer), before any of them is spawned. The legacy loop's four busy threads keep their CPUs by
 /// themselves; the session's host threads sleep and wake around every transition, and without
 /// this the sweep workers' wake-ups often land two on one CPU (`flybrain_core::pool::
-/// place_workers`). In-process and thread modes only: a worker process would inherit the host's
-/// mask without the plan. Placement changes no result, trace or checkpoint.
-fn place_threads(config: &Config, options: &ServiceOptions) {
+/// place_workers`). Placement changes no result, trace or checkpoint.
+///
+/// In-process and thread modes place this process's own threads. Process mode (BUS-01) makes the
+/// same split of this process's cpuset and hands it out: the agent process gets the sweep CPUs
+/// and the host CPU (`--sweep-cpus`, `--host-cpus`), and this process -- the router, the
+/// coordinator, the listeners -- and the environment process run on the host CPU too, or on
+/// `FLY_SESSION_AUX_CPUS` when it is set. The transaction is serial (nothing overlaps Prepare,
+/// PERF-01), so they share that CPU with the agent's dispatcher without contending.
+fn place_threads(config: &Config, options: &mut ServiceOptions) {
     if std::env::var(SESSION_PIN_ENV).ok().as_deref() == Some("0") {
         tracing::info!("{SESSION_PIN_ENV}=0: the threads float over the cpuset");
         return;
     }
-    if !matches!(
-        options.mode,
-        ExecutionMode::InProcess | ExecutionMode::Thread
-    ) {
+    let workers = config.loop_.threads;
+    if options.mode == ExecutionMode::Process {
+        let plan = flybrain_core::pool::allowed_cpus()
+            .and_then(|allowed| flybrain_core::pool::split_cpus(&allowed, workers));
+        let Some(plan) = plan else {
+            tracing::info!(
+                workers,
+                "threads not placed (fewer cpus than sweep threads): every process floats"
+            );
+            return;
+        };
+        let aux = match std::env::var(SESSION_AUX_CPUS_ENV).ok().filter(|v| !v.is_empty()) {
+            None => plan.host.clone(),
+            Some(value) => match flybrain_core::pool::parse_cpu_list(&value) {
+                Some(cpus) => cpus,
+                None => {
+                    tracing::warn!("{SESSION_AUX_CPUS_ENV}={value:?} is not a cpu list; ignored");
+                    plan.host.clone()
+                }
+            },
+        };
+        let aux = if flybrain_core::pool::confine_current(&aux) {
+            aux
+        } else {
+            tracing::warn!(?aux, "could not confine the service to these cpus; using the host cpus");
+            if !flybrain_core::pool::confine_current(&plan.host) {
+                tracing::warn!("could not confine the service at all: every process floats");
+                return;
+            }
+            plan.host.clone()
+        };
+        // The agent's own host threads (its dispatcher is sweep worker 0) keep the plan's host
+        // cpus, less any the service and the world were moved onto.
+        let agent_host: Vec<usize> = plan.host.iter().copied().filter(|c| !aux.contains(c)).collect();
+        options.placements.insert(
+            id(AGENT_ID),
+            ProcessCpus {
+                host: if agent_host.is_empty() { plan.host.clone() } else { agent_host },
+                sweep: plan.workers.clone(),
+            },
+        );
+        options.placements.insert(
+            id(crate::composition::WORLD_WORKER),
+            ProcessCpus {
+                host: aux.clone(),
+                sweep: Vec::new(),
+            },
+        );
+        tracing::info!(
+            sweep_workers = ?plan.workers,
+            agent_host = ?plan.host,
+            service_and_world = ?aux,
+            "process mode: the agent's sweep workers pinned one per cpu; the service, the router \
+             and the world on the rest"
+        );
         return;
     }
-    let workers = config.loop_.threads;
+    if std::env::var_os(SESSION_AUX_CPUS_ENV).is_some() {
+        tracing::warn!("{SESSION_AUX_CPUS_ENV} is for process mode; ignored");
+    }
     match flybrain_core::pool::place_workers(workers) {
         Some(placement) => tracing::info!(
             sweep_workers = ?placement.workers,
@@ -402,6 +537,12 @@ pub struct SessionHost {
     spikes: Vec<u8>,
     /// The agent's feed status as last read, for a publish whose read failed.
     last_feed: AgentFeed,
+    /// Over the bus (BUS-01): the feed status the last Commit attached, as of the committed
+    /// boundary; the next publish uses it instead of calling `Legacy.FeedStatus`. Cleared by a
+    /// rollback, which changes the agent after its Commit.
+    committed_feed: Option<Value>,
+    /// Whether the agent attaches its feed status to every Commit (the bus transport).
+    feed_on_commit: bool,
 
     semantic_rewards: bool,
     next_profile: Instant,
@@ -522,6 +663,8 @@ impl SessionHost {
             dc_blocker: DcBlocker::default(),
             spikes: Vec::new(),
             last_feed: AgentFeed::default(),
+            committed_feed: None,
+            feed_on_commit: options.transport == Transport::Bus,
             semantic_rewards,
             next_profile: now + PROFILE_PERIOD,
             shared,
@@ -532,9 +675,15 @@ impl SessionHost {
         // The service reads every transition's commit (the spike bitset) and paces itself by
         // flysim's `Pacer`, as the legacy loop does.
         host.session.coordinator.disable_pacing();
-        host.session
-            .coordinator
-            .request_commit_attachments(&[SPIKES_ATTACHMENT]);
+        if host.feed_on_commit {
+            host.session
+                .coordinator
+                .request_commit_attachments(&[SPIKES_ATTACHMENT, FEED_STATUS_ATTACHMENT]);
+        } else {
+            host.session
+                .coordinator
+                .request_commit_attachments(&[SPIKES_ATTACHMENT]);
+        }
         host.session.coordinator.digest_views(false);
 
         let origin = match &boot {
@@ -659,6 +808,7 @@ impl SessionHost {
         let mut next_watchdog = Instant::now();
 
         loop {
+            let iteration = Instant::now();
             self.shared.beat();
             if let Some(period) = watchdog_period {
                 let now = Instant::now();
@@ -739,6 +889,9 @@ impl SessionHost {
                     "the simulation is behind real time; no frames are being skipped"
                 );
             }
+            // The frame's compute time, before the pacing sleep (`fly_frame_work_*`), as the
+            // legacy loop records it.
+            self.shared.metrics.frame_work.record(iteration.elapsed());
             let sleep = pacer.next_sleep(Instant::now());
             if !sleep.is_zero() {
                 tokio::time::sleep(sleep).await;
@@ -787,6 +940,9 @@ impl SessionHost {
                 self.remaining_ms = remaining;
             }
             for (agent, name, bytes) in &details.commit_attachments {
+                if *agent == self.agent_id && name == FEED_STATUS_ATTACHMENT {
+                    self.committed_feed = serde_json::from_slice(bytes).ok();
+                }
                 if *agent == self.agent_id && name == SPIKES_ATTACHMENT {
                     if self.spikes.len() < bytes.len() {
                         self.spikes.resize(bytes.len(), 0);
@@ -860,6 +1016,8 @@ impl SessionHost {
             .await
             .map_err(|e| anyhow!("rollback ({} at {}): {}", e.detail, e.phase, e.error.message))?;
         if rolled_back {
+            // The rollback changed the agent after its Commit: the next publish asks again.
+            self.committed_feed = None;
             let feed = self.session.task.take_feed();
             let (game_over, events) = feed.rollback.unwrap_or_default();
             self.recovered(game_over, &events).await;
@@ -1277,7 +1435,11 @@ impl SessionHost {
     /// `Sim::publish`: one snapshot of the committed boundary. `with_attachments` is false while
     /// not running, which is the protocol's header-only idle cadence.
     async fn publish(&mut self, with_attachments: bool) {
-        match self.read_feed().await {
+        let feed = match self.committed_feed.take() {
+            Some(value) => AgentFeed::parse(&value),
+            None => self.read_feed().await,
+        };
+        match feed {
             Ok(feed) => self.last_feed = feed,
             Err(error) => tracing::warn!(%error, "the agent's feed status: publishing the last one"),
         }
@@ -1382,6 +1544,53 @@ impl SessionHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// BUS-01: the transport and the mode, from their two settings.
+    #[test]
+    fn the_transport_and_the_mode_follow_each_other() {
+        use crate::composition::SessionArm;
+        let pick = |mode, transport| mode_and_transport(mode, transport).ok();
+        let local = (ExecutionMode::InProcess, Transport::Local);
+        assert_eq!(pick(None, None), Some(local));
+        assert_eq!(pick(Some(""), Some("")), Some(local));
+        assert_eq!(pick(None, Some("local")), Some(local));
+        assert_eq!(pick(Some("in-process"), None), Some(local));
+        assert_eq!(pick(None, Some("bus")), Some((ExecutionMode::Process, Transport::Bus)));
+        assert_eq!(
+            pick(Some("in-process"), Some("bus")),
+            Some((ExecutionMode::InProcess, Transport::Bus))
+        );
+        // A thread or a process has only the bus, whether or not the transport says so.
+        assert_eq!(pick(Some("thread"), None), Some((ExecutionMode::Thread, Transport::Bus)));
+        assert_eq!(pick(Some("process"), Some("bus")), Some((ExecutionMode::Process, Transport::Bus)));
+        assert_eq!(pick(Some("process"), Some("local")), None);
+        assert_eq!(pick(Some("thread"), Some("local")), None);
+        assert_eq!(pick(Some("fork"), None), None);
+        assert_eq!(pick(None, Some("udp")), None);
+        // The arms the parity runs and the shadow name parse to the same pairs.
+        for (name, arm) in [
+            ("local", SessionArm::LOCAL),
+            ("in-process", SessionArm::LOCAL),
+            ("bus", SessionArm::BUS_PROCESS),
+            ("process", SessionArm::BUS_PROCESS),
+            ("bus/process", SessionArm::BUS_PROCESS),
+            ("bus/thread", SessionArm::BUS_THREAD),
+            ("thread", SessionArm::BUS_THREAD),
+            ("bus/in-process", SessionArm::BUS_IN_PROCESS),
+        ] {
+            assert_eq!(SessionArm::parse(name), Ok(arm), "{name}");
+        }
+        assert_eq!(SessionArm::BUS_PROCESS.label(), "bus/process");
+        assert_eq!(SessionArm::LOCAL.label(), "local");
+        assert!(SessionArm::parse("bus/fork").is_err());
+        assert_eq!(
+            SessionArm::parse_list("local, bus/thread,,bus").unwrap(),
+            vec![SessionArm::LOCAL, SessionArm::BUS_THREAD, SessionArm::BUS_PROCESS]
+        );
+        // The launcher transport each arm runs on.
+        assert_eq!(Transport::Bus.via(ExecutionMode::InProcess), fly_session::Via::Unix);
+        assert_eq!(Transport::Local.via(ExecutionMode::Process), fly_session::Via::Unix);
+    }
 
     /// The environment's native audio through the f32 DC blocker is the legacy loop's u8 audio
     /// through its own, bit for bit, across chunk boundaries.

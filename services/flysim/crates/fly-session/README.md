@@ -95,6 +95,26 @@ fly-session legacy-environment ... --worker ID --port p1 --rom PATH --rom-digest
 fly-session measure     --steps 300 --agents 1,2,4
 ```
 
+BUS-01 (the live composition on the router) added four things here:
+
+- **Placement per process.** `Launcher::place_process(worker_id, ProcessCpus { host, sweep })`
+  hands a separate process its CPUs as `--host-cpus` and `--sweep-cpus`; the worker applies them
+  (`flybrain_core::pool::apply_placement`) before it starts a thread, so an agent process pins its
+  own sweep and every agent can have its own CPUs.
+- **The launcher's own clients in memory.** In thread and process modes the supervisor's and the
+  coordinator's connections are in memory (they live with the router); the participants' are the
+  sockets.
+- **One async worker per participant, and long handlers give it up.** A thread or process
+  participant runs on a multi-thread runtime with one worker, so a bus request crosses no thread
+  inside it; a handler that can run for seconds (`*.Initialize`, `State.*`, `Agent.Rollback`) runs
+  under `tokio::task::block_in_place`, so the shell keeps reading -- and answers `Worker.Status`
+  and an exact duplicate's `IN_PROGRESS` -- while the legacy agent warms up. The local lane is
+  unchanged.
+- **Writers allocated ahead** (`worker::WriterPool`): after each bus reply the shell allocates a
+  staging writer for each of the last few reply-artifact shapes it sealed, so the next step's seal
+  is one round trip instead of two. Reply artifacts the worker holds itself (its own seals) are
+  cached by clone, not by a second `retain`.
+
 ## What it implements
 
 - **The transaction, in order.** Prepare all agents concurrently; run each task-local executor
