@@ -5132,3 +5132,274 @@ fn row70_the_list_after_a_faint_is_still_a_forced_switch_and_is_answered() {
     assert!(turn_after.is_some(), "the forced switch was never answered: {:?}", drive.starts);
     assert_eq!(out, 1, "the Pokémon still standing (the Zubat, slot 1) was sent out");
 }
+
+/// Route 25, Bill's house on it, and the flag rung 16 is (`constants/map_constants.asm`,
+/// `constants/event_constants.asm`; `docs/design/ladder.md` verified bit 1372).
+const ROUTE_25: u32 = 0x24;
+const BILLS_HOUSE: u32 = 0x58;
+const EVENT_GOT_SS_TICKET: u16 = 1372;
+
+/// A row-73 checkpoint named by `var`, or `None` to skip.
+///
+/// Scout B3's, from the v0.7.5 tree and the live row-71 checkpoint (rung 15), plus the live one
+/// itself (`FLY_ROW71_CHECKPOINT`, rom-env's existing name):
+///
+/// - `FLY_ROW73_DOOR_CHECKPOINT` (`scout-b3-bills-ring-door`): the same ring, just inside the door.
+/// - `FLY_ROW73_PC_CHECKPOINT` (`scout-b3-bills-pc-step`): a carry-forward by scripted presses --
+///   Bill has asked for the cell separator and walked into the machine, and the next step is the
+///   PC, a hidden event no sprite or sign stands for.
+fn row73_checkpoint(var: &str) -> Option<flysim::store::Checkpoint> {
+    std::env::var_os(var).map(|path| {
+        flysim::store::load(std::path::Path::new(&path))
+            .expect("the checkpoint should be a FLYSIM01 envelope")
+    })
+}
+
+/// Row 73: the hidden-event table the macros read is the cartridge's own, and Bill's PC is in it.
+///
+/// The two addresses are pinned the way `ItemUsePtrTable`'s is: they are the operands of
+/// `CheckForHiddenEvent`'s own `ld hl, HiddenEventMaps` (followed by its `ld a, [hli] / ld b, a /
+/// cp $ff`) and `ld hl, HiddenEventPointers` (followed by `add hl, de`), found in the routine's
+/// bank. Then, standing in Bill's house, the seam reads one hidden event, the PC at (1, 4), pressed
+/// facing up -- the entry the scout's scripted presses found by hand.
+#[test]
+fn row73_the_hidden_event_table_is_the_cartridges_and_bills_pc_is_in_it() {
+    use flybrain_gb::pokemon_red::macros::state::{Facing, HiddenEvent};
+    use flybrain_gb::pokemon_red::state::{self, poke::hidden};
+    let rom = skip_without_rom!();
+    let gb = emulator(&rom);
+    let bank: Vec<u8> = (0x4000u16..0x8000)
+        .map(|address| gb.read_rom_bank(hidden::TABLE_BANK, address).expect("bank $11 is in the image"))
+        .collect();
+    let [maps_low, maps_high] = hidden::MAPS_ADDRESS.to_le_bytes();
+    let [pointers_low, pointers_high] = hidden::POINTERS_ADDRESS.to_le_bytes();
+    let maps_load = [0x21, maps_low, maps_high, 0x2a, 0x47, 0xfe, 0xff];
+    let pointers_load = [0x21, pointers_low, pointers_high, 0x19];
+    let at = |needle: &[u8]| bank.windows(needle.len()).position(|window| window == needle);
+    let maps_at = at(&maps_load).expect("CheckForHiddenEvent loads HiddenEventMaps from the pinned address");
+    let pointers_at =
+        at(&pointers_load).expect("CheckForHiddenEvent loads HiddenEventPointers from the pinned address");
+    assert!(pointers_at > maps_at && pointers_at - maps_at < 32, "one routine: {maps_at:#x} {pointers_at:#x}");
+
+    let Some(checkpoint) = row73_checkpoint("FLY_ROW73_DOOR_CHECKPOINT") else {
+        eprintln!("skipped: no FLY_ROW73_DOOR_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert_eq!(run.map(), BILLS_HOUSE, "the checkpoint is inside Bill's house");
+    assert_eq!(
+        state::hidden_events(&mut run.gb),
+        vec![HiddenEvent { x: 1, y: 4, index: 0, facing: Some(Facing::Up) }],
+        "Bill's house has one hidden event, the cell separator's PC"
+    );
+}
+
+/// Row 73, the trap: from inside the ring at Bill's door, macros mode earns rung 16 (the S.S.
+/// Ticket).
+///
+/// **Live on v0.7.5** (scout B3, six seeds, 2.8 brain hours): rung 16's place was `at(ROUTE_25)`,
+/// so a fly on Route 25 was already "there". `GO ROUTE` walked it into Bill's house, and inside
+/// `GO OBJECTIVE` -- an exit into the objective's own map is toward it -- and `GO OUT` walked it
+/// straight back out, 30 to 60 times per ten brain minutes; `GO NPC` was chosen 0 times in about
+/// 600 starts in the house. Behind that, the errand's middle step is the cell separator's PC, a
+/// hidden event no macro could press, so even a fly that talked to Bill could not earn the rung.
+///
+/// The claims, over the stub rotation (no brain, a readout that never names a macro): the fly
+/// does not leave the house before the errand is done, and `EVENT_GOT_SS_TICKET` is set within the
+/// budget. On main the flag is never set.
+///
+/// ```sh
+/// FLY_ROM=/path/to/pokemon-red.gb \
+///   FLY_ROW73_DOOR_CHECKPOINT=.local/checkpoints/scout-b3-bills-ring-door.checkpoint \
+///   cargo test --release -p flysim --test rom_macros_mode -- --nocapture row73
+/// ```
+#[test]
+fn row73_the_fly_earns_the_ss_ticket_from_inside_the_ring_at_bills_door() {
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = row73_checkpoint("FLY_ROW73_DOOR_CHECKPOINT") else {
+        eprintln!("skipped: no FLY_ROW73_DOOR_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert_eq!(run.map(), BILLS_HOUSE, "the checkpoint is inside Bill's house");
+    assert!(!run.event(EVENT_GOT_SS_TICKET), "the checkpoint has no ticket");
+    let (_, out) = row73_drive_to_the_ticket(&mut run, 36_000);
+    assert_eq!(out, 0, "the house was left before the errand was done");
+}
+
+/// Row 73, the whole road: from the live row-71 checkpoint (v0.7.3, rung 15, in a wild battle on
+/// Route 25) macros mode finishes the battle, walks to Bill's house and earns the ticket. Route
+/// 25's own warp table is what pins `maps::BILLS_HOUSE`.
+#[test]
+fn row73_the_fly_walks_from_the_live_route_25_checkpoint_to_the_ss_ticket() {
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = row73_checkpoint("FLY_ROW71_CHECKPOINT") else {
+        eprintln!("skipped: no FLY_ROW71_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert_eq!(run.gb.read_wram(flybrain_gb::pokemon_red::symbols::ram::wCurMap), ROUTE_25 as u8);
+    assert!(!run.event(EVENT_GOT_SS_TICKET), "the checkpoint has no ticket");
+    let warps = flybrain_gb::pokemon_red::state::warps(&mut run.gb);
+    assert!(
+        warps.iter().any(|warp| (warp.x, warp.y, u32::from(warp.destination_map)) == (45, 3, BILLS_HOUSE)),
+        "Route 25's door at (45, 3) leads to $58: {warps:?}"
+    );
+    row73_drive_to_the_ticket(&mut run, 216_000);
+}
+
+/// Row 73, the hidden event alone: Bill is in the machine, the next step is the PC, and macros mode
+/// presses it and earns the ticket. On main no button on any pad presses a hidden event.
+#[test]
+fn row73_the_cell_separator_pc_is_pressed_and_bill_hands_over_the_ticket() {
+    let rom = skip_without_rom!();
+    let Some(checkpoint) = row73_checkpoint("FLY_ROW73_PC_CHECKPOINT") else {
+        eprintln!("skipped: no FLY_ROW73_PC_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    assert_eq!(run.map(), BILLS_HOUSE, "the checkpoint is inside Bill's house");
+    assert!(!run.event(EVENT_GOT_SS_TICKET), "the checkpoint has no ticket");
+    row73_drive_to_the_ticket(&mut run, 36_000);
+}
+
+/// Drive the stub rotation until the ticket's flag is set, counting the house's doors on the way:
+/// `(into, out)`.
+fn row73_drive_to_the_ticket(run: &mut Run, budget: u32) -> (u32, u32) {
+    let mut previous = run.map();
+    let (mut into, mut out) = (0u32, 0u32);
+    let mut got = None;
+    for frame in 0..budget {
+        run.frame();
+        let map = run.map();
+        if map != previous && map != u32::MAX {
+            into += u32::from(map == BILLS_HOUSE);
+            out += u32::from(previous == BILLS_HOUSE);
+            previous = map;
+        }
+        if run.event(EVENT_GOT_SS_TICKET) {
+            got = Some(frame);
+            break;
+        }
+    }
+    eprintln!(
+        "ticket at {got:?} ({:.1} brain minutes), into the house {into} times, out {out}, rank {}, \
+         talk on pad by map {:?}, talk starts {:?}, macros {:?}",
+        run.ms / 60_000.0,
+        run.adapter.progress().rank,
+        run.talk_on_pad_by_map,
+        run.talk_starts_by_map,
+        run.started
+    );
+    assert!(got.is_some(), "no S.S. Ticket in {budget} frames: route {:?}, macros {:?}", run.route, run.started);
+    (into, out)
+}
+
+const ROUTE_5: u32 = 0x10;
+const CERULEAN_TRASHED_HOUSE: u32 = 0x3e;
+
+/// Where `GO OBJECTIVE` aims from here, read through the seam the macros read: the tiles.
+fn row73_objective_aims(run: &mut Run) -> Vec<(u8, u8)> {
+    let ledger = AdapterLedger(&run.adapter);
+    let mut state = flybrain_gb::pokemon_red::state::PokeState::with_ledger(&mut run.gb, &ledger);
+    flybrain_gb::pokemon_red::macros::palette::objective_goals(&mut state)
+        .iter()
+        .map(|aim| (aim.tile.x, aim.tile.y))
+        .collect()
+}
+
+/// Row 73's third trap, on the seam: after the ticket, `GO OBJECTIVE` in the town aims at the
+/// trashed house's front door, and inside the house at the hole in its back wall.
+///
+/// On main the house is off the graph: in the town the objective toward Vermilion aimed at ground
+/// the town's piece cannot reach (scout B3: `blocked` at (17, 28)), and inside the house the only
+/// way toward an outdoor objective was the front door it came in by. From
+/// `FLY_ROW73_SOUTH_CHECKPOINT` (`scout-b3-cerulean-south-half`, seed 4, 40 brain minutes, standing
+/// at (10, 26) in the town's south-west) and `FLY_ROW73_TRASHED_CHECKPOINT` (the same run's seed 6,
+/// going through the house's front door).
+#[test]
+fn row73_the_objective_south_of_cerulean_is_the_trashed_houses_two_doors() {
+    let rom = skip_without_rom!();
+    if let Some(checkpoint) = row73_checkpoint("FLY_ROW73_SOUTH_CHECKPOINT") {
+        let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+        assert_eq!(run.map(), CERULEAN_CITY, "the checkpoint is in Cerulean");
+        assert!(run.event(EVENT_GOT_SS_TICKET), "the checkpoint has the ticket");
+        assert_eq!(row73_objective_aims(&mut run), vec![(27, 11)], "the trashed house's front door");
+    } else {
+        eprintln!("skipped: no FLY_ROW73_SOUTH_CHECKPOINT");
+    }
+    let Some(checkpoint) = row73_checkpoint("FLY_ROW73_TRASHED_CHECKPOINT") else {
+        eprintln!("skipped: no FLY_ROW73_TRASHED_CHECKPOINT");
+        return;
+    };
+    let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+    // Through the door with no button down: the warp's tear settles inside the house.
+    for _ in 0..240 {
+        run.gb.set_buttons(0);
+        run.gb.run_frame().expect("a frame should complete");
+        run.ms += MS_PER_FRAME;
+        run.adapter.sample(&mut run.gb, run.ms);
+    }
+    assert_eq!(run.map(), CERULEAN_TRASHED_HOUSE, "inside the trashed house");
+    let warps = flybrain_gb::pokemon_red::state::warps(&mut run.gb);
+    assert!(
+        warps.iter().any(|warp| (warp.x, warp.y, warp.destination_warp) == (3, 0, 7)),
+        "the hole in the back wall is the house's warp to Cerulean's (27, 9): {warps:?}"
+    );
+    assert_eq!(row73_objective_aims(&mut run), vec![(3, 0)], "the hole in the back wall");
+}
+
+/// Row 73's third trap, after the ticket: the road south out of Cerulean is through the trashed
+/// house, and macros mode takes it to Route 5.
+///
+/// **Scout B3** (six seeds, 43 brain minutes each, from the ticket's carry-forward): 0 of 6 past
+/// row 28 of Cerulean. The town's ground ends there; Route 5 is on the ground behind the trashed
+/// house, in by its front door and out by the hole in its back wall, and the house was off the map
+/// graph -- so `GO OBJECTIVE` toward Vermilion ended `blocked` at (17, 28) and the fly rang between
+/// the town and its houses, 60 to 100 map changes per ten brain minutes.
+///
+/// `FLY_ROW73_TRASHED_CHECKPOINT` (`scout-b3-cerulean-trashed-house`): seed 6, 40 brain minutes
+/// in, going through the house's front door. `FLY_ROW73_TICKET_CHECKPOINT`
+/// (`scout-b3-post-bill-ticket`): the carry-forward the Cerulean runs started from, in Bill's
+/// house with the ticket. The claim from each: the fly is on Route 5 within the budget, and from
+/// Bill's house in under half of what main needs.
+#[test]
+fn row73_the_fly_takes_the_trashed_house_south_to_route_5() {
+    let rom = skip_without_rom!();
+    // Deterministic under the stub: on main the two take 54,442 and 63,880 frames, on the branch
+    // 52,081 and 27,067. The rotation does stumble through the house on main -- `GO ROUTE` takes
+    // every door in turn -- so this is the regression guard, and the seam test above is the claim
+    // main fails.
+    for (var, budget) in [("FLY_ROW73_TRASHED_CHECKPOINT", 72_000u32), ("FLY_ROW73_TICKET_CHECKPOINT", 48_000)] {
+        let Some(checkpoint) = row73_checkpoint(var) else {
+            eprintln!("skipped: no {var}");
+            continue;
+        };
+        let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
+        assert!(run.event(EVENT_GOT_SS_TICKET), "{var}: the checkpoint has the ticket");
+        let mut previous = run.map();
+        let (mut changes, mut into_the_house) = (0u32, 0u32);
+        let mut south = None;
+        for frame in 0..budget {
+            run.frame();
+            let map = run.map();
+            if map != previous && map != u32::MAX {
+                changes += 1;
+                into_the_house += u32::from(map == CERULEAN_TRASHED_HOUSE);
+                previous = map;
+            }
+            if map == ROUTE_5 {
+                south = Some(frame);
+                break;
+            }
+        }
+        let tail: Vec<u32> = run.route.iter().rev().take(24).rev().copied().collect();
+        eprintln!(
+            "{var}: Route 5 at {south:?}, {changes} map changes, into the trashed house \
+             {into_the_house} times, rank {}, last maps {tail:?}, macros {:?}",
+            run.adapter.progress().rank,
+            run.started
+        );
+        assert!(south.is_some(), "{var}: not on Route 5 in {budget} frames: last maps {tail:?}");
+    }
+}

@@ -366,6 +366,24 @@ pub fn interactable_targets(state: &mut dyn MacroState) -> Vec<(Tile, TalkTarget
     out
 }
 
+/// The map's hidden events with the key the talked ledger records them under, and the one side
+/// each is pressed from when the cartridge names one (row 73).
+///
+/// Kept apart from [`interactable_targets`] on purpose, which is `GO ITEM`'s list: a hidden event
+/// is every PC, poster, trash can and hidden item in Kanto, and a fly sent to each of them is a
+/// fly reading posters. The one reader is the ladder's own errand list
+/// ([`super::palette::objective_targets`]), which needs the one the rung is waiting on.
+pub fn hidden_targets(state: &mut dyn MacroState) -> Vec<(Tile, TalkTarget, Option<Facing>)> {
+    let mut out: Vec<(Tile, TalkTarget, Option<Facing>)> = state
+        .hidden_events()
+        .iter()
+        .map(|event| (Tile::new(event.x, event.y), TalkTarget::Hidden(event.index), event.facing))
+        .collect();
+    out.sort_unstable_by_key(|(tile, target, _)| (*tile, *target));
+    out.dedup_by_key(|(tile, _, _)| *tile);
+    out
+}
+
 /// Every person on the map with the key the talked ledger records them under.
 pub fn person_targets(state: &mut dyn MacroState) -> Vec<(Tile, TalkTarget)> {
     let mut out: Vec<(Tile, TalkTarget)> = state
