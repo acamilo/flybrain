@@ -129,14 +129,11 @@ page_on_feed() {
 page_unit_active() { systemctl is-active --quiet "$FLY_PAGE_SERVICE" 2>/dev/null; }
 
 old_invocation=""
-# Print to stdout, exiting quietly if the pipe is closed (e.g. `fly-feed status | head -1`).
-# bash's builtins report "write error: Broken pipe" on a failed write even with `trap '' PIPE`,
-# so we check the write result ourselves and exit 0 on EPIPE: the reader is gone, nothing
-# useful is left to do, and `set -e` must not trip on the failing printf.
+# Print to stdout, exiting quietly once the reader has gone (`fly-feed status | head -1`).
+# Under `pct exec` SIGPIPE is ignored, so a write to a closed pipe fails with EPIPE and bash's
+# printf/echo print "write error: Broken pipe": silence that one write and stop printing.
 say() {
-    if ! printf '%s\n' "$*"; then
-        exit 0
-    fi
+    printf '%s\n' "$*" 2>/dev/null || exit 0
 }
 # Wait for a NEW flysim invocation to be healthy and the feed to be flowing in `via` mode.
 healthy() {

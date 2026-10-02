@@ -1659,6 +1659,8 @@ mkdir -p "$ff_dir/bin" "$ff_dir/release" "$ff_dir/proc/4242" "$ff_dir/run"
 cat > "$ff_dir/bin/systemctl" <<'FFSTUB'
 #!/usr/bin/env bash
 echo "$*" >> "$FF_DIR/systemctl.log"
+# FF_SLOW: answer is-active late, as a real systemctl does, so a reader can leave in between
+[ -n "${FF_SLOW:-}" ] && [ "$1" = is-active ] && sleep 0.3
 case "$1" in
     restart) n=$(( $(cat "$FF_DIR/invocation" 2>/dev/null || echo 1) + 1 )); echo "$n" > "$FF_DIR/invocation"
              # the new flysim's environment is whatever fly.env says now
@@ -1720,25 +1722,20 @@ else
     fail "fly-feed status wrong: $ff_out"
 fi
 
-# `fly-feed status | head -1` (a human reading a single line) closes stdout after the first
-# line. Subsequent writes would fail with EPIPE; bash's builtins report "write error:
-# Broken pipe" to stderr even with `trap '' PIPE`, so fly-feed routes every status_report
-# write through a helper that exits 0 on the first EPIPE. The test runs the real fly-feed
-# under the same stubbed state, captures fly-feed's stderr to a file, and asserts that
-# nothing is written there. The test's stdout is not the script's stdout (it goes to a
-# pipe closed by head -1), so suppress the SC2260 "this redirection overrides the
-# output pipe" warning: the override is the point of the test.
+# `fly-feed status | head -1` under `pct exec`, which runs commands with SIGPIPE ignored: every
+# write after head exits fails with EPIPE, and bash prints "write error: Broken pipe" unless
+# fly-feed stops printing quietly (seen live on 2026-10-02). Reproduce both conditions: SIGPIPE
+# ignored (inherited by the script) and a reader that leaves after the first line.
 ff_reset direct direct
 FF_ARGS=(status)
-: > /tmp/ff-status-pipe.err
-# shellcheck disable=SC2260
-fly_feed 2>/tmp/ff-status-pipe.err >/dev/null | head -1 || true
-if [ ! -s /tmp/ff-status-pipe.err ]; then
-    pass "fly-feed status | head -1: nothing written to stderr on a closed stdout"
+ff_pipe_err="$(mktemp)"
+( trap '' PIPE; export FF_SLOW=1; fly_feed 2>"$ff_pipe_err" ) | head -1 >/dev/null || true
+if [ ! -s "$ff_pipe_err" ]; then
+    pass "fly-feed status | head -1 with SIGPIPE ignored: nothing written to stderr"
 else
-    fail "fly-feed status | head -1 wrote to stderr: $(cat /tmp/ff-status-pipe.err)"
+    fail "fly-feed status | head -1 wrote to stderr: $(cat "$ff_pipe_err")"
 fi
-rm -f /tmp/ff-status-pipe.err
+rm -f "$ff_pipe_err"
 
 ff_reset direct direct
 FF_ARGS=(bus)
