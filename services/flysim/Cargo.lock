@@ -460,6 +460,7 @@ dependencies = [
  "axum",
  "clap",
  "fly-control-edge",
+ "fly-edge",
  "fly-session",
  "flybrain-core",
  "flybrain-gb",
@@ -477,6 +478,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "fly-scorecard"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fly-legacy-session",
+ "fly-session",
+ "flybrain-core",
+ "flybrain-gb",
+ "flysim",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "fly-session"
 version = "0.1.1"
 dependencies = [
@@ -486,6 +505,7 @@ dependencies = [
  "flybrain-gb",
  "flybus",
  "flysim-store",
+ "libc",
  "serde_json",
  "tempfile",
  "tokio",

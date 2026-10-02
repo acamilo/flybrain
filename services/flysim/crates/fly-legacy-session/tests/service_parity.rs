@@ -11,7 +11,8 @@
 //! - **feed**: every running snapshot, header field by field and attachments byte for byte,
 //!   except the fields that are wall clock by definition (`wallMs`, `uptimeSeconds`,
 //!   `realtimeFactor`, `sugar.cooldownMs`, an event's or chat line's `wallMs`) and `seq`, which
-//!   counts the idle headers a pause publishes at 2 Hz of wall clock;
+//!   counts the idle headers a pause publishes at 2 Hz of wall clock (the script holds the
+//!   resume until the recorder has seen the first one, so each runtime must publish one);
 //! - **control**: status code and body of every request (`/stimulate` 202 and 429 with the same
 //!   `retryAfterMs`, `/reward` 403, `/chat` 202/422, `/checkpoint` the same generation,
 //!   `/pause`, `/resume`, `/events`, `/healthz`), `/status` minus its wall-clock fields, and the
@@ -344,6 +345,29 @@ fn record(
                     ));
                     // Sent now, in order, each drained before the next frame.
                     for action in actions.iter().filter(|a| a.at == index) {
+                        if action.path == "/resume" {
+                            // The pause is only observable as idle headers if the loop stays
+                            // paused until it has published one (a header-only publish is due
+                            // within the 2 Hz idle period). Resuming 2 ms after the pause let a
+                            // loaded box skip it in one runtime and not the other, so wait, bounded,
+                            // for the condition instead of racing it.
+                            let before = idle.len();
+                            let waited = Instant::now();
+                            while idle.len() == before {
+                                match tokio::time::timeout(Duration::from_secs(30), snapshots.changed()).await {
+                                    Ok(Ok(())) => {}
+                                    other => panic!(
+                                        "{}: no idle header within 30 s of the pause ({other:?})",
+                                        runtime.label()
+                                    ),
+                                }
+                                let snap = Arc::clone(&snapshots.borrow_and_update());
+                                if snap.header.status == FeedStatus::Paused {
+                                    idle.push(comparable(&snap));
+                                }
+                            }
+                            eprintln!("  {}: idle header after {:.1?} paused", runtime.label(), waited.elapsed());
+                        }
                         let router = router.clone();
                         let label = format!("{} {}", action_label(action), index);
                         let action = action.clone();
@@ -351,6 +375,18 @@ fn record(
                         // One at a time, so the loop drains them in script order.
                         tokio::time::sleep(Duration::from_millis(2)).await;
                         pending.push((label, handle));
+                    }
+                    // Requests sent at one frame must all be drained together (two sugars before
+                    // one commit): if the loop published another snapshot while they were being
+                    // sent, a loaded box split them across frames and the run cannot be compared.
+                    let group = actions.iter().filter(|a| a.at == index).count();
+                    let pauses = actions.iter().any(|a| a.at == index && a.path.starts_with("/pause"));
+                    if group > 1 && !pauses && snapshots.has_changed().unwrap_or(false) {
+                        eprintln!(
+                            "  {}: the loop moved on while {group} requests were sent at frame {index}; the run will be repeated",
+                            runtime.label()
+                        );
+                        complete = false;
                     }
                 }
                 FeedStatus::Paused => idle.push(comparable(&snapshot)),
@@ -540,9 +576,20 @@ fn compare(legacy: &Recording, session: &Recording, label: &str) {
             );
         }
     }
-    assert_eq!(legacy.idle.is_empty(), session.idle.is_empty(), "{label}: idle headers");
+    assert!(!legacy.idle.is_empty(), "{label}: the legacy pause published no idle header");
+    assert!(!session.idle.is_empty(), "{label}: the session pause published no idle header");
     if let (Some(a), Some(b)) = (legacy.idle.first(), session.idle.first()) {
-        same(&format!("{label}: the first idle header"), a, b);
+        // An idle header carries the events not yet published, and which publish that is (the
+        // pause's own or a later one, whichever the recorder saw first) is wall clock; the events
+        // themselves are compared in the running snapshots and the event log.
+        let strip = |v: &Value| {
+            let mut v = v.clone();
+            if let Some(map) = v.as_object_mut() {
+                map.remove("events");
+            }
+            v
+        };
+        same(&format!("{label}: the first idle header"), &strip(a), &strip(b));
     }
     assert_eq!(legacy.responses.len(), session.responses.len());
     for ((la, sa, ba), (lb, sb, bb)) in legacy.responses.iter().zip(&session.responses) {

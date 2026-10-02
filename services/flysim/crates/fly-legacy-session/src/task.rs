@@ -368,6 +368,19 @@ impl PokeredTask {
         )
     }
 
+    /// Read the committed boundary's memory image through the cartridge, as the macro engine
+    /// reads it, for a harness that measures play (the scorecard). `None` before the first
+    /// observation. Changes nothing.
+    pub fn with_reader<R>(
+        &self,
+        f: impl FnOnce(&mut dyn flybrain_gb::MemoryReader) -> R,
+    ) -> Option<R> {
+        let inner = self.lock();
+        let (_, image) = inner.current.as_ref()?;
+        let mut reader = ImageReader::new(image, &inner.cartridge);
+        Some(f(&mut reader))
+    }
+
     /// The brain time of the last transition (its Prepare's clock), in ms: `network.ms`.
     pub fn brain_ms(&self) -> f64 {
         self.lock().ms

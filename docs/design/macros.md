@@ -2155,6 +2155,110 @@ throws),
 `row71_a_ball_past_the_bags_window_is_thrown` (`FLY_ROW71_CHECKPOINT`, the live trap) and
 `row71_the_list_scroll_offset_is_where_the_cartridge_reads_it` (FLY_ROM).
 
+### 12.35 An errand is its people, then its things, and a hidden event is a thing (2026-10-02, row 73)
+
+Live on v0.7.5, rung 15 (NUGGET BRIDGE), Route 24/25. Scout B3 measured it from the live
+checkpoint on six seeds (2.8 brain hours): `GO ROUTE` walked the fly into Bill's house, and inside
+it `GO OBJECTIVE` or `GO OUT` walked it straight back out, 30 to 60 times per ten brain minutes.
+`GO NPC` was chosen 0 times in about 600 starts in the house, and new tiles stopped (2527 to 2531
+in 35 minutes). Rung 16 (MET BILL, `EVENT_GOT_SS_TICKET`) was never earned.
+
+- **The place was the route.** `RUNG_PLACES[16]` was `at(ROUTE_25)`, because the house's id was
+  not derived. A fly on Route 25 was already "there", so inside the house `GO OBJECTIVE` was an
+  exit into the objective's own map, which is the same door as `GO OUT`. That is row 29's lab loop
+  again, one rung later.
+- **The rung is an errand, not a conversation.** `scripts/BillsHouse.asm`: Bill (a Pokémon, a
+  person sprite) asks for help and walks into the teleporter, the cartridge hides his sprite; the
+  cell separator is started from the PC at (1, 4), pressed facing up; Bill then steps out of the
+  machine as a second sprite and hands over the ticket. Two people and a thing, in that order.
+- **The PC is a hidden event.** `wNumSigns` is 0 in the house and the only sprite is Bill: the PC
+  is an entry of the cartridge's own hidden-event table (`data/events/hidden_events.asm`), which
+  `CheckForHiddenEvent` searches on every A in the overworld. No macro could aim at it and `TALK`
+  was never dealt in front of it, so even a fly that talked to Bill could not earn the rung.
+
+What changed, all of it knowledge inside macros:
+
+- **`PlaceKind::Errand`.** Rung 16's place is `errand(BILLS_HOUSE)` (`$58`, confirmed by Route
+  25's warp table and by the hidden-event map list). An errand's targets are the room's people,
+  drawn or off the screen, and once none is left untalked, its things: objects, signs and hidden
+  events. No step is named anywhere. The cartridge shows and hides the people as the errand moves
+  on, the talked ledger records what has been had, and what is left is the next step. People come
+  first because a thing pressed out of turn is in the talked ledger for the session: Bill's PC
+  pressed before he has asked prints the monitor and does nothing, and a PC recorded as talked to
+  would never be the next step again. Everything 12.5 and 12.22 give a person place applies: the
+  ways out are withheld while a target waits, `GO OBJECTIVE` aims at the four sides, facing a
+  target is the arrival and `TALK` is the press; the blocked ledger is the escape hatch.
+- **Hidden events are read from the cartridge's table, not written down.** `state::hidden_events`
+  walks `HiddenEventMaps` and `HiddenEventPointers` in ROM bank `$11` through
+  `MemoryReader::read_rom`, the same read the move and item tables use: no WRAM is written and the
+  mapper's bank register is not touched. The two addresses are pinned from the operands of
+  `CheckForHiddenEvent`'s own `ld hl` instructions and checked on the cartridge
+  (`macros-wram.md` section 17); every read checks the table's shape and answers nothing for a
+  table that is not the one the disassembly describes, which narrows and never invents a tile. A
+  hard-coded `(1, 4)` would have been a number nobody can check from the running game; the table is
+  what the cartridge itself consults when the A is pressed.
+- **A hidden event is only ever the errand's next step.** It is in `objective_targets` for an
+  errand and in `facing_target` (so `TALK` is dealt) only while it is that step. It is not added to
+  `GO ITEM`, `GO NPC` or `TALK` anywhere else. The table holds every PC, poster, trash can,
+  bookshelf and hidden item in Kanto; making them general targets would add a walk to most
+  buildings' pads and an entry to the talked ledger for each, which is a change to what the fly is
+  offered everywhere and not a fix for this trap. The day that is wanted it is one line in
+  `path::interactable_targets`, and it needs its own survey.
+- **A hidden event's side.** Where the entry's argument is a `SPRITE_FACING_*` value it is the side
+  the routine checks before it does anything (`BillsHousePC` returns unless the player faces up),
+  so the walk's one aim is the tile on that side and only facing it from there is the arrival and
+  `TALK`'s precondition. An argument that is an item or a text id and happens to equal a facing
+  value only narrows the approach.
+- **An errand is recoverable inside one session (row 73 review).** The talked ledger is the
+  session's and never forgot, but the cartridge re-shows people: Route 25's script resets Bill's
+  event once the fly has left, and a Bill whose bag was full never handed over the ticket. A
+  conversation had on the last visit then retired this one's and the rung was unreachable until a
+  restart. The palette now notes the room while the errand is the objective and, on the first
+  frame the fly stands anywhere else with that errand still the objective, forgets that room's
+  talked entries (`Talked::forget_map`). Other rooms' entries and a room that is not the errand
+  keep theirs. The bag-full case needs no extra rule: nothing is left to aim at, the exits return,
+  and the fly leaves and comes back.
+- **A one-sided target nobody can stand in front of is not waited for.** If every tile a hidden
+  event can be pressed from is one the cartridge pushes the fly off (the pushed ledger, row 37),
+  the walk had no aim, so no walk ended `blocked` and the ways out stayed withheld for good. Such
+  a target leaves the errand's list at once (`palette::servable`), which returns the exits.
+- **A hidden-event entry off its own map is skipped.** The Safari Zone gate lists a nugget
+  "inaccessible" at (10, 1) on an 8 x 6 map, and the rest houses a copied Pokecenter PC; one such
+  entry no longer voids the rest of the map's list.
+
+The fly still chooses every press: `GO OBJECTIVE` to walk, `TALK` to press A, `YES`, `NO` or
+`NEXT` in Bill's boxes. Nothing presses for it, no button is added to any pad, and the readout, the
+catalog, the adapter and the compatibility string are unchanged. What the scene deals inside the
+house is narrower than before, not wider: the ways out leave the pad while the errand waits.
+
+**The road after the ticket (the third trap).** With the ticket the objective is rung 17,
+Vermilion, south through Cerulean. Cerulean's ground is in three pieces, not two: the town's ends at
+row 28 (the gap at (16, 28) opens onto a wall and the trainer-tips sign), and the south of the map,
+the road to Route 5 and the east edge onto Route 9 are reached through the trashed house (`$3e`),
+in by its front door at (27, 11) and out by the hole in its back wall onto (27, 9) in the Rocket's
+yard. Scout B3 flooded the grid: 378 of the map's 801 walkable tiles are the town's. The house was
+off the map graph, so `GO OBJECTIVE` aimed at ground the town cannot reach (`blocked` at (17, 28))
+and the fly rang between the town and its houses (0 of 6 seeds past row 28 in 43 brain minutes
+each). The house is now on the graph and the south is `SPLIT`'s third piece of Cerulean, so the
+objective walks into the house and out through the hole. Before the ticket a guard stands on the
+tile in front of the door (`TOGGLE_CERULEAN_GUARD_2`, (27, 12)), which the ticket's own script hides; the objective only
+points south after the ticket.
+
+**Not fixed, predicted:** the road from Route 5 to Vermilion on the graph is Route 5, Saffron,
+Route 6, as plain map edges. The cartridge's gate houses are guarded until the guard's drink is
+given, and the way the game means is the Underground Path, whose houses are off the graph. No run
+has reached Route 5's gate yet; it needs its own checkpoint and row.
+
+Tests: `an_errand_is_its_people_first_and_the_room_is_not_left_while_one_is_waiting`,
+`a_hidden_event_is_the_errands_next_step_once_no_person_is_left_and_it_is_faced_from_its_side`,
+`a_hidden_event_is_nobody_elses_target`, `the_road_south_out_of_cerulean_is_through_the_trashed_house`,
+and on the cartridge `row73_the_hidden_event_table_is_the_cartridges_and_bills_pc_is_in_it`,
+`row73_the_fly_earns_the_ss_ticket_from_inside_the_ring_at_bills_door`,
+`row73_the_cell_separator_pc_is_pressed_and_bill_hands_over_the_ticket`,
+`row73_the_fly_walks_from_the_live_route_25_checkpoint_to_the_ss_ticket`,
+`row73_the_objective_south_of_cerulean_is_the_trashed_houses_two_doors` and
+`row73_the_fly_takes_the_trashed_house_south_to_route_5`.
+
 ## 13. Shops and Pokémon Centers (the operator, 2026-09-17: "refactor the shop macros. make it a
 ## priority to visit the shop at least once per area; make shop macros item purchases. same
 ## for the Pokécenter. heal should be a macro.")

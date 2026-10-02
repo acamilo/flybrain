@@ -1273,6 +1273,8 @@ fn the_objective_is_the_next_unreached_rungs_place_where_the_catalog_knows_one()
     assert_eq!(RUNG_PLACES[11].map(|place| place.map), Some(maps::PEWTER_GYM), "BOULDER BADGE");
     assert_eq!(RUNG_PLACES[14].map(|place| place.map), Some(maps::CERULEAN_GYM), "CASCADE BADGE");
     assert_eq!(RUNG_PLACES[19], None, "THUNDER BADGE: Vermilion Gym's id is not derived");
+    // Row 73: the ticket is an errand inside Bill's house, not the route the house is on.
+    assert_eq!(RUNG_PLACES[16], Some(crate::adapter::MapPlace::errand(maps::BILLS_HOUSE)), "MET BILL");
     // And past the top of the ladder there is no next rung at all.
     assert_eq!(RUNG_PLACES.len(), RANK_LADDER.len());
     assert_eq!(rung_place(&f.reward.seen, RANK_LADDER.len()), None);

@@ -1,0 +1,77 @@
+{
+  "schema": "fly-scorecard-set-v1",
+  "checkpoints": [
+    {
+      "id": "r08-viridian-city",
+      "rung": 8,
+      "env": "FLY_SCORECARD_R08_CHECKPOINT",
+      "note": "Viridian City on its first visit, few places known"
+    },
+    {
+      "id": "r09-viridian-mart",
+      "rung": 9,
+      "env": "FLY_ROW66_MART_CHECKPOINT",
+      "note": "the Viridian mart, rung 9 on the ledger (the shop and ball funnel)"
+    },
+    {
+      "id": "r09-forest-catch",
+      "rung": 9,
+      "env": "FLY_CATCH_CHECKPOINT",
+      "note": "Viridian Forest, one ball in the bag"
+    },
+    {
+      "id": "r09-forest-row60",
+      "rung": 9,
+      "env": "FLY_ROW60_CHECKPOINT",
+      "note": "rung 9, the row 60 state"
+    },
+    {
+      "id": "r10-pewter-center",
+      "rung": 10,
+      "env": "FLY_CENTER_CHECKPOINT",
+      "note": "Pewter City, at the Pokemon Center"
+    },
+    {
+      "id": "r10-pewter-gym",
+      "rung": 10,
+      "env": "FLY_ROW67_CHECKPOINT",
+      "note": "the live Pewter Gym battle"
+    },
+    {
+      "id": "r11-mart",
+      "rung": 11,
+      "env": "FLY_MART_CHECKPOINT",
+      "note": "rung 11, at a mart"
+    },
+    {
+      "id": "r11-badge",
+      "rung": 11,
+      "env": "FLY_BADGE_CHECKPOINT",
+      "note": "Boulder Badge in hand"
+    },
+    {
+      "id": "r12-mt-moon",
+      "rung": 12,
+      "env": "FLY_MT_MOON_CHECKPOINT",
+      "note": "Mt. Moon entered"
+    },
+    {
+      "id": "r12-row64",
+      "rung": 12,
+      "env": "FLY_ROW64_CHECKPOINT",
+      "note": "rung 12, the row 64 live state"
+    },
+    {
+      "id": "r15-yard",
+      "rung": 15,
+      "env": "FLY_ROW65_YARD_CHECKPOINT",
+      "note": "rung 15, a yard past Cerulean"
+    },
+    {
+      "id": "r15-nugget-bridge",
+      "rung": 15,
+      "env": "FLY_ROW71_CHECKPOINT",
+      "note": "Route 25, the bag-window trap's state"
+    }
+  ]
+}

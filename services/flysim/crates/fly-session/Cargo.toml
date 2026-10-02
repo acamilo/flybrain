@@ -36,6 +36,8 @@ flate2 = { workspace = true }
 flysim-store = { path = "../flysim-store" }
 
 serde_json = { workspace = true }
+# PR_SET_PDEATHSIG for worker processes (a child never outlives its parent, systemd or not).
+libc = "0.2"
 # `rt-multi-thread` is not only for the tests: a worker process and a dedicated-thread
 # worker each build their own runtime sized to the launcher's thread allocation.
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "io-util"] }

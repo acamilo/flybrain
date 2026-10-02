@@ -1,0 +1,176 @@
+# The behavioural scorecard
+
+A repeatable, multi-seed "good play" regression harness. The unit tests say the macros do what
+they were written to; the trap hunt says a fly stuck in one place got out. Neither says whether a
+release plays *better or worse* than the one before it across the places the fly actually is. The
+scorecard does: a fixed set of checkpoints, K seeds each, T brain minutes each, on the real
+connectome with the macro layer, reduced to one JSON per release and compared release against
+release by a test over the paired runs, never by a single run.
+
+It measures and presses nothing. It restores a checkpoint, lets the brain play, and counts. The
+ethos check (`docs/loop-review.md`) is untouched: the harness is outside the fly.
+
+```sh
+export FLY_ROM=/path/to/the-cartridge      # read, never copied
+cargo build --release -p fly-scorecard     # from services/flysim
+
+fly-scorecard list                                   # the set, resolved, each checkpoint's rung
+fly-scorecard suite --label v0.7.5 --out card.json   # the set x 3 seeds x 10 brain minutes
+fly-scorecard summary card.json                      # one screen of markdown
+fly-scorecard compare old.json new.json              # exit 1 when a metric regressed
+fly-scorecard run-one --checkpoint X --seed 1        # one run, JSON out (--out FILE)
+```
+
+`--runtime session` (the default) runs the session composition the release cut over to
+(`fly-legacy-session`, in-process, unpaced); `--runtime legacy` runs the stream's own frame
+(`flysim::frame::LegacyFrame`). Both hand the same per-frame observation to the same tally, so a
+card from one runtime is comparable with a card from the other. From the same checkpoint and seed
+the two give identical reports apart from wall time (`tests/rom_scorecard.rs` holds it), which makes a scorecard
+run on both a second piece of shadow evidence. `--mode raw` runs without the macro layer.
+
+## The set
+
+`tools/scorecard/checkpoints.json` names each checkpoint by the environment variable that holds
+its path (the ROM tests' own, `rom-env.sh`), never by a path; `--extra id=path` adds more (the
+newest live checkpoint, a trap's). The checkpoints are not committed (`.local/` is untracked).
+`list` prints the rung each one stands on, from its reward ledger. The set has two or three
+states at each of rungs 8, 9, 10, 11, 12 and 15; rungs 13 and 14 have no checkpoint yet and join
+the set when the scout makes them (a new entry is a line in the JSON). A checkpoint missing from
+the environment is named on stderr and, with `--strict`, an error.
+
+## Seeds
+
+A checkpoint restores a deterministic brain, so two runs from it would be the same run. A seed
+therefore chooses how many frames the brain's readout is ignored before the measurement starts
+(60 to 1,800 frames, a splitmix of the seed; seed 0 is none). The brain still ticks and its noise
+generator still advances, the game sees no button, and from the first measured frame the readout
+is the brain's own: the run sits on a different point of its own trajectory. The idle frames are
+not measured. The same seed twice is the same run.
+
+## What a run reports
+
+One `RunReport` per (checkpoint, seed). Every number is computed from per-frame observations by
+`tally.rs`, which has no emulator in it and is unit-tested on synthetic frames.
+
+| group | what |
+| --- | --- |
+| rungs | start, end, gained, the brain minute of each climb; reported per brain hour |
+| places | the adapter's exploration count, start and end |
+| empty pad | frames with the macro layer on, nothing running and no button dealt; seconds, share, longest stretch |
+| watchdog | `fly-watchdog` check 10, rule for rule (`watchdog.rs`): probes, suspected, reasons, **confirmed** (two suspected probes in a row) and **ladder events** (one per run of two or more: a trap the recovery ladder would act on) |
+| hunt | the trap hunt's windows (two brain minutes, fewer than four tiles or a sequence repeated more than ten times) |
+| ratchet | rollbacks, split by game over and stall |
+| macros | starts, done, blocked, timeout, refused, by macro |
+| funnel | GO SHOP, BUY BALL, THROW BALL, catch: counts at each stage, balls gained and spent, species gained, and how far down the funnel the run got |
+| heals | GO HEAL and the nurse's HEAL |
+| whiteouts | the whole party fainted (a rising edge) |
+| battles | started, ended, wild and trainer, won (a battle or trainer payout), lost (the party fainted in it), caught, other |
+| rewards, scenes | counts and totals by adapter kind; frames by scene |
+
+The watchdog's rules are the shell's: the same thresholds, the same order, the same two-probe
+memory for the zero-progress, unrewarded and unwon-battle rules. Two things differ, both about
+time: a run is short, so the probe cadence is a parameter (default every 120 brain seconds,
+first at 240; the stream's is five wall minutes) and the window is the last ten brain minutes or
+the whole run when it is shorter; and the first probe compares the exploration count with the
+run's starting count, which the live check lacks after a boot.
+
+## Compare
+
+`compare A.json B.json` pairs runs by (checkpoint, seed). Each metric (`compare.rs`, `METRICS`)
+has a direction (more is better, less is better, or info), an absolute tolerance and a relative
+one. For each metric the pairs give one difference, signed so that positive means B is worse. B
+**fails** a metric when it is worse by more than the tolerance **and** a one-sided sign-flip
+permutation test over the pairs gives a **Holm-adjusted** p below alpha (default 0.05; Holm over
+the judged metrics, so the whole compare, not each metric, has a false-fail rate of at most
+alpha when nothing changed; unadjusted, 13 metrics at 0.05 each false-failed about 15% of
+releases in a bootstrap of the baseline, with Holm 0 of 200). It reports **better** by the
+same two tests, and **pass** otherwise: a change inside the tolerance is noise however consistent,
+and one bad run among eighteen is not a regression. The test is exact up to 20 pairs and a
+fixed-seed Monte-Carlo beyond, so the same two cards always give the same verdicts. The
+comparison also names its caveats (different lengths, different runtimes, fewer than eight
+pairs, unpaired runs). Exit status 1 is a failed metric or a failed checkpoint.
+
+**The trap rule.** The pooled test cannot see a fault confined to one place: three seeds of one
+checkpoint give a sign-flip p of at least 1/8, and the shift is diluted over thirty-six pairs
+(the row-71 bag bug, 131 blocked THROW BALLs in every seed of one checkpoint, passed the pooled
+compare even spliced into an otherwise identical suite). So each checkpoint is also judged on its
+own, without statistics: it **fails**, named as `trap@<checkpoint>`, when B is trapped on at least
+two of its runs and on at least two more than A, or when any run of B has a blocked-macro storm
+(50 or more blocked finishes of one macro) and no run of A on that checkpoint does. A run is
+trapped on a recovery-ladder event (two suspected watchdog probes in a row, any rule: stalled,
+zero-progress, sequence, ...), on at least half its probes suspected, or on a storm. Costs: with
+three seeds a checkpoint whose trap is a coin flip in A already (r09-forest-catch, r10-pewter-center
+on the baseline) can fail by chance when B traps all three seeds (about 1 in 27 each by bootstrap,
+so roughly 7% of releases that changed nothing but the trajectory); five seeds make it 1 in 243.
+Identical suites never fail.
+
+The metrics: rungs per hour, places per hour, empty pad %, suspected probes %, ladder events per
+hour, rollbacks per hour, blocked macro %, buy ball, throws (THROW BALL that finished, not blocked starts) and catches per hour, battles won and
+lost per hour, whiteouts per hour. Blocked throws per hour, heals per hour, macro starts per minute and the trap hunt's
+flagged windows are reported, never judged: healing more can follow losing more, and a fly that
+fights for most of a run presses NEXT through battle text more than ten times in two minutes,
+which the hunt reads as a repeated sequence (nine windows in ten are flagged on the baseline, so
+the number has no room to move).
+
+## Cost and size
+
+A run's brain minute costs about 75 CPU seconds however it is split, and the result does not
+depend on the thread count (the same seed gives an identical report at one thread and at four).
+The split matters for wall time, because a run's sweep pool spins at its barriers: on a quiet
+ten-core box two jobs of four threads are fine, but on a box shared with compiles and tests one
+job of four threads ran five times slower per brain minute than one-thread jobs did. So the
+default is one thread per run and eight runs at a time. The default suite, twelve checkpoints by
+three seeds by ten brain minutes, is 360 brain minutes: about three quarters of an hour of ten
+quiet cores, about twice that when the box is busy. More seeds tighten the test; longer runs let
+rungs climb. Three seeds is the smallest suite whose pair count (36) can reach p < 0.001.
+`--resume` keeps the runs an interrupted suite had finished (`<out>.runs.jsonl`).
+
+## What it does not do
+
+- It does not rebuild session ledgers a restore starts empty (the trap hunt's
+  `FLY_TRAP_SEED_*`); a trap that needs them is that tool's.
+- Ten brain minutes rarely climb two rungs. Rungs per hour is a rate over many runs, not a
+  per-run prediction; a release that is faster by a rung every few hours shows only across the
+  suite.
+- It judges play against the previous release, not against a notion of good. A regression is
+  "worse than last time"; the absolute numbers say how good last time was.
+
+## Releases and nightly
+
+`tools/scorecard/overlay.sh <ref> <tree>` puts the tool on the tree of an older release (the crate,
+the set, the docs, and the one read-only accessor `PokeredTask::with_reader`), so a release that
+predates it can be scored and its numbers are its own. The operator's nightly runner builds the
+latest release tag on a build box, runs the suite, writes the card and a one-screen summary and
+compares with the previous release's card.
+
+## The v0.7.5 baseline
+
+`tools/scorecard/baseline-v0.7.5.json` is the reference card of v0.7.5 (adapter v8,
+compatibility `ff09d7dd5483`): the default set, 12 checkpoints by 3 seeds by 10 brain minutes on
+the session runtime, 6.0 brain hours, 6,130 s wall on a shared build box.
+
+| headline | v0.7.5 |
+| --- | ---: |
+| rungs per brain hour | 1.50 (9 of 36 runs climbed) |
+| empty-pad time | 6.96% of frames |
+| watchdog probes suspected | 2.8% |
+| ladder-worthy traps | 1 (one run, `r09-forest-catch`) |
+| blocked macro finishes | 0.5% |
+| buy ball / throw / catch | 10 / 10 / 8 |
+| heals / whiteouts | 9 / 46 |
+| battles won / lost | 33 / 45 |
+| ratchet rollbacks | 1 |
+
+What the card shows about v0.7.5, worth reading before the next release is compared with it:
+
+- **The fly fights for most of the frames it is given.** On nine of the twelve checkpoints a
+  battle is half to nine tenths of the frames, and it loses more than it wins (45 lost, 33 won;
+  46 whiteouts). The longest single battle is 18,354 frames (five brain minutes, a trainer, on
+  `r11-mart`); `r09-forest-catch` has one of 26,245 frames in a wild battle.
+- **`r15-nugget-bridge` keeps walking and finds nothing.** After the Oddish is caught (all three
+  seeds), the fly spends the rest of the run in the overworld, GO OBJECTIVE and GO OUT
+  alternating 13 times each in ten minutes, with the exploration count unmoved (2,527). The
+  watchdog does not flag it (a ring this slow stays under its twenty repeats), so no recovery
+  step would act on it.
+- The shop-to-catch funnel closes: buy ball, throw and catch all occur, across rungs 9 to 15.
+

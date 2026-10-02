@@ -49,3 +49,5 @@ axum = "0.8"
 futures-util = "0.3"
 tokio-tungstenite = "0.29"
 tower = { version = "0.5", features = ["util"] }
+# EDGE-02: the session runtime serves the feed over the bus (tests/feed_bus.rs).
+fly-edge = { path = "../fly-edge" }

@@ -136,7 +136,8 @@ publish. Pacing uses absolute deadlines at 1.0x by default; it never skips frame
   audio (binjgb's unipolar u8 converted and DC-blocked), and a 17,407-byte spike bitset.
   flysim serves it itself by default; with `FLY_FEED_VIA=bus` it publishes each snapshot on an
   embedded flybus router and the `fly-edge` process serves the same bytes
-  (`docs/design/flybus.md`, "Feed over the bus").
+  (`docs/design/flybus.md`, "Feed over the bus"; on a container `fly-feed bus|direct` switches, runbook
+  "Feed over the bus").
 - Control API (`docs/control-api.md`): loopback HTTP :7401. `POST /stimulate` (sugar: a timed PAM
   pulse, rate-limited server side), `POST /reward` (present, disabled by config), `POST /chat`
   (sanitized, deny-listed, ring of 12), `/status`, `/checkpoint`, `/pause`, `/resume`,

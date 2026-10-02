@@ -1,30 +1,41 @@
 # infra/units/flyedge.service — pushed to /etc/systemd/system/flyedge.service.
 #
 # The feed WebSocket served from flysim's feed bus (docs/design/flybus.md,
-# "Feed over the bus"; services/flysim/crates/fly-edge). DISABLED BY DEFAULT:
-# it is in no target's Wants=/Requires= and 07-enable.sh does not enable it.
-# With FLY_FEED_VIA=direct (the default, written into /etc/fly/fly.env by
-# 05-deploy.sh) flysim binds 127.0.0.1:7400 itself and this unit has nothing
-# to do. To move the feed onto the bus on one container:
+# "Feed over the bus"; services/flysim/crates/fly-edge). Whether it runs is
+# decided by one line, FLY_FEED_VIA in /etc/fly/fly.env (05-deploy.sh writes it
+# from the env file's FLY_FEED_VIA, default `direct`):
 #
-#   1. FLY_FEED_VIA=bus in the env file, then 05-deploy.sh (rewrites fly.env);
-#   2. systemctl enable --now flyedge.service; systemctl restart flysim.service
-#      (flysim stops binding :7400, the edge binds it once the first snapshot
-#      is on the bus);
-#   3. nothing for the watchdog: check 2 reads FLY_FEED_VIA from fly.env and
-#      follows the feed counters to this unit's loopback /metrics.
+#   direct  flysim binds 127.0.0.1:7400 itself. ExecCondition= below fails, so
+#           this unit starts as "skipped" (inactive, no failure, no restart).
+#   bus     flysim publishes on its feed bus and leaves :7400 to this unit.
 #
-# Back: FLY_FEED_VIA=direct, deploy, systemctl disable --now flyedge.service,
-# restart flysim.
+# flysim.service has Wants= on this unit, so EVERY start of flysim (the unstick
+# rule's restart, fly-loop-reset's stop and start, fly-reset-to-milestone, a
+# crash-restart, a reboot through fly.target) starts the edge in bus mode and
+# skips it in direct mode; fly.env alone decides, and flysim and the edge can
+# never disagree. This unit is in no target and has no [Install] section:
+# `systemctl enable` has nothing to do.
+#
+# Switching a running container (infra/bin/fly-feed, "Feed over the bus" in
+# docs/runbook.md; it is the whole procedure, with a health check and its own
+# rollback):
+#
+#   fly-feed bus      FLY_FEED_VIA=bus in fly.env, restart flysim, wait for
+#                     the edge and a client
+#   fly-feed direct   the way back
 #
 # Ordering (docs/design/flybus.md, amendment "Feed store lifecycle"): flysim
-# owns the router and its store under /run/fly/bus, so it starts first and
-# the edge follows it. Requires= makes an explicit stop or restart of flysim
-# (the unstick rule's `systemctl restart flysim.service` included) stop or
-# restart the edge with it. A crash-restart of flysim is covered by the edge
-# itself: it drops its clients, unbinds :7400 and reconnects every 500 ms,
-# so nothing here has to be restarted by hand. The edge holds no state; the
-# store is flysim's and a new router removes the previous one's directory.
+# owns the router and its store under /run/fly/bus, so it starts first and the
+# edge follows it. Requires= makes an explicit stop or restart of flysim stop
+# or restart the edge with it. A crash-restart of flysim is covered by the edge
+# itself: it drops its clients, unbinds :7400 and reconnects every 500 ms, so
+# nothing here has to be restarted by hand. The edge holds no state; the store
+# is flysim's and a new router removes the previous one's directory.
+#
+# CPUs: 05-deploy.sh writes this unit's cpuset drop-in on the page CPUs, never
+# flysim's (the sim's CPUs are the sim's alone, docs/runbook.md "CPU partition").
+# The router and the publisher run inside flysim, on its own two-thread bus
+# runtime.
 [Unit]
 Description=flyedge: the feed WebSocket served from flysim's feed bus
 After=flysim.service
@@ -42,15 +53,17 @@ User=fly
 EnvironmentFile=/etc/fly/fly.env
 Environment=FLY_FEED_BIND=127.0.0.1:7400
 Environment=FLY_BUS_DIR=/run/fly/bus
-# Its own read-only /metrics and /healthz, for watchdog check 2 in bus mode.
-# Loopback only: nothing off the container needs the edge's counters.
-Environment=FLY_EDGE_METRICS_ADDR=127.0.0.1:9102
+# Its own read-only /metrics and /healthz: watchdog check 2 reads them in bus mode (over
+# loopback), and so can the metrics dashboard, as a second target beside flysim's :9101, which
+# reads 0 for the feed counters in bus mode. Same exposure as :9101 (the container's network).
+Environment=FLY_EDGE_METRICS_ADDR=0.0.0.0:9102
+# Only in bus mode. EnvironmentFile= is the same fly.env flysim reads, so this is the value
+# flysim started with (flysim reads it case-insensitively, so does this). Exit 1 means
+# "skip": the unit goes inactive without failing and without being restarted.
+ExecCondition=/bin/sh -c 'case "$$FLY_FEED_VIA" in [Bb][Uu][Ss]) ;; *) exit 1;; esac'
 ExecStart=/opt/fly/current/fly-edge
 Restart=always
 RestartSec=2
 # A few snapshots in flight and a WebSocket per client; the store itself is
 # flysim's (tmpfs, bounded by feedbus::limits at 32 MiB).
 MemoryMax=256M
-
-[Install]
-WantedBy=fly.target

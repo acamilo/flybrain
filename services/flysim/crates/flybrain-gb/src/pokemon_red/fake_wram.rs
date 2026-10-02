@@ -460,6 +460,29 @@ impl Wram {
         self
     }
 
+    /// The cartridge's hidden-event table with one map in it: `HiddenEventMaps` listing `map`,
+    /// `HiddenEventPointers` pointing at a list of `(y, x, argument)` entries (six bytes each, the
+    /// routine's `dba` a bank-$11 address).
+    pub fn hidden_table(&mut self, map: u8, entries: &[(u8, u8, u8)]) -> &mut Self {
+        use super::state::poke::hidden::{ENTRY_BYTES, MAPS_ADDRESS, POINTERS_ADDRESS, TABLE_BANK};
+        let list = 0x7000u16;
+        let mut put = |address: u16, byte: u8| {
+            self.rom.insert((TABLE_BANK, address), byte);
+        };
+        put(MAPS_ADDRESS, map);
+        put(MAPS_ADDRESS + 1, 0xff);
+        put(POINTERS_ADDRESS, (list & 0xff) as u8);
+        put(POINTERS_ADDRESS + 1, (list >> 8) as u8);
+        for (index, (y, x, argument)) in entries.iter().enumerate() {
+            let base = list + index as u16 * ENTRY_BYTES;
+            for (offset, byte) in [*y, *x, *argument, TABLE_BANK, 0x00, 0x60].into_iter().enumerate() {
+                put(base + offset as u16, byte);
+            }
+        }
+        put(list + entries.len() as u16 * ENTRY_BYTES, 0xff);
+        self
+    }
+
     /// The cartridge's `ItemUsePtrTable`, one pointer per item id, grouped the way the pinned
     /// commit groups them: the balls share one routine, the potions, drinks, status heals and
     /// revives another, the four X stat items another, the four PP restores another, and every

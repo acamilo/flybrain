@@ -107,6 +107,11 @@ pub struct PokemonPalette {
     nearest: Option<(u8, u32)>,
     /// Whether the last `observe` was the frame that number fell on.
     nearer: bool,
+    /// The map the fly was last seen standing in while the ladder's objective was an errand in
+    /// it (row 73). On leaving it with the errand still the objective, the talked entries of that
+    /// room are forgotten: Route 25 re-shows Bill, and a Bill whose bag was full never handed
+    /// over the ticket, so a conversation had on the last visit must not retire this one's.
+    errand_seen: Option<u8>,
     /// The map of the last frame that was not a warp's tear, and how many tear frames have run
     /// since (row 58, [`PokemonPalette::tear`], [`TEAR_FRAMES`]).
     ///
@@ -150,6 +155,7 @@ impl PokemonPalette {
             grids: MapGrids::default(),
             nearest: None,
             nearer: false,
+            errand_seen: None,
             settled: None,
             tear_frames: 0,
             naming_since: None,
@@ -316,7 +322,7 @@ impl MacroPalette for PokemonPalette {
         // name gets the whole bound and a restore starts it again.
         self.naming_since = naming.map(|_| self.naming_since.unwrap_or(self.now_ms));
         let naming_elapsed = self.naming_since.map_or(0.0, |since| (self.now_ms - since).max(0.0));
-        let (scene, bindings, raw, standing, stepping, approach) = {
+        let (scene, bindings, raw, standing, stepping, approach, errand) = {
             let Self {
                 machine,
                 mode,
@@ -372,12 +378,28 @@ impl MacroPalette for PokemonPalette {
                 let hops = geography::hops(palette::region_here(&mut state)?, objective.map)?;
                 Some((objective.map, hops))
             });
+            // Row 73: whether the objective is an errand, and in which room.
+            let errand = standing.and_then(|_| {
+                let objective = palette::objective_place(&mut state)?;
+                (objective.target == Some(crate::adapter::PlaceKind::Errand)).then_some(objective.map)
+            });
             *cached = Some(palette);
-            (scene, bindings, raw, standing, stepping, approach)
+            (scene, bindings, raw, standing, stepping, approach, errand)
         };
         // Section 12.7: the macro layer's own answer to "has the run stood here", because the
         // adapter's reward ledger cannot record a doormat.
         if let Some(player) = standing {
+            if let Some(room) = self.errand_seen
+                && player.map != room
+            {
+                if errand == Some(room) {
+                    self.talked.forget_map(room);
+                }
+                self.errand_seen = None;
+            }
+            if errand == Some(player.map) {
+                self.errand_seen = Some(player.map);
+            }
             // New ground under the fly is the one thing that can change which tiles of this map
             // it can reach, so it is what clears the map's frontier mark (section 12.14). A tile
             // the ledger already had changes nothing and clears nothing.
@@ -594,7 +616,7 @@ mod tests {
     use crate::pokemon_red::fake_wram::{self, REDS_HOUSE_1F, WALL_TILE, Wram};
     use crate::pokemon_red::macros::geography::Amenity;
     use crate::pokemon_red::maps;
-    use crate::pokemon_red::macros::cartridge::{Edge, ExitId, MacroState};
+    use crate::pokemon_red::macros::cartridge::{Edge, ExitId, MacroState, TalkLedger, TalkTarget};
 
     /// A ledger with one exit in it, for the wiring test below.
     struct OneVisited(MapExit);
@@ -782,6 +804,54 @@ mod tests {
         wram.map(maps::PEWTER_CITY, 4, 4, 3, 6);
         palette.observe(&mut wram, &ledger);
         assert!(palette.nearer_the_objective(), "out of the front door is nearer still");
+    }
+
+    /// A ledger whose objective is the errand in one room (row 73).
+    struct ErrandIn(u8);
+
+    impl RunLedger for ErrandIn {
+        fn exit_visited(&self, _exit: MapExit) -> bool {
+            false
+        }
+
+        fn objective(&self) -> Option<crate::adapter::MapPlace> {
+            Some(crate::adapter::MapPlace::errand(self.0))
+        }
+    }
+
+    #[test]
+    fn an_errand_rooms_talked_entries_are_forgotten_when_the_fly_leaves_it() {
+        // Row 73 review N3. The talked ledger is the session's and never forgot, but the
+        // cartridge re-shows Bill after the fly leaves (Route 25's script resets his event), and a
+        // Bill whose bag was full never gave the ticket: a conversation had on the last visit
+        // retired this one's, and rung 16 was unreachable until a restart.
+        let mut wram = Wram::new();
+        wram.started().map(maps::BILLS_HOUSE, 8, 8, 2, 6).facing(0).house_collision();
+        let mut palette = PokemonPalette::new(7);
+        let ledger = ErrandIn(maps::BILLS_HOUSE);
+        palette.observe(&mut wram, &ledger);
+        palette.talked.record(maps::BILLS_HOUSE, TalkTarget::Sprite(1));
+        // A conversation elsewhere is not the errand's and stays.
+        palette.talked.record(maps::VIRIDIAN_CITY, TalkTarget::Sprite(2));
+        palette.observe(&mut wram, &ledger);
+        assert_eq!(palette.talked(), 2, "still in the room: nothing is forgotten");
+
+        wram.map(maps::ROUTE_25, 40, 10, 45, 4);
+        palette.observe(&mut wram, &ledger);
+        palette.observe(&mut wram, &ledger);
+        assert!(!palette.talked.talked(maps::BILLS_HOUSE, TalkTarget::Sprite(1)), "left: asked again");
+        assert!(palette.talked.talked(maps::VIRIDIAN_CITY, TalkTarget::Sprite(2)), "other rooms keep theirs");
+
+        // And a room that is not the objective's errand keeps its entries on leaving.
+        let mut wram = Wram::new();
+        wram.started().map(maps::BILLS_HOUSE, 8, 8, 2, 6).facing(0).house_collision();
+        let mut palette = PokemonPalette::new(7);
+        let elsewhere = Bound(maps::PEWTER_GYM);
+        palette.observe(&mut wram, &elsewhere);
+        palette.talked.record(maps::BILLS_HOUSE, TalkTarget::Sprite(1));
+        wram.map(maps::ROUTE_25, 40, 10, 45, 4);
+        palette.observe(&mut wram, &elsewhere);
+        assert_eq!(palette.talked(), 1);
     }
 
     #[test]

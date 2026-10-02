@@ -202,31 +202,56 @@ cpuset_partition() {
     echo "$sim_cpus $page_cpus $encoder_cpus"
 }
 
-# cpuset_dropin_plan CPUSET RAYON_THREADS [ENCODER_CORES] — print one "UNIT-NAME CPUS" line for every
+# cpuset_aux_split PAGE_CPUS COUNT — take the LAST COUNT cpus of the page group for flysim's
+# auxiliary threads (EDGE-02 review N1: the bus runtime, which must not share the sim's
+# dispatcher cpu). Echoes "PAGE_REST AUX"; dies if that would leave no page cpu.
+cpuset_aux_split() {
+    local page="$1" count="$2" n
+    n="$(echo "$page" | awk -F, '{print NF}')"
+    if [ "$count" -ge "$n" ]; then
+        die "cpuset_aux_split: SESSION_AUX_CPUS=${count} leaves no page cpu out of '${page}'. Widen CPUSET or lower SESSION_AUX_CPUS."
+    fi
+    echo "$(echo "$page" | cut -d, -f1-"$(( n - count ))") $(echo "$page" | cut -d, -f"$(( n - count + 1 ))"-)"
+}
+
+# cpuset_dropin_plan CPUSET RAYON_THREADS [ENCODER_CORES] [AUX_COUNT] — print one "UNIT-NAME CPUS" line for every
 # AllowedCPUs= drop-in 05-deploy.sh writes (UNIT-NAME includes its suffix, e.g. flysim.service,
 # flysim.slice), and then the two lines that name the confinement lists for bin/fly-cpu-confine:
 #
-#   flysim.slice            the sim's CPUs (flysim.service and flysim-session.service run in it);
+#   flysim.slice            the sim's CPUs plus AUX_COUNT page cpus (default 0) taken from the end of the
+#                            page group for flysim's bus threads, exclusive to flysim like the rest (flysim.service and flysim-session.service run in it);
 #   flysim.service, flysim-session.service   the same set (belt and braces: a unit outside the
 #                            slice is still bounded);
 #   xvfb, flystage, flystage-web, pulse, mediamtx, flyedge, flycontrol-edge   the page CPUs;
 #   flycast                  the encoder CPUs;
 #   flyshadow                page + encoder (never the sim's);
+#   FLY_AUX_CPUS=           only with AUX_COUNT > 0: the aux cpus (fly.env's FLY_SESSION_AUX_CPUS);
 #   FLY_SIM_CPUS / FLY_OTHER_CPUS   "=": the lists /etc/fly/cpuset.env carries; OTHER is every CPU
 #                            of CPUSET that is not the sim's, in CPUSET order.
 #
 # One function so the deploy and infra/tests/lint.sh cannot disagree about the plan. Dies like
 # cpuset_partition does.
 cpuset_dropin_plan() {
-    local cpuset="$1" rayon="$2" encoder="${3:-2}" sim page enc u
-    read -r sim page enc <<< "$(cpuset_partition "$cpuset" "$rayon" "$encoder")" || return 1
-    echo "flysim.slice $sim"
-    for u in flysim flysim-session; do echo "${u}.service $sim"; done
+    local cpuset="$1" rayon="$2" encoder="${3:-2}" aux_count="${4:-0}" sim page enc u aux="" slice_cpus
+    local out
+    out="$(cpuset_partition "$cpuset" "$rayon" "$encoder")" || return 1
+    read -r sim page enc <<< "$out"
+    if [ "$aux_count" -gt 0 ]; then
+        # not `read <<< "$(...)"`: die inside the substitution would only end the subshell
+        out="$(cpuset_aux_split "$page" "$aux_count")" || return 1
+        read -r page aux <<< "$out"
+    fi
+    slice_cpus="$sim"
+    [ -n "$aux" ] && slice_cpus="${sim},${aux}"
+    echo "flysim.slice $slice_cpus"
+    for u in flysim flysim-session; do echo "${u}.service $slice_cpus"; done
     for u in xvfb flystage flystage-web pulse mediamtx flyedge flycontrol-edge; do echo "${u}.service $page"; done
     echo "flycast.service $enc"
     echo "flyshadow.service ${page},${enc}"
-    echo "FLY_SIM_CPUS= $sim"
+    echo "FLY_SIM_CPUS= $slice_cpus"
     echo "FLY_OTHER_CPUS= ${page},${enc}"
+    [ -n "$aux" ] && echo "FLY_AUX_CPUS= $aux"
+    return 0
 }
 
 # cpuset_dropin_text UNIT-NAME CPUS ENV_LABEL — the AllowedCPUs= drop-in 05-deploy.sh converges to

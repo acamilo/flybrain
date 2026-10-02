@@ -459,9 +459,6 @@ else
     grep -qE '^ConditionPathExists=/opt/fly/current/fly-edge$' "$EDGE_UNIT" \
         && pass "flyedge.service stays inactive on a release without fly-edge" \
         || fail "flyedge.service needs ConditionPathExists=/opt/fly/current/fly-edge (a release before it has none)"
-    grep -qE '^Environment=FLY_EDGE_METRICS_ADDR=127\.0\.0\.1:' "$EDGE_UNIT" \
-        && pass "flyedge.service keeps its metrics on loopback" \
-        || fail "flyedge.service FLY_EDGE_METRICS_ADDR must be a 127.0.0.1 address"
 fi
 # Every unit a target's Wants=/Requires= names, with backslash continuations joined and
 # comments dropped: fly.target spreads both lists over several physical lines, and the
@@ -870,6 +867,23 @@ if command -v python3 >/dev/null 2>&1; then
     else
         fail "fly-shadow-run check --bus must pass --require-arm bus/process to fly-shadow check ($(cat "$cb_tmp/args" 2>/dev/null))"
     fi
+    # BUS-01 review N1: `check` (plain and --bus) refuses while the live fly runs the session
+    # runtime, which writes no trace for the shadow to follow, and never asks fly-shadow.
+    printf '[Service]\nExecStart=/opt/fly/current/flysim-session\n' > "$cb_tmp/10-runtime.conf"
+    for ck_args in "" "--bus"; do
+        rm -f "$cb_tmp/args"
+        ck_rc=0
+        # shellcheck disable=SC2086
+        ck_out="$(PATH="$cb_tmp/bin:$PATH" FLY_SHADOW_DIR="$cb_tmp/shadow" FLY_SHADOW_BIN="$cb_tmp/fly-shadow" \
+            FLY_SHADOW_REMOTE_DROPIN_DIR="$cb_tmp/none.d" FLY_ENV_FILE="$cb_tmp/none.env" \
+            FLY_RUNTIME_DROPIN="$cb_tmp/10-runtime.conf" \
+            "$INFRA_DIR/bin/fly-shadow-run" check $ck_args 2>&1)" || ck_rc=$?
+        if [ "$ck_rc" -ne 0 ] && echo "$ck_out" | grep -q 'runs the session runtime' && [ ! -e "$cb_tmp/args" ]; then
+            pass "fly-shadow-run check${ck_args:+ $ck_args} refuses while the live fly runs the session runtime"
+        else
+            fail "fly-shadow-run check${ck_args:+ $ck_args} must refuse while the session runtime drop-in exists (rc=$ck_rc): $ck_out"
+        fi
+    done
     rm -rf "$cb_tmp"
 fi
 # SHADOW-02: `check` in remote mode also needs the relay healthy now (relay.json under a minute
@@ -1602,6 +1616,389 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 3b2b. EDGE-02: the feed on the bus in production. fly.env's FLY_FEED_VIA is the one switch:
+# flysim.service Wants= the edge, the edge's ExecCondition= skips it in direct mode, `fly-feed`
+# rewrites the line and restarts flysim, the watchdog judges the edge only while flysim itself
+# serves it through the bus. Driven for real against stubs.
+# ---------------------------------------------------------------------------
+echo "--- EDGE-02: flyedge is skipped in direct mode, started by every flysim start in bus mode ---"
+grep -qE '^Wants=.*\bflyedge\.service\b' "$INFRA_DIR/units/flysim.service" \
+    && pass "flysim.service Wants=flyedge.service (every flysim start brings the edge up in bus mode)" \
+    || fail "flysim.service must Want flyedge.service: a stop and start of flysim (fly-loop-reset) would leave the edge down"
+grep -qE '^ExecCondition=.*FLY_FEED_VIA.*\[Bb\]\[Uu\]\[Ss\]' "$EDGE_UNIT" \
+    && pass "flyedge.service runs only when FLY_FEED_VIA is bus (ExecCondition=, any case)" \
+    || fail "flyedge.service needs an ExecCondition= on FLY_FEED_VIA (case-insensitive bus)"
+if grep -qE '^\[Install\]' "$EDGE_UNIT"; then
+    fail "flyedge.service has an [Install] section; flysim's Wants= is what starts it"
+else
+    pass "flyedge.service has no [Install] section"
+fi
+grep -qE '^Environment=FLY_EDGE_METRICS_ADDR=[0-9.]+:9102$' "$EDGE_UNIT" \
+    && pass "flyedge.service serves its metrics on :9102 (the dashboard's second target; the watchdog uses loopback)" \
+    || fail "flyedge.service FLY_EDGE_METRICS_ADDR must be an address on :9102"
+if grep -qE '^Wants=.*flyedge' "$INFRA_DIR/units/flysim-session.service"; then
+    fail "flysim-session.service Wants flyedge.service, whose Requires=flysim.service would start the unit it Conflicts with"
+else
+    pass "flysim-session.service (the standalone rehearsal unit) does not pull the edge in"
+fi
+grep -qE 'for name in .*\bfly-feed\b.*; do$' "$INFRA_DIR/05-deploy.sh" \
+    && pass "05-deploy.sh installs fly-feed" \
+    || fail "05-deploy.sh must converge bin/fly-feed to /opt/fly/bin"
+grep -qF 'this release has no fly-edge' "$INFRA_DIR/05-deploy.sh" \
+    && grep -qF '"${release_path}/fly-edge"' "$INFRA_DIR/05-deploy.sh" \
+    && pass "05-deploy.sh refuses a release without fly-edge while the feed is on the bus (before the symlink moves)" \
+    || fail "05-deploy.sh must refuse a release without fly-edge when FLY_FEED_VIA is bus (env file or container)"
+grep -qE '^fly ALL=\(root\) NOPASSWD: /usr/bin/systemctl restart flyedge\.service$' "$INFRA_DIR/config/fly-sudoers" \
+    && grep -qE '^fly ALL=\(root\) NOPASSWD: /opt/fly/bin/fly-feed direct --no-wait$' "$INFRA_DIR/config/fly-sudoers" \
+    && pass "sudoers lets the watchdog restart flyedge and run exactly 'fly-feed direct --no-wait'" \
+    || fail "config/fly-sudoers must grant the watchdog 'systemctl restart flyedge.service' and 'fly-feed direct --no-wait'"
+
+echo "--- fly-feed: bus, direct, status, rollback ---"
+ff_dir="$(mktemp -d "${TMPDIR:-/tmp}/fly-lint-feed.XXXXXX")"
+mkdir -p "$ff_dir/bin" "$ff_dir/release" "$ff_dir/proc/4242" "$ff_dir/run"
+cat > "$ff_dir/bin/systemctl" <<'FFSTUB'
+#!/usr/bin/env bash
+echo "$*" >> "$FF_DIR/systemctl.log"
+case "$1" in
+    restart) n=$(( $(cat "$FF_DIR/invocation" 2>/dev/null || echo 1) + 1 )); echo "$n" > "$FF_DIR/invocation"
+             # the new flysim's environment is whatever fly.env says now
+             v="$(awk -F= '/^FLY_FEED_VIA=/ { v=$2 } END { print v }' "$FF_ENV")"
+             printf 'FLY_FEED_VIA=%s\0' "$v" > "$FF_DIR/proc/4242/environ" ;;
+    show) case "$*" in
+              *MainPID*) echo 4242 ;;
+              *InvocationID*) echo "inv$(cat "$FF_DIR/invocation" 2>/dev/null || echo 1)" ;;
+          esac ;;
+    is-active)
+        case "${*: -1}" in
+            flystage.service) [ "${FF_PAGE:-1}" = 1 ]; exit $? ;;
+            flyedge.service) [ "${FF_EDGE_ACTIVE:-0}" = 1 ]; exit $? ;;
+        esac ;;
+esac
+exit 0
+FFSTUB
+cat > "$ff_dir/bin/curl" <<'FFSTUB'
+#!/usr/bin/env bash
+url="${*: -1}"
+quiet=0; for a in "$@"; do [ "$a" = /dev/null ] && quiet=1; done
+case "$url" in
+    http://control/healthz) [ "${FF_CONTROL_OK:-1}" = 1 ] || exit 22; exit 0 ;;
+    http://edge/healthz) [ "${FF_EDGE_OK:-1}" = 1 ] || exit 22; exit 0 ;;
+    http://sim/metrics|http://edge/metrics)
+        n=$(( $(cat "$FF_DIR/frames" 2>/dev/null || echo 1000) + 30 )); echo "$n" > "$FF_DIR/frames"
+        [ "${FF_FLAT:-0}" = 1 ] && n=1000
+        echo "fly_feed_clients ${FF_CLIENTS:-1}"; echo "fly_frames_sent_total $n"
+        echo "fly_edge_snapshot_age_seconds 0.03"; echo "fly_edge_bus_lost_total 0" ;;
+    *) exit 22 ;;
+esac
+FFSTUB
+printf '#!/usr/bin/env bash\necho 0\n' > "$ff_dir/bin/id"
+printf '#!/usr/bin/env bash\ntrue\n' > "$ff_dir/bin/logger"
+printf '#!/usr/bin/env bash\ntrue\n' > "$ff_dir/release/fly-edge"
+chmod +x "$ff_dir"/bin/* "$ff_dir/release/fly-edge"
+ff_env="$ff_dir/fly.env"
+fly_feed() {
+    env FF_DIR="$ff_dir" FF_ENV="$ff_env" PATH="$ff_dir/bin:$PATH" FLY_ENV_FILE="$ff_env" \
+        FLY_RELEASE_DIR="$ff_dir/release" FLY_PROC_DIR="$ff_dir/proc" FLY_FEED_LOG="$ff_dir/feed.log" \
+        FLY_FEED_LOCK="$ff_dir/run/feed.lock" FLY_CONTROL_URL=http://control FLY_METRICS_URL=http://sim \
+        FLY_EDGE_METRICS_URL=http://edge FLY_FEED_HEALTH_TIMEOUT=3 FLY_FEED_SAMPLE_SECONDS=0 \
+        "$@" bash "$INFRA_DIR/bin/fly-feed" "${FF_ARGS[@]}"
+}
+ff_reset() {  # ff_reset VIA_IN_FILE VIA_RUNNING
+    printf 'FLY_GAME=pokemon-red\nFLY_FEED_VIA=%s\nFLY_MACRO_MODE=raw\n' "$1" > "$ff_env"
+    chmod 0640 "$ff_env"
+    printf 'FLY_FEED_VIA=%s\0' "$2" > "$ff_dir/proc/4242/environ"
+    : > "$ff_dir/systemctl.log"; rm -f "$ff_dir/feed.log" "$ff_dir/frames" "$ff_dir/invocation"
+}
+ff_restarts() { grep -c '^restart --no-block flysim.service$' "$ff_dir/systemctl.log" || true; }
+
+ff_reset direct direct
+FF_ARGS=(status)
+ff_out="$(fly_feed 2>&1 || true)"
+if printf '%s\n' "$ff_out" | grep -qx 'configured: direct' && printf '%s\n' "$ff_out" | grep -qx 'running:    direct'; then
+    pass "fly-feed status: direct, running direct"
+else
+    fail "fly-feed status wrong: $ff_out"
+fi
+
+ff_reset direct direct
+FF_ARGS=(bus)
+if fly_feed && [ "$(grep -c '^FLY_FEED_VIA=' "$ff_env")" = 1 ] && grep -qx 'FLY_FEED_VIA=bus' "$ff_env" \
+    && grep -qx 'FLY_GAME=pokemon-red' "$ff_env" && grep -qx 'FLY_MACRO_MODE=raw' "$ff_env" \
+    && [ "$(stat -c %a "$ff_env")" = 640 ] && [ "$(ff_restarts)" = 1 ] && grep -q 'bus: healthy' "$ff_dir/feed.log"; then
+    pass "fly-feed bus: one FLY_FEED_VIA line, the rest and the mode kept, flysim restarted once, healthy on the edge's counters"
+else
+    fail "fly-feed bus: wrong ($(tr '\n' ' ' < "$ff_env"); restarts $(ff_restarts); $(cat "$ff_dir/feed.log" 2>/dev/null))"
+fi
+FF_ARGS=(bus)
+: > "$ff_dir/systemctl.log"
+if fly_feed && [ "$(ff_restarts)" = 0 ]; then
+    pass "fly-feed bus when already bus and running bus: nothing to do, no restart"
+else
+    fail "fly-feed bus must not restart flysim when fly.env and the running process already say bus"
+fi
+# A deploy wrote bus but the running flysim started direct: `bus` applies it (and a bus fly.env is not its own way back).
+ff_reset bus direct
+FF_ARGS=(bus)
+if fly_feed && [ "$(ff_restarts)" = 1 ] && grep -qx 'FLY_FEED_VIA=bus' "$ff_env"; then
+    pass "fly-feed bus applies a fly.env that says bus to a flysim that started direct"
+else
+    fail "fly-feed bus must restart flysim when fly.env says bus and it is running direct"
+fi
+ff_reset bus bus
+FF_ARGS=(status)
+ff_out="$(fly_feed 2>&1 || true)"
+if printf '%s\n' "$ff_out" | grep -q '^edge healthz: ok'; then
+    pass "fly-feed status in bus mode reads the edge"
+else
+    fail "fly-feed status in bus mode must report the edge's healthz"
+fi
+ff_reset Bus direct
+FF_ARGS=(status)
+ff_out="$(fly_feed 2>&1 || true)"
+printf '%s\n' "$ff_out" | grep -qx 'configured: bus' \
+    && pass "fly-feed reads FLY_FEED_VIA=Bus as bus (flysim lowercases it)" \
+    || fail "fly-feed must read FLY_FEED_VIA case-insensitively"
+
+# A bus that never becomes healthy (the edge answers 503) rolls back to direct and says so.
+ff_reset direct direct
+FF_ARGS=(bus)
+if fly_feed FF_EDGE_OK=0; then
+    fail "fly-feed bus must exit non-zero when the edge never becomes healthy"
+elif grep -qx 'FLY_FEED_VIA=direct' "$ff_env" && [ "$(ff_restarts)" = 2 ] && grep -q 'automatic rollback' "$ff_dir/feed.log"; then
+    pass "fly-feed bus rolls back to direct, restarting flysim again, when the edge is not healthy"
+else
+    fail "fly-feed bus rollback wrong ($(grep FLY_FEED_VIA "$ff_env"); restarts $(ff_restarts))"
+fi
+# A page that never reaches the feed (no clients) is not healthy either; --no-rollback leaves the switch in place.
+ff_reset direct direct
+FF_ARGS=(bus)
+if fly_feed FF_CLIENTS=0; then
+    fail "fly-feed bus must not call a feed with no page on it healthy while flystage is active"
+elif grep -qx 'FLY_FEED_VIA=direct' "$ff_env"; then
+    pass "fly-feed bus: a page that never connects is a failed switch, rolled back"
+else
+    fail "fly-feed bus with no client must roll back"
+fi
+ff_reset direct direct
+FF_ARGS=(bus --no-rollback)
+if fly_feed FF_EDGE_OK=0; then
+    fail "--no-rollback: must still fail"
+elif grep -qx 'FLY_FEED_VIA=bus' "$ff_env" && [ "$(ff_restarts)" = 1 ]; then
+    pass "fly-feed bus --no-rollback leaves the switch as it is when unhealthy"
+else
+    fail "--no-rollback must leave FLY_FEED_VIA=bus and restart once"
+fi
+# Frames that never advance are not a feed.
+ff_reset direct direct
+FF_ARGS=(bus)
+if fly_feed FF_FLAT=1; then fail "flat frames counter must not be healthy"; else pass "fly-feed bus: a frames counter that does not move is not healthy"; fi
+# No page unit: the wait ends at the edge's healthz.
+ff_reset direct direct
+FF_ARGS=(bus)
+fly_feed FF_PAGE=0 FF_CLIENTS=0 \
+    && pass "fly-feed bus on a box with no active page unit waits for the edge only" \
+    || fail "fly-feed bus with flystage inactive must succeed on the edge's healthz alone"
+# A release without fly-edge refuses before touching anything.
+ff_reset direct direct
+rm -f "$ff_dir/release/fly-edge"
+FF_ARGS=(bus)
+if fly_feed; then
+    fail "fly-feed bus must refuse a release without fly-edge"
+elif grep -qx 'FLY_FEED_VIA=direct' "$ff_env" && [ "$(ff_restarts)" = 0 ]; then
+    pass "fly-feed bus refuses a release without fly-edge, changing and restarting nothing"
+else
+    fail "refusal must leave fly.env and flysim alone"
+fi
+printf '#!/usr/bin/env bash\ntrue\n' > "$ff_dir/release/fly-edge"; chmod +x "$ff_dir/release/fly-edge"
+# direct: the way back, which works with no fly-edge at all and stops a lingering edge.
+ff_reset bus bus
+rm -f "$ff_dir/release/fly-edge"
+FF_ARGS=(direct)
+if fly_feed FF_EDGE_ACTIVE=1 && grep -qx 'FLY_FEED_VIA=direct' "$ff_env" && [ "$(ff_restarts)" = 1 ] \
+    && grep -qx 'stop flyedge.service' "$ff_dir/systemctl.log" && grep -q 'direct: healthy' "$ff_dir/feed.log"; then
+    pass "fly-feed direct: back to flysim on :7400 with no fly-edge in the release, a lingering edge stopped"
+else
+    fail "fly-feed direct wrong ($(grep FLY_FEED_VIA "$ff_env"); $(cat "$ff_dir/systemctl.log" | tr '\n' ';'))"
+fi
+printf '#!/usr/bin/env bash\ntrue\n' > "$ff_dir/release/fly-edge"; chmod +x "$ff_dir/release/fly-edge"
+ff_reset bus bus
+FF_ARGS=(direct --no-restart)
+fly_feed && grep -qx 'FLY_FEED_VIA=direct' "$ff_env" && [ "$(ff_restarts)" = 0 ] \
+    && pass "fly-feed direct --no-restart writes the line and restarts nothing" \
+    || fail "--no-restart must only write fly.env"
+ff_reset bus bus
+FF_ARGS=(direct --no-wait)
+fly_feed FF_CONTROL_OK=0 && [ "$(ff_restarts)" = 1 ] && grep -qx 'FLY_FEED_VIA=direct' "$ff_env" \
+    && pass "fly-feed direct --no-wait (the watchdog's fallback) restarts flysim and returns without a health wait" \
+    || fail "--no-wait must restart flysim and return 0 whatever the health"
+ff_reset 'buss' direct
+FF_ARGS=(bus)
+if fly_feed; then fail "fly-feed must refuse an invalid FLY_FEED_VIA"; else pass "fly-feed refuses an invalid FLY_FEED_VIA in fly.env, touching nothing"; fi
+# An interrupted switch (INT/TERM/HUP) rolls back: the stub restart hangs the health wait; kill it mid-way.
+ff_reset direct direct
+FF_ARGS=(bus)
+env FF_DIR="$ff_dir" FF_ENV="$ff_env" PATH="$ff_dir/bin:$PATH" FLY_ENV_FILE="$ff_env" \
+    FLY_RELEASE_DIR="$ff_dir/release" FLY_PROC_DIR="$ff_dir/proc" FLY_FEED_LOG="$ff_dir/feed.log" \
+    FLY_FEED_LOCK="$ff_dir/run/feed.lock" FLY_CONTROL_URL=http://control FLY_METRICS_URL=http://sim \
+    FLY_EDGE_METRICS_URL=http://edge FLY_FEED_HEALTH_TIMEOUT=30 FLY_FEED_SAMPLE_SECONDS=0 FF_EDGE_OK=0 \
+    bash "$INFRA_DIR/bin/fly-feed" bus >/dev/null 2>&1 &
+ff_pid=$!
+sleep 2
+kill -TERM "$ff_pid" 2>/dev/null || true
+for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$ff_pid" 2>/dev/null || break; sleep 0.5; done
+(kill -0 "$ff_pid" 2>/dev/null && kill -KILL "$ff_pid" 2>/dev/null) || true
+wait "$ff_pid" 2>/dev/null || true
+if grep -qx 'FLY_FEED_VIA=direct' "$ff_env" && grep -q 'interrupted or failed' "$ff_dir/feed.log" 2>/dev/null; then
+    pass "fly-feed bus interrupted mid-switch puts FLY_FEED_VIA back"
+else
+    fail "an interrupted fly-feed bus must roll back ($(grep FLY_FEED_VIA "$ff_env"); $(cat "$ff_dir/feed.log" 2>/dev/null | tr '\n' ';'))"
+fi
+# N2 (EDGE-02 notes): an interrupted `fly-feed direct` is never rolled back to bus: direct is the
+# safe terminal state, and flysim is restarted so the running process matches the line.
+ff_reset bus bus
+env FF_DIR="$ff_dir" FF_ENV="$ff_env" PATH="$ff_dir/bin:$PATH" FLY_ENV_FILE="$ff_env" \
+    FLY_RELEASE_DIR="$ff_dir/release" FLY_PROC_DIR="$ff_dir/proc" FLY_FEED_LOG="$ff_dir/feed.log" \
+    FLY_FEED_LOCK="$ff_dir/run/feed.lock" FLY_CONTROL_URL=http://control FLY_METRICS_URL=http://sim \
+    FLY_EDGE_METRICS_URL=http://edge FLY_FEED_HEALTH_TIMEOUT=30 FLY_FEED_SAMPLE_SECONDS=0 FF_CONTROL_OK=0 \
+    bash "$INFRA_DIR/bin/fly-feed" direct >/dev/null 2>&1 &
+ff_pid=$!
+sleep 2
+kill -TERM "$ff_pid" 2>/dev/null || true
+for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$ff_pid" 2>/dev/null || break; sleep 0.5; done
+(kill -0 "$ff_pid" 2>/dev/null && kill -KILL "$ff_pid" 2>/dev/null) || true
+wait "$ff_pid" 2>/dev/null || true
+if grep -qx 'FLY_FEED_VIA=direct' "$ff_env" && ! grep -q 'FLY_FEED_VIA=bus' "$ff_env" \
+    && grep -q 'kept: direct is the safe state' "$ff_dir/feed.log" 2>/dev/null && [ "$(ff_restarts)" -ge 2 ]; then
+    pass "fly-feed direct interrupted mid-switch stays on direct (never back to bus), flysim restarted to match"
+else
+    fail "an interrupted fly-feed direct must end on direct ($(grep FLY_FEED_VIA "$ff_env"); restarts $(ff_restarts); $(cat "$ff_dir/feed.log" 2>/dev/null | tr '\n' ';'))"
+fi
+rm -rf "$ff_dir"
+
+echo "--- fly-watchdog: check 2a (the edge) and check 2 in bus mode ---"
+wf_dir="$(mktemp -d "${TMPDIR:-/tmp}/fly-lint-wdedge.XXXXXX")"
+mkdir -p "$wf_dir/bin" "$wf_dir/proc/4242" "$wf_dir/run" "$wf_dir/state" "$wf_dir/textfile"
+cat > "$wf_dir/bin/systemctl" <<'WFSTUB'
+#!/usr/bin/env bash
+case "$1" in
+    show) echo 4242 ;;
+    is-active) [ "${WF_EDGE_ACTIVE:-1}" = 1 ]; exit $? ;;
+    restart) echo "restart $2" >> "$WF_DIR/actions.log" ;;
+esac
+exit 0
+WFSTUB
+cat > "$wf_dir/bin/sudo" <<'WFSTUB'
+#!/usr/bin/env bash
+if [ "$1" = /usr/bin/systemctl ]; then shift; exec systemctl "$@"; fi
+echo "sudo $*" >> "$WF_DIR/actions.log"
+exit 0
+WFSTUB
+cat > "$wf_dir/bin/curl" <<'WFSTUB'
+#!/usr/bin/env bash
+url="${*: -1}"
+case "$url" in
+    http://control/healthz) [ "${WF_CONTROL_OK:-1}" = 1 ] || exit 22 ;;
+    http://edge/healthz) [ "${WF_EDGE_OK:-1}" = 1 ] || exit 22 ;;
+    http://edge/metrics) echo "fly_frames_sent_total ${WF_EDGE_FRAMES:-100}"; echo "fly_feed_clients 1" ;;
+    http://sim/metrics) echo "fly_frames_sent_total ${WF_SIM_FRAMES:-0}"; echo "fly_feed_clients 0" ;;
+    *) exit 22 ;;
+esac
+WFSTUB
+printf '#!/usr/bin/env bash\ncat >/dev/null\n' > "$wf_dir/bin/systemd-cat"
+chmod +x "$wf_dir"/bin/*
+sed '$d' "$INFRA_DIR/bin/fly-watchdog" > "$wf_dir/wd.sh"
+wd_edge() {  # wd_edge VIA_RUNNING 'ENV...' -- COMMANDS
+    local via="$1"; shift
+    printf 'FLY_FEED_VIA=%s\0' "$via" > "$wf_dir/proc/4242/environ"
+    env WF_DIR="$wf_dir" PATH="$wf_dir/bin:$PATH" FLY_PROC_DIR="$wf_dir/proc" FLY_ENV_FILE="$wf_dir/fly.env" \
+        FLY_CONTROL_URL=http://control FLY_METRICS_URL=http://sim FLY_EDGE_METRICS_URL=http://edge \
+        WD_RUN_DIR="$wf_dir/run" WD_STATE_DIR="$wf_dir/state" TEXTFILE_DIR="$wf_dir/textfile" \
+        "$@" bash -c "source '$wf_dir/wd.sh'; $WD_CMDS" >/dev/null 2>&1 || true
+}
+wd_acts() { cat "$wf_dir/actions.log" 2>/dev/null | tr '\n' ';'; }
+wd_reset() { : > "$wf_dir/actions.log"; rm -f "$wf_dir/run"/*; }
+echo 'FLY_FEED_VIA=bus' > "$wf_dir/fly.env"
+
+wd_reset; WD_CMDS='check_flyedge; check_flyedge; check_flyedge'
+wd_edge direct
+[ -z "$(wd_acts)" ] && pass "check 2a does nothing in direct mode" || fail "check 2a acted in direct mode: $(wd_acts)"
+wd_reset; WD_CMDS='check_flyedge; check_flyedge; check_flyedge; check_flyedge'
+wd_edge bus WF_EDGE_OK=0 WF_CONTROL_OK=0
+[ -z "$(wd_acts)" ] && pass "check 2a leaves a down flysim to check 1" || fail "check 2a acted while flysim was down: $(wd_acts)"
+wd_reset; WD_CMDS='check_flyedge; check_flyedge; check_flyedge'
+wd_edge bus WF_EDGE_OK=1
+[ -z "$(wd_acts)" ] && pass "check 2a: a healthy edge is left alone" || fail "check 2a acted on a healthy edge: $(wd_acts)"
+wd_reset; WD_CMDS='check_flyedge'
+wd_edge bus WF_EDGE_OK=0
+[ -z "$(wd_acts)" ] && pass "check 2a lets the first failed pass go (a flysim that only just answered)" || fail "check 2a acted on the first failure: $(wd_acts)"
+wd_reset; WD_CMDS='check_flyedge; check_flyedge'
+wd_edge bus WF_EDGE_OK=0
+case "$(wd_acts)" in
+    "restart flyedge.service;") pass "check 2a: the second failed pass restarts flyedge" ;;
+    *) fail "check 2a second failure should restart flyedge only: $(wd_acts)" ;;
+esac
+wd_reset; WD_CMDS='check_flyedge; check_flyedge; check_flyedge'
+wd_edge bus WF_EDGE_OK=0
+case "$(wd_acts)" in
+    "restart flyedge.service;restart flyedge.service;restart flystage.service;restart flycast.service;") pass "check 2a: the third restarts the page and the encoder as well" ;;
+    *) fail "check 2a third failure: $(wd_acts)" ;;
+esac
+wd_reset; WD_CMDS='check_flyedge; check_flyedge; check_flyedge; check_flyedge'
+wd_edge bus WF_EDGE_OK=0
+case "$(wd_acts)" in
+    *"sudo /opt/fly/bin/fly-feed direct --no-wait;") pass "check 2a: the fourth failed pass puts the feed back on flysim (fly-feed direct --no-wait)" ;;
+    *) fail "check 2a fourth failure must run fly-feed direct --no-wait: $(wd_acts)" ;;
+esac
+# N3 (EDGE-02 notes): failures spread over more than 15 minutes (passes are skipped while flysim is
+# down) still fall back to direct from the 4th, and a long run of edge failures never reboots.
+wd_reset; WD_CMDS='f="$(fails_file flyedge)"; for i in 1 2 3 4 5 6; do echo $(( $(now) - 7200 + i )) >> "$f"; done; check_flyedge'
+wd_edge bus WF_EDGE_OK=0
+case "$(wd_acts)" in
+    "sudo /opt/fly/bin/fly-feed direct --no-wait;") pass "check 2a: failures older than 15 minutes still fall back to direct, with no restart chain and no reboot" ;;
+    *) fail "check 2a with a stretched failure run must run fly-feed direct only: $(wd_acts)" ;;
+esac
+wd_reset; WD_CMDS='check_flyedge; check_flyedge; check_flyedge; check_flyedge; check_flyedge; check_flyedge; check_flyedge; check_flyedge'
+wd_edge bus WF_EDGE_OK=0
+if ! grep -q reboot "$wf_dir/actions.log" 2>/dev/null && [ ! -e "$wf_dir/state/last-reboot" ]; then
+    pass "check 2a: eight failed passes (fly-feed direct unable to fix it) never reboot the container"
+else
+    fail "an edge fault must never reboot: $(wd_acts)"
+fi
+wd_reset; WD_CMDS='check_flyedge; check_flyedge'
+wd_edge bus WF_EDGE_OK=1 WF_EDGE_ACTIVE=0
+case "$(wd_acts)" in
+    "restart flyedge.service;") pass "check 2a: an inactive edge in bus mode is a failure like an unhealthy one" ;;
+    *) fail "check 2a inactive edge: $(wd_acts)" ;;
+esac
+# fly.env says bus but the running flysim started direct (a deploy, not yet restarted): it serves the feed itself.
+wd_reset; WD_CMDS='check_flyedge; check_flyedge; check_flyedge; check_flyedge'
+wd_edge direct WF_EDGE_OK=0 WF_EDGE_ACTIVE=0
+[ -z "$(wd_acts)" ] && pass "check 2a follows the running flysim, not fly.env: a pending switch is not an outage" || fail "check 2a acted on a pending switch: $(wd_acts)"
+WD_CMDS='feed_metrics_url'
+got="$(printf 'FLY_FEED_VIA=direct\0' > "$wf_dir/proc/4242/environ"; env WF_DIR="$wf_dir" PATH="$wf_dir/bin:$PATH" FLY_PROC_DIR="$wf_dir/proc" FLY_ENV_FILE="$wf_dir/fly.env" FLY_METRICS_URL=http://sim FLY_EDGE_METRICS_URL=http://edge WD_RUN_DIR="$wf_dir/run" WD_STATE_DIR="$wf_dir/state" TEXTFILE_DIR="$wf_dir/textfile" bash -c "source '$wf_dir/wd.sh'; feed_metrics_url" 2>/dev/null || true)"
+[ "$got" = http://sim ] && pass "check 2 reads flysim's counters while the running flysim serves the feed itself" || fail "check 2 URL for a pending switch: $got"
+
+# Check 2 in bus mode: an unhealthy edge is check 2a's, not a reason to restart the page; a healthy
+# edge with a flat frames counter restarts the page and, after three, the edge and the encoder.
+wd_reset; WD_CMDS='check_flystage; check_flystage; check_flystage'
+wd_edge bus WF_EDGE_OK=0
+[ -z "$(wd_acts)" ] && pass "check 2 in bus mode leaves a silent edge to check 2a (the page is not restarted)" || fail "check 2 restarted things while the edge was down: $(wd_acts)"
+wd_reset; WD_CMDS='check_flystage; check_flystage; check_flystage; check_flystage'
+wd_edge bus WF_EDGE_OK=1 WF_EDGE_FRAMES=100
+case "$(wd_acts)" in
+    "restart flystage.service;restart flystage.service;restart flystage.service;restart flyedge.service;restart flycast.service;")
+        pass "check 2 in bus mode: frames flat restarts the page, then the edge and the encoder in the chain" ;;
+    *) fail "check 2 bus chain: $(wd_acts)" ;;
+esac
+wd_reset; WD_CMDS='check_flystage; check_flystage; check_flystage; check_flystage'
+wd_edge direct WF_SIM_FRAMES=100
+case "$(wd_acts)" in
+    *"restart flyedge"*) fail "check 2 in direct mode must not touch the edge: $(wd_acts)" ;;
+    *) pass "check 2 in direct mode never restarts the edge" ;;
+esac
+rm -rf "$wf_dir"
+
+# ---------------------------------------------------------------------------
 # 3c. lib/common.sh cpuset_partition — the three-way cpuset split used by
 # 05-deploy.sh section 3b (flysim / page-capture / flycast). Run as its own
 # process (a tiny wrapper script), not sourced into this lint script,
@@ -1687,8 +2084,8 @@ set -euo pipefail
 PLANEOF
 chmod +x "$plan_bin"
 check_plan() {
-    local label="$1" cpuset="$2" rayon="$3" encoder="$4" plan sim other u cpus bad=""
-    plan="$("$plan_bin" cpuset_dropin_plan "$cpuset" "$rayon" "$encoder" 2>&1)" || { fail "cpuset_dropin_plan: $label: died: $plan"; return 0; }
+    local label="$1" cpuset="$2" rayon="$3" encoder="$4" aux="${5:-0}" plan sim other u cpus bad=""
+    plan="$("$plan_bin" cpuset_dropin_plan "$cpuset" "$rayon" "$encoder" "$aux" 2>&1)" || { fail "cpuset_dropin_plan: $label: died: $plan"; return 0; }
     sim="$(awk '$1 == "flysim.slice" {print $2}' <<< "$plan")"
     other="$(awk '$1 == "FLY_OTHER_CPUS=" {print $2}' <<< "$plan")"
     [ "$sim" = "$(awk '$1 == "FLY_SIM_CPUS=" {print $2}' <<< "$plan")" ] || bad="$bad SIM-list-differs-from-slice"
@@ -1697,7 +2094,7 @@ check_plan() {
     done
     # every other unit, and the confinement list, is disjoint from the sim's cpus
     while read -r u cpus; do
-        case "$u" in flysim.slice|flysim.service|flysim-session.service|FLY_SIM_CPUS=) continue ;; esac
+        case "$u" in flysim.slice|flysim.service|flysim-session.service|FLY_SIM_CPUS=|FLY_AUX_CPUS=) continue ;; esac
         if [ -n "$(comm -12 <(tr ',' '\n' <<< "$sim" | sort) <(tr ',' '\n' <<< "$cpus" | sort))" ]; then
             bad="$bad $u-overlaps-sim"
         fi
@@ -1715,6 +2112,29 @@ check_plan() {
 }
 check_plan "release shape (sixteen cpus, four sim, four encoder)" "1,3,5,7,9,11,13,15,29,31,33,35,17,19,37,39" 4 4
 check_plan "ten cpus, ENCODER_CORES=3" "1,3,5,7,9,11,13,15,17,19" 4 3
+check_plan "release shape with one aux cpu (EDGE-02 N1)" "1,3,5,7,9,11,13,15,29,31,33,35,17,19,37,39" 4 4 1
+check_plan "release shape with two aux cpus" "1,3,5,7,9,11,13,15,29,31,33,35,17,19,37,39" 4 4 2
+# The aux cpu is the last page cpu, is in flysim.slice, is in FLY_SIM_CPUS (so fly-cpu-confine keeps every
+# other process off it), is named in FLY_AUX_CPUS and is in no page or encoder unit.
+aux_plan="$("$plan_bin" cpuset_dropin_plan "1,3,5,7,9,11,13,15,29,31,33,35,17,19,37,39" 4 4 1 2>&1)"
+if [ "$(awk '$1 == "flysim.slice" {print $2}' <<< "$aux_plan")" = "1,3,5,7,35" ] \
+    && [ "$(awk '$1 == "FLY_SIM_CPUS=" {print $2}' <<< "$aux_plan")" = "1,3,5,7,35" ] \
+    && [ "$(awk '$1 == "FLY_AUX_CPUS=" {print $2}' <<< "$aux_plan")" = "35" ] \
+    && [ "$(awk '$1 == "xvfb.service" {print $2}' <<< "$aux_plan")" = "9,11,13,15,29,31,33" ] \
+    && ! grep -q "FLY_AUX_CPUS=" <<< "$("$plan_bin" cpuset_dropin_plan "1,3,5,7,9,11,13,15,29,31,33,35,17,19,37,39" 4 4 2>&1)"; then
+    pass "cpuset_dropin_plan: the aux cpu (35) is flysim.slice's, in FLY_SIM_CPUS, off every page unit; none without SESSION_AUX_CPUS"
+else
+    fail "cpuset_dropin_plan: aux cpu wiring wrong: $aux_plan"
+fi
+if "$plan_bin" cpuset_dropin_plan "1,3,5,7,9,11,13,15,17,19" 4 3 3 >/dev/null 2>&1; then
+    fail "cpuset_dropin_plan: SESSION_AUX_CPUS that leaves no page cpu must be refused"
+else
+    pass "cpuset_dropin_plan: SESSION_AUX_CPUS that leaves no page cpu is refused"
+fi
+grep -q 'FLY_SESSION_AUX_CPUS=${SESSION_AUX_LIST}' "$INFRA_DIR/05-deploy.sh" \
+    && grep -q 'SESSION_AUX_EFFECTIVE")"' "$INFRA_DIR/05-deploy.sh" \
+    && pass "05-deploy.sh writes FLY_SESSION_AUX_CPUS and passes the aux count to the plan" \
+    || fail "05-deploy.sh must write FLY_SESSION_AUX_CPUS and pass SESSION_AUX_EFFECTIVE to cpuset_dropin_plan"
 check_plan "eight cpus, default encoder" "1,3,5,7,9,11,13,15" 4 ""
 check_plan "dev shape (RAYON_THREADS=2)" "0,2,4,6,8,10,12,14" 2 ""
 # the generated drop-ins: a slice gets [Slice], a service [Service], both AllowedCPUs=

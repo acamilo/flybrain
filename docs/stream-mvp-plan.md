@@ -1016,3 +1016,30 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   zero divergence; `check` allowed the switch; the 30-minute speed probation passed at a median
   1.000x real time with no lag growth. Legacy stays one command away (`fly-runtime legacy`);
   RETIRE-01 after a clean week.
+- 2026-10-02 (v0.7.6, flybus groundwork, nothing switched): the control API as flybus RPC with
+  per-agent grants (CTRL-01, `FLY_CONTROL_VIA`), the video feed over the bus in production form
+  (EDGE-02, `fly-feed bus|direct`), the session's agent and world as processes on the router's
+  Unix sockets (BUS-01, `fly-runtime session --bus`), an optional aux cpu for bus threads off the
+  sim's cores, and a per-frame work metric for both runtimes. All default off; the live stream
+  is unchanged until each is switched on with its rollback. Also: the multi-seed behavioural
+  scorecard (nightly), two stale ROM tests fixed and every ROM suite mapped (row 72), and the
+  parity test's idle-header race.
+- 2026-10-02 07:13Z: the stream's video feed runs over flybus (`fly-feed bus`, one aux cpu for the
+  bus threads). Over the first 20 minutes the sim's mean work per frame fell from 15.2 to about
+  14.5 ms and its p99 from 46 to about 21 ms (the publisher left the sim's shared cpu); realtime
+  factor unchanged at about 1.0. Rollback: `fly-feed direct`.
+- 2026-10-02 07:41Z: the control API runs over flybus too (`FLY_CONTROL_VIA=bus`): `:7401` is
+  served by the control edge calling flysim's RPC services under per-client grants. First 15
+  minutes: bus connected, calls flowing, no failures, no restarts, realtime factor about 1.0.
+  Both switches are in the host env, so a deploy keeps them. The session's agent and world stay
+  on the in-process lane: over the router they cost 2.5 to 3.5 ms a frame, more than the
+  release box's headroom (live work about 14.5 of 16.74 ms); the GPU brain is the way there.
+- 2026-10-02 (v0.7.7, loop review): row 73. The scout found rung 16 unreachable: its place was
+  "on Route 25", so inside Bill's house the walks just left again, and Bill's PC is a hidden
+  object no macro could press. Rung 16 is now Bill's errand inside the house (people first, then
+  things; exits off the pad while the errand waits), and hidden objects are read from the
+  cartridge's own table and become a target only as that errand's next step. Cerulean's north half
+  joins the map graph through the trashed house. Trap hunts: rung 16 in 0 of 6 seeds before, 6 of 6
+  after; Route 5 from the ticket 0 of 6 before, 5 of 6 after. Review: APPROVE-WITH-NOTES; notes
+  fixed. Also: bus worker children die with their parent; the feed test asserts structure, not a
+  wall-clock rate.

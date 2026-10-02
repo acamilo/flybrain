@@ -173,6 +173,12 @@ const LINKS: &[(u8, u8)] = &[
     // which from the back door's arrival is the back door. Which piece each door opens onto is
     // [`SPLIT`]'s business.
     (maps::CERULEAN_BADGE_HOUSE, maps::CERULEAN_CITY),
+    // The trashed house (row 73): its front door is the town's, the hole in its back wall the
+    // south's ([`SPLIT`]). It is the only road from the town to Route 5, rung 17's.
+    (maps::CERULEAN_TRASHED_HOUSE, maps::CERULEAN_CITY),
+    // Bill's house, rung 16's room (row 73): Route 25's door at (45, 3), and the house's two
+    // doormats back to the route (`LAST_MAP`).
+    (maps::BILLS_HOUSE, maps::ROUTE_25),
     (maps::ROCK_TUNNEL_1F, maps::ROUTE_10),
     (maps::INDIGO_PLATEAU_LOBBY, maps::INDIGO_PLATEAU),
 ];
@@ -252,6 +258,9 @@ const B2F_SOUTH: u8 = 2;
 const CERULEAN_TOWN: u8 = 0;
 #[cfg(test)]
 const CERULEAN_YARD: u8 = 1;
+/// [`SPLIT`]'s third piece of Cerulean: the ground behind the trashed house (row 73).
+#[cfg(test)]
+const CERULEAN_SOUTH: u8 = 2;
 
 /// Every map whose ground is in pieces, with each piece's doors and neighbours.
 ///
@@ -383,21 +392,33 @@ const SPLIT: &[Split] = &[
                     (3, 30, 19),
                     (4, 13, 25),
                     (5, 25, 25),
-                    (7, 27, 9),
                     (8, 9, 11),
                 ],
                 next: &[
                     Region::whole(maps::ROUTE_24),
-                    Region::whole(maps::ROUTE_5),
                     Region::piece(maps::ROUTE_4, EAST_SIDE),
-                    Region::whole(maps::ROUTE_9),
                     Region::whole(maps::CERULEAN_POKECENTER),
                     Region::whole(maps::CERULEAN_GYM),
                     Region::whole(maps::CERULEAN_MART),
                     Region::whole(maps::CERULEAN_BADGE_HOUSE),
+                    Region::whole(maps::CERULEAN_TRASHED_HOUSE),
                 ],
             },
             Piece { doors: &[(9, 9, 9)], next: &[Region::whole(maps::CERULEAN_BADGE_HOUSE)] },
+            // Row 73: everything behind the trashed house. The town's own ground ends at row 28 --
+            // the gap at (16, 28) and (17, 28) opens onto a wall and the trainer-tips sign -- and
+            // the south of the map, the road down to Route 5, and the east edge onto Route 9 are
+            // reached through the house: in by the front door at (27, 11), out by the hole in its
+            // back wall, which lands on (27, 9) in the Rocket's yard, and from there east and down
+            // (scout B3 flooded the grid: 378 of the map's 801 walkable tiles are the town's).
+            Piece {
+                doors: &[(7, 27, 9)],
+                next: &[
+                    Region::whole(maps::ROUTE_5),
+                    Region::whole(maps::ROUTE_9),
+                    Region::whole(maps::CERULEAN_TRASHED_HOUSE),
+                ],
+            },
         ],
     },
 ];
@@ -975,6 +996,31 @@ mod tests {
         // Route 4's sides, which row 59 split, answer the same question.
         let west = Region::piece(maps::ROUTE_4, WEST_SIDE);
         assert!(warp_on(west, 1) && !warp_on(west, 2) && !edge_on(west, maps::CERULEAN_CITY));
+    }
+
+    #[test]
+    fn the_road_south_out_of_cerulean_is_through_the_trashed_house() {
+        // Row 73. The town's ground ends at row 28; Route 5 and Route 9 are on the ground behind
+        // the trashed house, reached in by its front door (Cerulean's warp 0) and out by the hole
+        // in its back wall, which lands on (27, 9) (warp 7). Scout B3: 0 of 6 seeds past the
+        // town's south edge in 43 brain minutes each while the house was off the graph.
+        let town = Region::piece(maps::CERULEAN_CITY, CERULEAN_TOWN);
+        let south = Region::piece(maps::CERULEAN_CITY, CERULEAN_SOUTH);
+        let house = Region::whole(maps::CERULEAN_TRASHED_HOUSE);
+        assert_eq!(arrival_by_warp(maps::CERULEAN_CITY, 0), Some(town), "the front door is the town's");
+        assert_eq!(arrival_by_warp(maps::CERULEAN_CITY, 7), Some(south), "the hole lands behind the house");
+        assert_eq!(arrival_by_edge(maps::CERULEAN_CITY, maps::ROUTE_5), Some(south));
+        assert_eq!(arrival_by_edge(maps::CERULEAN_CITY, maps::ROUTE_9), Some(south));
+        assert_eq!(next_step(town, maps::ROUTE_5), Some(house));
+        assert_eq!(next_step(house, maps::ROUTE_5), Some(south));
+        assert_eq!(next_step(south, maps::ROUTE_5), Some(Region::whole(maps::ROUTE_5)));
+        assert_eq!(next_step(house, maps::CERULEAN_GYM), Some(town));
+        assert_eq!(region_at(maps::CERULEAN_CITY, 27, 9), south);
+        assert_eq!(region_at(maps::CERULEAN_CITY, 27, 12), town);
+        assert!(!edge_on(town, maps::ROUTE_5) && edge_on(south, maps::ROUTE_5));
+        assert!(warp_on(south, 7) && !warp_on(town, 7) && !warp_on(south, 0));
+        // Rung 17's road from Bill's house is now one the graph knows end to end.
+        assert!(hops(Region::whole(maps::BILLS_HOUSE), maps::VERMILION_CITY).is_some());
     }
 
     #[test]

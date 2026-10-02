@@ -196,6 +196,13 @@ where
         let bus_runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("flysim-bus")
+            // EDGE-02 review N1: the router, the publisher and the artifact copies cost
+            // milliseconds a frame; on the sim's dispatcher cpu they stall every barrier. When the
+            // session reserved aux cpus (FLY_SESSION_AUX_CPUS) these threads, the blocking pool
+            // included, run there; otherwise they keep the host mask they inherited.
+            .on_thread_start(|| {
+                flybrain_core::pool::confine_to_aux();
+            })
             .enable_all()
             .build()
             .context("building the bus runtime")?;
