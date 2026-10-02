@@ -518,6 +518,12 @@ check() {
         esac
     done
     set -- "${pass[@]}"
+    # Only the legacy loop writes the trace the shadow follows: if the live fly moved to the session
+    # runtime during the window, the verdict no longer covers what would be cut over.
+    if [ -f "$RUNTIME_DROPIN" ]; then
+        echo "cutover refused: flysim.service runs the session runtime, which writes no trace for a shadow to follow (switch the live fly to legacy for the shadow window: fly-runtime legacy)"
+        exit 1
+    fi
     # A tripped guard, a shadow that is not running, or a run that no guard watched never allows a
     # cutover, whatever the verdict file says: the guard timer must be active and its baseline
     # present (G1-a).
