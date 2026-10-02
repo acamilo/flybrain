@@ -1016,3 +1016,11 @@ median; a two-fly transition near 10 to 12 ms at the median in every execution m
   zero divergence; `check` allowed the switch; the 30-minute speed probation passed at a median
   1.000x real time with no lag growth. Legacy stays one command away (`fly-runtime legacy`);
   RETIRE-01 after a clean week.
+- 2026-10-02 (v0.7.6, flybus groundwork, nothing switched): the control API as flybus RPC with
+  per-agent grants (CTRL-01, `FLY_CONTROL_VIA`), the video feed over the bus in production form
+  (EDGE-02, `fly-feed bus|direct`), the session's agent and world as processes on the router's
+  Unix sockets (BUS-01, `fly-runtime session --bus`), an optional aux cpu for bus threads off the
+  sim's cores, and a per-frame work metric for both runtimes. All default off; the live stream
+  is unchanged until each is switched on with its rollback. Also: the multi-seed behavioural
+  scorecard (nightly), two stale ROM tests fixed and every ROM suite mapped (row 72), and the
+  parity test's idle-header race.
