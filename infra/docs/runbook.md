@@ -1463,6 +1463,50 @@ The card is shared with **the neighbouring GPU container (`ml`, the GPU workload
 mode stays `Default`; never set `nvidia-smi -c EXCLUSIVE_PROCESS`, which would let
 whichever container got there first lock the card out from under the other.
 
+## GPU on a build box (dev and benchmarks)
+
+A build box is a container with the host's `/dev/nvidia*` device nodes passed through but no
+userspace driver installed — used for the `cuda` feature tests and the GPU benchmarks. The
+release container follows the lockstep runbook above; this path is only for build boxes,
+no root, no system install, one userspace per test run.
+
+**Get the host's module version** — the .run must match exactly:
+
+```sh
+ssh the host cat /proc/driver/nvidia/version      # the "Kernel Module" line
+# or: ssh the host cat /sys/module/nvidia/version
+```
+
+**Install under your home.** Download the matching `NVIDIA-Linux-x86_64-<ver>.run`, verify
+its SHA256 against the checksum NVIDIA publishes, and `--extract-only`:
+
+```sh
+VER=580.76.05                                       # whatever the host module reports
+mkdir -p ~/tmp/nvidia-$VER && cd ~/tmp/nvidia-$VER
+U=https://download.nvidia.com/XFree86/Linux-x86_64/$VER/NVIDIA-Linux-x86_64-$VER.run
+curl -fSLO $U && curl -fSLO $U.sha256sum
+sha256sum -c NVIDIA-Linux-x86_64-$VER.run.sha256sum     # must print OK
+sh NVIDIA-Linux-x86_64-$VER.run --extract-only --target ~/tmp/nvidia-$VER/NVIDIA-Linux-x86_64-$VER
+```
+
+**Use it only for the test run.** Prepend the extracted directory to `LD_LIBRARY_PATH`
+(`libcuda.so`, `libnvidia-ptxjitcompiler.so`) and `PATH` (`nvidia-smi`); the kernel
+modules are the host's, so nothing else is needed:
+
+```sh
+NV=~/tmp/nvidia-$VER/NVIDIA-Linux-x86_64-$VER
+LD_LIBRARY_PATH=$NV:$LD_LIBRARY_PATH PATH=$NV:$PATH FLY_CARGO_FEATURES=cuda \
+    cargo test --release -p flybrain-core --features cuda
+LD_LIBRARY_PATH=$NV:$LD_LIBRARY_PATH PATH=$NV:$PATH \
+    cargo run --release -p flybrain-core --features cuda --example cuda_bench
+```
+
+**Shared card.** The build box shares the GPU with the LLM workload. Before and after each
+timing run, `nvidia-smi` for other compute processes on the device; re-run flagged timings
+(benchmarks yield to the other workload — a contended run is not a measurement).
+
+**Never on the release container** — that path is the lockstep one above.
+
 ## The host reboot order
 
 Fly containers have no special reboot ordering requirement relative to each other
