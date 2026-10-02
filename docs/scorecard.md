@@ -80,16 +80,33 @@ run's starting count, which the live check lacks after a boot.
 has a direction (more is better, less is better, or info), an absolute tolerance and a relative
 one. For each metric the pairs give one difference, signed so that positive means B is worse. B
 **fails** a metric when it is worse by more than the tolerance **and** a one-sided sign-flip
-permutation test over the pairs gives p below alpha (default 0.05). It reports **better** by the
+permutation test over the pairs gives a **Holm-adjusted** p below alpha (default 0.05; Holm over
+the judged metrics, so the whole compare, not each metric, has a false-fail rate of at most
+alpha when nothing changed; unadjusted, 13 metrics at 0.05 each false-failed about 15% of
+releases in a bootstrap of the baseline, with Holm 0 of 200). It reports **better** by the
 same two tests, and **pass** otherwise: a change inside the tolerance is noise however consistent,
 and one bad run among eighteen is not a regression. The test is exact up to 20 pairs and a
 fixed-seed Monte-Carlo beyond, so the same two cards always give the same verdicts. The
 comparison also names its caveats (different lengths, different runtimes, fewer than eight
-pairs, unpaired runs). Exit status 1 is a failed metric.
+pairs, unpaired runs). Exit status 1 is a failed metric or a failed checkpoint.
+
+**The trap rule.** The pooled test cannot see a fault confined to one place: three seeds of one
+checkpoint give a sign-flip p of at least 1/8, and the shift is diluted over thirty-six pairs
+(the row-71 bag bug, 131 blocked THROW BALLs in every seed of one checkpoint, passed the pooled
+compare even spliced into an otherwise identical suite). So each checkpoint is also judged on its
+own, without statistics: it **fails**, named as `trap@<checkpoint>`, when B is trapped on at least
+two of its runs and on at least two more than A, or when any run of B has a blocked-macro storm
+(50 or more blocked finishes of one macro) and no run of A on that checkpoint does. A run is
+trapped on a recovery-ladder event (two suspected watchdog probes in a row, any rule: stalled,
+zero-progress, sequence, ...), on at least half its probes suspected, or on a storm. Costs: with
+three seeds a checkpoint whose trap is a coin flip in A already (r09-forest-catch, r10-pewter-center
+on the baseline) can fail by chance when B traps all three seeds (about 1 in 27 each by bootstrap,
+so roughly 7% of releases that changed nothing but the trajectory); five seeds make it 1 in 243.
+Identical suites never fail.
 
 The metrics: rungs per hour, places per hour, empty pad %, suspected probes %, ladder events per
-hour, rollbacks per hour, blocked macro %, buy ball, throws and catches per hour, battles won and
-lost per hour, whiteouts per hour. Heals per hour, macro starts per minute and the trap hunt's
+hour, rollbacks per hour, blocked macro %, buy ball, throws (THROW BALL that finished, not blocked starts) and catches per hour, battles won and
+lost per hour, whiteouts per hour. Blocked throws per hour, heals per hour, macro starts per minute and the trap hunt's
 flagged windows are reported, never judged: healing more can follow losing more, and a fly that
 fights for most of a run presses NEXT through battle text more than ten times in two minutes,
 which the hunt reads as a repeated sequence (nine windows in ten are flagged on the baseline, so

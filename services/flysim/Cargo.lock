@@ -487,6 +487,7 @@ dependencies = [
  "flybrain-core",
  "flybrain-gb",
  "flysim",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
