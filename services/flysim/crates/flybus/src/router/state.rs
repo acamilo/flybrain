@@ -15,6 +15,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
+use serde::Serialize;
+use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 use tokio::sync::{Notify, watch};
 
@@ -24,7 +26,8 @@ use crate::policy::{Grants, Policy};
 use crate::store::{sealed_rel, staging_rel};
 use crate::wire::{
     ArtifactRef, Attachment, Envelope, Fields, GENERATION, Identity, Kind, MAJOR, MAX_BATCH,
-    MAX_CREDIT, MAX_ENVELOPE_BYTES, MINOR, WireError, id_batch, parse_serial_id, serial_id,
+    MAX_CREDIT, MAX_ENVELOPE_BYTES, MINOR, Unnumbered, WireError, id_batch, parse_serial_id,
+    serial_id,
 };
 
 pub(crate) type ConnKey = u64;
@@ -155,6 +158,9 @@ pub(crate) enum Outcome {
     Allocate(AllocJob),
     /// Copy staging into the sealed file (off the routing path), then call `finish_seal`.
     Seal(SealJob),
+    /// Seal the writers a sending command attaches (off the routing path), then call
+    /// `finish_sealing_send`, which admits the command (BUS-02).
+    SealThenAdmit(SealingSend),
     /// The connection was closed; stop reading.
     Close,
 }
@@ -176,18 +182,36 @@ pub(crate) struct SealJob {
     pub owner: u64,
 }
 
+/// One writer a sending command attaches, sealed as the command is admitted (bus-v1 section 12
+/// amendment 2026-10-02).
+pub(crate) struct SendSeal {
+    /// The writer's artifact.
+    pub serial: u64,
+    /// The length sealed: the attachment's `byteLength`, at most the allocation.
+    pub len: u64,
+    /// The staging allocation.
+    pub capacity: u64,
+    pub owner: u64,
+    /// With `recycle`, the artifact the staging file is reissued as, once sealed.
+    pub recycle: Option<u64>,
+}
+
+pub(crate) struct SealingSend {
+    pub conn: ConnKey,
+    pub env: Envelope,
+    pub seals: Vec<SendSeal>,
+}
+
 pub(crate) enum NextFrame {
     Frame(Vec<u8>),
     Idle,
     Gone,
 }
 
+/// A router frame, encoded once when it is built (BUS-02); its envelope id is spliced in when the
+/// scheduler selects it.
 pub(crate) struct Outbound {
-    kind: Kind,
-    op: String,
-    reply_to: Option<String>,
-    body: Map<String, Value>,
-    attachments: Vec<Attachment>,
+    frame: Unnumbered,
     /// Conservative encoded size using the longest router envelope id.
     bytes: usize,
 }
@@ -324,7 +348,7 @@ struct TopicMsg {
     topic: String,
     topic_incarnation: String,
     sequence: u64,
-    payload: Map<String, Value>,
+    payload: Box<RawValue>,
     attachments: Vec<(String, ArtifactRef)>,
     artifacts: Vec<u64>,
     bytes: usize,
@@ -361,7 +385,7 @@ struct Svc {
 
 struct ResultMsg {
     responder: Identity,
-    outcome: Map<String, Value>,
+    outcome: Box<RawValue>,
     attachments: Vec<(String, ArtifactRef)>,
     artifacts: Vec<u64>,
 }
@@ -386,7 +410,8 @@ struct Call {
     service_incarnation: String,
     service_conn: ConnKey,
     method: String,
-    payload: Map<String, Value>,
+    /// The validated payload, encoded once at admission and forwarded verbatim (BUS-02).
+    payload: Box<RawValue>,
     attachments: Vec<(String, ArtifactRef)>,
     artifacts: Vec<u64>,
     phase: Phase,
@@ -461,10 +486,10 @@ fn attachments_with_owner(list: &[(String, ArtifactRef)], owner: &str) -> Vec<At
         .collect()
 }
 
-fn frame_len(
+fn frame_len<B: Serialize>(
     kind: Kind,
     op: &str,
-    body: Map<String, Value>,
+    body: B,
     attachments: Vec<Attachment>,
 ) -> usize {
     let id = serial_id("bus", MAX_SERIAL);
@@ -482,47 +507,113 @@ fn frame_len(
         .unwrap_or(usize::MAX)
 }
 
+/// An identity as delivery bodies carry it ([`Identity::to_json`]'s members, in order).
+#[derive(Serialize)]
+struct IdentityBody<'a> {
+    #[serde(rename = "clientId")]
+    client_id: &'a str,
+    #[serde(rename = "clientIncarnation")]
+    client_incarnation: &'a str,
+}
+
+impl<'a> From<&'a Identity> for IdentityBody<'a> {
+    fn from(i: &'a Identity) -> IdentityBody<'a> {
+        IdentityBody { client_id: &i.client_id, client_incarnation: &i.client_incarnation }
+    }
+}
+
+/// `rpc.request` (bus-v1 section 5), members in the order the router always sent them; the
+/// payload is the admitted bytes, not a copy of a parsed tree (BUS-02).
+#[derive(Serialize)]
+struct RequestBody<'a> {
+    #[serde(rename = "deliveryId")]
+    delivery_id: &'a str,
+    #[serde(rename = "callId")]
+    call_id: &'a str,
+    caller: IdentityBody<'a>,
+    target: &'a str,
+    #[serde(rename = "serviceIncarnation")]
+    service_incarnation: &'a str,
+    method: &'a str,
+    payload: &'a RawValue,
+}
+
+/// `rpc.result`.
+#[derive(Serialize)]
+struct ResultBody<'a> {
+    #[serde(rename = "deliveryId")]
+    delivery_id: &'a str,
+    #[serde(rename = "callId")]
+    call_id: &'a str,
+    responder: IdentityBody<'a>,
+    #[serde(rename = "serviceIncarnation")]
+    service_incarnation: &'a str,
+    outcome: &'a RawValue,
+}
+
+/// `topic.message`.
+#[derive(Serialize)]
+struct TopicBody<'a> {
+    #[serde(rename = "deliveryId")]
+    delivery_id: &'a str,
+    #[serde(rename = "subscriptionId")]
+    subscription_id: &'a str,
+    topic: &'a str,
+    #[serde(rename = "topicIncarnation")]
+    topic_incarnation: &'a str,
+    #[serde(rename = "topicSequence")]
+    topic_sequence: String,
+    replaced: String,
+    payload: &'a RawValue,
+}
+
+/// Encodes an admitted payload once (BUS-02). It was parsed strictly on the way in, so it
+/// re-encodes; a failure here is the caller's refusal like any oversized envelope.
+fn raw(value: &Map<String, Value>) -> Result<Box<RawValue>, BusError> {
+    serde_json::value::to_raw_value(value)
+        .map_err(|e| BusError::new(ErrorCode::InvalidEnvelope, format!("payload: {e}")))
+}
+
 impl Call {
-    fn request_body(&self, delivery_id: &str) -> Map<String, Value> {
-        obj(vec![
-            ("deliveryId", delivery_id.into()),
-            ("callId", self.call_id.clone().into()),
-            ("caller", self.caller_identity.to_json()),
-            ("target", self.target.clone().into()),
-            (
-                "serviceIncarnation",
-                self.service_incarnation.clone().into(),
-            ),
-            ("method", self.method.clone().into()),
-            ("payload", Value::Object(self.payload.clone())),
-        ])
+    fn request_body<'a>(&'a self, delivery_id: &'a str) -> RequestBody<'a> {
+        RequestBody {
+            delivery_id,
+            call_id: &self.call_id,
+            caller: (&self.caller_identity).into(),
+            target: &self.target,
+            service_incarnation: &self.service_incarnation,
+            method: &self.method,
+            payload: &self.payload,
+        }
     }
 
-    fn result_body(&self, delivery_id: &str, result: &ResultMsg) -> Map<String, Value> {
-        obj(vec![
-            ("deliveryId", delivery_id.into()),
-            ("callId", self.call_id.clone().into()),
-            ("responder", result.responder.to_json()),
-            (
-                "serviceIncarnation",
-                self.service_incarnation.clone().into(),
-            ),
-            ("outcome", Value::Object(result.outcome.clone())),
-        ])
+    fn result_body<'a>(&'a self, delivery_id: &'a str, result: &'a ResultMsg) -> ResultBody<'a> {
+        ResultBody {
+            delivery_id,
+            call_id: &self.call_id,
+            responder: (&result.responder).into(),
+            service_incarnation: &self.service_incarnation,
+            outcome: &result.outcome,
+        }
     }
 }
 
 impl TopicMsg {
-    fn body(&self, delivery_id: &str, subscription_id: &str, replaced: u64) -> Map<String, Value> {
-        obj(vec![
-            ("deliveryId", delivery_id.into()),
-            ("subscriptionId", subscription_id.into()),
-            ("topic", self.topic.clone().into()),
-            ("topicIncarnation", self.topic_incarnation.clone().into()),
-            ("topicSequence", self.sequence.to_string().into()),
-            ("replaced", replaced.to_string().into()),
-            ("payload", Value::Object(self.payload.clone())),
-        ])
+    fn body<'a>(
+        &'a self,
+        delivery_id: &'a str,
+        subscription_id: &'a str,
+        replaced: u64,
+    ) -> TopicBody<'a> {
+        TopicBody {
+            delivery_id,
+            subscription_id,
+            topic: &self.topic,
+            topic_incarnation: &self.topic_incarnation,
+            topic_sequence: self.sequence.to_string(),
+            replaced: replaced.to_string(),
+            payload: &self.payload,
+        }
     }
 }
 
@@ -651,41 +742,34 @@ impl State {
     }
 
     /// Builds a router-originated item without assigning its envelope id. IDs are assigned only
-    /// after the scheduler selects an item, so fairness cannot reorder numbered envelopes.
-    fn outbound(
+    /// after the scheduler selects an item, so fairness cannot reorder numbered envelopes. The
+    /// item is encoded here, once (BUS-02), with the id left to splice in.
+    fn outbound<B: Serialize>(
         &self,
         kind: Kind,
         op: &str,
         reply_to: Option<String>,
-        body: Map<String, Value>,
+        body: B,
         attachments: Vec<Attachment>,
     ) -> Option<Outbound> {
-        let mut env = Envelope::new(serial_id("bus", MAX_SERIAL), kind, op, body.clone());
-        env.reply_to = reply_to;
-        env.attachments = attachments.clone();
-        let bytes = env.encode().ok()?.len();
-        Some(Outbound {
+        let head = crate::wire::EnvelopeHead {
+            major: MAJOR,
+            minor: MINOR,
+            id: "",
+            reply_to: reply_to.as_deref(),
             kind,
-            op: op.to_owned(),
-            reply_to: env.reply_to,
-            body,
-            attachments,
-            bytes,
-        })
+            op,
+        };
+        let max_id = serial_id("bus", MAX_SERIAL).len();
+        let frame = Unnumbered::encode(&head, &body, &attachments, max_id).ok()?;
+        let bytes = frame.len() + max_id;
+        Some(Outbound { frame, bytes })
     }
 
     fn encode_outbound(&mut self, c: ConnKey, item: Outbound) -> Option<Vec<u8>> {
         let conn = self.conns.get_mut(&c)?;
         conn.out_serial += 1;
-        let mut env = Envelope::new(
-            serial_id("bus", conn.out_serial),
-            item.kind,
-            &item.op,
-            item.body,
-        );
-        env.reply_to = item.reply_to;
-        env.attachments = item.attachments;
-        env.encode().ok()
+        Some(item.frame.number(&serial_id("bus", conn.out_serial)))
     }
 
     /// Queues a reply or notice on the control lane; closes the connection if the lane is full.
@@ -1114,7 +1198,7 @@ impl State {
     // -----------------------------------------------------------------------------------------
     // Commands
 
-    pub(crate) fn handle(&mut self, c: ConnKey, env: Envelope) -> Outcome {
+    pub(crate) fn handle(&mut self, c: ConnKey, mut env: Envelope) -> Outcome {
         let Some(conn) = self.conns.get_mut(&c) else {
             return Outcome::Close;
         };
@@ -1144,6 +1228,34 @@ impl State {
             );
         }
         let op = env.op.clone();
+        if matches!(op.as_str(), "rpc.call" | "rpc.reply" | "publish") {
+            match self.sealing_attachments(c, &mut env) {
+                Ok(None) => {}
+                Ok(Some(seals)) => {
+                    return Outcome::SealThenAdmit(SealingSend { conn: c, env, seals });
+                }
+                Err(e) => {
+                    // Refused before anything was sealed: the writers it named are released
+                    // all the same, as a refused sealing send releases them (bus-v1 section 12,
+                    // amendment 2026-10-02).
+                    for a in &env.attachments {
+                        let Some(owner) = parse_serial_id("own", &a.owner_id) else {
+                            continue;
+                        };
+                        if matches!(
+                            self.conns[&c].owners.get(&OwnerKey::Hold(owner)),
+                            Some(Owner::Writer { sealing: false, .. })
+                        ) && let Some(w) = self.take_owner(c, OwnerKey::Hold(owner))
+                        {
+                            self.release_owner(c, w);
+                        }
+                    }
+                    self.reply(c, &env.id, &op, Err(e));
+                    self.flush_notices();
+                    return if self.conns.contains_key(&c) { Outcome::Done } else { Outcome::Close };
+                }
+            }
+        }
         let result = if !env.attachments.is_empty()
             && !matches!(op.as_str(), "rpc.call" | "rpc.reply" | "publish")
         {
@@ -1190,6 +1302,242 @@ impl State {
         } else {
             Outcome::Close
         }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Sealing on send (bus-v1 section 12 amendment 2026-10-02, BUS-02)
+
+    /// Finds the attachments of a sending command that name one of the sender's own writers
+    /// rather than a sealed artifact, validates each as `artifact.seal` would, and marks them
+    /// sealing. `None` when there are none (the command takes the ordinary path). Takes the
+    /// body's `recycle` member, which only such a command may carry.
+    fn sealing_attachments(
+        &mut self,
+        c: ConnKey,
+        env: &mut Envelope,
+    ) -> Result<Option<Vec<SendSeal>>, BusError> {
+        // Present at all, `recycle` needs a sealing attachment: the amendment refuses it
+        // otherwise, `false` included (BUS-02 review N4).
+        let recycle = match env.body.remove("recycle") {
+            None => None,
+            Some(Value::Bool(b)) => Some(b),
+            Some(_) => return err(ErrorCode::InvalidEnvelope, "recycle must be a boolean"),
+        };
+        let mut found: Vec<(u64, u64, u64)> = Vec::new();
+        for a in &env.attachments {
+            let Some(owner) = parse_serial_id("own", &a.owner_id) else {
+                continue;
+            };
+            let Some(Owner::Writer { artifact, sealing }) =
+                self.conns[&c].owners.get(&OwnerKey::Hold(owner))
+            else {
+                continue;
+            };
+            let (artifact, sealing) = (*artifact, *sealing);
+            if parse_serial_id("a", &a.reference.artifact_id) != Some(artifact) {
+                // Another artifact under a writer's owner id: check_owned refuses it later.
+                continue;
+            }
+            if found.iter().any(|(s, _, _)| *s == artifact) {
+                return err(
+                    ErrorCode::InvalidEnvelope,
+                    format!("attachment {:?} names a writer another attachment already seals", a.name),
+                );
+            }
+            if sealing {
+                return err(ErrorCode::OwnerInvalid, "a seal is already in progress");
+            }
+            let art = &self.artifacts[&artifact];
+            let r = &a.reference;
+            if r.store_id != self.store_id
+                || r.generation != GENERATION
+                || r.content_type != art.content_type
+                || r.digest.is_some()
+                || r.byte_length > art.byte_length
+            {
+                return err(
+                    ErrorCode::ArtifactMismatch,
+                    format!(
+                        "attachment {:?} does not describe its writer: same store, generation and \
+content type, a null digest and at most the allocated length",
+                        a.name
+                    ),
+                );
+            }
+            found.push((artifact, owner, r.byte_length));
+        }
+        if found.is_empty() {
+            if recycle.is_some() {
+                return err(ErrorCode::InvalidEnvelope, "recycle without a writer attached");
+            }
+            return Ok(None);
+        }
+        let recycle = recycle.unwrap_or(false);
+        let sealed: u64 = found.iter().map(|(_, _, len)| len).sum();
+        if self.store_bytes.saturating_add(sealed) > self.limits.max_store_bytes {
+            return err(ErrorCode::QuotaExceeded, "no room for the sealing copies");
+        }
+        self.store_bytes += sealed;
+        let mut seals = Vec::with_capacity(found.len());
+        for (serial, owner, len) in found {
+            let art = self.artifacts.get_mut(&serial).expect("a writer's artifact is registered");
+            art.state = ArtState::Sealing;
+            let capacity = art.byte_length;
+            self.conns.get_mut(&c).expect("present").owners.insert(
+                OwnerKey::Hold(owner),
+                Owner::Writer { artifact: serial, sealing: true },
+            );
+            let recycle = recycle.then(|| {
+                self.next_artifact += 1;
+                self.next_artifact
+            });
+            seals.push(SendSeal { serial, len, capacity, owner, recycle });
+        }
+        Ok(Some(seals))
+    }
+
+    /// Completes a sealing send: every copy has been made (`results`, in `job.seals` order) and,
+    /// for a recycled writer, its staging file moved to the new artifact's name. Then the
+    /// command is admitted exactly as an ordinary one whose attachments the sender had sealed
+    /// first; a refused command releases what it sealed, as a sender dropping its holds would.
+    pub(crate) fn finish_sealing_send(
+        &mut self,
+        job: SealingSend,
+        results: Vec<Result<(), crate::store::SealFailure>>,
+    ) -> Outcome {
+        let SealingSend { conn: c, env, seals } = job;
+        let live = |s: &State, seal: &SendSeal| {
+            s.conns.get(&c).is_some_and(|conn| {
+                matches!(conn.owners.get(&OwnerKey::Hold(seal.owner)),
+                    Some(Owner::Writer { artifact, sealing: true }) if *artifact == seal.serial)
+            })
+        };
+        let all_live = seals.iter().all(|seal| live(self, seal));
+        let failure = results.iter().find_map(|r| r.as_ref().err()).map(|e| match e {
+            crate::store::SealFailure::Mismatch(m) => BusError::new(ErrorCode::ArtifactMismatch, m.clone()),
+            crate::store::SealFailure::Io(e) => {
+                BusError::new(ErrorCode::StoreFailure, format!("seal: {e}"))
+            }
+        });
+        if failure.is_some() || !all_live {
+            // Nothing is admitted: every writer named is released and every copy unlinked.
+            for seal in &seals {
+                if self.artifacts.remove(&seal.serial).is_some() {
+                    self.store_bytes -= seal.len + seal.capacity;
+                }
+                self.unlinks.push(sealed_rel(seal.serial));
+                self.unlinks.push(staging_rel(seal.recycle.unwrap_or(seal.serial)));
+                if live(self, seal) {
+                    self.take_owner(c, OwnerKey::Hold(seal.owner));
+                }
+            }
+            if !self.conns.contains_key(&c) {
+                return Outcome::Close;
+            }
+            let e = failure
+                .unwrap_or_else(|| BusError::new(ErrorCode::ArtifactGone, "the writer was released during the seal"));
+            self.reply(c, &env.id, &env.op, Err(e));
+            self.flush_notices();
+            return if self.conns.contains_key(&c) { Outcome::Done } else { Outcome::Close };
+        }
+        // Sealed: each writer's owner becomes the sender's hold, as after `artifact.seal`.
+        let mut writers = Vec::new();
+        for seal in &seals {
+            let art = self.artifacts.get_mut(&seal.serial).expect("sealing artifact is registered");
+            art.state = ArtState::Sealed;
+            art.byte_length = seal.len;
+            art.digest = None;
+            art.roots = 1;
+            let content_type = art.content_type.clone();
+            self.conns.get_mut(&c).expect("present").owners.insert(
+                OwnerKey::Hold(seal.owner),
+                Owner::Hold { artifact: seal.serial },
+            );
+            match seal.recycle {
+                // The staging file goes on as a new writer of the same allocation.
+                Some(next) if self.ordinary_budget_left(c) => {
+                    self.artifacts.insert(
+                        next,
+                        Art {
+                            state: ArtState::Writing,
+                            byte_length: seal.capacity,
+                            content_type,
+                            digest: None,
+                            roots: 0,
+                        },
+                    );
+                    let conn = self.conns.get_mut(&c).expect("present");
+                    conn.hold_issued += 1;
+                    let owner = conn.hold_issued;
+                    self.insert_owner(
+                        c,
+                        OwnerKey::Hold(owner),
+                        Owner::Writer { artifact: next, sealing: false },
+                    );
+                    writers.push((seal.serial, next, owner));
+                }
+                Some(next) => {
+                    self.store_bytes -= seal.capacity;
+                    self.unlinks.push(staging_rel(next));
+                }
+                // The staging file was unlinked with the copy; its reservation ends here.
+                None => self.store_bytes -= seal.capacity,
+            }
+        }
+        let op = env.op.clone();
+        let result = match op.as_str() {
+            "rpc.call" => self.op_call(c, &env),
+            "rpc.reply" => self.op_reply(c, &env),
+            "publish" => self.op_publish(c, &env),
+            _ => unreachable!("only sending commands seal"),
+        };
+        let result = match result {
+            Ok(mut value) => {
+                if !writers.is_empty() {
+                    let list = writers
+                        .iter()
+                        .map(|(sealed, next, owner)| {
+                            let name = env
+                                .attachments
+                                .iter()
+                                .find(|a| parse_serial_id("a", &a.reference.artifact_id) == Some(*sealed))
+                                .map(|a| a.name.clone())
+                                .unwrap_or_default();
+                            let loc = crate::wire::Location {
+                                store_id: self.store_id.clone(),
+                                relative_path: staging_rel(*next),
+                            };
+                            Value::Object(obj(vec![
+                                ("name", name.into()),
+                                ("artifactId", serial_id("a", *next).into()),
+                                ("generation", GENERATION.to_string().into()),
+                                ("ownerId", serial_id("own", *owner).into()),
+                                ("writeLocation", loc.to_json()),
+                            ]))
+                        })
+                        .collect();
+                    value.insert("writers".into(), Value::Array(list));
+                }
+                Ok(value)
+            }
+            Err(e) => {
+                // Refused: the holds the seals made and the recycled writers go with it.
+                for seal in &seals {
+                    if let Some(owner) = self.take_owner(c, OwnerKey::Hold(seal.owner)) {
+                        self.release_owner(c, owner);
+                    }
+                }
+                for (_, _, owner) in &writers {
+                    if let Some(owner) = self.take_owner(c, OwnerKey::Hold(*owner)) {
+                        self.release_owner(c, owner);
+                    }
+                }
+                Err(e)
+            }
+        };
+        self.reply(c, &env.id, &op, result);
+        self.flush_notices();
+        if self.conns.contains_key(&c) { Outcome::Done } else { Outcome::Close }
     }
 
     fn grants(&self, c: ConnKey) -> &Grants {
@@ -1490,7 +1838,7 @@ impl State {
         let target = f.name("target").map_err(wire)?;
         let expected = f.nullable_id("expectedIncarnation").map_err(wire)?;
         let method = f.method("method").map_err(wire)?;
-        let payload = f.object("payload").map_err(wire)?.clone();
+        let payload = raw(f.object("payload").map_err(wire)?)?;
         f.finish().map_err(wire)?;
         let Some(call_serial) = parse_serial_id("call", &call_id) else {
             return err(ErrorCode::InvalidEnvelope, "callId must be call-<U64>");
@@ -1584,7 +1932,7 @@ impl State {
         let mut f = Fields::of(&env.body, "rpc.reply");
         let call_id = f.id("callId").map_err(wire)?;
         let delivery_id = f.id("requestDeliveryId").map_err(wire)?;
-        let outcome = f.object("outcome").map_err(wire)?.clone();
+        let outcome = raw(f.object("outcome").map_err(wire)?)?;
         f.finish().map_err(wire)?;
         let Some(n) = parse_serial_id("dlv", &delivery_id) else {
             return err(
@@ -2022,7 +2370,7 @@ impl State {
     fn op_publish(&mut self, c: ConnKey, env: &Envelope) -> Result<Map<String, Value>, BusError> {
         let mut f = Fields::of(&env.body, "publish");
         let topic = f.name("topic").map_err(wire)?;
-        let payload = f.object("payload").map_err(wire)?.clone();
+        let payload = raw(f.object("payload").map_err(wire)?)?;
         f.finish().map_err(wire)?;
         if !Grants::allows(&self.grants(c).publish, &topic) {
             return err(
@@ -2548,6 +2896,7 @@ impl State {
             let call = &self.calls[&key];
             let body = call.result_body(&did, &msg);
             let atts = attachments_with_owner(&msg.attachments, &did);
+            let frame = self.outbound(Kind::Delivery, "rpc.result", None, body, atts);
             self.insert_owner(
                 c,
                 OwnerKey::Delivery(n),
@@ -2556,7 +2905,7 @@ impl State {
                     kind: DeliveryKind::Result { call: key },
                 },
             );
-            return self.outbound(Kind::Delivery, "rpc.result", None, body, atts);
+            return frame;
         }
         // Requests for services this connection registered, round robin.
         let conn = &self.conns[&c];
@@ -2583,13 +2932,16 @@ impl State {
             conn.requests.insert(n, key);
             conn.reply_capabilities += 1;
             let call = self.calls.get_mut(&key).expect("queued call is registered");
-            // Dispatched before a byte of it is written.
+            // Dispatched before a byte of it is written. (The frame is built below, under the
+            // same lock, before anything can write it.)
             call.phase = Phase::Dispatched { delivery: n };
             call.reply_capability = true;
             let did = serial_id("dlv", n);
+            let call = &self.calls[&key];
             let body = call.request_body(&did);
             let atts = attachments_with_owner(&call.attachments, &did);
             let artifacts = call.artifacts.clone();
+            let frame = self.outbound(Kind::Delivery, "rpc.request", None, body, atts);
             self.insert_owner(
                 c,
                 OwnerKey::Delivery(n),
@@ -2602,7 +2954,7 @@ impl State {
                     },
                 },
             );
-            return self.outbound(Kind::Delivery, "rpc.request", None, body, atts);
+            return frame;
         }
         None
     }
@@ -2630,8 +2982,10 @@ impl State {
             conn.delivery_issued += 1;
             let n = conn.delivery_issued;
             let did = serial_id("dlv", n);
-            let body = msg.body(&did, &serial_id("sub", id), replaced);
+            let sid = serial_id("sub", id);
+            let body = msg.body(&did, &sid, replaced);
             let atts = attachments_with_owner(&msg.attachments, &did);
+            let frame = self.outbound(Kind::Delivery, "topic.message", None, body, atts);
             self.insert_owner(
                 c,
                 OwnerKey::Delivery(n),
@@ -2640,7 +2994,7 @@ impl State {
                     kind: DeliveryKind::Topic { sub: id },
                 },
             );
-            return self.outbound(Kind::Delivery, "topic.message", None, body, atts);
+            return frame;
         }
         None
     }

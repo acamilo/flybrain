@@ -207,7 +207,11 @@ roots, so an idempotent repeat may report zero. Queue/credit requests are intege
 and cannot exceed configured limits. Method strings are 1..128 printable ASCII characters.
 call target is a service name; expectedIncarnation is its registration ID, not worker process ID.
 Location grants are `{storeId, relativePath}` resolved by the client beneath the configured
-local store root; absolute paths, parent traversal and symlink escapes are rejected. They
+local store root; absolute paths, parent traversal and symlink escapes are rejected (the
+reference SDK caches a store's canonical directories per connection, BUS-02, and still checks
+each file with an lstat and an `O_NOFOLLOW` open; a store directory replaced by a symlink after a
+connection first used it is not re-checked by that connection, which the store's 0700 owner-only
+directory makes a same-user act). They
 are SDK-private and do not appear in the application's ArtifactRef. Runtime paths are not
 committed into application schemas or source configuration.
 
@@ -561,3 +565,45 @@ a staging file, reading a sealed one, up to 256 KiB) run in place rather than on
 -- on the store's tmpfs a hop to the pool and back costs more than the copy -- and
 `Artifact::is_hold` tells a sealed writer's or a retained hold from a delivery's handle, so a holder
 that needs the bytes kept alive can keep a clone instead of taking a second hold.
+
+**2026-10-02, BUS-02 (wire change; `contractDigest` changes).** A sending command may seal the
+artifacts it attaches. Section 8.1 makes a producer seal (`artifact.seal`, one router round trip)
+before any message may name the artifact, and section 5 allocates every artifact afresh
+(`artifact.allocate`, another). A participant that replies with media every transition -- the
+legacy world a frame, a memory image and an audio chunk, the agent a spike bitset and its feed
+status -- paid both for every artifact of every transition, two of them on the transition's
+critical path, for answers the router could give as it admits the reply.
+
+- **Sealing attachments.** In `rpc.call`, `rpc.reply` and `publish`, an attachment's `ownerId` may
+  be the sender's own writer of `ref.artifactId`, still unsealed. Its `ref` is the reference the
+  sealed artifact will have: this store, generation 1, the allocation's content type, a null
+  digest, and a `byteLength` of at most the allocation -- the sealed artifact is the first
+  `byteLength` staging bytes. As part of admitting the command the router seals each such writer
+  exactly as `artifact.seal` would (section 8.1: the copy into a fresh sealed inode happens outside
+  the routing state lock, before anything is admitted, and the connection's later commands wait
+  for it), the writer becomes the sender's explicit hold on the sealed artifact (as after
+  `artifact.seal`), and only then is the command admitted as if its sender had sealed first. If a
+  seal fails, or the command is then refused, nothing is admitted and every writer the command
+  named is released (with whatever it sealed): the reply carries the refusal, `not-dispatched`.
+- **Recycling.** Such a command's body may carry `recycle: true` (a body member of `rpc.call`,
+  `rpc.reply` and `publish` with at least one sealing attachment, refused otherwise). The router
+  then keeps each sealed writer's staging file and reissues it as a new writer -- a new
+  `artifactId`, a new hold `ownerId`, the same allocation and content type -- and the command's
+  reply value carries `writers: [{name, artifactId, generation, ownerId, writeLocation}]`, one per
+  attachment it sealed, named by attachment. A writer it cannot reissue (owner budget) is simply
+  left out. Section 8.1's immutability is unchanged: the sealed bytes are a copy, so a producer
+  writing into the recycled staging file reaches only the staging inode. A reissued writer is a
+  fresh allocation in content as well: the router overwrites the staging file with zeros before
+  the reply, so it reads as zeros and no artifact sealed from it -- a prefix, or the whole
+  allocation through `artifact.seal` -- can carry bytes of the artifact it was before (review N3,
+  2026-10-02). `recycle` in a body with no sealing attachment is refused, `false` included, and
+  one writer named by two attachments of the same command is refused (`INVALID_ENVELOPE`).
+- Nothing else changes: deliveries, ownership roots, credits and quotas are those of the command
+  with pre-sealed attachments; a sealing attachment counts its sealed copy against the store quota
+  at admission, as `artifact.seal` counts it at the seal.
+
+SDK changes of the same slice, no wire change: `ArtifactWriter::into_unsealed` and
+`Responder::reply_sealing` (the client side of the above); a reply the router admitted spends the
+call's reply authority, so the SDK no longer sends `rpc.responder.release` after one (it was a
+no-op command on every call); the router encodes each frame once and forwards an admitted
+payload as the bytes it re-encoded once at admission instead of deep-copying it per delivery.

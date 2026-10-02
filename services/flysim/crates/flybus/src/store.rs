@@ -108,25 +108,35 @@ impl Store {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(&path)?;
-        let reserve = || -> io::Result<()> {
-            if len == 0 {
-                return Ok(());
-            }
-            let off_len = libc::off_t::try_from(len)
-                .map_err(|_| io::Error::other("length overflows off_t"))?;
-            // SAFETY: posix_fallocate on a valid descriptor opened for writing.
-            let rc = unsafe { libc::posix_fallocate(file.as_raw_fd(), 0, off_len) };
-            match rc {
-                0 => Ok(()),
-                libc::EOPNOTSUPP | libc::EINVAL => file.set_len(len),
-                e => Err(io::Error::from_raw_os_error(e)),
-            }
-        };
-        let result = reserve();
+        let result = reserve(&file, len);
         if result.is_err() {
             let _ = fs::remove_file(&path);
         }
         result
+    }
+
+    /// Makes a recycled writer's staging file what a fresh allocation is: `len` bytes, all zero
+    /// (BUS-02 review N3). The file still holds the artifact it was sealed from; a producer that
+    /// wrote fewer bytes into its next life and sealed the whole allocation would otherwise
+    /// publish the previous artifact's tail. The zeros are written over the blocks already
+    /// there, which stay allocated: freeing them (truncating, or punching a hole) and faulting
+    /// them back in on the next write cost four times as much on tmpfs (a 92,160-byte frame:
+    /// about 36 us a reply against 9). The length is set last, in case the producer resized
+    /// the file.
+    pub(crate) fn reset_staging(&self, serial: u64, len: u64) -> io::Result<()> {
+        use std::os::unix::fs::FileExt;
+        let file = OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(self.path(&staging_rel(serial)))?;
+        let zeros = vec![0u8; len.clamp(1, 256 * 1024) as usize];
+        let mut at = 0;
+        while at < len {
+            let n = (len - at).min(zeros.len() as u64) as usize;
+            file.write_all_at(&zeros[..n], at)?;
+            at += n as u64;
+        }
+        file.set_len(len)
     }
 
     /// Copies exactly `len` staging bytes into a fresh sealed file, checking the length and,
@@ -159,6 +169,36 @@ impl Store {
         result
     }
 
+    /// Copies the first `len` staging bytes into a fresh sealed file (BUS-02: a writer attached
+    /// to a sending command seals the bytes its attachment declares, at most its allocation).
+    /// The staging file is left for the caller.
+    pub(crate) fn seal_prefix(&self, serial: u64, len: u64) -> Result<(), SealFailure> {
+        let mut src = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(self.path(&staging_rel(serial)))?;
+        let dst_path = self.path(&sealed_rel(serial));
+        let mut dst = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&dst_path)?;
+        let result = copy_prefix(&mut src, &mut dst, len).and_then(|()| {
+            dst.set_permissions(fs::Permissions::from_mode(0o444))?;
+            Ok(())
+        });
+        if result.is_err() {
+            let _ = fs::remove_file(&dst_path);
+        }
+        result
+    }
+
+    /// Renames a store file within the store (a recycled writer's staging file).
+    pub(crate) fn rename(&self, from: &str, to: &str) -> io::Result<()> {
+        fs::rename(self.path(from), self.path(to))
+    }
+
     /// Unlinks a store file; a missing file is not an error.
     pub(crate) fn remove(&self, rel: &str) {
         let _ = fs::remove_file(self.path(rel));
@@ -168,6 +208,23 @@ impl Store {
 impl Drop for Store {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Reserves `len` bytes of `file` (zero-filled), so a full disk fails here and not in the
+/// producer's write.
+fn reserve(file: &File, len: u64) -> io::Result<()> {
+    if len == 0 {
+        return Ok(());
+    }
+    let off_len =
+        libc::off_t::try_from(len).map_err(|_| io::Error::other("length overflows off_t"))?;
+    // SAFETY: posix_fallocate on a valid descriptor opened for writing.
+    let rc = unsafe { libc::posix_fallocate(file.as_raw_fd(), 0, off_len) };
+    match rc {
+        0 => Ok(()),
+        libc::EOPNOTSUPP | libc::EINVAL => file.set_len(len),
+        e => Err(io::Error::from_raw_os_error(e)),
     }
 }
 
@@ -187,7 +244,9 @@ fn copy_exact(
     digest: Option<&str>,
 ) -> Result<(), SealFailure> {
     let mut hasher = digest.map(|_| Sha256::new());
-    let mut buf = vec![0u8; 256 * 1024];
+    // Sized to the copy (BUS-02): a fixed 256 KiB buffer is a fresh mapping, and its page
+    // faults, on every seal of a frame-sized artifact.
+    let mut buf = vec![0u8; (len.saturating_add(1)).clamp(1, 256 * 1024) as usize];
     let mut remaining = len;
     while remaining > 0 {
         let want = remaining.min(buf.len() as u64) as usize;
@@ -216,6 +275,68 @@ fn copy_exact(
                 "digest mismatch: content hashes to {got}"
             )));
         }
+    }
+    Ok(())
+}
+
+fn copy_prefix(src: &mut File, dst: &mut File, len: u64) -> Result<(), SealFailure> {
+    // In the kernel where it can (`copy_file_range`: one copy, no bounce through a user buffer;
+    // on the store's tmpfs that halves a frame's seal), else through a buffer.
+    let mut done: u64 = 0;
+    while done < len {
+        let want = (len - done).min(1 << 30) as usize;
+        // SAFETY: two valid descriptors; null offsets use and advance each file's position.
+        let n = unsafe {
+            libc::copy_file_range(
+                src.as_raw_fd(),
+                std::ptr::null_mut(),
+                dst.as_raw_fd(),
+                std::ptr::null_mut(),
+                want,
+                0,
+            )
+        };
+        if n < 0 {
+            let e = io::Error::last_os_error();
+            if e.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            if done == 0
+                && matches!(
+                    e.raw_os_error(),
+                    Some(libc::ENOSYS | libc::EXDEV | libc::EINVAL | libc::EOPNOTSUPP)
+                )
+            {
+                return copy_prefix_buffered(src, dst, len);
+            }
+            return Err(SealFailure::Io(e));
+        }
+        if n == 0 {
+            return Err(SealFailure::Mismatch(format!(
+                "staging holds {done} of {len} declared bytes"
+            )));
+        }
+        done += n as u64;
+    }
+    Ok(())
+}
+
+fn copy_prefix_buffered(src: &mut File, dst: &mut File, len: u64) -> Result<(), SealFailure> {
+    // Sized to the copy: a frame or a memory image is one read and one write, and the buffer is
+    // small enough to come from the heap rather than a fresh mapping each time.
+    let mut buf = vec![0u8; len.clamp(1, 256 * 1024) as usize];
+    let mut remaining = len;
+    while remaining > 0 {
+        let want = remaining.min(buf.len() as u64) as usize;
+        let n = read_retry(src, &mut buf[..want])?;
+        if n == 0 {
+            return Err(SealFailure::Mismatch(format!(
+                "staging holds {} of {len} declared bytes",
+                len - remaining
+            )));
+        }
+        dst.write_all(&buf[..n])?;
+        remaining -= n as u64;
     }
     Ok(())
 }
@@ -250,7 +371,12 @@ fn clean_orphans(root: &Path) -> io::Result<()> {
 
 /// Resolves a location grant beneath `<root>/<store_id>`. Absolute paths, `..`, anything but
 /// plain `[a-z0-9._-]` components, and symlinks that lead outside the store are refused.
-pub(crate) fn resolve(root: &Path, store_id: &str, loc: &Location) -> Result<PathBuf, BusError> {
+pub(crate) fn resolve(
+    root: &Path,
+    store_id: &str,
+    loc: &Location,
+    dirs: &DirCache,
+) -> Result<PathBuf, BusError> {
     if loc.store_id != store_id {
         return Err(BusError::new(
             ErrorCode::ArtifactGone,
@@ -280,18 +406,66 @@ pub(crate) fn resolve(root: &Path, store_id: &str, loc: &Location) -> Result<Pat
             _ => return Err(refuse("parent, root or current-directory component")),
         }
     }
-    let base = root.join(&loc.store_id);
-    let base = base
-        .canonicalize()
+    // The directory part (`sealed`, `staging`) is resolved once per store directory and
+    // connection, and cached ([`DirCache`], BUS-02): canonicalizing the whole path is a readlink per component, twice, on every open
+    // of every artifact. The file itself is then checked with one lstat: a symlink there is
+    // refused like one that escapes (the open that follows uses O_NOFOLLOW as well).
+    let (dir, file) = match loc.relative_path.rsplit_once('/') {
+        Some((dir, file)) => (Some(dir), file),
+        None => (None, loc.relative_path.as_str()),
+    };
+    let base = dirs
+        .canonical(&root.join(&loc.store_id), None)
         .map_err(|e| refuse(&format!("store directory: {e}")))?;
-    let full = base.join(rel).canonicalize().map_err(|e| match e.kind() {
-        io::ErrorKind::NotFound => BusError::new(ErrorCode::ArtifactGone, "artifact file is gone"),
-        _ => refuse(&e.to_string()),
-    })?;
-    if !full.starts_with(&base) {
+    let parent = match dir {
+        None => base.clone(),
+        Some(dir) => dirs.canonical(&root.join(&loc.store_id), Some(dir)).map_err(|e| match e.kind() {
+            io::ErrorKind::NotFound => BusError::new(ErrorCode::ArtifactGone, "artifact file is gone"),
+            _ => refuse(&e.to_string()),
+        })?,
+    };
+    if !parent.starts_with(&base) {
         return Err(refuse("escapes the store"));
     }
-    Ok(full)
+    let full = parent.join(file);
+    match fs::symlink_metadata(&full) {
+        Ok(m) if m.file_type().is_symlink() => Err(refuse("escapes the store")),
+        Ok(_) => Ok(full),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            Err(BusError::new(ErrorCode::ArtifactGone, "artifact file is gone"))
+        }
+        Err(e) => Err(refuse(&e.to_string())),
+    }
+}
+
+/// The canonical store directories one client connection has resolved (BUS-02): a store's
+/// directories are made by its router when the store is created and never move. The cache is
+/// the connection's, not the process's (BUS-02 review N6), so a directory is resolved again by
+/// every new connection -- after a router restart, for one -- and nothing outlives the store
+/// incarnation it was resolved for. Within one connection a directory replaced after its first
+/// use is not re-checked; the file itself still is (an lstat, then an O_NOFOLLOW open), and
+/// the store is the user's own directory (mode 0700), so replacing it needs the user already.
+#[derive(Default)]
+pub(crate) struct DirCache(std::sync::Mutex<std::collections::HashMap<PathBuf, PathBuf>>);
+
+impl DirCache {
+    /// `store.join(dir).canonicalize()`, cached.
+    fn canonical(&self, store: &Path, dir: Option<&str>) -> io::Result<PathBuf> {
+        let key = match dir {
+            Some(dir) => store.join(dir),
+            None => store.to_path_buf(),
+        };
+        if let Some(hit) = self.0.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+            return Ok(hit.clone());
+        }
+        let resolved = key.canonicalize()?;
+        let mut map = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if map.len() > 256 {
+            map.clear();
+        }
+        map.insert(key, resolved.clone());
+        Ok(resolved)
+    }
 }
 
 pub(crate) fn open_read(path: &Path) -> io::Result<File> {
@@ -327,7 +501,7 @@ mod tests {
         fs::write(store.join("sealed/a-1"), b"ok").unwrap();
         fs::write(root.path().join("secret"), b"no").unwrap();
         std::os::unix::fs::symlink(root.path().join("secret"), store.join("sealed/a-2")).unwrap();
-        assert!(resolve(root.path(), "store-x", &loc("sealed/a-1")).is_ok());
+        assert!(resolve(root.path(), "store-x", &loc("sealed/a-1"), &DirCache::default()).is_ok());
         for bad in [
             "",
             "/etc/passwd",
@@ -338,7 +512,7 @@ mod tests {
             "sealed/a-2",
         ] {
             assert!(
-                resolve(root.path(), "store-x", &loc(bad)).is_err(),
+                resolve(root.path(), "store-x", &loc(bad), &DirCache::default()).is_err(),
                 "{bad:?}"
             );
         }
@@ -347,7 +521,7 @@ mod tests {
             relative_path: "sealed/a-1".into(),
         };
         assert_eq!(
-            resolve(root.path(), "store-x", &other).unwrap_err().code,
+            resolve(root.path(), "store-x", &other, &DirCache::default()).unwrap_err().code,
             ErrorCode::ArtifactGone
         );
     }

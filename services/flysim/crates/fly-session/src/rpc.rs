@@ -186,29 +186,15 @@ impl SentCall {
         let result = pending.result().await.map_err(|e| bus_error(method, &e))?;
         let outcome = SessionRpcOutcome::from_json(&Value::Object(result.outcome().clone()))
             .map_err(|e| DomainError::invalid(format!("{method}: {e}")))?;
-        // An independent explicit hold on each wanted attachment, so the handle outlives this
-        // delivery and can be forwarded to several Commit calls and to publication. The holds
-        // are independent router round trips, so they are taken concurrently.
-        let wanted: Vec<(String, flybus::Artifact)> = self
-            .want_artifacts
-            .iter()
-            .filter_map(|name| result.artifact(name).ok().map(|a| (name.clone(), a)))
-            .collect();
-        let retains: Vec<_> = wanted
-            .into_iter()
-            .map(|(name, artifact)| {
-                tokio::spawn(async move {
-                    match artifact.retain().await {
-                        Ok(hold) => (name, hold),
-                        Err(_) => (name, artifact),
-                    }
-                })
-            })
-            .collect();
+        // Each wanted attachment's handle keeps the result delivery's ownership alive for as long
+        // as it lives (bus-v1 section 8.3), and a delivery's handle can be forwarded -- to the
+        // Commit calls and to publication -- like a hold (section 8.2). So the handles are kept
+        // as delivered: an explicit hold per attachment was a router round trip each, on the
+        // step's critical path, and an `artifact.release` each later (BUS-02).
         let mut artifacts = BTreeMap::new();
-        for retain in retains {
-            if let Ok((name, artifact)) = retain.await {
-                artifacts.insert(name, artifact);
+        for name in &self.want_artifacts {
+            if let Ok(artifact) = result.artifact(name) {
+                artifacts.insert(name.clone(), artifact);
             }
         }
         drop(result);

@@ -281,6 +281,20 @@ impl ResultCache {
         }
     }
 
+    /// Drops a lifecycle reply that never reached its caller (its artifacts could not be
+    /// sealed), as if it had never been recorded: a retry runs again, as it would have when
+    /// the handler itself failed to store them.
+    pub fn forget_lifecycle(&mut self, request: &DomainRequestId) {
+        if self.lifecycle.remove(request.as_str()).is_some() {
+            self.lifecycle_order.retain(|existing| existing != request.as_str());
+        }
+    }
+
+    /// Drops a read-only reply that never reached its caller.
+    pub fn forget_readonly(&mut self, request: &DomainRequestId) {
+        self.readonly.retain(|(existing, _)| existing != request.as_str());
+    }
+
     /// Releases an operation that did not mutate anything, so the key stays free.
     pub fn abandon(&mut self, key: &OperationKey) {
         self.active.remove(key);

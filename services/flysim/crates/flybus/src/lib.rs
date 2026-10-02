@@ -26,7 +26,7 @@ mod transport;
 
 pub use client::{
     Artifact, ArtifactFile, ArtifactWriter, Artifacts, CancelState, Client, ClientConfig, IN_MEMORY_STORE_ID, Message,
-    Mode, PendingCall, PublishReceipt, Request, Responder, Retained, RpcResult, Service,
+    Mode, PendingCall, PublishReceipt, Request, Responder, Retained, RpcResult, SealedReply, Service, Unsealed,
     ServiceConfig, SessionInfo, Subscription, SubscriptionConfig, TopicInfo,
 };
 pub use error::{BusError, Dispatch, ErrorCode};

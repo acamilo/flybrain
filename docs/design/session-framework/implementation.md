@@ -541,6 +541,51 @@ multiplayer and more flies follow. The topology, its rules and the shadow proced
   ms/frame within 1% on every arm measured, and it is the headroom a paced realtime factor of 1.0
   hides.
 
+### BUS-02 (port slice) — A cheaper bus transition
+
+**2026-10-02: built** on `port/bus-02` off `port/bus-01`, awaiting review. Goal: make the
+session-over-flybus transport cheap enough to carry the live fly (operator: run on the bus with
+real sockets, because more consoles and more flies follow). The wire change is [bus-v1](bus-v1.md)
+section 12 (amendment 2026-10-02); [step-v1](step-v1.md)'s ordering is untouched.
+
+- **Where a bus transition's time went** (a build box with the release CPU model and the release
+  cpuset's shape, router traffic counted per frame, cross-process timestamps per hop). About 35
+  commands a transition went through the router -- three calls and their replies, but also five
+  `artifact.seal`, six `artifact.allocate`, five `artifact.retain`, four `artifact.release`, six
+  `delivery.consumed` and three no-op `rpc.responder.release` -- and the router encoded every frame
+  twice and deep-copied every payload three or four times. The session's host CPU (the dispatcher's
+  CPU, which the router, the coordinator and the world share) was about 96% busy in every arm, so
+  bus cost was frame time almost one for one.
+- **What changed.** Sealing sends (bus-v1 amendment: a reply seals the writers it attaches and
+  recycles their staging files as new writers, so a reply's media cost no seal or allocate round
+  trip); result attachments kept as delivered instead of retained; no responder release after an
+  admitted reply; the router encodes each frame once and forwards an admitted payload as bytes;
+  seal copies with `copy_file_range`; client location resolution cached; the session's writer pool
+  keyed by capacity (4 KiB buckets) so the variable-length feed status no longer misses it. About
+  14 commands a transition remain (three calls, three replies, consumes, cache releases).
+- **Measured.** Before/after tables in the run report `claude-bus-02`. Unpaced, same rounds:
+  `bus/process` 17.1-17.2 ms a frame before, 14.9-15.8 after; paced at 1.0, the frame-work metric
+  17.4 before, 15.0 after (the lane 12.5, legacy 10.7). The bus still costs 2.5 to 3.5 ms a frame
+  more than the lane on that box, short of the 1.5 ms target, so the lane stays live. Also found:
+  BUS-01's numbers had the bus store on a disk-backed directory; on tmpfs (as the release, under
+  `/run`) its own binaries were 2.5 ms a frame faster.
+- **Identical.** Traces, checkpoints, feed snapshots and the compatibility string (648 B,
+  `7b940584`) in `local`, `bus/thread` and `bus/process` (the FAFB parity suites, all arms).
+- **Review notes (2026-10-02).** The review approved with notes; since the feed and the control
+  API already run over flybus in production, the router and SDK changes carry live traffic, so
+  every note was treated as live-path correctness. A recycled writer's staging file is zero-filled
+  when the router reissues it (about 10 us a 92,160-byte reply on tmpfs), so no artifact sealed from it -- by prefix or
+  whole -- carries the previous artifact's bytes (N3). A sealing reply is sent with the worker's
+  result cache held, so a duplicate replays the sealed artifacts rather than racing the reply
+  with an unsealed writer (N2). A refused sealing reply is answered as the handler's own seal
+  failure was before this slice (`BACKEND_FAILURE`, mutation applied), cached the same way, and
+  logged (N1). A failed staging rename leaves no file (N5). `recycle` without a sealing
+  attachment is refused even when false, a writer named by two attachments is refused, and the
+  SDK checks `writers` on every sealing send's reply (N4). The store-directory cache is per
+  connection (N6). Two test races are closed: the fly-edge stall test waits for the feed topic,
+  and SERVE-01's parity accepts a refused `/stimulate` drained one frame late (N7). The review's
+  adversarial lifecycle tests are in `flybus/tests/sealing_lifecycle.rs`.
+
 ### SHADOW-01 — The session runtime beside the live fly (port slice)
 
 **2026-09-29: built** on `port/shadow-01` off `port/task-01`, and awaiting review. It changes no

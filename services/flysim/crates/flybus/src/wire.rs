@@ -37,6 +37,8 @@ pub const CONTRACT: &str = "flybus 1.0
 frame: u32le length, 1..=65536 bytes of strict UTF-8 JSON
 envelope: protocol major minor id replyTo kind op body attachments
 attachment: name ref ownerId [readLocation(storeId relativePath): in a router delivery only]
+sealing attachment: in rpc.call rpc.reply publish, ownerId may be the sender's own unsealed writer of ref.artifactId; ref.byteLength <= its allocation, digest null; the router seals that prefix on admission and the writer becomes the sender's hold
+recycle: optional boolean member of an rpc.call rpc.reply publish body with a sealing attachment, refused in any other body; the reply value then carries writers[name artifactId generation ownerId writeLocation], each sealed writer's staging allocation reissued zero-filled as a fresh allocation
 ref: storeId artifactId generation byteLength contentType digest
 reply: ok value | ok error{code message dispatch}
 bus.hello: clientId clientIncarnation supportedMajors -> routerId connectionId selectedMajor selectedMinor contractDigest limits
@@ -257,11 +259,16 @@ impl<'de> Visitor<'de> for StrictVisitor {
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
         let mut out = Map::new();
         while let Some(key) = map.next_key::<String>()? {
-            if out.contains_key(&key) {
-                return Err(de::Error::custom(format!("duplicate key {key:?}")));
-            }
             let v = map.next_value_seed(StrictSeed)?;
-            out.insert(key, v);
+            // One hash per key (BUS-02).
+            match out.entry(key) {
+                serde_json::map::Entry::Vacant(slot) => {
+                    slot.insert(v);
+                }
+                serde_json::map::Entry::Occupied(slot) => {
+                    return Err(de::Error::custom(format!("duplicate key {:?}", slot.key())));
+                }
+            }
         }
         Ok(Value::Object(out))
     }
@@ -273,7 +280,8 @@ impl<'de> Visitor<'de> for StrictVisitor {
 /// Reads the fields of one JSON object, then refuses any it did not read.
 pub struct Fields<'a> {
     map: &'a Map<String, Value>,
-    seen: HashSet<&'static str>,
+    // A handful of keys per object: a vector beats hashing them (BUS-02).
+    seen: Vec<&'static str>,
     what: &'static str,
 }
 
@@ -288,19 +296,19 @@ impl<'a> Fields<'a> {
     pub fn of(map: &'a Map<String, Value>, what: &'static str) -> Fields<'a> {
         Fields {
             map,
-            seen: HashSet::new(),
+            seen: Vec::with_capacity(8),
             what,
         }
     }
 
     /// A field that may be absent; read (so [`Fields::finish`] accepts it) when present.
     pub fn optional(&mut self, key: &'static str) -> Option<&'a Value> {
-        self.seen.insert(key);
+        self.seen.push(key);
         self.map.get(key)
     }
 
     pub fn value(&mut self, key: &'static str) -> Result<&'a Value, WireError> {
-        self.seen.insert(key);
+        self.seen.push(key);
         match self.map.get(key) {
             Some(v) => Ok(v),
             None => err(format!("{}: missing field {key:?}", self.what)),
@@ -397,7 +405,7 @@ impl<'a> Fields<'a> {
 
     /// Refuses fields that were not read.
     pub fn finish(self) -> Result<(), WireError> {
-        if let Some(extra) = self.map.keys().find(|k| !self.seen.contains(k.as_str())) {
+        if let Some(extra) = self.map.keys().find(|k| !self.seen.contains(&k.as_str())) {
             return err(format!("{}: unknown field {extra:?}", self.what));
         }
         Ok(())
@@ -738,13 +746,13 @@ pub struct EnvelopeHead<'a> {
 /// field order -- without copying the body into a value tree first (BUS-01: the body is the one
 /// large part of a message, and it used to be copied twice on the way out). Refuses anything over
 /// [`MAX_ENVELOPE_BYTES`].
-pub fn encode_parts(
+pub fn encode_parts<B: serde::Serialize + ?Sized>(
     head: &EnvelopeHead<'_>,
-    body: &Map<String, Value>,
+    body: &B,
     attachments: &[Attachment],
 ) -> Result<Vec<u8>, WireError> {
     #[derive(serde::Serialize)]
-    struct Out<'a> {
+    struct Out<'a, B: serde::Serialize + ?Sized> {
         protocol: &'static str,
         major: u64,
         minor: u64,
@@ -753,7 +761,7 @@ pub fn encode_parts(
         reply_to: Option<&'a str>,
         kind: &'static str,
         op: &'a str,
-        body: &'a Map<String, Value>,
+        body: &'a B,
         attachments: Vec<Value>,
     }
     let out = Out {
@@ -777,6 +785,65 @@ pub fn encode_parts(
     Ok(bytes)
 }
 
+
+/// An envelope encoded once, before its id is known (BUS-02). A router assigns envelope ids
+/// only when its scheduler selects a frame, and it used to serialize every frame twice -- once
+/// to size it, once to send it -- and deep-copy its body for each. This holds the bytes encoded
+/// with an empty id and where the id goes; [`Unnumbered::number`] splices the id in, which is
+/// the same bytes a whole encode with that id produces.
+#[derive(Clone, Debug)]
+pub struct Unnumbered {
+    bytes: Vec<u8>,
+    id_at: usize,
+}
+
+impl Unnumbered {
+    /// Encodes with an empty id. Refuses an envelope that would exceed [`MAX_ENVELOPE_BYTES`]
+    /// once given an id of up to `max_id_len` bytes.
+    pub fn encode<B: serde::Serialize + ?Sized>(
+        head: &EnvelopeHead<'_>,
+        body: &B,
+        attachments: &[Attachment],
+        max_id_len: usize,
+    ) -> Result<Unnumbered, WireError> {
+        debug_assert!(head.id.is_empty());
+        let bytes = encode_parts(head, body, attachments)?;
+        if bytes.len() + max_id_len > MAX_ENVELOPE_BYTES {
+            return err(format!(
+                "envelope of {} bytes exceeds {MAX_ENVELOPE_BYTES}",
+                bytes.len() + max_id_len
+            ));
+        }
+        // The id is the first `"id":` member: protocol, major and minor precede it and none of
+        // them can contain that text.
+        const KEY: &[u8] = b"\"id\":\"";
+        let id_at = bytes
+            .windows(KEY.len())
+            .position(|w| w == KEY)
+            .map(|at| at + KEY.len())
+            .ok_or_else(|| WireError("encoded envelope has no id".into()))?;
+        Ok(Unnumbered { bytes, id_at })
+    }
+
+    /// The encoded length without an id.
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    /// The final bytes with `id` (an `Id`, which needs no JSON escaping) in place.
+    pub fn number(self, id: &str) -> Vec<u8> {
+        debug_assert!(is_id(id));
+        let mut out = Vec::with_capacity(self.bytes.len() + id.len());
+        out.extend_from_slice(&self.bytes[..self.id_at]);
+        out.extend_from_slice(id.as_bytes());
+        out.extend_from_slice(&self.bytes[self.id_at..]);
+        out
+    }
+}
 
 // ---------------------------------------------------------------------------------------------
 // Framing

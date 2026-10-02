@@ -162,17 +162,23 @@ pub struct HandlerCtx<'a> {
     pub incoming: &'a Incoming,
     /// Staging writers allocated ahead for the reply artifacts this worker seals every step.
     pub(crate) writers: &'a WriterPool,
+    /// The reply artifacts [`HandlerCtx::seal`] wrote and left for the reply to seal (BUS-02).
+    pub(crate) unsealed: &'a Mutex<Vec<flybus::Unsealed>>,
 }
 
-/// Staging writers allocated ahead of need (BUS-01). A bus worker seals the same shapes of reply
-/// artifact every step -- the environment a 92,160-byte frame, a 65,536-byte memory image and an
-/// audio chunk of one of two lengths, the agent a 17,407-byte spike bitset -- and allocating one
-/// is a router round trip on the step's critical path. The pool remembers the last few
-/// `(content type, length)` shapes [`HandlerCtx::seal`] asked for and, after each reply, allocates
-/// a writer for every remembered shape that has none, off the critical path. A seal that finds a
-/// ready writer of its exact shape writes and seals it; one that does not allocates as before. A
-/// writer is an artifact like any other: unsealed, it is released when dropped, and the bytes it
-/// seals are the bytes written, so nothing a caller sees depends on the pool.
+/// Staging writers allocated ahead of need (BUS-01), and handed back by the router after each
+/// reply (BUS-02). A bus worker seals the same shapes of reply artifact every step -- the
+/// environment a 92,160-byte frame, a 65,536-byte memory image and an audio chunk of one of two
+/// lengths, the agent a 17,407-byte spike bitset and its feed status, a JSON document of varying
+/// length -- and allocating one is a router round trip. The pool remembers the last few
+/// `(content type, capacity)` shapes [`HandlerCtx::seal`] asked for; a capacity is the length
+/// rounded up to 4 KiB, so the two audio lengths and every feed status share one writer. A seal
+/// takes a ready writer of its content type with room for its bytes, writes them, and leaves
+/// the artifact for the reply to seal (bus-v1 section 12 amendment 2026-10-02): the reply
+/// recycles each writer's allocation, the pool takes the recycled writers back, and only a shape
+/// with no writer is allocated, off the critical path, after the reply. A writer is an artifact
+/// like any other: unsealed, it is released when dropped, and the bytes sealed are exactly the
+/// bytes written, so nothing a caller sees depends on the pool.
 #[derive(Default)]
 pub struct WriterPool {
     state: Mutex<PoolState>,
@@ -182,27 +188,51 @@ pub struct WriterPool {
 struct PoolState {
     /// The most recent distinct shapes, newest last.
     recent: Vec<(String, u64)>,
-    ready: Vec<((String, u64), flybus::ArtifactWriter)>,
+    ready: Vec<flybus::ArtifactWriter>,
     allocating: Vec<(String, u64)>,
 }
 
-/// Shapes the pool keeps writers for: an environment's three reply artifacts, with the audio
-/// chunk's two lengths, and an agent's one.
-const POOL_SHAPES: usize = 4;
+/// Shapes the pool keeps writers for: an environment's three reply artifacts and an agent's
+/// two, with room to spare.
+const POOL_SHAPES: usize = 6;
+
+/// The allocation a reply artifact of `len` bytes is written into.
+fn pool_capacity(len: u64) -> u64 {
+    len.max(1).div_ceil(4096) * 4096
+}
 
 impl WriterPool {
     fn take(&self, content_type: &str, len: u64) -> Option<flybus::ArtifactWriter> {
         let mut st = self.state.lock().expect("never poisoned");
-        let shape = (content_type.to_owned(), len);
+        let shape = (content_type.to_owned(), pool_capacity(len));
         if let Some(at) = st.recent.iter().position(|s| *s == shape) {
             st.recent.remove(at);
         } else if st.recent.len() >= POOL_SHAPES {
             let gone = st.recent.remove(0);
-            st.ready.retain(|(s, _)| *s != gone);
+            st.ready
+                .retain(|w| (w.content_type(), w.byte_length()) != (gone.0.as_str(), gone.1));
         }
-        st.recent.push(shape.clone());
-        let at = st.ready.iter().position(|(s, _)| *s == shape)?;
-        Some(st.ready.swap_remove(at).1)
+        st.recent.push(shape);
+        let at = st
+            .ready
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| w.content_type() == content_type && w.byte_length() >= len)
+            .min_by_key(|(_, w)| w.byte_length())
+            .map(|(at, _)| at)?;
+        Some(st.ready.swap_remove(at))
+    }
+
+    /// Takes back the writers a sealing reply recycled, for the shapes still in use.
+    fn give(&self, writers: Vec<flybus::ArtifactWriter>) {
+        let mut st = self.state.lock().expect("never poisoned");
+        for w in writers {
+            let shape = (w.content_type().to_owned(), w.byte_length());
+            let spare = st.ready.iter().any(|r| (r.content_type(), r.byte_length()) == (shape.0.as_str(), shape.1));
+            if st.recent.contains(&shape) && !spare {
+                st.ready.push(w);
+            }
+        }
     }
 
     /// Allocates, in the background, a writer for every remembered shape that has none.
@@ -212,7 +242,10 @@ impl WriterPool {
             let wanted: Vec<_> = st
                 .recent
                 .iter()
-                .filter(|s| !st.ready.iter().any(|(r, _)| r == *s) && !st.allocating.contains(s))
+                .filter(|s| {
+                    !st.ready.iter().any(|w| (w.content_type(), w.byte_length()) == (s.0.as_str(), s.1))
+                        && !st.allocating.contains(s)
+                })
                 .cloned()
                 .collect();
             st.allocating.extend(wanted.iter().cloned());
@@ -227,7 +260,7 @@ impl WriterPool {
                 if let Ok(writer) = writer
                     && st.recent.contains(&shape)
                 {
-                    st.ready.push((shape, writer));
+                    st.ready.push(writer);
                 }
             });
         }
@@ -290,26 +323,36 @@ impl HandlerCtx<'_> {
     }
 
     /// One immutable reply artifact holding `bytes`. Over the local lane it is an in-memory
-    /// artifact that owns `bytes` (no copy, no store file, no router round trip); over the bus
-    /// it is allocated, written and sealed in the router's store as before.
+    /// artifact that owns `bytes` (no copy, no store file, no router round trip). Over the bus
+    /// the bytes go into a staging writer (one allocated ahead, [`WriterPool`]) and the reply
+    /// that carries the artifact seals it as the router admits the reply (bus-v1 section 12
+    /// amendment 2026-10-02, BUS-02): the handle is valid from then on, and the handler must
+    /// put it in its reply.
     pub async fn seal(&self, content_type: &str, bytes: Vec<u8>) -> DomainResult<flybus::Artifact> {
         if self.is_local() {
             return Ok(flybus::Artifact::in_memory(content_type, bytes));
         }
-        // A writer allocated ahead for this shape saves the allocation's round trip ([`WriterPool`]).
-        let Some(mut writer) = self.writers.take(content_type, bytes.len() as u64) else {
-            let _span = crate::profile::span("shell.seal.allocated");
-            return crate::media::seal_copy(self.client, content_type.to_owned(), &bytes).await;
+        let len = bytes.len() as u64;
+        let mut writer = match self.writers.take(content_type, len) {
+            Some(writer) => writer,
+            None => {
+                let _span = crate::profile::span("shell.seal.allocated");
+                self.client
+                    .artifacts()
+                    .allocate(pool_capacity(len), content_type)
+                    .await
+                    .map_err(|e| crate::media::store_error("allocate", &e.message))?
+            }
         };
         let _span = crate::profile::span("shell.seal.pooled");
         use std::io::Write as _;
         writer
             .write_all(&bytes)
             .map_err(|e| crate::media::store_error("write", &e.to_string()))?;
-        writer
-            .seal()
-            .await
-            .map_err(|e| crate::media::store_error("seal", &e.message))
+        let unsealed = writer.into_unsealed();
+        let artifact = unsealed.artifact().clone();
+        self.unsealed.lock().expect("never poisoned").push(unsealed);
+        Ok(artifact)
     }
 }
 
@@ -476,16 +519,42 @@ enum Answer {
     Local(tokio::sync::oneshot::Sender<LocalReply>),
 }
 
+/// What answering a call came to.
+enum Sent {
+    /// Answered, or the caller is gone (nothing more can reach it), with the writers a sealing
+    /// reply recycled.
+    Done(Vec<flybus::ArtifactWriter>),
+    /// The router refused the reply that was to seal the handler's artifacts (a store failure:
+    /// quota, IO, a writer gone). Nothing reached the caller and the call is still open: the
+    /// answer comes back to send the failure on (BUS-02 review N1).
+    SealRefused(Answer, flybus::BusError),
+}
+
 impl Answer {
-    async fn send(self, outcome: SessionRpcOutcome, artifacts: &[(String, flybus::Artifact)]) {
+    /// Answers the call. Over the bus, the artifacts left unsealed by [`HandlerCtx::seal`] are
+    /// sealed by the reply itself and their writers come back recycled, for the pool (BUS-02).
+    async fn send(
+        self,
+        outcome: SessionRpcOutcome,
+        artifacts: &[(String, flybus::Artifact)],
+        unsealed: Vec<flybus::Unsealed>,
+    ) -> Sent {
         match self {
             Answer::Bus(responder) => {
                 let list: Vec<(&str, &flybus::Artifact)> =
                     artifacts.iter().map(|(n, a)| (n.as_str(), a)).collect();
-                let _ = responder.reply(outcome.to_outcome(), &list).await;
+                if unsealed.is_empty() {
+                    let _ = responder.reply(outcome.to_outcome(), &list).await;
+                    return Sent::Done(Vec::new());
+                }
+                match responder.reply_sealing(outcome.to_outcome(), &list, unsealed, true).await {
+                    Ok(sealed) => Sent::Done(sealed.writers),
+                    Err(error) => Sent::SealRefused(Answer::Bus(responder), error),
+                }
             }
             Answer::Local(tx) => {
                 let _ = tx.send(LocalReply { outcome, artifacts: artifacts.to_vec() });
+                Sent::Done(Vec::new())
             }
         }
     }
@@ -751,7 +820,7 @@ impl<E: WorkerEndpoint> Shell<E> {
                 DomainError::before(ErrorCode::Unsupported, format!("{method} is not supported")),
                 request.scope.clone(),
             );
-            answer.send(outcome, &[]).await;
+            answer.send(outcome, &[], Vec::new()).await;
             return;
         };
 
@@ -762,7 +831,7 @@ impl<E: WorkerEndpoint> Shell<E> {
             Ok(body) => body,
             Err(e) => {
                 let outcome = refuse(DomainError::invalid(format!("{method}: {e}")), request.scope.clone());
-                answer.send(outcome, &[]).await;
+                answer.send(outcome, &[], Vec::new()).await;
                 return;
             }
         };
@@ -776,7 +845,7 @@ impl<E: WorkerEndpoint> Shell<E> {
             },
             (OpClass::StepMutation, None) => {
                 let outcome = refuse(DomainError::invalid(format!("{method} requires a scope")), None);
-                answer.send(outcome, &[]).await;
+                answer.send(outcome, &[], Vec::new()).await;
                 return;
             }
             _ => OperationKey {
@@ -797,12 +866,12 @@ impl<E: WorkerEndpoint> Shell<E> {
         };
         match admission {
             Admission::Replay(reply) => {
-                answer.send(reply.outcome.clone(), &reply.artifacts).await;
+                answer.send(reply.outcome.clone(), &reply.artifacts, Vec::new()).await;
                 return;
             }
             Admission::Refuse(e) => {
                 let outcome = refuse(e, request.scope.clone());
-                answer.send(outcome, &[]).await;
+                answer.send(outcome, &[], Vec::new()).await;
                 return;
             }
             Admission::Execute => {}
@@ -907,6 +976,7 @@ async fn execute<E: WorkerEndpoint>(
     let Admitted { class, key, serial, body, method, request, incoming } = admitted;
     let (worker_id, incarnation_id, status, cache) =
         (&shell.worker_id, &shell.incarnation_id, &shell.status, &shell.cache);
+    let unsealed = Mutex::new(Vec::new());
     let outcome = {
         // One mutation at a time: the endpoint mutex is the worker's simulation lock, and it is
         // never held across a bus round trip taken by anything else.
@@ -918,6 +988,7 @@ async fn execute<E: WorkerEndpoint>(
             client: &shell.client,
             incoming: &incoming,
             writers: &shell.writers,
+            unsealed: &unsealed,
         };
         if matches!(incoming, Incoming::Bus(_)) && long_method(&method) && blocking_allowed() {
             // A long bus request's handler runs with this worker thread handed over to blocking
@@ -979,22 +1050,88 @@ async fn execute<E: WorkerEndpoint>(
             }
             let cache_span = crate::profile::span("shell.record.cache");
             let cached = CachedReply::with_artifacts(outcome.clone(), holds);
+            let unsealed = std::mem::take(&mut *unsealed.lock().expect("never poisoned"));
+            // The cache records the reply before it is sent, so a duplicate never re-executes;
+            // but until the reply that seals this handler's artifacts is admitted they are
+            // still writers, and a replay attaching one would seal it into the duplicate's
+            // reply (or be refused) and refuse the original (BUS-02 review N2). So a sealing
+            // reply is sent with the cache held: a duplicate waits for it in admission and
+            // replays sealed handles, or the failure below. A reply that seals nothing (the
+            // lane's, or a handler's without artifacts of its own) holds nothing.
+            let mut held = Some(cache.lock().await);
             {
-                let mut c = cache.lock().await;
+                let c = held.as_mut().expect("just taken");
                 match class {
-                    OpClass::StepMutation => c.record(key, serial, body, cached),
-                    OpClass::Lifecycle => c.record_lifecycle(serial, body, cached),
-                    OpClass::ReadOnly => c.record_readonly(serial, cached),
+                    OpClass::StepMutation => {
+                        c.record(key.clone(), serial.clone(), body.clone(), cached)
+                    }
+                    OpClass::Lifecycle => c.record_lifecycle(serial.clone(), body.clone(), cached),
+                    OpClass::ReadOnly => c.record_readonly(serial.clone(), cached),
                 }
             }
             status.set_completed(request.request_id.clone());
+            if unsealed.is_empty() {
+                held = None;
+            }
             drop(cache_span);
+            #[cfg(test)]
+            sealing_tests::gate(worker_id).await;
             let reply_span = crate::profile::span("shell.reply");
-            answer.send(outcome, &reply.artifacts).await;
+            let sent = answer.send(outcome, &reply.artifacts, unsealed).await;
             drop(reply_span);
-            // The next step's writers, allocated while the caller goes on (bus requests only:
-            // the lane seals nothing into the store).
+            let recycled = match sent {
+                Sent::Done(recycled) => {
+                    drop(held);
+                    recycled
+                }
+                Sent::SealRefused(answer, error) => {
+                    // The handler's artifacts could not be stored. Before BUS-02 the handler's
+                    // own seal failed and returned this error; it is answered, cached and
+                    // reported exactly as that was (BUS-02 review N1), instead of reaching the
+                    // caller as a bus-level failed call.
+                    eprintln!(
+                        "worker {worker_id}: {method}: the reply's artifacts were not sealed ({}: {}); \
+answering BACKEND_FAILURE",
+                        error.code.as_str(),
+                        error.message
+                    );
+                    let e = crate::media::store_error("seal", &error.message);
+                    let mut c = held.take().expect("a sealing reply holds the cache");
+                    match class {
+                        OpClass::StepMutation => c.record(
+                            key,
+                            serial,
+                            body,
+                            CachedReply::new(failure_outcome(
+                                &request.request_id,
+                                worker_id,
+                                incarnation_id,
+                                request.scope.clone(),
+                                e.clone(),
+                            )),
+                        ),
+                        OpClass::Lifecycle => c.forget_lifecycle(&serial),
+                        OpClass::ReadOnly => c.forget_readonly(&serial),
+                    }
+                    drop(c);
+                    status.set_state(WorkerState::Failed);
+                    status.set_active(None);
+                    let outcome = failure(
+                        &request.request_id,
+                        worker_id,
+                        incarnation_id,
+                        request.scope.clone(),
+                        e,
+                    );
+                    let _ = answer.send(outcome, &[], Vec::new()).await;
+                    Vec::new()
+                }
+            };
+            // The next step's writers: the ones the reply recycled, and any shape without one
+            // allocated while the caller goes on (bus requests only: the lane seals nothing into
+            // the store).
             if matches!(incoming, Incoming::Bus(_)) {
+                shell.writers.give(recycled);
                 shell.writers.refill(&shell.client);
             }
         }
@@ -1027,7 +1164,7 @@ async fn execute<E: WorkerEndpoint>(
                 request.scope.clone(),
                 e,
             );
-            answer.send(outcome, &[]).await;
+            answer.send(outcome, &[], Vec::new()).await;
         }
     }
 }
@@ -1201,3 +1338,7 @@ async fn acknowledge(
     let result = AcknowledgeResult { acknowledged };
     Ok(object(result.to_json()))
 }
+
+#[cfg(test)]
+#[path = "worker_sealing_tests.rs"]
+mod sealing_tests;

@@ -187,6 +187,7 @@ and once over a Unix socket, so `tests/rpc.rs::request_reply_roundtrip` means
 | The first backend is runtime-configured local files, optionally on tmpfs | conforms | `store.rs::Store::create` under `RouterConfig::store_root` | `store.rs::tests::orphans_are_removed_and_live_stores_kept` |
 | The producer writes staging storage outside the message stream | conforms | `store.rs::create_staging`, `client/mod.rs::Artifacts::allocate` | `tests/artifacts.rs::allocate_write_seal_read` (both) |
 | Seal closes writable handles in the SDK, checks length and digest, then finishes an immutable store-owned object before acknowledging | conforms: a writable descriptor kept after sealing reaches only the unlinked staging inode | `client/handles.rs::seal_with_digest` (drops the file first), `store.rs::seal` (fresh 0444 inode) | `tests/artifacts.rs::seal_is_immune_to_live_writable_handles` (both), `tests/conformance_artifacts.rs::seal_is_immutable_despite_a_stale_writable_handle` (both) |
+| Sealing on send (amendment 2026-10-02, BUS-02): an `rpc.call`/`rpc.reply`/`publish` attachment naming the sender's own writer is sealed (its declared prefix, copied outside the state lock) before the command is admitted, the writer becomes the sender's hold, `recycle` reissues the staging file as a new writer, and a refused sealing send releases every writer it named | conforms | `router/state.rs::{sealing_attachments, finish_sealing_send}`, `router/mod.rs::read_loop` (`SealThenAdmit`), `store.rs::{seal_prefix, rename}`, `client/handles.rs::{ArtifactWriter::into_unsealed, Responder::reply_sealing}` | `tests/sealing.rs::{a_reply_seals_and_recycles_its_writers, a_refused_sealing_send_releases_its_writers}` (both), `tests/artifacts.rs::unsealed_artifacts_cannot_be_used` (both) |
 | A copy into a fresh sealed inode is allowed; account for both allocations during sealing | conforms | `router/state.rs::op_seal` (`store_bytes += len` for the copy, released in `finish_seal`) | `tests/artifacts.rs::quotas_are_enforced` (both) |
 | No per-frame fsync for transient media | conforms by absence | `store.rs` | `tests/perf.rs` (seal p50 1.3 ms for 1.2 MB) |
 | Consumers resolve a readLocation through `artifact.open` and read it read-only | conforms; amended 2026-10-01 (bus-v1 section 12, BUS-01): a delivered handle uses the location its delivery carries, every other handle still asks | `router/state.rs::op_open`, `store.rs::open_read` | `tests/conformance_artifacts.rs::allocate_write_seal_open_roundtrip_and_mismatches` (both) |
@@ -345,7 +346,7 @@ behind "latest replaces only queued messages": the replacement never turns into 
 
 ## The crate README's differences from the draft
 
-Each of the ten differences the crate lists, kept with the sentence that allows it or fixed.
+Each of the differences the crate lists, kept with the sentence that allows it or fixed.
 
 | README difference | Verdict |
 | --- | --- |
@@ -359,6 +360,8 @@ Each of the ten differences the crate lists, kept with the sentence that allows 
 | 8. No `budget` argument on calls, and no router executable | Kept. Section 1 calls the executable "optional"; section 6 puts the deadline in the calling client, and the section 2 sketch no longer shows a budget either (amendment, contradiction 2) |
 | 9. Wire strictness: unknown fields in management bodies refused, `minor` must be 0 after hello | Kept. Stricter than section 4's "unknown envelope fields", forbidden nowhere, and section 4's envelope literally fixes `minor: 0` |
 | 10. `rpc.responder.release` and its terminal `call.failed` | Kept. Section 4 allows draft schema changes ("Changes to these draft schemas change contractDigest"), and it is how section 6's "bounded call correlation metadata" stays bounded when a handler outlives its request delivery. Added to the bus-v1 amendment (section 12) |
+| 11. Read locations in deliveries | Kept. The bus-v1 amendment of 2026-10-01 (BUS-01) |
+| 12. Sealing sends, `recycle`, and no `rpc.responder.release` after an admitted reply | Kept. The bus-v1 amendment of 2026-10-02 (BUS-02); section 8.1's immutability holds because the sealed bytes are still a copy, and a reply the router admitted already ended the reply authority the release would give up |
 
 ## Measured on the dev VM
 

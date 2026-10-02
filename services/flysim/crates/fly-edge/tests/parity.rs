@@ -175,6 +175,68 @@ async fn a_header_too_large_for_an_envelope_travels_as_an_artifact_and_arrives_i
     assert!(direct == edge);
 }
 
+/// Each artifact a snapshot rides on is its own bytes, whatever came before it (BUS-02 review
+/// N3): smaller attachments after larger ones, and a header that travels as an artifact, then
+/// inline, then as a smaller artifact, reach the edge's clients exactly as the direct feed
+/// writes them, with nothing of an earlier snapshot in them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn smaller_artifacts_after_larger_ones_arrive_exactly() {
+    let base = snapshot_of(&fixture_messages("macros")[10]).unwrap();
+    let with_events = |n: u64, fill: char| {
+        let mut snapshot = base.clone();
+        for id in 0..n {
+            snapshot.header.events.push(flysim::snapshot::FeedEvent {
+                id: 10_000 + id,
+                wall_ms: 1_757_000_000_000 + id,
+                brain_ms: 5.0,
+                kind: flysim::snapshot::FeedEventKind::System,
+                label: fill.to_string().repeat(200),
+                value: None,
+                reward_kind: None,
+                by: None,
+            });
+        }
+        snapshot
+    };
+    // (header events, attachment length, fill): large, then smaller, then large-but-smaller.
+    let plan = [(400, 92_160, 0xA1u8), (0, 1_000, 0xB2), (0, 7, 0xC3), (360, 4_096, 0xD4), (0, 3, 0xE5)];
+    let mut snapshots = Vec::new();
+    for (seq, (events, len, fill)) in plan.into_iter().enumerate() {
+        let mut snapshot = with_events(events, char::from(b'a' + seq as u8));
+        snapshot.header.seq = base.header.seq + seq as u64;
+        snapshot.frame = vec![fill; len].into();
+        snapshot.audio = vec![fill ^ 0xFF; len / 2].into();
+        snapshot.spikes = vec![fill.rotate_left(1); len / 3].into();
+        snapshots.push(snapshot);
+    }
+    let paths = start(snapshots[0].clone(), true).await;
+    let wants = ["frame", "audio", "spikes"];
+    let mut direct = connect(paths.direct, &wants).await;
+    let mut edge = connect(paths.edge, &wants).await;
+    for (index, snapshot) in snapshots.iter().enumerate() {
+        if index > 0 {
+            paths.snapshots.send_replace(std::sync::Arc::new(snapshot.clone()));
+        }
+        let d = next_binary(&mut direct, Duration::from_secs(20)).await;
+        let e = next_binary(&mut edge, Duration::from_secs(20)).await;
+        assert_eq!(seq_of(&e), snapshot.header.seq, "#{index}");
+        assert!(d == e, "#{index}: the edge's message differs from the direct feed's");
+        let (_, attachments) = split(&e);
+        let expected: Vec<&[u8]> = snapshot
+            .header
+            .attachments
+            .iter()
+            .map(|kind| match kind {
+                flysim::snapshot::AttachmentKind::Frame => snapshot.frame.as_slice(),
+                flysim::snapshot::AttachmentKind::Audio => snapshot.audio.as_slice(),
+                flysim::snapshot::AttachmentKind::Spikes => snapshot.spikes.as_slice(),
+            })
+            .collect();
+        assert!(!expected.is_empty());
+        assert_eq!(attachments, expected, "#{index}: attachments");
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_edge_drops_its_clients_and_unbinds_when_the_bus_goes_away_then_comes_back() {
     let snapshot = snapshot_of(&fixture_messages("shop")[5]).unwrap();

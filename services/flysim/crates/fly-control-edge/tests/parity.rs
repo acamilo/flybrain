@@ -342,6 +342,31 @@ async fn a_request_body_over_the_envelope_gets_directs_answer() {
     assert_eq!(rig.bus.router.stats().artifacts, 0);
 }
 
+/// Request bodies that ride as artifacts, larger ones first (BUS-02 review N3): each artifact is
+/// exactly its own body, never a tail of the one before -- a stale byte past a smaller body's end
+/// would make it a different request (or not JSON), and its answer would differ from direct's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_smaller_request_body_after_a_larger_one_is_exactly_its_own() {
+    let rig = rig(|_| {}).await;
+    for (size, fill) in [(300_000usize, 'a'), (120_000, 'b'), (70_000, 'c'), (66_000, 'd')] {
+        for uri in ["/chat", "/stimulate"] {
+            let text = fill.to_string().repeat(size);
+            let (method, uri, content_type, body) = json_case(
+                Method::POST,
+                uri,
+                json!({"by": "viewer", "source": "points", "text": text, "message": text}),
+            );
+            let direct = exchange(rig.direct(), &method, uri, content_type, &body).await;
+            let edge = exchange(rig.via_edge(), &method, uri, content_type, &body).await;
+            assert_eq!(direct, edge, "{uri} ({} bytes, {fill:?})", body.len());
+        }
+    }
+    assert_eq!(rig.metrics.call_failures.load(Ordering::Relaxed), 0);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let stats = rig.bus.router.stats();
+    assert_eq!((stats.artifacts, stats.store_bytes), (0, 0), "every request artifact released");
+}
+
 /// The running edge over real sockets: the whole HTTP/1.1 response equals flysim's own listener's,
 /// `date` aside, for a request of every kind.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

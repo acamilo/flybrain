@@ -12,9 +12,9 @@ use std::sync::Arc;
 use serde_json::{Map, Value};
 use tokio::sync::{mpsc, oneshot};
 
-use super::reactor::{CallSlot, ClientConn, Control, Extra, Hook, OutCommand};
+use super::reactor::{CallSlot, ClientConn, Control, Extra, Hook, OutCommand, WriterGrant};
 use crate::error::{BusError, Dispatch, ErrorCode};
-use crate::store::{open_read, resolve};
+use crate::store::{open_read, open_write, resolve};
 use crate::wire::{ArtifactRef, Attachment, Fields, GENERATION, Identity, Location};
 
 pub(crate) struct OwnerGuard {
@@ -238,7 +238,7 @@ impl Artifact {
                 "read location names another store",
             ));
         }
-        let path = resolve(&shared.store_root, &loc.store_id, &loc)?;
+        let path = resolve(&shared.store_root, &loc.store_id, &loc, &shared.dirs)?;
         let file = open_read(&path)
             .map_err(|e| BusError::new(ErrorCode::StoreFailure, format!("open: {e}")))?;
         let len = file
@@ -363,6 +363,8 @@ pub struct ArtifactWriter {
     pub(crate) artifact_id: String,
     pub(crate) byte_length: u64,
     pub(crate) written: u64,
+    pub(crate) store_id: String,
+    pub(crate) content_type: String,
 }
 
 impl ArtifactWriter {
@@ -374,8 +376,44 @@ impl ArtifactWriter {
         self.byte_length
     }
 
-    /// Closes the writable handle and seals, returning the immutable artifact on an explicit
-    /// hold. Bytes not written read as zeros: the staging file is preallocated.
+    /// Bytes written so far: what a sealing send seals ([`Responder::reply_sealing`]).
+    pub fn written(&self) -> u64 {
+        self.written
+    }
+
+    pub fn content_type(&self) -> &str {
+        &self.content_type
+    }
+
+    /// Ends writing and returns the artifact as a sealing send will seal it: its first
+    /// [`written`](Self::written) bytes, under this writer's owner, which becomes the hold
+    /// (bus-v1 section 12 amendment 2026-10-02). The handle is usable once a send that attaches
+    /// it -- [`Responder::reply_sealing`] -- is admitted; before that it is only a name for it.
+    pub fn into_unsealed(mut self) -> Unsealed {
+        drop(self.file.take());
+        let reference = ArtifactRef {
+            store_id: self.store_id.clone(),
+            artifact_id: self.artifact_id.clone(),
+            generation: GENERATION,
+            byte_length: self.written,
+            content_type: self.content_type.clone(),
+            digest: None,
+        };
+        Unsealed {
+            artifact: Artifact {
+                reference: Arc::new(reference),
+                holder: Holder::Bus(self.owner.clone()),
+                location: None,
+            },
+            capacity: self.byte_length,
+            content_type: std::mem::take(&mut self.content_type),
+        }
+    }
+
+    /// Closes the writable handle and seals the whole allocation, returning the immutable
+    /// artifact on an explicit hold. Bytes not written read as zeros: the staging file is
+    /// preallocated, and a recycled writer's ([`SealedReply::writers`]) is reset to zeros when
+    /// the router reissues it, so no artifact ever carries bytes of the one before it.
     pub async fn seal(self) -> Result<Artifact, BusError> {
         self.seal_with_digest(None).await
     }
@@ -539,6 +577,30 @@ impl Request {
     }
 }
 
+/// A writer's artifact waiting for the send that seals it ([`ArtifactWriter::into_unsealed`]).
+pub struct Unsealed {
+    artifact: Artifact,
+    capacity: u64,
+    content_type: String,
+}
+
+impl Unsealed {
+    /// The handle the sealed artifact will have; attach it to the sealing send.
+    pub fn artifact(&self) -> &Artifact {
+        &self.artifact
+    }
+}
+
+/// What a sealing reply ([`Responder::reply_sealing`]) produced.
+pub struct SealedReply {
+    /// As [`Responder::reply`]: routed to the caller, or the caller had detached.
+    pub routed: bool,
+    /// With `recycle`, a fresh writer of the same allocation for each artifact sealed. Its
+    /// staging file is the sealed artifact's, zero-filled: it reads as zeros, as a new
+    /// allocation does.
+    pub writers: Vec<ArtifactWriter>,
+}
+
 /// Replies to one request, whether or not the request delivery is still held.
 #[derive(Clone)]
 pub struct Responder {
@@ -567,7 +629,84 @@ impl Responder {
             .shared
             .command("rpc.reply", body, atts, keep, Hook::None)
             .await?;
+        // An admitted reply ends this call's reply authority at the router (routed or, for a
+        // detached caller, retired), so there is nothing left to release (BUS-02): the
+        // `rpc.responder.release` the guard would send is a no-op command on every call.
+        self.guard
+            .replied
+            .store(true, std::sync::atomic::Ordering::Release);
         Ok(Fields::of(&reply.value, "reply").boolean("routed")?)
+    }
+}
+
+impl Responder {
+    /// Replies with `attachments`, among which the artifacts of `unsealed` are sealed by the
+    /// router as it admits the reply (bus-v1 section 12 amendment 2026-10-02): each becomes an
+    /// immutable artifact exactly as if it had been sealed and then attached, without the
+    /// `artifact.seal` round trip. With `recycle` the router reissues each one's staging
+    /// allocation as a new writer, which saves the next `artifact.allocate`. Refused, nothing
+    /// is admitted and every unsealed artifact is gone.
+    pub async fn reply_sealing(
+        &self,
+        outcome: Map<String, Value>,
+        attachments: &[(&str, &Artifact)],
+        unsealed: Vec<Unsealed>,
+        recycle: bool,
+    ) -> Result<SealedReply, BusError> {
+        let (atts, keep) = attachment_list(attachments)?;
+        let shapes: Vec<(String, u64, String)> = unsealed
+            .into_iter()
+            .filter_map(|u| {
+                let name = atts
+                    .iter()
+                    .find(|a| a.reference.artifact_id == u.artifact.reference.artifact_id)?
+                    .name
+                    .clone();
+                Some((name, u.capacity, u.content_type))
+            })
+            .collect();
+        let mut body = Map::new();
+        body.insert("callId".into(), self.call_id.clone().into());
+        body.insert(
+            "requestDeliveryId".into(),
+            self.request_delivery_id.clone().into(),
+        );
+        body.insert("outcome".into(), Value::Object(outcome));
+        if recycle && !shapes.is_empty() {
+            body.insert("recycle".into(), true.into());
+        }
+        let shared = &self.guard.conn.shared;
+        let reply = shared
+            .command("rpc.reply", body, atts, keep, Hook::Writers)
+            .await?;
+        self.guard
+            .replied
+            .store(true, std::sync::atomic::Ordering::Release);
+        let routed = Fields::of(&reply.value, "reply").boolean("routed")?;
+        let grants = match reply.extra {
+            Extra::Writers(grants) => grants,
+            _ => Vec::new(),
+        };
+        let mut writers = Vec::with_capacity(grants.len());
+        for WriterGrant { name, artifact_id, owner, location } in grants {
+            let Some((_, capacity, content_type)) = shapes.iter().find(|(n, _, _)| *n == name)
+            else {
+                continue;
+            };
+            let path = resolve(&shared.store_root, &location.store_id, &location, &shared.dirs)?;
+            let file = open_write(&path)
+                .map_err(|e| BusError::new(ErrorCode::StoreFailure, format!("staging: {e}")))?;
+            writers.push(ArtifactWriter {
+                file: Some(file),
+                owner,
+                artifact_id,
+                byte_length: *capacity,
+                written: 0,
+                store_id: location.store_id,
+                content_type: content_type.clone(),
+            });
+        }
+        Ok(SealedReply { routed, writers })
     }
 }
 
@@ -575,10 +714,15 @@ pub(crate) struct ReplyGuard {
     pub conn: Arc<ClientConn>,
     pub call_id: String,
     pub request_delivery_id: String,
+    /// Set once the router admitted a reply: the authority is spent, no release is sent.
+    pub replied: std::sync::atomic::AtomicBool,
 }
 
 impl Drop for ReplyGuard {
     fn drop(&mut self) {
+        if self.replied.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
         self.conn.shared.push_control(Control::ResponderReleased {
             call_id: self.call_id.clone(),
             request_delivery_id: self.request_delivery_id.clone(),
