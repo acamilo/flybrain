@@ -115,18 +115,28 @@ impl Store {
         result
     }
 
-    /// Makes a recycled writer's staging file what a fresh allocation is: `len` bytes, all zero,
-    /// reserved (BUS-02 review N3). The file still holds the artifact it was sealed from; a
-    /// producer that wrote fewer bytes into its next life and sealed the whole allocation would
-    /// otherwise publish the previous artifact's tail. Truncating frees those blocks, and the
-    /// reservation that follows is the one `create_staging` makes.
+    /// Makes a recycled writer's staging file what a fresh allocation is: `len` bytes, all zero
+    /// (BUS-02 review N3). The file still holds the artifact it was sealed from; a producer that
+    /// wrote fewer bytes into its next life and sealed the whole allocation would otherwise
+    /// publish the previous artifact's tail. The zeros are written over the blocks already
+    /// there, which stay allocated: freeing them (truncating, or punching a hole) and faulting
+    /// them back in on the next write cost four times as much on tmpfs (a 92,160-byte frame:
+    /// about 36 us a reply against 9). The length is set last, in case the producer resized
+    /// the file.
     pub(crate) fn reset_staging(&self, serial: u64, len: u64) -> io::Result<()> {
+        use std::os::unix::fs::FileExt;
         let file = OpenOptions::new()
             .write(true)
             .custom_flags(libc::O_NOFOLLOW)
             .open(self.path(&staging_rel(serial)))?;
-        file.set_len(0)?;
-        reserve(&file, len)
+        let zeros = vec![0u8; len.clamp(1, 256 * 1024) as usize];
+        let mut at = 0;
+        while at < len {
+            let n = (len - at).min(zeros.len() as u64) as usize;
+            file.write_all_at(&zeros[..n], at)?;
+            at += n as u64;
+        }
+        file.set_len(len)
     }
 
     /// Copies exactly `len` staging bytes into a fresh sealed file, checking the length and,

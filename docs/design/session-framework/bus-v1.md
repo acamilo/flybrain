@@ -593,8 +593,8 @@ critical path, for answers the router could give as it admits the reply.
   attachment it sealed, named by attachment. A writer it cannot reissue (owner budget) is simply
   left out. Section 8.1's immutability is unchanged: the sealed bytes are a copy, so a producer
   writing into the recycled staging file reaches only the staging inode. A reissued writer is a
-  fresh allocation in content as well: the router empties the staging file and reserves it again
-  before the reply, so it reads as zeros and no artifact sealed from it -- a prefix, or the whole
+  fresh allocation in content as well: the router overwrites the staging file with zeros before
+  the reply, so it reads as zeros and no artifact sealed from it -- a prefix, or the whole
   allocation through `artifact.seal` -- can carry bytes of the artifact it was before (review N3,
   2026-10-02). `recycle` in a body with no sealing attachment is refused, `false` included, and
   one writer named by two attachments of the same command is refused (`INVALID_ENVELOPE`).

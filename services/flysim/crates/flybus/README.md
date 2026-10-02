@@ -192,7 +192,7 @@ let kept = frame.retain().await?;              // an independent explicit hold
   `responder.reply_sealing(outcome, attachments, unsealed, recycle)`: the router seals it as it
   admits the reply, with no `artifact.seal` round trip, and with `recycle` hands each staging
   allocation back as a fresh writer (`SealedReply::writers`), with no `artifact.allocate` either.
-  The router empties a reissued staging file first, so a recycled writer reads as zeros like a
+  The router zero-fills a reissued staging file first, so a recycled writer reads as zeros like a
   new allocation and never carries the previous artifact's bytes into the next one, however it
   is sealed. The handle is valid once the reply is admitted. The router accepts sealing attachments on
   `rpc.call` and `publish` too; the SDK exposes them for replies.

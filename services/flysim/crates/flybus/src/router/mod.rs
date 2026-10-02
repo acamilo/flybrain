@@ -336,7 +336,7 @@ async fn read_loop<R: AsyncRead + Unpin>(
                 // (bus-v1 section 12 amendment 2026-10-02): the copies run here, outside the
                 // state lock, and this connection's next command waits for the admission, so
                 // its commands stay in order. A recycled writer's staging file is kept,
-                // renamed for the artifact it becomes and reset to zeros, as a fresh allocation
+                // renamed for the artifact it becomes and zero-filled, as a fresh allocation
                 // is (BUS-02 review N3); otherwise it goes with the copy.
                 let total: u64 = job.seals.iter().map(|s| s.len).sum();
                 let plan: Vec<(u64, u64, u64, Option<u64>)> = job

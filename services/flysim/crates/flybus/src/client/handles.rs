@@ -596,7 +596,7 @@ pub struct SealedReply {
     /// As [`Responder::reply`]: routed to the caller, or the caller had detached.
     pub routed: bool,
     /// With `recycle`, a fresh writer of the same allocation for each artifact sealed. Its
-    /// staging file is the sealed artifact's, emptied: it reads as zeros, as a new
+    /// staging file is the sealed artifact's, zero-filled: it reads as zeros, as a new
     /// allocation does.
     pub writers: Vec<ArtifactWriter>,
 }

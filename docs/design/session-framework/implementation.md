@@ -573,8 +573,8 @@ section 12 (amendment 2026-10-02); [step-v1](step-v1.md)'s ordering is untouched
   `7b940584`) in `local`, `bus/thread` and `bus/process` (the FAFB parity suites, all arms).
 - **Review notes (2026-10-02).** The review approved with notes; since the feed and the control
   API already run over flybus in production, the router and SDK changes carry live traffic, so
-  every note was treated as live-path correctness. A recycled writer's staging file is emptied
-  and reserved again when the router reissues it, so no artifact sealed from it -- by prefix or
+  every note was treated as live-path correctness. A recycled writer's staging file is zero-filled
+  when the router reissues it (about 10 us a 92,160-byte reply on tmpfs), so no artifact sealed from it -- by prefix or
   whole -- carries the previous artifact's bytes (N3). A sealing reply is sent with the worker's
   result cache held, so a duplicate replays the sealed artifacts rather than racing the reply
   with an unsealed writer (N2). A refused sealing reply is answered as the handler's own seal
