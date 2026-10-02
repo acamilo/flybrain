@@ -1182,12 +1182,23 @@ loud which backend is configured. Two separate switches, deliberately:
 | build | `FLY_CARGO_FEATURES=cuda` | `build-flysim.sh` | the backend is *compiled in*, `libcuda` still only `dlopen`ed |
 | run | `FLY_LIF_CUDA=1` | the env file → `/etc/fly/fly.env` | the backend is *attached* |
 
-A binary without the feature ignores `FLY_LIF_CUDA=1` **silently**, so confirm the
+A `flysim` binary without the feature ignores `FLY_LIF_CUDA=1` **silently**, so confirm the
 backend from flysim's own log, not from the env file:
 
 ```sh
 pct exec <ctid> -- journalctl -u flysim -b --no-pager | grep -i 'cuda\|lif backend'
 ```
+
+The session runtime (`flysim-session`, `fly-shadow`, GPU-02) reads the same two variables
+(`FLY_LIF_CUDA`, `FLY_LIF_CUDA_DEVICE`, a device ordinal) in its agent worker and does **not**
+ignore them: without the feature, or when the backend cannot start, `Agent.Initialize` fails
+with `BACKEND_FAILURE`, and the worker logs `LIF backend cuda:<n> attached, device-owned state`
+when it starts. It steps one game frame per GPU call and keeps `membrane` and `refractory` on the
+card, copying them back only for a checkpoint, so per frame only the inputs (noise draws, visual
+drive, plastic gains, about 110 KB) go up and the spike lists come down. A CUDA failure mid-run
+fails the agent; a restore into that worker runs on the CPU from the last checkpoint (bit-exact, so nothing is
+migrated). Build all binaries with the feature: `FLY_CARGO_FEATURES=cuda` now reaches
+`flysim-session`, `fly-shadow` and `fly-session` too.
 
 It needs `GPU=1` (the `/dev/nvidia*` device block plus the userspace driver in the
 container — `docs/design/gpu.md` sections 1 and 2) and the card the committed PTX

@@ -21,6 +21,11 @@ path = "src/bin/flysim-session.rs"
 name = "fly-shadow"
 path = "src/bin/fly-shadow.rs"
 
+[features]
+# The LIF tick on the GPU (GPU-02), for `flysim-session` and `fly-shadow`: the same switch as
+# flysim's, so `FLY_CARGO_FEATURES=cuda infra/build/build-flysim.sh` builds every binary with it.
+cuda = ["fly-session/cuda", "flysim/cuda"]
+
 [dependencies]
 # The session framework and its legacy workers (AGENT-01, ENV-01).
 fly-session = { path = "../fly-session" }

@@ -18,6 +18,11 @@ path = "src/lib.rs"
 name = "fly-session"
 path = "src/bin/fly-session.rs"
 
+[features]
+# The LIF tick on the GPU (GPU-02), a passthrough to `flybrain-core/cuda`. Compiling it in does not
+# turn it on: the agent worker attaches the backend only when `FLY_LIF_CUDA=1` reaches it.
+cuda = ["flybrain-core/cuda"]
+
 [dependencies]
 # The domain contract (scalars, payloads, canonical digests, the trace format) and the bus.
 # Everything else this crate needs is std or Tokio.

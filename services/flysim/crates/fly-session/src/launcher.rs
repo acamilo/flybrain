@@ -1671,6 +1671,9 @@ pub(crate) fn legacy_agent_config(spec: &LegacyAgentLaunch, worker_threads: usiz
         dataset_dir: spec.dataset_dir.clone(),
         profile: spec.profile,
         macro_channels: spec.macro_channels.clone(),
+        // The deployment's switch, read where the worker runs: a thread, or a child process
+        // that inherited the launcher's environment.
+        lif_backend: flybrain_core::lif::LifBackend::from_env(),
     }
 }
 
