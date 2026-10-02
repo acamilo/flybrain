@@ -88,9 +88,12 @@ comparison also names its caveats (different lengths, different runtimes, fewer 
 pairs, unpaired runs). Exit status 1 is a failed metric.
 
 The metrics: rungs per hour, places per hour, empty pad %, suspected probes %, ladder events per
-hour, hunt windows flagged %, rollbacks per hour, blocked macro %, buy ball, throws and catches
-per hour, battles won and lost per hour, whiteouts per hour. Heals per hour and macro starts per
-minute are reported, never judged: healing more can follow losing more.
+hour, rollbacks per hour, blocked macro %, buy ball, throws and catches per hour, battles won and
+lost per hour, whiteouts per hour. Heals per hour, macro starts per minute and the trap hunt's
+flagged windows are reported, never judged: healing more can follow losing more, and a fly that
+fights for most of a run presses NEXT through battle text more than ten times in two minutes,
+which the hunt reads as a repeated sequence (nine windows in ten are flagged on the baseline, so
+the number has no room to move).
 
 ## Cost and size
 
@@ -123,4 +126,34 @@ predates it can be scored and its numbers are its own. The operator's nightly ru
 latest release tag on a build box, runs the suite, writes the card and a one-screen summary and
 compares with the previous release's card.
 
-`tools/scorecard/baseline-v0.7.5.json` is the reference card of v0.7.5 (adapter v8).
+## The v0.7.5 baseline
+
+`tools/scorecard/baseline-v0.7.5.json` is the reference card of v0.7.5 (adapter v8,
+compatibility `ff09d7dd5483`): the default set, 12 checkpoints by 3 seeds by 10 brain minutes on
+the session runtime, 6.0 brain hours, 6,130 s wall on a shared build box.
+
+| headline | v0.7.5 |
+| --- | ---: |
+| rungs per brain hour | 1.50 (9 of 36 runs climbed) |
+| empty-pad time | 6.96% of frames |
+| watchdog probes suspected | 2.8% |
+| ladder-worthy traps | 1 (one run, `r09-forest-catch`) |
+| blocked macro finishes | 0.5% |
+| buy ball / throw / catch | 10 / 10 / 8 |
+| heals / whiteouts | 9 / 46 |
+| battles won / lost | 33 / 45 |
+| ratchet rollbacks | 1 |
+
+What the card shows about v0.7.5, worth reading before the next release is compared with it:
+
+- **The fly fights for most of the frames it is given.** On nine of the twelve checkpoints a
+  battle is half to nine tenths of the frames, and it loses more than it wins (45 lost, 33 won;
+  46 whiteouts). The longest single battle is 18,354 frames (five brain minutes, a trainer, on
+  `r11-mart`); `r09-forest-catch` has one of 26,245 frames in a wild battle.
+- **`r15-nugget-bridge` keeps walking and finds nothing.** After the Oddish is caught (all three
+  seeds), the fly spends the rest of the run in the overworld, GO OBJECTIVE and GO OUT
+  alternating 13 times each in ten minutes, with the exploration count unmoved (2,527). The
+  watchdog does not flag it (a ring this slow stays under its twenty repeats), so no recovery
+  step would act on it.
+- The shop-to-catch funnel closes: buy ball, throw and catch all occur, across rungs 9 to 15.
+

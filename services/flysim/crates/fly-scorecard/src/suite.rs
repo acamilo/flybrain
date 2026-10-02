@@ -393,6 +393,23 @@ mod tests {
     }
 
     #[test]
+    fn the_committed_baseline_is_a_valid_card_and_passes_against_itself() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../tools/scorecard/baseline-v0.7.5.json");
+        let card = SuiteReport::load(&path).expect("the reference card");
+        assert_eq!(card.label, "v0.7.5");
+        assert_eq!(card.build.adapter, "pokered-unique8-v8");
+        assert_eq!(card.runs.len(), 36);
+        assert!(card.failed_runs.is_empty());
+        assert!(card.runs.iter().all(|run| run.frames > 30_000 && run.minutes >= 10.0));
+        let comparison = crate::compare::compare(&card, &card, 0.05);
+        assert!(comparison.pass, "{:?}", comparison.failed);
+        assert_eq!(comparison.pairs, 36);
+        // Nothing in a public card names a path or a host.
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("/home/") && !text.contains("192.168"));
+    }
+
+    #[test]
     fn a_suite_round_trips_and_summarises() {
         let mut run = RunReport {
             checkpoint: "r08".into(),

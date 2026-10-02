@@ -90,12 +90,16 @@ pub const METRICS: &[Metric] = &[
         rel_tol: 0.25,
         read: |r| per_hour(r.watchdog.ladder_events as f64, r),
     },
+    // The trap hunt's windows are reported, not judged: a fly that fights for most of a run
+    // presses NEXT through battle text more than ten times in two minutes, which that instrument
+    // reads as a repeated sequence, so on these checkpoints nine windows in ten are flagged and
+    // the number has no room to move. The watchdog's rules above are the judged ones.
     Metric {
         name: "hunt_flagged_pct",
         unit: "% of windows",
-        direction: Direction::Down,
-        abs_tol: 5.0,
-        rel_tol: 0.25,
+        direction: Direction::Info,
+        abs_tol: 0.0,
+        rel_tol: 0.0,
         read: |r| pct(r.hunt.flagged as f64, r.hunt.windows as f64),
     },
     Metric {
