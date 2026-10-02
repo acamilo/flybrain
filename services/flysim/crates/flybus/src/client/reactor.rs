@@ -44,6 +44,17 @@ pub(crate) enum Extra {
     Service(ServiceGuard, mpsc::UnboundedReceiver<Request>),
     Subscription(SubscriptionGuard, mpsc::UnboundedReceiver<Message>),
     Call(CallGuard),
+    /// The writers a sealing send's reply reissued (`recycle`), with their owners.
+    Writers(Vec<WriterGrant>),
+}
+
+/// One recycled writer a sealing send's reply granted (bus-v1 section 12 amendment
+/// 2026-10-02): the attachment it was, and the new artifact its staging file now is.
+pub(crate) struct WriterGrant {
+    pub name: String,
+    pub artifact_id: String,
+    pub owner: Arc<OwnerGuard>,
+    pub location: crate::wire::Location,
 }
 
 /// What the reactor does with a reply before handing it over. Handles are built here, inside
@@ -57,6 +68,8 @@ pub(crate) enum Hook {
     Subscribe,
     Call(String),
     Cancel(String),
+    /// `value.writers`, when present, are new writers (a recycling sealing send).
+    Writers,
 }
 
 pub(crate) struct OutCommand {
@@ -445,6 +458,7 @@ pub(crate) async fn write_loop(shared: Arc<Shared>, mut wr: WriteHalf<Transport>
                     _ = shutdown.wait_for(|v| *v) => break,
                 }
             }
+
             Next::Exit => break,
         }
     }
@@ -617,6 +631,7 @@ fn validate_reply_value(op: &str, value: &Map<String, Value>) -> Result<(), Wire
         }
         "rpc.reply" => {
             f.boolean("routed")?;
+            validate_writers(&mut f)?;
         }
         "rpc.responder.release" => {
             f.boolean("released")?;
@@ -673,6 +688,29 @@ fn validate_reply_value(op: &str, value: &Map<String, Value>) -> Result<(), Wire
     f.finish()
 }
 
+/// The optional `writers` of a sealing send's reply (bus-v1 section 12 amendment 2026-10-02).
+fn validate_writers(f: &mut Fields<'_>) -> Result<(), WireError> {
+    let Some(list) = f.optional("writers") else {
+        return Ok(());
+    };
+    let list = list
+        .as_array()
+        .filter(|l| (1..=crate::wire::MAX_ATTACHMENTS).contains(&l.len()))
+        .ok_or_else(|| WireError("writers must be an array of 1..=32 grants".into()))?;
+    for w in list {
+        let mut g = Fields::new(w, "writer")?;
+        g.id("name")?;
+        serial_field(&mut g, "artifactId", "a")?;
+        if g.u64_string("generation")? != GENERATION {
+            return Err(WireError("unsupported artifact generation".into()));
+        }
+        serial_field(&mut g, "ownerId", "own")?;
+        crate::wire::Location::from_json(g.value("writeLocation")?)?;
+        g.finish()?;
+    }
+    Ok(())
+}
+
 fn owner_guard(conn: &Weak<ClientConn>, id: String, delivery: bool) -> Option<Arc<OwnerGuard>> {
     Some(Arc::new(OwnerGuard {
         id,
@@ -704,6 +742,36 @@ fn complete(
             value,
             extra: Extra::None,
         }),
+        (Hook::Writers, Ok(value)) => {
+            // Every granted writer gets its guard here, inside the reactor, so a caller that
+            // abandoned the reply still releases them.
+            let mut grants = Vec::new();
+            let mut closed = false;
+            if let Some(Value::Array(list)) = value.get("writers") {
+                for w in list {
+                    let mut g = Fields::new(w, "writer")?;
+                    let name = g.id("name")?;
+                    let artifact_id = g.id("artifactId")?;
+                    let owner_id = g.id("ownerId")?;
+                    let location = crate::wire::Location::from_json(g.value("writeLocation")?)?;
+                    match owner_guard(conn, owner_id, false) {
+                        Some(owner) => grants.push(WriterGrant { name, artifact_id, owner, location }),
+                        None => {
+                            closed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if closed {
+                Err(BusError::lost("client closed"))
+            } else {
+                Ok(Reply {
+                    value,
+                    extra: Extra::Writers(grants),
+                })
+            }
+        }
         (Hook::Owner, Ok(value)) => {
             let id = Fields::of(&value, "reply").id("ownerId")?;
             match owner_guard(conn, id, false) {
@@ -826,12 +894,22 @@ fn u64_field(f: &mut Fields<'_>, key: &'static str) -> Result<u64, WireError> {
     parse_u64(s).ok_or_else(|| WireError(format!("{key} is not a U64")))
 }
 
+/// Moves an object field out of a validated body (BUS-02: the payload is the one large part of a
+/// delivery, and it used to be deep-copied out of the tree it was parsed into).
+fn take_object(body: &mut Map<String, Value>, key: &str) -> Map<String, Value> {
+    match body.remove(key) {
+        Some(Value::Object(m)) => m,
+        _ => Map::new(),
+    }
+}
+
 fn on_delivery(
     shared: &Arc<Shared>,
     conn: &Weak<ClientConn>,
-    env: Envelope,
+    mut env: Envelope,
 ) -> Result<(), WireError> {
-    let mut f = Fields::of(&env.body, "delivery");
+    let mut body = std::mem::take(&mut env.body);
+    let mut f = Fields::of(&body, "delivery");
     let delivery_id = f.id("deliveryId")?;
     let delivery_serial = parse_serial_id("dlv", &delivery_id)
         .filter(|n| *n > 0)
@@ -854,14 +932,16 @@ fn on_delivery(
                 return Err(WireError("service incarnation is not svc-<U64>".into()));
             }
             let method = f.method("method")?;
-            let payload = f.object("payload")?.clone();
+            f.object("payload")?;
             f.finish()?;
+            let payload = take_object(&mut body, "payload");
             accept_delivery_serial(shared, delivery_serial)?;
             let req = Request {
                 reply_guard: Arc::new(ReplyGuard {
                     conn: guard.conn.clone(),
                     call_id: call_id.clone(),
                     request_delivery_id: delivery_id.clone(),
+                    replied: std::sync::atomic::AtomicBool::new(false),
                 }),
                 guard,
                 call_id,
@@ -891,8 +971,9 @@ fn on_delivery(
             if parse_serial_id("svc", &service_incarnation).is_none() {
                 return Err(WireError("service incarnation is not svc-<U64>".into()));
             }
-            let outcome = f.object("outcome")?.clone();
+            f.object("outcome")?;
             f.finish()?;
+            let outcome = take_object(&mut body, "outcome");
             accept_delivery_serial(shared, delivery_serial)?;
             let res = RpcResult {
                 guard,
@@ -923,8 +1004,9 @@ fn on_delivery(
             }
             let topic_sequence = u64_field(&mut f, "topicSequence")?;
             let replaced = u64_field(&mut f, "replaced")?;
-            let payload = f.object("payload")?.clone();
+            f.object("payload")?;
             f.finish()?;
+            let payload = take_object(&mut body, "payload");
             accept_delivery_serial(shared, delivery_serial)?;
             let msg = Message {
                 guard,

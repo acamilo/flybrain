@@ -11,7 +11,8 @@ description = "A small local RPC and pub/sub bus with immutable file-backed arti
 # `flock`, `posix_fallocate` and `O_NOFOLLOW`; everything else is std or Tokio.
 libc = "0.2"
 serde = { workspace = true }
-serde_json = { workspace = true }
+# `raw_value`: the router forwards payloads it validated as pre-encoded JSON (BUS-02).
+serde_json = { workspace = true, features = ["raw_value"] }
 sha2 = { workspace = true }
 tokio = { version = "1", features = ["rt", "net", "io-util", "sync", "time", "macros"] }
 

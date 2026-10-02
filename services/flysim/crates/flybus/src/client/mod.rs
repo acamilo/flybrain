@@ -15,7 +15,7 @@ use tokio::sync::oneshot;
 use handles::attachment_list;
 pub use handles::{
     IN_MEMORY_STORE_ID, Artifact, ArtifactFile, ArtifactWriter, CancelState, Message, PendingCall, Request, Responder,
-    RpcResult, Service, Subscription,
+    RpcResult, SealedReply, Service, Subscription, Unsealed,
 };
 use reactor::{CallSlot, ClientConn, Extra, Hook, OutCommand, Shared};
 
@@ -593,6 +593,8 @@ impl Artifacts<'_> {
             artifact_id,
             byte_length,
             written: 0,
+            store_id: loc.store_id,
+            content_type: content_type.to_owned(),
         })
     }
 }

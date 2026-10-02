@@ -86,11 +86,6 @@ async fn unsealed_artifacts_cannot_be_used(via: Via) {
     let store = a["writeLocation"]["storeId"].clone();
     let reference = json!({"storeId": store, "artifactId": a["artifactId"], "generation": "1", "byteLength": "8",
         "contentType": "application/octet-stream", "digest": null});
-    let att = json!([{"name": "x", "ref": reference, "ownerId": a["ownerId"]}]);
-    let r = raw
-        .call_with("publish", json!({"topic": "t.x", "payload": {}}), att)
-        .await;
-    assert_eq!(code(&r), "ARTIFACT_UNSEALED");
     let r = raw
         .call(
             "artifact.open",
@@ -105,7 +100,20 @@ async fn unsealed_artifacts_cannot_be_used(via: Via) {
         )
         .await;
     assert_eq!(code(&r), "ARTIFACT_UNSEALED");
-    assert_eq!(code(&raw.seal(&a, Value::Null).await), "OK");
+    // Since the 2026-10-02 amendment (bus-v1 section 12), a sending command that names its own
+    // writer seals it as it is admitted: the writer is then a hold, and seals no more.
+    let att = json!([{"name": "x", "ref": reference, "ownerId": a["ownerId"]}]);
+    let r = raw
+        .call_with("publish", json!({"topic": "t.x", "payload": {}}), att)
+        .await;
+    assert_eq!(code(&r), "OK");
+    let r = raw
+        .call(
+            "artifact.open",
+            json!({"ref": reference, "ownerId": a["ownerId"]}),
+        )
+        .await;
+    assert_eq!(code(&r), "OK", "the writer became the sender's hold");
     assert_eq!(
         code(&raw.seal(&a, Value::Null).await),
         "OWNER_INVALID",

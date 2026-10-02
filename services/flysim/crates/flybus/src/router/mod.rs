@@ -331,6 +331,47 @@ async fn read_loop<R: AsyncRead + Unpin>(
                 };
                 inner.with_state(|s| s.finish_allocate(job, created));
             }
+            Outcome::SealThenAdmit(job) => {
+                // The writers a sending command attaches are sealed before it is admitted
+                // (bus-v1 section 12 amendment 2026-10-02): the copies run here, outside the
+                // state lock, and this connection's next command waits for the admission, so
+                // its commands stay in order. A recycled writer's staging file is kept and
+                // renamed for the artifact it becomes; otherwise it goes with the copy.
+                let total: u64 = job.seals.iter().map(|s| s.len).sum();
+                let plan: Vec<(u64, u64, Option<u64>)> =
+                    job.seals.iter().map(|s| (s.serial, s.len, s.recycle)).collect();
+                let i = inner.clone();
+                let run = move || {
+                    plan.into_iter()
+                        .map(|(serial, len, recycle)| {
+                            let r = i.store.seal_prefix(serial, len);
+                            match recycle {
+                                Some(next) if r.is_ok() => i
+                                    .store
+                                    .rename(&crate::store::staging_rel(serial), &crate::store::staging_rel(next))
+                                    .map_err(crate::store::SealFailure::Io),
+                                _ => {
+                                    i.store.remove(&crate::store::staging_rel(serial));
+                                    r
+                                }
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let results = if total <= crate::store::INLINE_IO_BYTES {
+                    run()
+                } else {
+                    let n = job.seals.len();
+                    tokio::task::spawn_blocking(run).await.unwrap_or_else(|e| {
+                        (0..n)
+                            .map(|_| Err(SealFailure::Io(io::Error::other(e.to_string()))))
+                            .collect()
+                    })
+                };
+                if let Outcome::Close = inner.with_state(|s| s.finish_sealing_send(job, results)) {
+                    return;
+                }
+            }
             Outcome::Seal(job) if job.len <= crate::store::INLINE_IO_BYTES => {
                 // A small seal copies in place, for the same reason; the connection's reader
                 // waits for it as it waits for any command (BUS-01). The outcome is the
