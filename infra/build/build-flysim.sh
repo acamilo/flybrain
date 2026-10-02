@@ -85,6 +85,9 @@ log "building in $crate_dir for target-cpu=haswell (the host is E5-2660 v3, Hasw
     # without a rebuild. It lands next to OUT_PATH, where package-release.sh
     # looks for it.
     RUSTFLAGS="-C target-cpu=haswell" cargo build --release --target "$CARGO_TARGET" --bin fly-edge
+    # fly-control-edge (FLY_CONTROL_VIA=bus, CTRL-01): the control API served from
+    # flysim's control services on the bus. Same reasons, same place.
+    RUSTFLAGS="-C target-cpu=haswell" cargo build --release --target "$CARGO_TARGET" --bin fly-control-edge
     # flysim-session (SERVE-01): the live fly on the session runtime, a drop-in for flysim
     # that `fly-runtime session` points flysim.service at; fly-shadow (SHADOW-01,
     # infra/units/flyshadow.service): the session runtime shadowing the live fly; and
@@ -125,6 +128,12 @@ edge_out="$(dirname "$OUT_PATH")/fly-edge"
 cp "$edge_built" "$edge_out"
 chmod 0755 "$edge_out"
 log "built $edge_out ($(du -h "$edge_out" | cut -f1))"
+control_edge_built="${crate_dir}/target/${CARGO_TARGET}/release/fly-control-edge"
+[ -x "$control_edge_built" ] || die "expected binary not found after build: $control_edge_built"
+control_edge_out="$(dirname "$OUT_PATH")/fly-control-edge"
+cp "$control_edge_built" "$control_edge_out"
+chmod 0755 "$control_edge_out"
+log "built $control_edge_out ($(du -h "$control_edge_out" | cut -f1))"
 for extra in flysim-session fly-shadow fly-session; do
     extra_built="${crate_dir}/target/${CARGO_TARGET}/release/${extra}"
     [ -x "$extra_built" ] || die "expected binary not found after build: $extra_built"

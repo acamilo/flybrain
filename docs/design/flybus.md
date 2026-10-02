@@ -1,7 +1,8 @@
 # flybus: the communications bus
 
-Status: **crate landed; the feed rides it behind `FLY_FEED_VIA=bus`, off by default**.
-Written 2026-09-22, amended 2026-09-23 (EDGE-01, below). Index only; the
+Status: **crate landed; the feed rides it behind `FLY_FEED_VIA=bus` and the control API behind
+`FLY_CONTROL_VIA=bus`, both off by default**. Written 2026-09-22, amended 2026-09-23 (EDGE-01)
+and 2026-10-01 (CTRL-01, "Control over the bus", below). Index only; the
 authority for the API and the wire format is the crate's own
 [README](../../services/flysim/crates/flybus/README.md), and the audit of the crate against
 the draft is the [conformance report](session-framework/bus-conformance.md).
@@ -61,13 +62,13 @@ allocate/seal/read with quotas and router restarts, plus the conformance suites 
 ## Wiring still pending
 
 - ~~**flysim publisher.**~~ Done 2026-09-23 behind `FLY_FEED_VIA=bus`: see "Feed over the bus".
-- **flysim control services.** The control endpoints as RPC services with grants, so the
-  "no button endpoint" structural guarantee is expressed as a grant table.
+- ~~**flysim control services.**~~ Done 2026-10-01 behind `FLY_CONTROL_VIA=bus`: see "Control
+  over the bus". The "no button endpoint" guarantee is a grant table there.
 - **Stage and bridge clients.** Both are TypeScript/Node; the crate is Rust only, so either
   a binding or a thin translating edge process is required before they leave the WebSocket
   and HTTP surfaces. The operator chose the edge process (port decisions, 2026-09-23); for
-  the feed it exists (`fly-edge`), and they keep the WebSocket contract unchanged. The
-  control API (:7401) is the next slice and stays in flysim until then.
+  the feed it is `fly-edge` and for the control API `fly-control-edge`, and both keep their
+  contracts byte for byte.
 - ~~**Sizing.**~~ Decided 2026-09-23: amendment "Feed sizing" below.
 - ~~**Lifecycle.**~~ Decided 2026-09-23: amendment "Feed store lifecycle" below.
 - **Migration order.** The feed is the cheaper first move; control should follow only once
@@ -188,3 +189,208 @@ Accepted for now and written down rather than fixed:
   escalates. Switch back to `direct` first (the unit header's way back), then roll back.
 - **Old fixtures.** `cold-open`, `steady` and `big-moment` predate `game.scene` and cannot be a
   Rust `FeedHeader`, so fixture parity covers `macros`, `shop`, `center` and `bigpad`.
+
+## Control over the bus (2026-10-01, CTRL-01)
+
+`control.via` (`FLY_CONTROL_VIA`) picks who serves `http://127.0.0.1:7401`. `direct` is the
+default and the behaviour that predates the bus. With `bus`:
+
+```text
+ api router (flysim::api)       BusBackend            flybus (Unix socket)       control host (in flysim)
+ :7401 in fly-control-edge  --> encode_request --> <bus_dir>/control-edge.sock --> fly.control.s.main.* services
+   same routes, extractors,       (controlbus)        bound to "fly-control-edge"     -> flysim::control::handle
+   404s, headers, bodies                                                              -> the same Command queue
+```
+
+- `docs/control-api.md` is unchanged and still binding: every endpoint, status code and body.
+  flysim's control code is split in two. `flysim::control` holds the semantics: one
+  `ControlRequest` per endpoint, and `handle`, the only code that validates a request, talks to
+  the loop and picks a status. `flysim::api` is the HTTP layer over any `ControlBackend`. Direct
+  mode is `api` over `control` in one process. Bus mode is the same `api` in `fly-control-edge`
+  over a `BusBackend`, which carries the request to the `control` services in flysim. Neither
+  process has an HTTP table or a validation rule of its own, so the bytes on `:7401` are the
+  same in both modes. `crates/fly-control-edge/tests/parity.rs` sends every endpoint, each
+  validation case and each refusal to both paths and requires equal status, headers and
+  body. Over real sockets, it also requires the whole HTTP/1.1 response to be equal apart from
+  `date`. `fly-legacy-session/tests/service_parity.rs` runs the session runtime once more with
+  its control on the bus and compares it with the legacy loop. The comparison covers 120
+  frames, 19 control responses, the event log, the journal and the final checkpoint.
+- Both runtimes get it: `flysim` and `flysim-session` both run `flysim::serve`, which in bus mode
+  does not bind `control.bind`. Instead it registers the services on the embedded router. That
+  is the feed's router when the feed is on the bus too: one router, one store, one closed policy
+  (`flysim::bus`). The read-only `control.metrics_bind` listener (`:9101`) stays in flysim in
+  both modes.
+- Nothing about the fly changes. The command queue, its bound and its timeouts are the same.
+  The compatibility string is byte-identical in both modes.
+
+### Services and methods
+
+flybus grants name services, not methods. The surface is therefore split into six service
+*families*, and a grant names families. Every family is scoped either to a session or to one
+agent (fly) of it. Each method's payload and outcome:
+
+| Service (live names) | Method | Endpoint | Payload |
+| --- | --- | --- | --- |
+| `fly.control.s.main.read` | `Control.Status` | `GET /status`, `/status.json` | `{}` |
+| | `Control.Healthz` | `GET /healthz` | `{}` |
+| | `Control.Metrics` | `GET /metrics` | `{}` |
+| | `Control.Events` | `GET /events` | `{since?: string, limit?: string}`, the raw query values |
+| `fly.control.s.main.a.fly.status` | `Control.Status` | (none: the fly's own status, for native clients) | `{}` |
+| `fly.control.s.main.a.fly.sugar` | `Control.Stimulate` | `POST /stimulate` | `{request?: <body JSON>}` |
+| `fly.control.s.main.a.fly.reward` | `Control.Reward` | `POST /reward` | `{request?: <body JSON>}` |
+| `fly.control.s.main.chat` | `Control.Chat` | `POST /chat` | `{request?: <body JSON>}` |
+| `fly.control.s.main.ops` | `Control.Checkpoint`, `Control.Pause`, `Control.Resume` | `POST /checkpoint`, `/pause`, `/resume` | `{}` |
+
+- **Outcome.** `{"status": <the control-api.md code>, "body": <the JSON body>}`, or `{"status",
+  "text"}` for `/metrics`. Above 48 KiB (a full `/events` page can be 4,096 events) the body
+  travels as a sealed `body` artifact instead, with `bodyArtifact` naming its type. The status
+  code is the outcome's vocabulary, not transport. A bus caller reads `429 {retryAfterMs}` as an
+  HTTP caller does, so the edge needs no table of its own.
+- **Requests** carry the body as the caller sent it (`request` is absent when it was empty or
+  not JSON), so validation stays in `control::handle`. A `request` over 48 KiB of JSON travels as
+  a sealed `request` artifact with `requestArtifact: true` in the payload, so a large body gets
+  the answer direct mode gives it, not an envelope error (`tests/parity.rs`). An unknown payload field is a 400. A
+  method the service does not have is a 404. Neither reaches the loop.
+- **Concurrency.** Each service has 16 queued and 16 in flight (`controlbus::SERVICE_CONFIG`).
+  The router dispatches FIFO per service. The host answers each request in a task of its own, so
+  a pause waiting on a durable write does not hold up a resume. Families are separate services,
+  so a stuck `ops` never delays `/status`.
+- **Backpressure.** The bound is on the queue at the moment of admission. A burst can
+  therefore be refused before the router has dispatched its first calls into the in-flight
+  slots. That is measured, not assumed (`tests/backpressure.rs`). A full service refuses at
+  once with `BACKPRESSURE`, and the edge answers it
+  with direct mode's `503 {"error": "the simulation command queue is full"}`. Bus failures use
+  direct mode's words for the same failure (`control::unavailable`). `NO_SERVICE` before
+  dispatch is "has stopped"; `NO_SERVICE` after dispatch, `CALL_GONE` and `ROUTER_LOST` are
+  "dropped the request". `NOT_AUTHORIZED` is a 403.
+- **Deadlines and cancel.** The host keeps direct mode's own timeouts: 2 s for a command,
+  none for `/checkpoint` and `/pause`, which wait for a durable write. The edge adds a guard of
+  that plus 2 s for timed requests only. At the guard it cancels the call and answers direct
+  mode's timeout 503. A call cancelled before dispatch never reaches the loop. A dispatched call
+  may still act, as a direct request whose caller timed out may. An HTTP client that goes away
+  drops its handler, and with it the pending call. The router discards the late result, and
+  the call record goes once the host answers (`tests/backpressure.rs`).
+
+### Grants: the structural guarantee as a table
+
+| Participant (socket) | read | status | sugar | reward | chat | ops | register |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `flysim-control`, the host (in-process, no socket) | | | | | | | every control service, exact names |
+| `fly-stage` (`control/stage.sock`) | yes | yes | | | | | |
+| `fly-bridge` (`control/bridge.sock`) | yes | yes | yes | | yes | | |
+| `fly-watchdog` (`control/watchdog.sock`): watchdog, loop-recover ladder, `fly-runtime`, probation, shadow guard, stream check | yes | yes | | | | | |
+| `fly-operator` (`control/operator.sock`) | yes | yes | yes | yes | yes | yes | |
+| `fly-control-edge` (`control-edge.sock`): everything on `:7401` | yes | yes | yes | yes | yes | yes | |
+| a player backing one fly (`player_grants`, not wired yet) | yes | that fly | that fly | | | | |
+
+The status, sugar and reward columns are per agent: a role gets them for every fly of the
+session (`grants`), or for one fly by id or by controller port (`grants_for`, `player_grants`
+with `Agents::Id` or `Agents::Port`). The table is `controlbus::Role` and `controlbus::grants`. It reflects what each client calls
+today: the stage only waits on `/healthz`; the bridge calls `/status`, `/stimulate`, `/chat`,
+`/events` and `/healthz`; the infra scripts only read; the operator uses `curl`. Each socket is
+launcher-bound to its participant. The watchdog and the ladder restart through systemd, never
+through a control call.
+
+"Nothing can press buttons" is structurally true because of four properties. Each is tested:
+
+1. **No method takes input.** `ControlRequest` and the loop's `Command` have no variant that
+   presses a button, edits game memory or changes the reward catalog, so no method can be added
+   without a contract change. Service and method names are scanned for the same words `api.rs`
+   scans routes for (`controlbus` unit tests).
+2. **Grants are exact calls and nothing else.** No role is granted `Any`, a prefix, `register`,
+   `publish`, `subscribe` or topic management (`every_grant_is_an_exact_call_...`). On a router
+   that also carries an environment's input service, no control participant can call that
+   service, the operator and the edge included. The router refuses before dispatch
+   (`tests/grants.rs`, `on_a_shared_router_no_control_participant_can_reach_an_input_service`).
+3. **Only the host registers.** The one register grant belongs to an in-process participant
+   with no socket, so nothing outside flysim can stand in for a control service. A socket admits
+   only its own participant; claiming another id at hello is refused.
+4. **The policy is closed.** An id that is not in the table cannot connect.
+
+What this does not change: loopback HTTP has no caller identity, so `fly-control-edge` carries
+the whole surface. That is exactly the trust `:7401` has today. A client is narrowed by moving
+it off HTTP onto its own role socket. That needs a native client for the TypeScript processes
+(a later slice; the operator chose edges over a Node binding for now). The bus's own limit still
+applies: processes running as the same OS user are inside the trust boundary (crate README,
+"Limitations").
+
+### N flies, M environments, controller ports, players
+
+Operator direction (2026-10-01): first the existing Game Boy fly goes fully onto the framework
+and the bus. A later project puts several flies on multi-controller consoles, one fly per
+controller port. This slice does not build that, but the services and grants are scoped per
+session, per agent and per port from the start, so multi-fly is configuration, not a redesign.
+A single-fly deployment is the same design with one agent.
+
+- **Scope** (`controlbus::Scope`): a session id and its agents, each an id and, where the
+  environment has controller ports, the port it plays on (`AgentScope { id, port }`). The live
+  fly is session `main`, agent `fly` on port 0, the Game Boy's one pad (`Scope::live`). A scope
+  refuses two agents with one id or on one port.
+- **Session-scoped** families (read, chat, ops) are `fly.control.s.<session>.<family>`. Pause and
+  checkpoint act on a whole session: one coordinator steps every agent, and one save is one
+  generation. The chat ring is the session's stage. `read` holds the session's status, health,
+  metrics and event log.
+- **Agent-scoped** families (status, sugar, reward) are
+  `fly.control.s.<session>.a.<agent>.<family>`, one service per fly. A sugar or reward pulse goes
+  into one brain. Each fly's own view is its `status` service. Adding a fly adds its three
+  services, and nothing else changes.
+- **Ports.** A port is a property of an agent's binding, not part of a name, because a pulse
+  goes into a brain, not into a controller. A grant limited to a port
+  (`Agents::Port(n)`) is resolved to the agent bound to that port when the policy is built. The
+  policy is fixed for a router's lifetime, so rebinding ports is a session restart. A port nobody
+  plays on grants no agent service.
+- **M sessions** on one router (several games, or one multiplayer game) have disjoint names, so
+  a grant on one session never names another's. `:7401` addresses the live scope only. A second
+  session gets native bus clients, or an edge of its own on another port with its own scope.
+- **Environments.** Environment-scoped status is reserved as
+  `fly.control.s.<session>.e.<env>.read`. Environment *input* services (`Environment.Step` and
+  the like) are never in a control scope. An agent's decision reaches its environment through
+  the coordinator, never through control, and on a multi-controller console each fly's decoder
+  writes only its own port. Property 2 holds however many environments and ports share the
+  router.
+- **Players.** A viewer who backs one fly gets `player_grants(scope, Agents::Port(n))` or
+  `Agents::Id(..)`: read the session, see and sugar that fly, nothing else
+  (`a_player_sugars_their_own_fly_and_no_other`). In a multiplayer game the players on the pads
+  are flies, and their presses come from their decoders. A human input path would be a new
+  contract, never a control grant.
+
+### What in `docs/control-api.md` is single-fly
+
+The contract is unchanged by this slice. These parts of it assume one fly per session. Each
+would need a contract amendment before a second fly could be served over HTTP. The bus services
+above are already addressed per agent, so the amendments are to the HTTP shapes, not the bus.
+
+| Endpoint or rule | Why it is single-fly | Multi-fly direction |
+| --- | --- | --- |
+| `GET /status` | The feed header reshaped: one `buttons`, `rates`, `decoder`, `learning`, `game`, `milestone`, `sugar`, `version` | Per agent: each fly's `status` service. The session's `Control.Status` becomes a session shape listing its agents and ports |
+| `POST /stimulate` | No agent field; addresses "the fly" | The agent's `sugar` service; over HTTP an `agent` (or `port`) field, absent meaning the only fly |
+| sugar limits ("6 per minute globally, no overlap with an active pulse") | The overlap rule is per brain; the budget is per deployment | Overlap per agent; whether the budget is per fly or per session is a policy decision |
+| `POST /reward` | No agent field | The agent's `reward` service; same field as `/stimulate` |
+| `GET /events`, `events.jsonl` | `FeedEvent` has no agent: reward, sugar and macro events cannot say whose they are | An `agent` field on agent events, absent for session events |
+| `POST /checkpoint` | One generation of one FLYSIM01 envelope, which is single-fly by format | A session checkpoint holding every agent. FLYSIM01 stays the format of record until RETIRE-01 |
+| `GET /metrics` | Series carry no agent label (`fly_reward_*`, the rates) | An `agent` label on per-fly series |
+| `[macros]`, `loop.game` | One mode and one game per deployment | Per environment |
+| `POST /chat`, `/pause`, `/resume`, `/healthz` | Session-level already | None |
+
+### Lifecycle and operations
+
+- `bus_dir` (`FLY_BUS_DIR`, `/run/fly/bus`) as for the feed. Sockets are `control-edge.sock` and
+  `control/{stage,bridge,watchdog,operator}.sock`. Stale sockets are removed at start. With
+  control on the bus, the router's `max_clients` and `max_services` are the feed's plus 8.
+- `flycontrol-edge.service` has no `[Install]` section: `flysim.service` `Wants=` it, and its
+  `ExecCondition=` on `FLY_CONTROL_VIA` skips it in direct mode (EDGE-02's pattern for
+  `flyedge`), so every start of flysim, `fly-loop-reset`'s stop and start included, brings
+  `:7401` back. It is `After=` and `Requires=flysim.service`, gets the page's CPUs from the cpuset plan, and exports its own
+  counters on loopback `:9103` (`fly_control_edge_bus_connected`, `_calls_total`,
+  `_call_failures_total`, `_cancelled_total`, `_bus_lost_total`, `_bind_failures_total`).
+- The edge binds `:7401` only once the services answer. When the bus goes away it unbinds and
+  reconnects every 500 ms. To a client that looks exactly like flysim restarting
+  (`tests/backpressure.rs`, `tests/serve.rs`).
+- Watchdog. Check 1 reads flysim's own `/healthz` on `:9101` when `FLY_CONTROL_VIA=bus`, so an
+  edge outage never restarts the fly. Check 1b restarts the edge alone when `:7401` fails while
+  flysim is healthy. Every other `:7401` reader (`fly-runtime`, probation, shadow guard,
+  loop-recover, the stream check) goes through the edge unchanged.
+- Switch and rollback: `infra/docs/runbook.md`, "Control over the bus".
+- **Migration order.** This document's rule stands: the control API moves after the feed has
+  been on the bus in production for a full session. The switch exists independently of the
+  feed's, and when to throw it is the coordinator's call.

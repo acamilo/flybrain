@@ -6,7 +6,7 @@
 # <unit>` and, on the 5-consecutive-failure escalation, a container
 # reboot. This is the minimum NOPASSWD surface for exactly what
 # bin/fly-watchdog's checks actually restart (flysim, flystage, flycast,
-# mediamtx, flypush), plus reboot. No `systemctl stop`, no
+# mediamtx, flypush, and flycontrol-edge when FLY_CONTROL_VIA=bus), plus reboot. No `systemctl stop`, no
 # `enable`/`disable`, no arbitrary unit name, and no units this script
 # does not itself restart (xvfb, pulse, flystage-web are never touched by
 # fly-watchdog's checks, so they are not granted here).
@@ -15,6 +15,7 @@ fly ALL=(root) NOPASSWD: /usr/bin/systemctl restart flystage.service
 fly ALL=(root) NOPASSWD: /usr/bin/systemctl restart flycast.service
 fly ALL=(root) NOPASSWD: /usr/bin/systemctl restart mediamtx.service
 fly ALL=(root) NOPASSWD: /usr/bin/systemctl restart flypush.service
+fly ALL=(root) NOPASSWD: /usr/bin/systemctl restart flycontrol-edge.service
 fly ALL=(root) NOPASSWD: /usr/sbin/reboot
 # fly-loop-recover.service (also User=fly): its ladder restarts flysim (granted above) and
 # resets to a milestone archive through this one root wrapper, which validates the rung,

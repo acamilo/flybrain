@@ -6,6 +6,12 @@ nothing outside the container can reach it, and the bridge is the only intended 
 There is deliberately **no endpoint that presses buttons, edits game memory, or changes the
 reward catalog**. That is a structural guarantee, not a configuration.
 
+Who serves it (2026-10-01): flysim itself (`FLY_CONTROL_VIA=direct`, the default), or
+`fly-control-edge` from flysim's control services on the bus (`FLY_CONTROL_VIA=bus`,
+`docs/design/flybus.md`, "Control over the bus"). Both are the same HTTP code over the same
+request handling, so nothing in this document depends on the switch. On the bus, the
+guarantee above is also a grant table.
+
 | Method and path | Body | Effect |
 |---|---|---|
 | `GET /status` | | Same fields as the feed header minus events and attachments, plus `version` strings (kernel, plasticity, adapter, binjgb, dataset fingerprint) and `checkpoint: { latestWallMs, generation }`. Includes the macro buttons' `game.scene`, `game.macroMode`, `game.palette`, `game.macro` and `game.macroOutcome` (2026-09-16), because the body is the header reshaped rather than a parallel struct. `game.macroMode` is `"raw"` or `"macros"`, and each `game.palette` entry carries its `slot` (0..5), its `name`, its `gloss` and its `channel` tag (`docs/design/macros.md` section 12). |
