@@ -618,6 +618,38 @@ encoder.
   `FLY_FEED_VIA=direct` in the env file first, then roll back or deploy.
 - A reboot keeps whatever `fly.env` says.
 
+### What the rehearsal measured
+
+Before the first live switch (EDGE-02, 2026-10-02): the real fly (session runtime, real connectome,
+macros mode, sim on four CPUs and the page and edge on two others, as on the container), the real
+stage page in headless Chromium consuming through `fly-edge`, plus the repo's own units, `fly-feed`
+and watchdog under a real systemd. The build box was shared and loaded (load average 8 to 30), so
+**real-time factor is not comparable between the two runs**; the numbers below are the ones load does
+not move much. The live switch is the real A/B: take the step 1 baseline and compare.
+
+| Measure | direct | bus |
+| --- | --- | --- |
+| WebSocket content, speed 0.25 so every frame is published, 4,261 and 5,406 frames compared | reference | frame, audio and spike attachments byte-equal on every frame; headers equal except a wall-clock "checkpoint saved" event that lands on different frames in any two runs |
+| Latency, snapshot stamped by the sim to received by a local client (median / p95) | 1 / 3 ms | 7 / 14 ms (two hops: seal into the store, read out) |
+| CPU per snapshot | 0.24 ms (flysim's websocket thread, on the host CPU) | 2.4 ms in flysim (`flysim-bus` publisher, on the host CPU, about 7% of a CPU at 30 Hz) and 1.1 ms in the edge (page CPUs) |
+| Edge CPU and placement | n/a | 1.3% mean, 2.8% p95, only on the page CPUs |
+| Router store | n/a | 116 KB steady (median), 238 KB peak, 6 to 9 files, flat over the run |
+| Memory over 35 min plus the restarts | flysim 72 to 78 MB | flysim 65 to 69 MB, edge 8.3 to 9.6 MB; the page grows the same in both |
+| Snapshots dropped on the way (heavy load) | none seen by a local client | 0.28% sequence gaps at the recorder (the edge sits on CPUs Chromium saturates); none on a quiet box |
+| Page | 0 decode errors | 0 decode errors, gaps only under that load |
+
+Recovery, with the page (a reconnecting stage) as the witness: `kill -9 fly-edge`, a SIGTERM
+restart of it, and two kills 0.1 s apart (the router's one seat for the edge is released at once)
+each had the page streaming again in 0.7 to 0.9 s; a `kill -9` of flysim (router, publisher and
+sim) had the edge serving the new router 3 s later and the page 3.4 s later; a SIGTERM restart of
+flysim (the unstick rule) 4 and 5.3 s (the page's retries are 0.3 to 1 s apart, the sim restores
+from its hot ring). Under the real systemd: `fly-feed bus` took 6 s from command to "page on the
+feed", `fly-feed direct` 6 s, a `fly-feed bus` with a broken `fly-edge` rolled itself back after
+the 40 s test timeout and left the page on flysim, a stop and start of flysim brought the edge
+back by itself, and the watchdog's fourth failed pass switched a permanently broken edge back to
+direct with the page connected again. The live restart is longer than these 6 s by the real
+restore and warm-up; use the unstick rule's usual time.
+
 ### Notes
 
 - **Dashboards.** In bus mode flysim's `:9101` reports `fly_feed_clients` and
