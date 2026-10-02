@@ -411,6 +411,10 @@ pub enum ReapOutcome {
 struct Endpoints {
     router: Router,
     via: Via,
+    /// How this process's own clients -- the supervisor and the coordinator, which live with the
+    /// router -- reach it: in memory when the participants are a thread or a process away (their
+    /// sockets are the ones that cross a boundary; BUS-01), else the participants' transport.
+    own: Via,
     store_root: PathBuf,
     sockets: PathBuf,
     next_socket: AtomicU64,
@@ -423,9 +427,18 @@ impl Endpoints {
         self.sockets.join(format!("{client_id}-{n}.sock"))
     }
 
-    /// A connection this process owns, over the configured transport.
+    /// A connection this process owns: the supervisor's and the coordinator's.
     async fn connect(&self, client_id: &str) -> Result<Client, flybus::BusError> {
-        let transport = match self.via {
+        self.connect_via(self.own, client_id).await
+    }
+
+    /// A connection for an in-process participant, over the participants' transport.
+    async fn connect_participant(&self, client_id: &str) -> Result<Client, flybus::BusError> {
+        self.connect_via(self.via, client_id).await
+    }
+
+    async fn connect_via(&self, via: Via, client_id: &str) -> Result<Client, flybus::BusError> {
+        let transport = match via {
             Via::Memory | Via::Local => self.router.connect_in_memory_as(client_id),
             Via::Unix => {
                 let path = self.socket_path(client_id);
@@ -480,6 +493,30 @@ pub struct Launcher {
     serial: u64,
     /// Whether an in-process participant's reference carries its local lane (PERF-01).
     local_lane: bool,
+    /// Where each separate-process participant's threads run, by worker id (BUS-01).
+    placements: BTreeMap<Id, ProcessCpus>,
+}
+
+/// Where a separate-process participant's threads run (BUS-01): `host` for every thread of the
+/// process, and for an agent `sweep`, one CPU per spawned sweep worker (`flybrain_core::pool::
+/// Placement`). Given to the worker as `--host-cpus` and `--sweep-cpus`; the worker applies it
+/// before it starts a thread. Placement chooses a CPU, never a result.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProcessCpus {
+    pub host: Vec<usize>,
+    pub sweep: Vec<usize>,
+}
+
+/// The runtime a thread or process participant serves on (BUS-01): one async worker, so a bus
+/// request crosses no thread inside the participant -- each crossing was a wake-up on the
+/// participant's shared CPU, about a millisecond a transition in all -- and multi-thread rather
+/// than current-thread, so a handler that runs for seconds (a warm-up, a restore, a capture) can
+/// hand that worker over (`tokio::task::block_in_place`) and the shell keeps answering status and
+/// duplicates meanwhile. The thread allocation (`threads`) is the agent's sweep, not this runtime's.
+pub fn participant_runtime(_threads: usize) -> tokio::runtime::Builder {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    builder.worker_threads(1);
+    builder
 }
 
 /// The bus client id the supervisor connects under.
@@ -528,6 +565,10 @@ impl Launcher {
         let endpoints = Endpoints {
             router,
             via: mode.transport(via),
+            own: match mode {
+                ExecutionMode::InProcess => via,
+                ExecutionMode::Thread | ExecutionMode::Process => Via::Memory,
+            },
             store_root: store_root.into(),
             sockets,
             next_socket: AtomicU64::new(0),
@@ -544,7 +585,14 @@ impl Launcher {
             workers: BTreeMap::new(),
             serial: 0,
             local_lane: mode == ExecutionMode::InProcess && via == Via::Local,
+            placements: BTreeMap::new(),
         })
+    }
+
+    /// Places the separate process of `worker_id` (launched from now on) on `cpus`. Process mode
+    /// only; the other modes share this process's placement.
+    pub fn place_process(&mut self, worker_id: &Id, cpus: ProcessCpus) {
+        self.placements.insert(worker_id.clone(), cpus);
     }
 
     /// Offers every in-process participant launched from now on over the local lane
@@ -807,7 +855,7 @@ impl Launcher {
     ) -> Result<(WorkerHandle, StatusCell), DomainError> {
         let client = self
             .endpoints
-            .connect(&identity.client_id)
+            .connect_participant(&identity.client_id)
             .await
             .map_err(|e| launch_error(&identity.worker_id, &e))?;
         let service = register_with_retry(&client, &identity.service, self.health.boot)
@@ -862,10 +910,7 @@ impl Launcher {
         let join = std::thread::Builder::new()
             .name(format!("fly-session-{}", identity.worker_id))
             .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(threads)
-                    .enable_all()
-                    .build();
+                let runtime = participant_runtime(threads).enable_all().build();
                 let runtime = match runtime {
                     Ok(runtime) => runtime,
                     Err(e) => {
@@ -952,6 +997,18 @@ impl Launcher {
             .arg(threads.to_string());
         for (flag, value) in what.arguments() {
             command.arg(flag).arg(value);
+        }
+        if let Some(cpus) = self.placements.get(&identity.worker_id) {
+            if !cpus.host.is_empty() {
+                command
+                    .arg(format!("--{}", flags::HOST_CPUS))
+                    .arg(flybrain_core::pool::format_cpu_list(&cpus.host));
+            }
+            if !cpus.sweep.is_empty() {
+                command
+                    .arg(format!("--{}", flags::SWEEP_CPUS))
+                    .arg(flybrain_core::pool::format_cpu_list(&cpus.sweep));
+            }
         }
         command.stdin(std::process::Stdio::null());
         let child = command.spawn().map_err(|e| {
@@ -1411,6 +1468,10 @@ pub(crate) mod flags {
     pub const WORKER_THREADS: &str = "worker-threads";
     pub const MODES: &str = "modes";
 
+    /// BUS-01: the CPUs of the worker's threads, and an agent's sweep workers.
+    pub const HOST_CPUS: &str = "host-cpus";
+    pub const SWEEP_CPUS: &str = "sweep-cpus";
+
     /// What every launched worker is given.
     pub const COMMON: &[&str] = &[
         SOCKET,
@@ -1420,6 +1481,8 @@ pub(crate) mod flags {
         THREADS,
         SESSION,
         INCARNATION,
+        HOST_CPUS,
+        SWEEP_CPUS,
     ];
     /// What only an agent is given.
     pub const AGENT_ONLY: &[&str] = &[

@@ -7,10 +7,11 @@
 //!
 //! It reads exactly `flysim`'s configuration (`/etc/fly/fly.env` through the unit, or
 //! `--config flysim.toml`), writes the same checkpoint stores, event log, sugar journal and chat
-//! sidecar, and serves the same feed, control API and metrics. Three variables are its own:
+//! sidecar, and serves the same feed, control API and metrics. These variables are its own:
 //! `FLY_SESSION_DIR` (the session's router store and sockets, default `/run/fly/session`),
-//! `FLY_SESSION_MODE` (`in-process`, `thread` or `process`) and `FLY_SESSION_PROFILE`
-//! (`production`, or `toy` for tests).
+//! `FLY_SESSION_TRANSPORT` (`local`, the default, or `bus`; `--transport`), `FLY_SESSION_MODE`
+//! (`in-process`, `thread` or `process`; `process` by default on the bus), `FLY_SESSION_PIN`,
+//! `FLY_SESSION_AUX_CPUS` and `FLY_SESSION_PROFILE` (`production`, or `toy` for tests).
 //!
 //! The one-shot flags are `flysim`'s: `--check-config`, `--print-compatibility` (the session's
 //! own string, which must equal `flysim`'s), `--print-state-compatibility` and
@@ -48,6 +49,12 @@ struct Args {
     /// service stopped; `flysim --reset-to-milestone`, the same store).
     #[arg(long, value_name = "RANK")]
     reset_to_milestone: Option<u32>,
+
+    /// `local` (in-process over the local lane) or `bus` (every participant a socket client of
+    /// the session's router, one process each unless `FLY_SESSION_MODE` says otherwise).
+    /// Overrides `FLY_SESSION_TRANSPORT`.
+    #[arg(long, value_name = "local|bus")]
+    transport: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -55,7 +62,8 @@ fn main() -> Result<()> {
     init_tracing();
 
     let config = Config::load(args.config.as_deref())?;
-    let options = fly_legacy_session::service::ServiceOptions::from_env()?;
+    let options =
+        fly_legacy_session::service::ServiceOptions::from_env_with(args.transport.as_deref())?;
     tracing::info!(config = ?config, options = ?options, "resolved configuration");
     if args.check_config {
         println!("{}", toml::to_string_pretty(&config)?);

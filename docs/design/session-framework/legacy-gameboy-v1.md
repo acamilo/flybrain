@@ -456,6 +456,79 @@ the CPU a thread runs on, never what an index of a parallel phase computes.
   legacy loop's, which is what failed CUT-01's speed probation (0.959 < 0.97); placed, they cost
   what the legacy loop's do.
 
+**Amendment, 2026-10-01 (BUS-01): the composition on the router.** The operator's direction of
+2026-10-01: run the live session's participants over the flybus router on Unix sockets, one
+emulator and one fly today, because multiplayer and more flies follow. Nothing in the declaration,
+the digest or the compatibility string changes, and no result can: the bus carries the same
+domain calls, in the same order, to the same endpoints as the local lane. Traces, checkpoints and
+the FAFB parity runs are identical in every arm (`local`, `bus/thread`, `bus/process`;
+`fly_legacy_session::composition::SessionArm`).
+
+*Selecting it.* `FLY_SESSION_TRANSPORT=bus` (or `flysim-session --transport bus`) puts every
+participant on the router's sockets; `FLY_SESSION_MODE` then defaults to `process`, and `thread` and
+`in-process` are also allowed (`in-process` on the bus is every participant a socket client from
+the coordinator's own runtime). `local`, the default, is the PERF-01 lane and stays the release
+configuration until a cutover onto the bus. `local` with a thread or a process is refused: those
+have no lane. On the container, `fly-runtime session --bus` (`session-bus`) writes
+`Environment=FLY_SESSION_TRANSPORT=bus` into the runtime drop-in, and `session --local` takes it out.
+
+*The topology (process mode, the bus default).*
+
+| Process | Runs | Bus client | Reached by |
+| --- | --- | --- | --- |
+| `flysim-session` (the unit's main process) | the router (one per session), the launcher's supervisor, the coordinator with the `pokered-macros-v1` task and executor, the service host (feed, control API, metrics, checkpoint writer, sugar journal) | `coordinator`, `launcher` | in memory: they live with the router |
+| `fly-session legacy-agent` (child) | AGENT-01: the brain, its readout and its sweep pool | `legacy-fly`, registers `agent.fly` | `<session dir>/attempt-N/sockets/legacy-fly-<n>.sock`, launcher-bound |
+| `fly-session legacy-environment` (child) | ENV-01: binjgb, the slot, the memory image | `legacy-world`, then `legacy-world-r2` for the restore's replacement world; registers `env.world` | `.../sockets/legacy-world[-r2]-<n>.sock`, launcher-bound |
+
+- *Policy* (closed, `composition.rs`): the coordinator may call `agent.*` and `env.*` and owns
+  `session.*` (publish, topics, its query service); the supervisor may call `agent.*` and `env.*`
+  and register nothing; each participant may register exactly its own service and call nothing.
+  An identity is bound by the launcher before Hello, so a process cannot answer as another.
+- *Media* stay artifacts in the router's store (`<session dir>/attempt-N/store`, tmpfs, `fly`
+  0700): the 92,160-byte frame, the 65,536-byte memory image, the audio chunk (about 6.4 KB a frame
+  of `f32le`) and the 17,407-byte spike bitset every transition, and the captures (MBs, every hot
+  save). Inline is not an option: bus-v1 section 8.1 forbids binary in a body, and the image alone
+  would not fit the 64 KiB envelope once encoded. A delivery names each attachment's read location
+  (bus-v1 section 12, 2026-10-01), so a read is a local file read; a worker seals into writers it
+  allocated after the previous step (`worker::WriterPool`). Over the bus the agent's Commit also
+  attaches its feed status (`legacy.feed-status`, the `Legacy.FeedStatus` result's bytes as of the
+  committed boundary), which the service host reads instead of making that call at every publish;
+  a rollback after the Commit makes it ask again.
+- *One unit, restarted as a whole.* The session cannot survive the loss of a participant: its
+  state is split across them and is recovered only as a group (STATE-01), and the store's last save
+  is that group. So the children belong to `flysim.service` (the launcher spawns them; systemd's
+  default `KillMode=control-group` reaps them with the unit), a dead participant fails the step
+  within `ipc-v1` section 6's ten seconds, `flysim-session` exits, and `Restart=always` starts the
+  whole session again from the store -- what a crash of the in-process session does today. A
+  child also exits when its router connection closes. The router lives in the coordinator's
+  process for the same reason: its loss is the session's. One unit keeps `fly-runtime`'s one
+  drop-in switch, the `OnFailure=` fallback to legacy (three starts in ten minutes), the speed
+  probation, the watchdog and the unstick rule's restart unchanged; separate units would need
+  `BindsTo=` chains and three start limits for no recovery a group restore does not already give.
+- *CPUs.* The unit's cpuset is unchanged (on the release container `flysim.slice`'s four CPUs).
+  The service splits it as PERF-02 does and hands the split out: the agent process pins its spawned
+  sweep workers one per CPU and keeps its other threads (its dispatcher is sweep worker 0) on the
+  remaining CPU (`fly-session ... --sweep-cpus 3,5,7 --host-cpus 1`); the service process and the
+  world process run on that same host CPU. The transaction is serial -- nothing overlaps Prepare
+  (PERF-01) -- so they take turns on it rather than contend. `FLY_SESSION_AUX_CPUS` moves the
+  service and the world elsewhere in the unit's cpuset; it was measured and does not pay
+  (implementation guide, BUS-01). `FLY_SESSION_PIN=0` floats everything, as before.
+- *Each participant process has one async worker, and a long handler gives it up*
+  (`tokio::task::block_in_place` for `*.Initialize`, `State.*`, `Agent.Rollback`): the agent's
+  warm-up runs for seconds, and a Tokio worker blocked that long stranded the shell's own bus loop,
+  so `ipc-v1` section 6's resolution of a slow `Agent.Initialize` failed ("never resolved") and a
+  session could not boot on a loaded box. A step's handlers (milliseconds) run in place, so a bus
+  request crosses no thread inside a participant. The local lane is unchanged.
+
+*N agents and M environments are configuration.* Nothing above assumes one of each: the
+launcher starts any number of `LegacyAgentLaunch` and environment launches, each with its own
+client id, service name and socket; the policy grants are per client; placements are per worker
+id (`Launcher::place_process`), so each agent process pins its own sweep to its own CPUs; the
+coordinator calls agents concurrently and assembles one batch over every declared port; the router
+has no notion of a fly. What is one-of-each today is this composition (`LegacyConfig`, one
+`PokeredTask`, `FLYSIM01`'s one agent and one world) and the service's CPU split (one agent's
+plan), which a multi-agent composition replaces rather than extends.
+
 ## 13. Machine-readable parts
 
 | Where | What |
@@ -944,3 +1017,24 @@ verdict comes back (`shadow::remote`, `shadow::relay`, `shadow::ingest`).
   unchanged. `fly-shadow-run start` runs the shadow on the container only with `--local`.
 - *The guard* stays on the container and guards the live fly as before; it now watches the relay's
   cost, which is a few file reads and one ssh stream.
+
+**Amendment, 2026-10-01 (BUS-01): a shadow of the bus topology.** A cutover onto the bus is a
+cutover into another topology, so it needs a shadow that ran it. `fly-shadow --mode` (and
+`FLY_SHADOW_MODE`) names the topology as `SessionArm` does: `local` (the default, the in-process
+lane; `in-process` is the same), `bus/thread`, `bus/process` (`bus`, `process`), `bus/in-process`.
+`fly-shadow-run start --bus` sets `FLY_SHADOW_MODE=bus/process` in a drop-in of
+`flyshadow.service` (`mode.conf`); in remote mode the relay forwards it with the rest of the live
+composition's settings (it is in `FORWARDED_ENV`), so the box's shadow -- the same release, which
+ships `fly-session` beside `fly-shadow` -- starts its agent and its world as child processes on its
+own router's sockets. Its placement is the box's: the shadow places no thread. The verdict records
+the topology (`candidate.executionMode`, and `candidate.transport`, new), and
+`fly-shadow check --require-arm bus/process` (`fly-shadow-run check --bus`) refuses a verdict that
+did not run it; a verdict from before this amendment, with no `transport`, counts as `local` when
+it ran in process. The comparison, the window and every other rule of this section are unchanged.
+
+The shadow follows the trace only the legacy loop writes (`FLY_TRACE_DIR`); the session runtime
+ignores it. So the live fly runs the legacy runtime for the shadow's window, as it did for CUT-01:
+`fly-shadow-run start` refuses while `flysim.service` runs the session runtime. The procedure for a
+switch onto the bus is: `fly-runtime legacy`; `fly-shadow-run start --bus`; three hours of zero
+divergence; `fly-shadow-run check --bus && fly-runtime session --bus` (the probation then judges
+the bus topology). Shadowing the session runtime from its own trace is not built.

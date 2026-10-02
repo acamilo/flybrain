@@ -29,8 +29,8 @@ use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::http::{Method, Request};
+use fly_legacy_session::composition::SessionArm;
 use fly_legacy_session::service::{ServiceOptions, run_host};
-use fly_session::launcher::ExecutionMode;
 use fly_session::legacy_agent::LegacyProfileKind;
 use flysim::AppState;
 use flysim::config::Config;
@@ -69,14 +69,14 @@ fn sha(bytes: &[u8]) -> String {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Runtime {
     Legacy,
-    Session(ExecutionMode),
+    Session(SessionArm),
 }
 
 impl Runtime {
     fn label(&self) -> String {
         match self {
             Runtime::Legacy => "legacy".to_owned(),
-            Runtime::Session(mode) => format!("session ({})", mode.label()),
+            Runtime::Session(arm) => format!("session ({})", arm.label()),
         }
     }
 }
@@ -245,11 +245,13 @@ fn record(
                 let mut sim = Sim::boot(loop_shared, snapshots_tx, command_rx)?;
                 sim.run(&notifier)
             }
-            Runtime::Session(mode) => {
+            Runtime::Session(arm) => {
                 let options = ServiceOptions {
-                    mode,
+                    mode: arm.mode,
+                    transport: arm.transport,
                     profile,
                     session_dir,
+                    placements: Default::default(),
                 };
                 run_host(loop_shared, snapshots_tx, command_rx, &notifier, &options)
             }
@@ -580,15 +582,8 @@ fn seed(from: &Path, to: &Path) {
     }
 }
 
-fn modes() -> Vec<ExecutionMode> {
-    let mut modes = vec![ExecutionMode::InProcess];
-    let program = fly_session::launcher::default_worker_program();
-    if program.is_file() {
-        modes.push(ExecutionMode::Process);
-    } else {
-        eprintln!("process mode skipped: no worker program at {}", program.display());
-    }
-    modes
+fn modes() -> Vec<SessionArm> {
+    SessionArm::parity_arms()
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -14,8 +14,8 @@ use fly_session::coordinator::{AgentSlot, Coordinator, StepDetails, StepReport};
 use fly_session::fly_session_types::extensions::ROLLBACK_POLICY;
 use fly_session::fly_session_types::gameboy;
 use fly_session::launcher::{
-    ExecutionMode, Launcher, LegacyAgentLaunch, LegacyEnvironmentLaunch, SUPERVISOR_CLIENT,
-    ThreadBudget, Via,
+    ExecutionMode, Launcher, LegacyAgentLaunch, LegacyEnvironmentLaunch, ProcessCpus,
+    SUPERVISOR_CLIENT, ThreadBudget, Via,
 };
 use fly_session::legacy_agent::{LegacyProfileKind, SPIKES_ATTACHMENT};
 use fly_session::legacy_env::BackendConfig;
@@ -54,12 +54,152 @@ const COORDINATOR_CLIENT: &str = "coordinator";
 const ENV_CLIENT: &str = "legacy-world";
 const ENV_SERVICE: &str = "env.world";
 const ENV_WORKER: &str = "world";
+/// The environment's worker id, which [`LegacyConfig::placements`] names it by.
+pub const WORLD_WORKER: &str = ENV_WORKER;
 const AGENT_CLIENT: &str = "legacy-fly";
+
+/// How the session's participants reach each other (BUS-01).
+///
+/// - `Local`: in-process participants are called over the local lane (PERF-01): no bus message
+///   and no store file per call. Only [`ExecutionMode::InProcess`] has a lane.
+/// - `Bus`: every participant is a client of the session's router over a Unix-domain socket,
+///   launcher-bound to its identity, with its artifacts in the router's store: the topology that
+///   takes more flies and more worlds by configuration. In-process, thread and process modes all
+///   run it; thread and process modes have no other transport.
+///
+/// Neither changes a result, a trace or a checkpoint: the transport carries the same domain calls
+/// to the same endpoints (`legacy-gameboy-v1` section 12, amendment 2026-10-01 BUS-01).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Transport {
+    #[default]
+    Local,
+    Bus,
+}
+
+impl Transport {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Transport::Local => "local",
+            Transport::Bus => "bus",
+        }
+    }
+
+    /// `local` or `bus`.
+    pub fn parse(value: &str) -> Result<Transport, String> {
+        match value {
+            "local" => Ok(Transport::Local),
+            "bus" => Ok(Transport::Bus),
+            other => Err(format!("transport {other:?}: local or bus")),
+        }
+    }
+
+    /// The launcher transport for a mode: the lane only in process and only when asked for (and
+    /// not turned off by `FLY_SESSION_LOCAL_LANE=0`, which keeps an in-memory bus); Unix sockets
+    /// for the bus, and always for a thread or a process.
+    pub fn via(&self, mode: ExecutionMode) -> Via {
+        match (self, mode) {
+            (Transport::Local, ExecutionMode::InProcess) if local_lane_enabled() => Via::Local,
+            (Transport::Local, ExecutionMode::InProcess) => Via::Memory,
+            _ => Via::Unix,
+        }
+    }
+}
+
+/// One way to run the composition: where the participants run and how they are reached.
+/// `local` (in-process over the lane, the release default until the bus cutover), `bus/in-process`,
+/// `bus/thread` and `bus/process`. Parity runs and measurements name them this way
+/// (`FLY_PARITY_ARMS`, `FLY_PERF_ARMS`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionArm {
+    pub mode: ExecutionMode,
+    pub transport: Transport,
+}
+
+impl SessionArm {
+    pub const LOCAL: SessionArm = SessionArm {
+        mode: ExecutionMode::InProcess,
+        transport: Transport::Local,
+    };
+    pub const BUS_IN_PROCESS: SessionArm = SessionArm {
+        mode: ExecutionMode::InProcess,
+        transport: Transport::Bus,
+    };
+    pub const BUS_THREAD: SessionArm = SessionArm {
+        mode: ExecutionMode::Thread,
+        transport: Transport::Bus,
+    };
+    pub const BUS_PROCESS: SessionArm = SessionArm {
+        mode: ExecutionMode::Process,
+        transport: Transport::Bus,
+    };
+
+    pub fn label(&self) -> String {
+        match self.transport {
+            Transport::Local => "local".to_owned(),
+            Transport::Bus => format!("bus/{}", self.mode.label()),
+        }
+    }
+
+    /// `local`, `bus` (= `bus/process`), `bus/in-process`, `bus/thread`, `bus/process`; also the
+    /// bare mode names `in-process` (= local), `thread` and `process` (= the bus).
+    pub fn parse(value: &str) -> Result<SessionArm, String> {
+        Ok(match value.trim() {
+            "local" | "in-process" => SessionArm::LOCAL,
+            "bus/in-process" => SessionArm::BUS_IN_PROCESS,
+            "bus/thread" | "thread" => SessionArm::BUS_THREAD,
+            "bus" | "bus/process" | "process" => SessionArm::BUS_PROCESS,
+            other => {
+                return Err(format!(
+                    "{other:?}: local, bus/in-process, bus/thread or bus/process"
+                ));
+            }
+        })
+    }
+
+    /// The arms a parity run compares with the legacy loop: `FLY_PARITY_ARMS` (a list of
+    /// [`SessionArm::parse`] names), else `local`, `bus/thread` and `bus/process`. Process mode
+    /// needs the workspace's `fly-session` binary; a build without it skips that arm and says so.
+    pub fn parity_arms() -> Vec<SessionArm> {
+        let arms = match std::env::var("FLY_PARITY_ARMS") {
+            Ok(list) if !list.trim().is_empty() => SessionArm::parse_list(&list)
+                .unwrap_or_else(|e| panic!("FLY_PARITY_ARMS: {e}")),
+            _ => vec![SessionArm::LOCAL, SessionArm::BUS_THREAD, SessionArm::BUS_PROCESS],
+        };
+        let program = fly_session::launcher::default_worker_program();
+        arms.into_iter()
+            .filter(|arm| {
+                let runnable = arm.mode != ExecutionMode::Process || program.is_file();
+                if !runnable {
+                    eprintln!(
+                        "{} skipped: no worker program at {}",
+                        arm.label(),
+                        program.display()
+                    );
+                }
+                runnable
+            })
+            .collect()
+    }
+
+    /// A comma-separated list of [`SessionArm::parse`] names.
+    pub fn parse_list(value: &str) -> Result<Vec<SessionArm>, String> {
+        value
+            .split(',')
+            .filter(|part| !part.trim().is_empty())
+            .map(SessionArm::parse)
+            .collect()
+    }
+}
 
 /// How one legacy session is composed.
 #[derive(Clone, Debug)]
 pub struct LegacyConfig {
     pub mode: ExecutionMode,
+    /// The transport in-process participants use; thread and process modes always use the bus.
+    pub transport: Transport,
+    /// Process mode: where each participant process's threads run, by worker id (the agent's
+    /// id, [`WORLD_WORKER`]). Empty: they float (BUS-01).
+    pub placements: BTreeMap<Id, ProcessCpus>,
     pub rom_path: PathBuf,
     pub dataset_dir: PathBuf,
     pub profile: LegacyProfileKind,
@@ -337,11 +477,11 @@ impl LegacySession {
         let mut launcher = Launcher::start(
             router,
             config.mode,
-            // In-process participants reach the router in memory: no socket between two tasks
-            // of one process (a separate process always uses the socket). They are called over
-            // the local lane: the same worker shell, no bus message and no store file per
-            // artifact (PERF-01, `workers-v1` amendment).
-            if local_lane_enabled() { Via::Local } else { Via::Memory },
+            // `Transport::Local`: in-process participants are called over the local lane: the same
+            // worker shell, no bus message and no store file per artifact (PERF-01, `workers-v1`
+            // amendment). `Transport::Bus`: every participant is a socket client of the router,
+            // whatever its mode (BUS-01); a thread or a separate process always is.
+            config.transport.via(config.mode),
             &store_root,
             &sockets,
             budget,
@@ -349,6 +489,9 @@ impl LegacySession {
         .await
         .map_err(|e| format!("launcher: {}", e.message))?;
 
+        for (worker, cpus) in &config.placements {
+            launcher.place_process(worker, cpus.clone());
+        }
         let mut backend = BackendConfig::legacy(&rom_digest);
         backend.slots = vec![id(crate::task::SLOT)];
         launcher

@@ -50,7 +50,7 @@ pub fn audio_attachment(stream_id: &str) -> String {
     format!("audio.{stream_id}")
 }
 
-fn store_error(what: &str, message: &str) -> DomainError {
+pub(crate) fn store_error(what: &str, message: &str) -> DomainError {
     DomainError::new(
         ErrorCode::BackendFailure,
         format!("{what}: {message}"),

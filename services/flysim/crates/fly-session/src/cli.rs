@@ -42,6 +42,8 @@ fly-session <command> [options]
 
 Worker options (agent and environment):
   --socket PATH        the launcher's endpoint for this participant
+  --host-cpus LIST     the CPUs every thread of this process runs on (optional)
+  --sweep-cpus LIST    an agent's sweep workers, one CPU each (optional, with --host-cpus)
   --store-root PATH    the router's artifact store root
   --client-id ID       the configured bus client identity
   --service NAME       the one service name this worker registers
@@ -212,6 +214,7 @@ fn serve(role: &str, options: &Options) -> Result<(), String> {
     }
     let session_id = options.id(flags::SESSION)?;
     let incarnation_id = options.id(flags::INCARNATION)?;
+    place(options)?;
     let what = match role {
         "agent" => Started::Agent(AgentLaunch {
             session_id,
@@ -291,8 +294,28 @@ fn serve(role: &str, options: &Options) -> Result<(), String> {
             service: service.clone(),
         }),
     };
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(threads)
+    if crate::profile::enabled() {
+        // A worker process keeps its own span table (`FLY_SESSION_PROFILE`): printed once a
+        // minute on stderr, the service's journal, beside the coordinator's profile line.
+        let who = client_id.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                let line: Vec<String> = crate::profile::report_with_max()
+                    .into_iter()
+                    .map(|(name, count, mean, max)| {
+                        format!(
+                            "{name}={count}x{:.3}/{:.1}",
+                            mean.as_secs_f64() * 1e3,
+                            max.as_secs_f64() * 1e3
+                        )
+                    })
+                    .collect();
+                eprintln!("worker profile {who} (count x mean/max ms): {}", line.join(" "));
+            }
+        });
+    }
+    let runtime = crate::launcher::participant_runtime(threads)
         .enable_all()
         .build()
         .map_err(|e| format!("runtime: {e}"))?;
@@ -303,6 +326,42 @@ fn serve(role: &str, options: &Options) -> Result<(), String> {
         handle.join().await;
         Ok(())
     })
+}
+
+/// `--host-cpus` and `--sweep-cpus` (BUS-01): the placement the launcher made for this process,
+/// applied before any thread starts, so every thread inherits the host set and every sweep pool
+/// pins its workers. Without `--host-cpus` the process floats over what it inherited.
+fn place(options: &Options) -> Result<(), String> {
+    let list = |flag: &str| -> Result<Option<Vec<usize>>, String> {
+        options
+            .optional(flag)
+            .map(|value| {
+                flybrain_core::pool::parse_cpu_list(value)
+                    .ok_or_else(|| format!("--{flag}: {value:?} is not a cpu list"))
+            })
+            .transpose()
+    };
+    let (host, sweep) = (list(flags::HOST_CPUS)?, list(flags::SWEEP_CPUS)?);
+    let Some(host) = host else {
+        if sweep.is_some() {
+            return Err(format!("--{} needs --{}", flags::SWEEP_CPUS, flags::HOST_CPUS));
+        }
+        return Ok(());
+    };
+    let placement = flybrain_core::pool::Placement {
+        workers: sweep.unwrap_or_default(),
+        host,
+    };
+    // Best effort, as in the service: a refused placement leaves the process floating.
+    if flybrain_core::pool::apply_placement(&placement) {
+        eprintln!(
+            "placed: sweep workers {:?}, every other thread on {:?}",
+            placement.workers, placement.host
+        );
+    } else {
+        eprintln!("placement {placement:?} refused; the threads float");
+    }
+    Ok(())
 }
 
 fn parse_channels(value: &str) -> Result<Vec<String>, String> {

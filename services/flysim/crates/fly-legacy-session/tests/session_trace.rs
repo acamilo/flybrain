@@ -31,11 +31,12 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use fly_legacy_session::admission::LegacyAdmission;
-use fly_legacy_session::composition::{LegacyConfig, LegacySession, channels_and_hold};
+use fly_legacy_session::composition::{
+    LegacyConfig, LegacySession, SessionArm, channels_and_hold,
+};
 use fly_legacy_session::driver::{DecisionDriver, RotationDriver};
 use fly_legacy_session::task::ledgers_of;
 use fly_legacy_session::trace::{self, Agreement};
-use fly_session::ExecutionMode;
 use fly_session::legacy_agent::LegacyProfileKind;
 use fly_session::legacy_parity;
 use fly_session::types::id;
@@ -81,18 +82,8 @@ fn env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-fn modes() -> Vec<ExecutionMode> {
-    let mut modes = vec![ExecutionMode::InProcess];
-    let program = fly_session::launcher::default_worker_program();
-    if program.is_file() {
-        modes.push(ExecutionMode::Process);
-    } else {
-        eprintln!(
-            "process mode skipped: no worker program at {}",
-            program.display()
-        );
-    }
-    modes
+fn modes() -> Vec<SessionArm> {
+    SessionArm::parity_arms()
 }
 
 /// What each frame admits at its top, in admission order, and whether the rotation driver hands
@@ -230,7 +221,7 @@ fn run_legacy(
 /// The same run on the session framework.
 #[allow(clippy::too_many_arguments)]
 async fn run_session(
-    mode: ExecutionMode,
+    mode: SessionArm,
     rom_path: &Path,
     dataset_dir: &Path,
     profile: LegacyProfileKind,
@@ -241,7 +232,9 @@ async fn run_session(
 ) -> Run {
     let root = tempfile::tempdir().expect("tmp");
     let config = LegacyConfig {
-        mode,
+        mode: mode.mode,
+        transport: mode.transport,
+        placements: Default::default(),
         rom_path: rom_path.to_owned(),
         dataset_dir: dataset_dir.to_owned(),
         profile,
@@ -599,8 +592,10 @@ async fn fafb_boot_run_save_restore() {
             flysim::store::Store::new(&store.durable_dir, store.keep_generations)
                 .commit(generation, &original, None)
                 .expect("the seeded store");
-            let config = |mode| LegacyConfig {
-                mode,
+            let config = |mode: SessionArm| LegacyConfig {
+                mode: mode.mode,
+                transport: mode.transport,
+                placements: Default::default(),
                 rom_path: rom_path.clone(),
                 dataset_dir: dataset.clone(),
                 profile: LegacyProfileKind::Production,
