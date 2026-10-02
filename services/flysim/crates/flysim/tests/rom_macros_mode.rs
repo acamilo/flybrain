@@ -2068,60 +2068,54 @@ fn nopp_checkpoint() -> Option<flysim::store::Checkpoint> {
 // Section 13: the errands, a purchase and a heal, from the release box's own checkpoint
 // -------------------------------------------------------------------------------------------
 
-/// `GO SHOP` walks the fly into the Viridian mart, once, and then to its counter.
+/// `GO SHOP` walks the fly into the town's mart, once, and then to its counter.
 ///
-/// **What is proven here, and what is not.** The errand works: from the release container's own
-/// Viridian checkpoint the fly is inside the mart in 1.4 brain minutes, the errand is discharged
-/// on arrival and `GO SHOP` is never on the city's pad again. Inside, `GO SHOP` walks it to a tile
-/// it can talk to the clerk from — which needs the counter reach, because every tile beside a
-/// clerk behind a desk is a wall.
+/// **From a state where `GO SHOP` is dealt.** Since rows 62 and 66 `GO SHOP` is on the pad while
+/// `service_needed` holds -- no ball in the bag, the wallet covers one, no Oak's parcel -- and the
+/// parcel errand is `GO OBJECTIVE`'s (`the_objective_is_the_errand_and_macros_mode_walks_to_it`).
+/// The Viridian stall checkpoint carries the parcel, so `GO SHOP` is rightly not dealt there; this
+/// test starts from the rung-11 Pewter checkpoint (money, no ball, party hurt), where it is. The
+/// ledger half of the old claim ("paid once, never offered again") is row 66's counter window now:
+/// once the counter has been faced, the service walk is off the street's pad for the window.
 ///
-/// **The purchase is not ROM-proven from this checkpoint**, and the mechanism is named rather than
-/// papered over (`infra/docs/macros-traps.md` rows 33b and 34b). Two things are in the way, both
-/// measured on the cartridge on 2026-09-17:
-///
-/// - the screen-buffer tile read disagrees with itself on a map smaller than the screen. In the
-///   Viridian mart the same tile reads walkable-and-counter from one of the fly's tiles and
-///   wall-and-not-counter from another two tiles away, because an 8x8 map cannot centre under a
-///   ten-by-nine view. `facing_target`'s reach is taken from the *map id* for exactly that reason,
-///   but the walk's own goals are still priced off the tile read;
-/// - a counter *faced* is lost to the next hold. `GO SHOP` ends standing at the counter looking at
-///   the clerk, and `TALK` is on the pad there — but a hold is 800 ms and whichever macro wins the
-///   next one turns the fly away before the A press happens. The `reached` window brings `GO SHOP`
-///   back in ten brain minutes, so it is bounded rather than a loop; it is not a proof.
-///
-/// The purchase scripts themselves are covered by the fake-game tests
-/// (`a_purchase_navigates_by_the_items_place_in_the_stock_list`), and the *stock* read is proven
-/// against the cartridge below: Viridian's counter sells no Potion.
+/// **What is proven here, and what is not.** The errand works: the fly is inside the mart, `GO
+/// SHOP` walks it to a tile it can talk to the clerk from, and the way out is withheld while the
+/// counter is unfaced. **The purchase is not ROM-proven from this checkpoint**
+/// (`infra/docs/macros-traps.md` rows 33b and 34b): a counter *faced* is lost to the next hold,
+/// since a hold is 800 ms and whichever macro wins the next one turns the fly away before the A
+/// press. The purchase scripts themselves are covered by the fake-game tests
+/// (`a_purchase_navigates_by_the_items_place_in_the_stock_list`).
 #[test]
 fn go_shop_enters_the_mart_once_and_walks_to_its_counter() {
     let rom = skip_without_rom!();
-    let Some(checkpoint) = checkpoint() else {
-        eprintln!("skipped: no FLY_TRAP_CHECKPOINT / FLY_MACRO_CHECKPOINT");
+    let Some(checkpoint) = rank_eleven_checkpoint() else {
+        eprintln!("skipped: no FLY_RANK11_CHECKPOINT");
         return;
     };
     let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
-    assert_eq!(run.map(), VIRIDIAN_CITY, "the checkpoint is the one the stream stalled on");
+    assert_eq!(run.map(), PEWTER_CITY, "the checkpoint is the town the badge was won in");
 
-    // The errand is outstanding at the checkpoint: the ledger is session state and a restore
-    // starts empty (`docs/design/macros.md` section 13).
+    // The service is needed at the checkpoint, read from the cartridge: money, no ball, no parcel.
+    // Forced hot before the first frame so that the first hold is `GO SHOP`'s, not the rotation's,
+    // and the burst held open: the party is hurt here too, so `GO HEAL` is on the same pads and a
+    // hold that fell between bursts would be the rotation's pick of the two, which walks the fly
+    // out of the mart to the centre.
+    run.force_hot = Some("macro_go_shop");
+    run.next_burst = 1e15;
     run.frame();
     assert!(
         run.layer.bound_channels().iter().any(|channel| channel == "macro_go_shop"),
-        "`GO SHOP` is on the pad with the errand outstanding: {:?}",
+        "`GO SHOP` is on the pad with the service needed: {:?}",
         run.layer.bound_channels()
     );
 
-    // Into the mart, on `GO SHOP`'s own channel. Viridian is a wide city and the mart is on the
-    // far side of it, so this is several budgets' worth of walking and several holds.
-    run.force_hot = Some("macro_go_shop");
-    let mart = u32::from(flybrain_gb::pokemon_red::maps::VIRIDIAN_MART);
+    // Into the mart, on `GO SHOP`'s own channel.
+    let mart = PEWTER_MART;
     run.drive_until("inside the mart", 240_000, |run| run.map() == mart);
 
-    // Inside, `GO SHOP` is still the walk to the clerk -- the half of section 13 the ledger does
-    // not gate, because the errand's remaining job is to put the fly where the purchases can be
-    // pressed. Every tile beside the clerk is a wall, so reaching one at all is the counter reach
-    // doing the work (`docs/design/macros-wram.md` section 7).
+    // Inside, `GO SHOP` is still the walk to the clerk. Every tile beside the clerk is a wall, so
+    // reaching one at all is the counter reach doing the work (`docs/design/macros-wram.md`
+    // section 7).
     let mut shop_seen = false;
     let mut faced_the_counter = false;
     let mut pad_in_the_mart: Vec<String> = Vec::new();
@@ -2131,10 +2125,9 @@ fn go_shop_enters_the_mart_once_and_walks_to_its_counter() {
         }
         let bound = run.layer.bound_channels();
         let shop = bound.iter().any(|channel| channel == "macro_go_shop");
-        // The frames straight after a warp report the new map with the *old* coordinates -- the
-        // header changes before the position does -- so the pad on those is dealt against a tile
-        // of the city. Waiting for `GO SHOP` to appear is waiting for the fly to actually be in
-        // the building.
+        // The frames straight after a warp report the new map with the *old* coordinates, so the
+        // pad on those is dealt against a tile of the city. Waiting for `GO SHOP` to appear is
+        // waiting for the fly to actually be in the building.
         if !shop_seen {
             shop_seen = shop;
             if shop_seen {
@@ -2142,8 +2135,7 @@ fn go_shop_enters_the_mart_once_and_walks_to_its_counter() {
             }
             return false;
         }
-        // `GO SHOP` leaving the pad inside the building *is* the counter having been faced: the
-        // reached ledger is what retires it (`palette::counter_aims`).
+        // `GO SHOP` leaving the pad inside the building *is* the counter having been faced.
         faced_the_counter |= !shop;
         faced_the_counter
     });
@@ -2153,25 +2145,25 @@ fn go_shop_enters_the_mart_once_and_walks_to_its_counter() {
         run.money()
     );
     assert!(faced_the_counter, "`GO SHOP` walked to the clerk and retired it");
-    // And while the counter was unfaced, nothing on the pad could leave the building: that is what
-    // stops the one visit this area gets being spent on the doormat (`palette::counter_pending`).
+    // While the counter was unfaced, nothing on the pad could leave the building
+    // (`palette::counter_pending`).
     assert!(
         !pad_in_the_mart.iter().any(|channel| channel == "macro_go_out"),
-        "no way out while the errand's counter is unfaced: {pad_in_the_mart:?}"
+        "no way out while the counter is unfaced: {pad_in_the_mart:?}"
     );
 
-    // Out again -- the suppression is released now -- and the errand is paid: `GO SHOP` is not on
-    // the city's pad a second time. That is "once per area per run", and it is what makes the
-    // errand impossible to loop on.
+    // Out again -- the suppression is released now -- and the counter was faced, so for the
+    // reached window the service walk is not dealt from the street (row 66): that is what makes
+    // the service impossible to ring on, though the bag still holds no ball.
     run.force_hot = Some("macro_go_out");
-    run.drive_until("back out onto the city", 120_000, |run| run.map() == VIRIDIAN_CITY);
+    run.drive_until("back out onto the town", 120_000, |run| run.map() == PEWTER_CITY);
     run.force_hot = None;
-    for _ in 0..600 {
+    for _ in 0..60 {
         run.frame();
     }
     assert!(
         !run.layer.bound_channels().iter().any(|channel| channel == "macro_go_shop"),
-        "the errand is paid and never offered again: {:?}",
+        "a counter just faced is not walked back to at once: {:?}",
         run.layer.bound_channels()
     );
 }
@@ -2195,6 +2187,10 @@ fn go_heal_enters_the_centre_and_heal_restores_the_party() {
     };
     let mut run = Run::resume(&rom, MacroMode::Macros, &checkpoint);
     assert_eq!(run.map(), VIRIDIAN_CITY);
+    // Forced hot *before* the first frame: the rotation's first hold is `GO OBJECTIVE`, which at
+    // this checkpoint (the parcel in the bag) walks to Pallet Town and Oak's lab, and the fly is
+    // then in another area for the rest of the budget, healing at Pewter's centre, never this one.
+    run.force_hot = Some("macro_go_heal");
     run.frame();
     assert!(
         run.layer.bound_channels().iter().any(|channel| channel == "macro_go_heal"),
@@ -2210,7 +2206,6 @@ fn go_heal_enters_the_centre_and_heal_restores_the_party() {
     let mut heal_seen = false;
     let mut hurt_in_centre = false;
     let mut rested_in_centre = false;
-    run.force_hot = Some("macro_go_heal");
     run.drive_until("the centre's own pad", 240_000, |run| {
         if run.map() != centre {
             return false;
