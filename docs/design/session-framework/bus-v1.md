@@ -534,3 +534,30 @@ before anything is sent (`INVALID_ENVELOPE`, not dispatched). They exist for par
 process that hand each other buffers directly ([session RPCs](ipc-v1.md) section 1, amendment of
 the same date); section 8's ownership rules apply to every artifact a router stores, which these
 never are.
+
+**2026-10-01, BUS-01 (wire change; `contractDigest` changes).** A delivery's attachments carry the
+read location their delivery ownership grants. Section 8.1 makes a consumer resolve a
+store-issued `readLocation` through `artifact.open` before it reads, which is one router round
+trip per artifact read. The legacy composition on the bus reads four artifacts a frame on its
+critical path (the frame in `Agent.Prepare`, the memory image and the audio chunk after
+`Environment.Advance`, the spike bitset after `Agent.Commit`), so that rule cost four round trips
+a frame for an answer the router already knows when it delivers.
+
+- In an `rpc.request`, `rpc.result` or `topic.message` delivery, every attachment is
+  `{name, ref, ownerId, readLocation}`, where `readLocation` is the `{storeId, relativePath}`
+  `artifact.open` would return for that artifact under that delivery's ownership. It is still
+  store-issued, private to the SDK, resolved beneath the store root with the same traversal and
+  symlink checks, and never placed in an application body.
+- A client never sends one: an attachment in a command that carries `readLocation` is an unknown
+  field, and the connection closes as for any malformed envelope.
+- The SDK's handle on a delivered artifact reads through it with no round trip. Section 8.1's
+  guarantee is unchanged: the delivery's root holds the bytes while the handle (or a file opened
+  from it) lives, exactly as after an `artifact.open`. `artifact.open` stays for every handle that
+  did not come from a delivery (a sealed writer's hold, an explicit `retain` of one) and for any
+  client that prefers to ask.
+
+Two SDK-only changes of the same slice, no wire change: small store operations (creating or sealing
+a staging file, reading a sealed one, up to 256 KiB) run in place rather than on the blocking pool
+-- on the store's tmpfs a hop to the pool and back costs more than the copy -- and
+`Artifact::is_hold` tells a sealed writer's or a retained hold from a delivery's handle, so a holder
+that needs the bytes kept alive can keep a clone instead of taking a second hold.

@@ -876,6 +876,8 @@ impl Sim {
                     "the simulation is behind real time; no frames are being skipped"
                 );
             }
+            // The frame's compute time, before the pacing sleep (`fly_frame_work_*`).
+            self.shared.metrics.frame_work.record(iteration.elapsed());
             let sleep = pacer.next_sleep(Instant::now());
             if !sleep.is_zero() {
                 std::thread::sleep(sleep);

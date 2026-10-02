@@ -51,7 +51,7 @@ use fly_session::types::{id, parse_id};
 use flysim::snapshot::MacroMode;
 
 use crate::admission::LegacyAdmission;
-use crate::composition::{LegacyConfig, LegacySession};
+use crate::composition::{LegacyConfig, LegacySession, Transport};
 use crate::trace::{self, Agreement, Difference};
 use checkpoint::ShadowCapture;
 use follow::Follower;
@@ -87,6 +87,9 @@ pub struct ShadowConfig {
     pub macro_mode: MacroMode,
     pub speed: f64,
     pub mode: ExecutionMode,
+    /// How the shadow session's participants reach each other (BUS-01): the local lane, or the
+    /// router's sockets.
+    pub transport: Transport,
     pub agent_threads: usize,
     pub required_brain_seconds: f64,
     /// Follow every trace file present at start, oldest first (a rehearsal), rather than only the
@@ -457,6 +460,9 @@ pub async fn run(config: ShadowConfig, stop: StopFlag) -> Result<(Ended, Verdict
     }
     let session_config = LegacyConfig {
         mode: config.mode,
+        transport: config.transport,
+        // The shadow places nothing: its box gives it cores of its own.
+        placements: Default::default(),
         rom_path: config.rom_path.clone(),
         dataset_dir: config.dataset_dir.clone(),
         profile: config.profile,
@@ -517,6 +523,7 @@ pub async fn run(config: ShadowConfig, stop: StopFlag) -> Result<(Ended, Verdict
             release: config.release.clone(),
             compatibility: compatibility.clone(),
             execution_mode: config.mode.label().to_owned(),
+            transport: config.transport.label().to_owned(),
             agent_threads: config.agent_threads,
             required_brain_seconds: config.required_brain_seconds,
             agreement: Agreement::default(),

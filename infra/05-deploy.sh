@@ -411,6 +411,11 @@ The 'current' symlink has NOT been moved; the running release is untouched."
     if ct_exec "$CTID" -- test -f /etc/systemd/system/flysim.service.d/10-runtime.conf; then
         ct_exec "$CTID" -- test -x "${release_path}/flysim-session" \
             || die "05-deploy: REFUSING to deploy release ${version}: flysim.service runs the session runtime (fly-runtime session) and this release has no flysim-session. Run \`fly-runtime legacy\` in the container first, or deploy a release that ships it. The 'current' symlink has NOT been moved."
+        # BUS-01: on the bus transport flysim-session starts its participants from fly-session.
+        if ct_exec "$CTID" -- grep -qx 'Environment=FLY_SESSION_TRANSPORT=bus' /etc/systemd/system/flysim.service.d/10-runtime.conf; then
+            ct_exec "$CTID" -- test -x "${release_path}/fly-session" \
+                || die "05-deploy: REFUSING to deploy release ${version}: flysim.service runs the session runtime on the bus (fly-runtime session --bus) and this release has no fly-session worker. Run \`fly-runtime session --local\` in the container first. The 'current' symlink has NOT been moved."
+        fi
         session_compat="$(ct_exec "$CTID" -- env \
             "FLY_GAME=${GAME}" \
             "FLY_DATASET=${release_path}/data/fafb-v783" \

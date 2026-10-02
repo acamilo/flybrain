@@ -296,6 +296,61 @@ pub fn place_workers(workers: usize) -> Option<Placement> {
     Some(placement)
 }
 
+/// [`place_workers`] with a plan made elsewhere (BUS-01): a separate agent process is handed its
+/// placement by the launcher, which split the service's cpuset, instead of splitting its own mask.
+/// Confines the calling thread (and every thread it spawns afterwards) to `placement.host` and
+/// pins worker `i` of every pool created afterwards to `placement.workers[i - 1]`. False, and
+/// nothing changed, when the kernel refuses the host set, when a placement is already recorded,
+/// or off Linux. Placement decides only the CPU: no result depends on it.
+pub fn apply_placement(placement: &Placement) -> bool {
+    if WORKER_CPUS.get().is_some() || placement.host.is_empty() {
+        return false;
+    }
+    if !affinity::set_current(&placement.host) {
+        return false;
+    }
+    WORKER_CPUS.set(placement.workers.clone()).is_ok()
+}
+
+/// The CPUs the calling thread may run on (`sched_getaffinity`); `None` off Linux.
+pub fn allowed_cpus() -> Option<Vec<usize>> {
+    affinity::allowed()
+}
+
+/// Confines the calling thread, and every thread it spawns afterwards, to `cpus`; false (and
+/// unchanged) if the kernel refuses or off Linux.
+pub fn confine_current(cpus: &[usize]) -> bool {
+    affinity::set_current(cpus)
+}
+
+/// A CPU list as `taskset` and cpusets write it: `1,3,5-7`.
+pub fn parse_cpu_list(value: &str) -> Option<Vec<usize>> {
+    let mut cpus = Vec::new();
+    for part in value.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        match part.split_once('-') {
+            Some((a, b)) => {
+                let (a, b): (usize, usize) = (a.trim().parse().ok()?, b.trim().parse().ok()?);
+                if a > b {
+                    return None;
+                }
+                cpus.extend(a..=b);
+            }
+            None => cpus.push(part.parse().ok()?),
+        }
+    }
+    cpus.sort_unstable();
+    cpus.dedup();
+    (!cpus.is_empty()).then_some(cpus)
+}
+
+/// The inverse of [`parse_cpu_list`], without ranges: `1,3,5`.
+pub fn format_cpu_list(cpus: &[usize]) -> String {
+    cpus.iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 #[cfg(target_os = "linux")]
 mod affinity {
     /// The CPUs the calling thread may run on.
@@ -465,6 +520,16 @@ mod tests {
             ran.fetch_add(1, Ordering::Relaxed);
         });
         assert_eq!(ran.load(Ordering::Relaxed), 8);
+    }
+
+    #[test]
+    fn cpu_lists_parse_as_taskset_writes_them() {
+        assert_eq!(parse_cpu_list("1,3,5,7"), Some(vec![1, 3, 5, 7]));
+        assert_eq!(parse_cpu_list("9-11, 1 ,10"), Some(vec![1, 9, 10, 11]));
+        assert_eq!(parse_cpu_list(""), None);
+        assert_eq!(parse_cpu_list("3-1"), None);
+        assert_eq!(parse_cpu_list("x"), None);
+        assert_eq!(format_cpu_list(&[1, 3, 5]), "1,3,5");
     }
 
     #[test]

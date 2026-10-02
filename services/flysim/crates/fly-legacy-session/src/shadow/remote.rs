@@ -57,7 +57,9 @@ pub const TRACE_CHUNK: u64 = 4 << 20;
 /// The live configuration the relay forwards to the box, so the remote shadow runs the live
 /// service's composition (game, macro mode, accepted adapters, pins): exactly these names, and
 /// nothing that is a path or a secret. The box's own env file supplies the paths.
-pub const FORWARDED_ENV: [&str; 14] = [
+pub const FORWARDED_ENV: [&str; 15] = [
+    // BUS-01: the topology the box's shadow runs (`fly-shadow-run start --bus`).
+    "FLY_SHADOW_MODE",
     "FLY_GAME",
     "FLYSIM_LOOP_GAME",
     "FLY_MACRO_MODE",

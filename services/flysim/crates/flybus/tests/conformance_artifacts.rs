@@ -768,7 +768,71 @@ async fn issued_locations_are_relative_and_contained(via: Via) {
     );
 }
 
+/// Amendment 2026-10-01 (BUS-01): every attachment of a delivery names the read location its
+/// delivery ownership grants -- the store's sealed path of that artifact -- so the recipient reads
+/// it without an `artifact.open` round trip; the SDK's handle uses it.
+async fn deliveries_carry_the_read_location_their_ownership_grants(via: Via) {
+    let e = env(via).await;
+    let caller = e.client("caller").await;
+    let mut server = e.raw_hello("server").await;
+    assert_eq!(
+        code(
+            &server
+                .call(
+                    "service.register",
+                    json!({"name": "agent.located", "maxQueued": 4, "maxInFlight": 4})
+                )
+                .await
+        ),
+        "OK"
+    );
+    let art = sealed(&caller, b"located bytes", "application/octet-stream").await;
+    let _pending = caller
+        .call("agent.located", None, "Look", obj(json!({})), &[("in", &art)])
+        .await
+        .unwrap();
+    let request = within("the request", server.event()).await;
+    let attachment = &request.attachments[0];
+    let location = attachment
+        .read_location
+        .as_ref()
+        .expect("a delivery's attachment names where its bytes are");
+    assert_eq!(location.store_id, e.router.store_id());
+    assert_eq!(
+        location.relative_path,
+        format!("sealed/{}", attachment.reference.artifact_id)
+    );
+    assert_eq!(
+        std::fs::read(e.router.store_dir().join(&location.relative_path)).unwrap(),
+        b"located bytes"
+    );
+    // The SDK's handle on a delivered artifact reads through the same location.
+    let other = e.client("other").await;
+    other
+        .declare_topic("t.located", Retained::None)
+        .await
+        .unwrap();
+    let mut sub = caller
+        .subscribe("t.located", SubscriptionConfig::bounded())
+        .await
+        .unwrap();
+    other
+        .publish("t.located", obj(json!({})), &[("frame", &art_of(&other).await)])
+        .await
+        .unwrap();
+    let message = within("the message", sub.next()).await.unwrap();
+    assert_eq!(
+        message.artifact("frame").unwrap().read_all().await.unwrap(),
+        b"other bytes"
+    );
+}
+
+async fn art_of(client: &flybus::Client) -> flybus::Artifact {
+    sealed(client, b"other bytes", "application/octet-stream").await
+}
+
 both_transports!(
+    deliveries_carry_the_read_location_their_ownership_grants,
     allocate_write_seal_open_roundtrip_and_mismatches,
     seal_is_immutable_despite_a_stale_writable_handle,
     extracted_artifact_outlives_the_message_it_came_from,

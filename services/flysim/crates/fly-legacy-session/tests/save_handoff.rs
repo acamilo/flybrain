@@ -25,6 +25,8 @@ async fn session(root: &std::path::Path) -> Option<(LegacySession, StoreConfig)>
     };
     let config = LegacyConfig {
         mode: ExecutionMode::InProcess,
+        transport: Default::default(),
+        placements: Default::default(),
         rom_path,
         dataset_dir: legacy_parity::toy::dir(),
         profile: LegacyProfileKind::Toy,
