@@ -144,7 +144,7 @@ impl SuiteReport {
             hunt_flagged_pct: if windows > 0.0 { 100.0 * sum(&|r| r.hunt.flagged as f64) / windows } else { 0.0 },
             blocked_macro_pct: if finishes > 0.0 { 100.0 * sum(&|r| r.macros.failed() as f64) / finishes } else { 0.0 },
             buy_ball_done: self.runs.iter().map(|r| r.funnel.buy_ball_done).sum(),
-            throws: self.runs.iter().map(|r| r.funnel.throw_ball_start).sum(),
+            throws: self.runs.iter().map(|r| r.funnel.throw_ball_done).sum(),
             catches: self.runs.iter().map(|r| r.funnel.catches).sum(),
             heals: self.runs.iter().map(|r| r.heals.heal_done).sum(),
             whiteouts: self.runs.iter().map(|r| r.whiteouts).sum(),
@@ -221,7 +221,7 @@ impl SuiteReport {
                 mean(&susp),
                 sum(&|r| r.watchdog.ladder_events as u64),
                 sum(&|r| r.funnel.buy_ball_done),
-                sum(&|r| r.funnel.throw_ball_start),
+                sum(&|r| r.funnel.throw_ball_done),
                 sum(&|r| r.funnel.catches),
                 sum(&|r| r.battles.won),
                 sum(&|r| r.battles.lost),
@@ -306,6 +306,30 @@ pub fn run_jobs(
     results.into_iter().map(|(_, outcome)| outcome).collect()
 }
 
+/// The child gets SIGKILL when this process dies (PR_SET_PDEATHSIG), so a killed or timed-out
+/// suite leaves no `run-one` behind. The parent-pid check closes the race where the parent
+/// died between the fork and the prctl.
+#[cfg(target_os = "linux")]
+fn die_with_parent(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: only async-signal-safe calls (prctl, getppid, _exit) run between fork and exec.
+    unsafe {
+        let parent = libc::getpid();
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::getppid() != parent {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn die_with_parent(_command: &mut Command) {}
+
 fn run_child(exe: &Path, job: &Job, args: &ChildArgs) -> Result<RunReport, FailedRun> {
     let fail = |error: String| FailedRun { checkpoint: job.id.clone(), seed: job.seed, error };
     let mut command = Command::new(exe);
@@ -335,6 +359,7 @@ fn run_child(exe: &Path, job: &Job, args: &ChildArgs) -> Result<RunReport, Faile
     // The report travels in a file: the emulator library prints the cartridge's header on stdout.
     let report = tempfile::NamedTempFile::new().map_err(|e| fail(format!("a scratch file: {e}")))?;
     command.arg("--out").arg(report.path());
+    die_with_parent(&mut command);
     let status = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())

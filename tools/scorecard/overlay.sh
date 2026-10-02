@@ -25,6 +25,12 @@ if [ ! -d "$target/services/flysim/crates/fly-scorecard" ]; then
     git -C "$repo" archive "$ref" services/flysim/crates/fly-scorecard tools/scorecard docs/scorecard.md \
         | tar -x -C "$target"
 fi
+# One crate source fits releases on both sides of BUS-01: a tree whose LegacyConfig has no
+# `transport`/`placements` fields loses the lines that set them (marked `overlay:bus01`).
+comp="$target/services/flysim/crates/fly-legacy-session/src/composition.rs"
+if ! grep -q 'pub placements:' "$comp" 2>/dev/null; then
+    sed -i '/overlay:bus01/d' "$target/services/flysim/crates/fly-scorecard/src/runner.rs"
+fi
 if ! grep -q '"crates/fly-scorecard"' "$ws"; then
     sed -i 's#^    "crates/flysim-store",#    "crates/flysim-store",\n    "crates/fly-scorecard",#' "$ws"
     grep -q '"crates/fly-scorecard"' "$ws" || { echo "overlay: could not add the crate to the workspace" >&2; exit 1; }

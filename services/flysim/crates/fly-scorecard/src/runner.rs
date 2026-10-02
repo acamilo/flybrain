@@ -275,6 +275,7 @@ impl fly_legacy_session::driver::DecisionDriver for IdleDriver {
 
 /// The session composition the release runs, in-process and unpaced, from the checkpoint.
 pub async fn run_session(spec: &RunSpec) -> Result<RunReport> {
+    use fly_legacy_session::composition::Transport; // overlay:bus01
     use fly_legacy_session::composition::{LegacyConfig, LegacySession};
     use fly_session::ExecutionMode;
     use fly_session::legacy_agent::LegacyProfileKind;
@@ -288,6 +289,8 @@ pub async fn run_session(spec: &RunSpec) -> Result<RunReport> {
         root.path(),
         LegacyConfig {
             mode: ExecutionMode::InProcess,
+            transport: Transport::default(), // overlay:bus01
+            placements: Default::default(), // overlay:bus01
             rom_path: spec.rom.clone(),
             dataset_dir: spec.dataset.clone(),
             profile: LegacyProfileKind::Production,
@@ -367,6 +370,7 @@ pub async fn run_session(spec: &RunSpec) -> Result<RunReport> {
 
 /// The adapter and the compatibility digest of this build, for the report.
 pub fn build_info(release: &str) -> crate::suite::BuildInfo {
+    use fly_legacy_session::composition::Transport; // overlay:bus01
     use fly_legacy_session::composition::{LegacyConfig, compatibility_of};
     use fly_session::ExecutionMode;
     use fly_session::legacy_agent::LegacyProfileKind;
@@ -374,6 +378,8 @@ pub fn build_info(release: &str) -> crate::suite::BuildInfo {
     let adapter = GameAdapter::id(&PokemonRedReward::new()).to_owned();
     let compat = compatibility_of(&LegacyConfig {
         mode: ExecutionMode::InProcess,
+        transport: Transport::default(), // overlay:bus01
+        placements: Default::default(), // overlay:bus01
         rom_path: PathBuf::new(),
         dataset_dir: PathBuf::new(),
         profile: LegacyProfileKind::Production,

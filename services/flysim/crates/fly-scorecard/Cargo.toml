@@ -29,3 +29,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 tempfile = "3"
+libc = "0.2"

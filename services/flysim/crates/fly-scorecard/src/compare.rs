@@ -3,8 +3,13 @@
 //! The runs of the two suites are paired by `(checkpoint, seed)`. Each pair gives one difference
 //! per metric, signed so that positive means B is worse. A metric fails when B is worse than A by
 //! more than its tolerance **and** a sign-flip permutation test over the pairs says the shortfall
-//! is not noise (one-sided, `alpha`). Otherwise it passes, and when B is better by the same two
-//! tests it says so. A metric with no direction (`info`) is only reported.
+//! is not noise (one-sided, `alpha`, Holm-adjusted over the judged metrics so the whole compare
+//! has a family-wise false-fail rate of at most `alpha` under "nothing changed", where the
+//! unadjusted per-metric test had about 15% over 13 metrics). Otherwise it passes, and when B is
+//! better by the same two tests it says so. A metric with no direction (`info`) is only reported.
+//!
+//! The pooled test cannot see a trap confined to one place (three seeds of one checkpoint among
+//! thirty-six pairs), so a second, non-statistical rule runs per checkpoint: see [`trap_rule`].
 //!
 //! The test is exact up to 20 pairs and a fixed-seed Monte-Carlo beyond, so the same two suites
 //! always give the same verdicts.
@@ -135,7 +140,17 @@ pub const METRICS: &[Metric] = &[
         direction: Direction::Up,
         abs_tol: 0.5,
         rel_tol: 0.25,
-        read: |r| per_hour(r.funnel.throw_ball_start as f64, r),
+        read: |r| per_hour(r.funnel.throw_ball_done as f64, r),
+    },
+    // Reported, never judged on its own: a blocked THROW BALL storm is the trap rule's and the
+    // watchdog's business, and `throws_per_hour` above counts only throws that happened.
+    Metric {
+        name: "throw_ball_blocked_per_hour",
+        unit: "blocked/h",
+        direction: Direction::Info,
+        abs_tol: 0.0,
+        rel_tol: 0.0,
+        read: |r| per_hour(r.macros.by_macro.get("THROW BALL").map_or(0, |c| c.blocked) as f64, r),
     },
     Metric {
         name: "catches_per_hour",
@@ -247,6 +262,106 @@ pub fn sign_flip_p(diffs: &[f64]) -> f64 {
     at_least as f64 / (draws + 1) as f64
 }
 
+/// Holm's step-down adjustment: the adjusted p of each value (same order), so that rejecting
+/// where `adjusted < alpha` controls the family-wise error rate at `alpha` under any dependence
+/// between the tests.
+pub fn holm_adjust(ps: &[f64]) -> Vec<f64> {
+    let m = ps.len();
+    let mut order: Vec<usize> = (0..m).collect();
+    order.sort_by(|&i, &j| ps[i].total_cmp(&ps[j]));
+    let mut adjusted = vec![1.0; m];
+    let mut running = 0.0f64;
+    for (rank, &i) in order.iter().enumerate() {
+        running = running.max(((m - rank) as f64 * ps[i]).min(1.0));
+        adjusted[i] = running;
+    }
+    adjusted
+}
+
+/// Blocked finishes of one macro in one run that make a storm no watchdog window is needed to
+/// read: the row-71 bag bug blocked THROW BALL 131 times in ten brain minutes.
+pub const STORM_BLOCKED: u64 = 50;
+/// Trapped runs of B on a checkpoint (and this many more than A) that fail the checkpoint.
+pub const TRAP_RUNS: usize = 2;
+
+/// Why a run counts as trapped, if it does: a recovery-ladder event (two suspected watchdog
+/// probes in a row, any rule including stalled and zero-progress), at least half the probes
+/// suspected, or a blocked-macro storm.
+pub fn trapped(run: &RunReport) -> Option<String> {
+    if let Some((name, n)) = storm(run) {
+        return Some(format!("{n} blocked {name}"));
+    }
+    let w = &run.watchdog;
+    if w.ladder_events > 0 {
+        return Some(format!("{} ladder event(s), {}/{} probes suspected", w.ladder_events, w.suspected, w.probes));
+    }
+    if w.probes >= 2 && w.suspected * 2 >= w.probes {
+        return Some(format!("{}/{} probes suspected", w.suspected, w.probes));
+    }
+    None
+}
+
+/// The macro with the most blocked finishes in the run when that is a storm.
+pub fn storm(run: &RunReport) -> Option<(String, u64)> {
+    run.macros
+        .by_macro
+        .iter()
+        .map(|(name, c)| (name.clone(), c.blocked))
+        .filter(|(_, n)| *n >= STORM_BLOCKED)
+        .max_by_key(|(_, n)| *n)
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CheckpointTrap {
+    pub checkpoint: String,
+    pub runs_a: usize,
+    pub runs_b: usize,
+    pub trapped_a: usize,
+    pub trapped_b: usize,
+    pub storms_a: usize,
+    pub storms_b: usize,
+    /// What B's trapped runs looked like (seed: reason).
+    pub detail: Vec<String>,
+}
+
+/// The per-checkpoint trap rule, independent of the cross-seed test: a checkpoint FAILS when B is
+/// trapped on at least `TRAP_RUNS` of its runs and on at least `TRAP_RUNS` more than A, or when B
+/// has a blocked-macro storm on any run and A has none on that checkpoint. A fault confined to one
+/// place cannot fail the pooled test (three seeds give a sign-flip p of at least 1/8, and the
+/// shift is diluted over every checkpoint), but it is exactly the regression class this exists
+/// for. Returns the failing checkpoints.
+pub fn trap_rule(a: &SuiteReport, b: &SuiteReport) -> Vec<CheckpointTrap> {
+    let mut ids: Vec<&str> = b.runs.iter().map(|r| r.checkpoint.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut failing = Vec::new();
+    for id in ids {
+        let ra: Vec<&RunReport> = a.runs.iter().filter(|r| r.checkpoint == id).collect();
+        let rb: Vec<&RunReport> = b.runs.iter().filter(|r| r.checkpoint == id).collect();
+        if ra.is_empty() {
+            continue;
+        }
+        let trapped_a = ra.iter().filter(|r| trapped(r).is_some()).count();
+        let trapped_b = rb.iter().filter(|r| trapped(r).is_some()).count();
+        let storms_a = ra.iter().filter(|r| storm(r).is_some()).count();
+        let storms_b = rb.iter().filter(|r| storm(r).is_some()).count();
+        let fails = (trapped_b >= TRAP_RUNS && trapped_b >= trapped_a + TRAP_RUNS) || (storms_b > 0 && storms_a == 0);
+        if fails {
+            failing.push(CheckpointTrap {
+                checkpoint: id.to_owned(),
+                runs_a: ra.len(),
+                runs_b: rb.len(),
+                trapped_a,
+                trapped_b,
+                storms_a,
+                storms_b,
+                detail: rb.iter().filter_map(|r| trapped(r).map(|why| format!("seed {}: {why}", r.seed))).collect(),
+            });
+        }
+    }
+    failing
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Verdict {
@@ -270,6 +385,11 @@ pub struct MetricVerdict {
     /// The one-sided p of "B is worse" and of "B is better".
     pub p_worse: f64,
     pub p_better: f64,
+    /// The same, Holm-adjusted over the judged metrics (what the verdict uses).
+    #[serde(default)]
+    pub p_worse_adj: f64,
+    #[serde(default)]
+    pub p_better_adj: f64,
     /// The smallest change that counts, in the metric's unit.
     pub tolerance: f64,
     pub verdict: Verdict,
@@ -286,7 +406,10 @@ pub struct Comparison {
     pub unpaired_b: usize,
     pub notes: Vec<String>,
     pub metrics: Vec<MetricVerdict>,
-    /// Every metric that failed, in order.
+    /// Checkpoints the per-checkpoint trap rule failed.
+    #[serde(default)]
+    pub trapped_checkpoints: Vec<CheckpointTrap>,
+    /// Every metric that failed, in order, then `trap@<checkpoint>` for each failed checkpoint.
     pub failed: Vec<String>,
     pub pass: bool,
 }
@@ -324,29 +447,56 @@ pub fn compare(a: &SuiteReport, b: &SuiteReport, alpha: f64) -> Comparison {
             (1.0 / alpha).log2().ceil() as usize
         ));
     }
+    // First the raw p-values of every metric, then Holm over the judged ones.
+    struct Raw {
+        mean_a: f64,
+        mean_b: f64,
+        delta: f64,
+        tolerance: f64,
+        shortfall: f64,
+        p_worse: f64,
+        p_better: f64,
+    }
+    let raws: Vec<Raw> = METRICS
+        .iter()
+        .map(|metric| {
+            let va: Vec<f64> = pairs.iter().map(|(ra, _)| (metric.read)(ra)).collect();
+            let vb: Vec<f64> = pairs.iter().map(|(_, rb)| (metric.read)(rb)).collect();
+            let (mean_a, mean_b) = (mean(&va), mean(&vb));
+            let delta = mean_b - mean_a;
+            // Signed so that positive is worse.
+            let sign = match metric.direction {
+                Direction::Up => -1.0,
+                Direction::Down | Direction::Info => 1.0,
+            };
+            let worse: Vec<f64> = va.iter().zip(&vb).map(|(x, y)| sign * (y - x)).collect();
+            let better: Vec<f64> = worse.iter().map(|d| -d).collect();
+            Raw {
+                mean_a,
+                mean_b,
+                delta,
+                tolerance: metric.abs_tol.max(metric.rel_tol * mean_a.abs()),
+                shortfall: sign * delta,
+                p_worse: sign_flip_p(&worse),
+                p_better: sign_flip_p(&better),
+            }
+        })
+        .collect();
+    let judged: Vec<usize> = (0..METRICS.len()).filter(|&i| METRICS[i].direction != Direction::Info).collect();
+    let adj_worse = holm_adjust(&judged.iter().map(|&i| raws[i].p_worse).collect::<Vec<_>>());
+    let adj_better = holm_adjust(&judged.iter().map(|&i| raws[i].p_better).collect::<Vec<_>>());
     let mut metrics = Vec::new();
-    for metric in METRICS {
-        let va: Vec<f64> = pairs.iter().map(|(ra, _)| (metric.read)(ra)).collect();
-        let vb: Vec<f64> = pairs.iter().map(|(_, rb)| (metric.read)(rb)).collect();
-        let (mean_a, mean_b) = (mean(&va), mean(&vb));
-        let delta = mean_b - mean_a;
-        let tolerance = metric.abs_tol.max(metric.rel_tol * mean_a.abs());
-        // Signed so that positive is worse.
-        let sign = match metric.direction {
-            Direction::Up => -1.0,
-            Direction::Down | Direction::Info => 1.0,
-        };
-        let worse: Vec<f64> = va.iter().zip(&vb).map(|(x, y)| sign * (y - x)).collect();
-        let better: Vec<f64> = worse.iter().map(|d| -d).collect();
-        let (p_worse, p_better) = (sign_flip_p(&worse), sign_flip_p(&better));
-        let shortfall = sign * delta;
+    for (i, metric) in METRICS.iter().enumerate() {
+        let raw = &raws[i];
+        let slot = judged.iter().position(|&j| j == i);
+        let (p_worse_adj, p_better_adj) = slot.map_or((raw.p_worse, raw.p_better), |k| (adj_worse[k], adj_better[k]));
         let verdict = if pairs.is_empty() {
             Verdict::None
         } else if metric.direction == Direction::Info {
             Verdict::Info
-        } else if shortfall > tolerance && p_worse < alpha {
+        } else if raw.shortfall > raw.tolerance && p_worse_adj < alpha {
             Verdict::Fail
-        } else if -shortfall > tolerance && p_better < alpha {
+        } else if -raw.shortfall > raw.tolerance && p_better_adj < alpha {
             Verdict::Better
         } else {
             Verdict::Pass
@@ -356,20 +506,24 @@ pub fn compare(a: &SuiteReport, b: &SuiteReport, alpha: f64) -> Comparison {
             unit: metric.unit.to_owned(),
             direction: metric.direction,
             pairs: pairs.len(),
-            mean_a,
-            mean_b,
-            delta,
-            p_worse,
-            p_better,
-            tolerance,
+            mean_a: raw.mean_a,
+            mean_b: raw.mean_b,
+            delta: raw.delta,
+            p_worse: raw.p_worse,
+            p_better: raw.p_better,
+            p_worse_adj,
+            p_better_adj,
+            tolerance: raw.tolerance,
             verdict,
         });
     }
-    let failed: Vec<String> = metrics
+    let trapped_checkpoints = trap_rule(a, b);
+    let mut failed: Vec<String> = metrics
         .iter()
         .filter(|m| m.verdict == Verdict::Fail)
         .map(|m| m.metric.clone())
         .collect();
+    failed.extend(trapped_checkpoints.iter().map(|t| format!("trap@{}", t.checkpoint)));
     Comparison {
         schema: "fly-scorecard-compare-v1".to_owned(),
         a: a.label.clone(),
@@ -382,6 +536,7 @@ pub fn compare(a: &SuiteReport, b: &SuiteReport, alpha: f64) -> Comparison {
         pass: failed.is_empty() && !pairs.is_empty(),
         failed,
         metrics,
+        trapped_checkpoints,
     }
 }
 
@@ -396,7 +551,7 @@ impl Comparison {
             if self.pass { "PASS" } else { "FAIL" }
         ));
         out.push_str(&format!(
-            "{} paired runs (alpha {} one-sided, sign-flip test); {} only in {}, {} only in {}.\n\n",
+            "{} paired runs (alpha {} one-sided, sign-flip test, Holm over the judged metrics); {} only in {}, {} only in {}.\n\n",
             self.pairs, self.alpha, self.unpaired_a, self.a, self.unpaired_b, self.b
         ));
         for note in &self.notes {
@@ -406,7 +561,7 @@ impl Comparison {
             out.push('\n');
         }
         out.push_str(&format!(
-            "| metric | {} | {} | delta | tolerance | p worse | p better | verdict |\n",
+            "| metric | {} | {} | delta | tolerance | p worse (Holm) | p better (Holm) | verdict |\n",
             self.a, self.b
         ));
         out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n");
@@ -425,8 +580,8 @@ impl Comparison {
                 m.mean_b,
                 m.delta,
                 m.tolerance,
-                m.p_worse,
-                m.p_better,
+                m.p_worse_adj,
+                m.p_better_adj,
                 match m.verdict {
                     Verdict::Pass => "pass",
                     Verdict::Better => "better",
@@ -435,6 +590,24 @@ impl Comparison {
                     Verdict::None => "n/a",
                 }
             ));
+        }
+        if !self.trapped_checkpoints.is_empty() {
+            out.push_str("\n**Per-checkpoint trap rule: FAIL**\n\n");
+            for t in &self.trapped_checkpoints {
+                out.push_str(&format!(
+                    "- `{}`: {} trapped / {} storm run(s) of {} in {}, against {} / {} of {} in {} ({})\n",
+                    t.checkpoint,
+                    t.trapped_b,
+                    t.storms_b,
+                    t.runs_b,
+                    self.b,
+                    t.trapped_a,
+                    t.storms_a,
+                    t.runs_a,
+                    self.a,
+                    t.detail.join("; ")
+                ));
+            }
         }
         out
     }
@@ -571,6 +744,138 @@ mod tests {
         let none = compare(&a, &suite("empty", Vec::new()), 0.05);
         assert!(!none.pass);
         assert!(none.metrics.iter().all(|m| m.verdict == Verdict::None));
+    }
+
+    fn row71(r: &mut RunReport) {
+        // The v0.7.3 row-71 bag bug: THROW BALL started and blocked 131 times, suspected on every probe.
+        let c = r.macros.by_macro.entry("THROW BALL".into()).or_default();
+        c.start = 132;
+        c.blocked = 131;
+        r.macros.blocked = 131;
+        r.watchdog.probes = 4;
+        r.watchdog.suspected = 4;
+        r.watchdog.ladder_events = 1;
+    }
+
+    #[test]
+    fn a_trap_on_one_checkpoint_fails_though_the_pooled_test_cannot_see_it() {
+        let a = many("a", |_, _, _| {});
+        let b = many("b", |ck, _, r| {
+            if ck == "r10" {
+                row71(r)
+            }
+        });
+        let c = compare(&a, &b, 0.05);
+        assert!(!c.pass);
+        assert!(c.failed.contains(&"trap@r10".to_owned()), "{:?}", c.failed);
+        assert_eq!(c.trapped_checkpoints.len(), 1);
+        assert_eq!(c.trapped_checkpoints[0].trapped_b, 3);
+        assert!(c.markdown().contains("`r10`"));
+        // ... while the same suite against itself passes.
+        assert!(compare(&b, &b, 0.05).pass);
+        assert!(compare(&a, &a, 0.05).pass);
+    }
+
+    #[test]
+    fn the_trap_rule_wants_two_seeds_or_a_storm_and_a_clean_a() {
+        let a = many("a", |_, _, _| {});
+        // One trapped seed with no storm: not enough.
+        let one = many("b", |ck, s, r| {
+            if ck == "r10" && s == 1 {
+                r.watchdog.probes = 4;
+                r.watchdog.suspected = 3;
+                r.watchdog.ladder_events = 1;
+            }
+        });
+        assert!(trap_rule(&a, &one).is_empty());
+        // Two trapped seeds fail it.
+        let two = many("b", |ck, s, r| {
+            if ck == "r10" && s <= 2 {
+                r.watchdog.probes = 4;
+                r.watchdog.suspected = 3;
+                r.watchdog.ladder_events = 1;
+            }
+        });
+        assert_eq!(trap_rule(&a, &two)[0].checkpoint, "r10");
+        // One seed with a storm fails it.
+        let storm_one = many("b", |ck, s, r| {
+            if ck == "r11" && s == 3 {
+                r.macros.by_macro.entry("GO OUT".into()).or_default().blocked = 50;
+            }
+        });
+        assert_eq!(trap_rule(&a, &storm_one)[0].checkpoint, "r11");
+        // The same storm in A as well is not new.
+        assert!(trap_rule(&storm_one, &storm_one).is_empty());
+        // A was trapped on two seeds already: B trapped on the same two is not a new trap.
+        assert!(trap_rule(&two, &two).is_empty());
+    }
+
+    #[test]
+    fn a_blocked_throw_is_not_a_throw() {
+        let r = run("x", 1, |r| {
+            r.funnel.throw_ball_start = 132;
+            r.funnel.throw_ball_done = 1;
+            row71(r);
+        });
+        let get = |name: &str| (METRICS.iter().find(|m| m.name == name).unwrap().read)(&r);
+        assert!((get("throws_per_hour") - 5.0).abs() < 1e-9);
+        assert!((get("throw_ball_blocked_per_hour") - 131.0 * 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn holm_adjusts_step_down_and_never_below_the_raw_p() {
+        let adj = holm_adjust(&[0.01, 0.04, 0.03, 0.20]);
+        let want = [0.04, 0.09, 0.09, 0.20];
+        for (x, y) in adj.iter().zip(want) {
+            assert!((x - y).abs() < 1e-12, "{adj:?}");
+        }
+        assert!(holm_adjust(&[]).is_empty());
+        assert_eq!(holm_adjust(&[0.6, 0.9]), vec![1.0, 1.0]);
+    }
+
+    /// The false-fail rate of the whole compare under "nothing changed but the trajectory":
+    /// resample each checkpoint's seeds with replacement (A is the committed v0.7.5 card, B a
+    /// bootstrap of it) and count failing compares. Slow; run with `--ignored --nocapture`.
+    #[test]
+    #[ignore = "a simulation: about a minute in release"]
+    fn null_false_fail_rate() {
+        let text = include_str!("../../../../../tools/scorecard/baseline-v0.7.5.json");
+        let a: SuiteReport = serde_json::from_str(text).expect("baseline");
+        let mut ids: Vec<String> = a.runs.iter().map(|r| r.checkpoint.clone()).collect();
+        ids.dedup();
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move |n: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % n as u64) as usize
+        };
+        let (reps, mut fails, mut metric_fails, mut trap_fails) = (200, 0, 0, 0);
+        let mut by_checkpoint = BTreeMap::new();
+        for _ in 0..reps {
+            let mut b = a.clone();
+            b.label = "boot".into();
+            b.runs.clear();
+            for id in &ids {
+                let pool: Vec<&RunReport> = a.runs.iter().filter(|r| &r.checkpoint == id).collect();
+                for (seed, _) in pool.iter().enumerate() {
+                    let mut r = pool[next(pool.len())].clone();
+                    r.seed = pool[seed].seed;
+                    b.runs.push(r);
+                }
+            }
+            let c = compare(&a, &b, 0.05);
+            if !c.pass {
+                fails += 1;
+            }
+            metric_fails += usize::from(c.failed.iter().any(|f| !f.starts_with("trap@")));
+            trap_fails += usize::from(!c.trapped_checkpoints.is_empty());
+            for t in &c.trapped_checkpoints {
+                *by_checkpoint.entry(t.checkpoint.clone()).or_insert(0usize) += 1;
+            }
+        }
+        println!("null compares: {fails}/{reps} fail ({metric_fails} by a metric, {trap_fails} by the trap rule)");
+        println!("trap rule by checkpoint: {by_checkpoint:?}");
     }
 
     #[test]
