@@ -1316,9 +1316,11 @@ impl State {
         c: ConnKey,
         env: &mut Envelope,
     ) -> Result<Option<Vec<SendSeal>>, BusError> {
+        // Present at all, `recycle` needs a sealing attachment: the amendment refuses it
+        // otherwise, `false` included (BUS-02 review N4).
         let recycle = match env.body.remove("recycle") {
-            None => false,
-            Some(Value::Bool(b)) => b,
+            None => None,
+            Some(Value::Bool(b)) => Some(b),
             Some(_) => return err(ErrorCode::InvalidEnvelope, "recycle must be a boolean"),
         };
         let mut found: Vec<(u64, u64, u64)> = Vec::new();
@@ -1336,7 +1338,13 @@ impl State {
                 // Another artifact under a writer's owner id: check_owned refuses it later.
                 continue;
             }
-            if sealing || found.iter().any(|(s, _, _)| *s == artifact) {
+            if found.iter().any(|(s, _, _)| *s == artifact) {
+                return err(
+                    ErrorCode::InvalidEnvelope,
+                    format!("attachment {:?} names a writer another attachment already seals", a.name),
+                );
+            }
+            if sealing {
                 return err(ErrorCode::OwnerInvalid, "a seal is already in progress");
             }
             let art = &self.artifacts[&artifact];
@@ -1359,11 +1367,12 @@ content type, a null digest and at most the allocated length",
             found.push((artifact, owner, r.byte_length));
         }
         if found.is_empty() {
-            if recycle {
+            if recycle.is_some() {
                 return err(ErrorCode::InvalidEnvelope, "recycle without a writer attached");
             }
             return Ok(None);
         }
+        let recycle = recycle.unwrap_or(false);
         let sealed: u64 = found.iter().map(|(_, _, len)| len).sum();
         if self.store_bytes.saturating_add(sealed) > self.limits.max_store_bytes {
             return err(ErrorCode::QuotaExceeded, "no room for the sealing copies");

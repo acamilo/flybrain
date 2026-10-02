@@ -127,6 +127,8 @@ pub(crate) struct ClientState {
 pub(crate) struct Shared {
     pub info: SessionInfo,
     pub store_root: PathBuf,
+    /// The store directories this connection resolved (BUS-02 review N6: per connection).
+    pub dirs: crate::store::DirCache,
     state: Mutex<ClientState>,
     wake: Notify,
     control_capacity: usize,
@@ -157,6 +159,7 @@ impl Shared {
         Shared {
             info,
             store_root,
+            dirs: crate::store::DirCache::default(),
             state: Mutex::new(ClientState {
                 closed: None,
                 shutting_down: false,
@@ -628,6 +631,7 @@ fn validate_reply_value(op: &str, value: &Map<String, Value>) -> Result<(), Wire
                 ));
             }
             serial_field(&mut f, "serviceIncarnation", "svc")?;
+            validate_writers(&mut f)?;
         }
         "rpc.reply" => {
             f.boolean("routed")?;
@@ -661,6 +665,7 @@ fn validate_reply_value(op: &str, value: &Map<String, Value>) -> Result<(), Wire
             f.u64_string("topicSequence")?;
             f.u64_string("subscribers")?;
             f.u64_string("replaced")?;
+            validate_writers(&mut f)?;
         }
         "delivery.consumed" | "artifact.release" => {
             f.u64_string("released")?;
@@ -1092,4 +1097,38 @@ fn on_notice(shared: &Arc<Shared>, env: Envelope) -> Result<(), WireError> {
         other => return Err(WireError(format!("unknown notice {other:?}"))),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The wire allows a recycling `rpc.call` or `publish` (bus-v1 section 12 amendment
+    /// 2026-10-02), so their reply values may carry `writers`, checked as an `rpc.reply`'s are
+    /// (BUS-02 review N4).
+    #[test]
+    fn every_sealing_send_reply_may_carry_writers() {
+        let writers = serde_json::json!([{
+            "name": "x", "artifactId": "a-2", "generation": "1", "ownerId": "own-3",
+            "writeLocation": {"storeId": "store-1", "relativePath": "staging/a-2"},
+        }]);
+        let with = |mut v: serde_json::Value| {
+            v["writers"] = writers.clone();
+            v.as_object().unwrap().clone()
+        };
+        let call = with(serde_json::json!({"accepted": true, "serviceIncarnation": "svc-1"}));
+        let publish =
+            with(serde_json::json!({"topicSequence": "1", "subscribers": "0", "replaced": "0"}));
+        let reply = with(serde_json::json!({"routed": true}));
+        assert!(validate_reply_value("rpc.call", &call).is_ok());
+        assert!(validate_reply_value("publish", &publish).is_ok());
+        assert!(validate_reply_value("rpc.reply", &reply).is_ok());
+        let mut bad = publish.clone();
+        bad.insert("writers".into(), serde_json::json!([]));
+        assert!(validate_reply_value("publish", &bad).is_err());
+        // Not on a command that cannot seal.
+        let mut declare = serde_json::json!({"declared": true, "topicIncarnation": "top-1"});
+        declare["writers"] = writers;
+        assert!(validate_reply_value("topic.declare", declare.as_object().unwrap()).is_err());
+    }
 }

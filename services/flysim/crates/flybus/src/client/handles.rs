@@ -238,7 +238,7 @@ impl Artifact {
                 "read location names another store",
             ));
         }
-        let path = resolve(&shared.store_root, &loc.store_id, &loc)?;
+        let path = resolve(&shared.store_root, &loc.store_id, &loc, &shared.dirs)?;
         let file = open_read(&path)
             .map_err(|e| BusError::new(ErrorCode::StoreFailure, format!("open: {e}")))?;
         let len = file
@@ -410,8 +410,10 @@ impl ArtifactWriter {
         }
     }
 
-    /// Closes the writable handle and seals, returning the immutable artifact on an explicit
-    /// hold. Bytes not written read as zeros: the staging file is preallocated.
+    /// Closes the writable handle and seals the whole allocation, returning the immutable
+    /// artifact on an explicit hold. Bytes not written read as zeros: the staging file is
+    /// preallocated, and a recycled writer's ([`SealedReply::writers`]) is reset to zeros when
+    /// the router reissues it, so no artifact ever carries bytes of the one before it.
     pub async fn seal(self) -> Result<Artifact, BusError> {
         self.seal_with_digest(None).await
     }
@@ -593,7 +595,9 @@ impl Unsealed {
 pub struct SealedReply {
     /// As [`Responder::reply`]: routed to the caller, or the caller had detached.
     pub routed: bool,
-    /// With `recycle`, a fresh writer of the same allocation for each artifact sealed.
+    /// With `recycle`, a fresh writer of the same allocation for each artifact sealed. Its
+    /// staging file is the sealed artifact's, emptied: it reads as zeros, as a new
+    /// allocation does.
     pub writers: Vec<ArtifactWriter>,
 }
 
@@ -689,7 +693,7 @@ impl Responder {
             else {
                 continue;
             };
-            let path = resolve(&shared.store_root, &location.store_id, &location)?;
+            let path = resolve(&shared.store_root, &location.store_id, &location, &shared.dirs)?;
             let file = open_write(&path)
                 .map_err(|e| BusError::new(ErrorCode::StoreFailure, format!("staging: {e}")))?;
             writers.push(ArtifactWriter {

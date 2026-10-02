@@ -571,6 +571,20 @@ section 12 (amendment 2026-10-02); [step-v1](step-v1.md)'s ordering is untouched
   `/run`) its own binaries were 2.5 ms a frame faster.
 - **Identical.** Traces, checkpoints, feed snapshots and the compatibility string (648 B,
   `7b940584`) in `local`, `bus/thread` and `bus/process` (the FAFB parity suites, all arms).
+- **Review notes (2026-10-02).** The review approved with notes; since the feed and the control
+  API already run over flybus in production, the router and SDK changes carry live traffic, so
+  every note was treated as live-path correctness. A recycled writer's staging file is emptied
+  and reserved again when the router reissues it, so no artifact sealed from it -- by prefix or
+  whole -- carries the previous artifact's bytes (N3). A sealing reply is sent with the worker's
+  result cache held, so a duplicate replays the sealed artifacts rather than racing the reply
+  with an unsealed writer (N2). A refused sealing reply is answered as the handler's own seal
+  failure was before this slice (`BACKEND_FAILURE`, mutation applied), cached the same way, and
+  logged (N1). A failed staging rename leaves no file (N5). `recycle` without a sealing
+  attachment is refused even when false, a writer named by two attachments is refused, and the
+  SDK checks `writers` on every sealing send's reply (N4). The store-directory cache is per
+  connection (N6). Two test races are closed: the fly-edge stall test waits for the feed topic,
+  and SERVE-01's parity accepts a refused `/stimulate` drained one frame late (N7). The review's
+  adversarial lifecycle tests are in `flybus/tests/sealing_lifecycle.rs`.
 
 ### SHADOW-01 — The session runtime beside the live fly (port slice)
 

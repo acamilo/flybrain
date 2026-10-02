@@ -492,6 +492,26 @@ fn truncate(value: &Value) -> String {
     }
 }
 
+/// A `/stimulate` refused because a pulse is still running (429) answers the pulse's remaining
+/// brain time at the frame the loop drained the request on. The script sends each request on its
+/// frame's snapshot, while the loop sleeps; on a loaded box a request can still reach the loop
+/// after its next drain and be drained one frame later (BUS-02 review N7: seen once, the session
+/// over bus/process under load 16-22). A refusal changes no state (no event, no journal line, no
+/// admission), so the only trace of that is a `retryAfterMs` exactly one emulated frame
+/// (16.74 brain ms, so 16 or 17 once rounded up) apart; anything else is still a difference.
+fn one_frame_late_refusal(label: &str, status: u16, a: &Value, b: &Value) -> bool {
+    let retry = |v: &Value| {
+        let map = v.as_object()?;
+        if map.len() != 1 {
+            return None;
+        }
+        map.get("retryAfterMs")?.as_u64()
+    };
+    label.starts_with("POST /stimulate")
+        && status == 429
+        && matches!((retry(a), retry(b)), (Some(x), Some(y)) if (16..=17).contains(&x.abs_diff(y)))
+}
+
 fn compare(legacy: &Recording, session: &Recording, label: &str) {
     assert_eq!(
         legacy.running.len(),
@@ -539,6 +559,14 @@ fn compare(legacy: &Recording, session: &Recording, label: &str) {
             }
             v
         };
+        if one_frame_late_refusal(la, *sa, ba, bb) {
+            eprintln!(
+                "  {label}: {la}: retryAfterMs {} vs {}, one frame apart: the loaded box delivered \
+the refused request a frame later in one run (a refusal changes nothing else)",
+                ba["retryAfterMs"], bb["retryAfterMs"]
+            );
+            continue;
+        }
         same(&format!("{label}: {la} body"), &strip(ba), &strip(bb));
     }
     let status = |v: &Value| {

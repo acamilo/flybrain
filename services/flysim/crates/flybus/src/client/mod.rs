@@ -584,7 +584,7 @@ impl Artifacts<'_> {
             return Err(BusError::lost("router issued a malformed artifact id"));
         }
         let loc = Location::from_json(f.value("writeLocation")?)?;
-        let path = resolve(&shared.store_root, &loc.store_id, &loc)?;
+        let path = resolve(&shared.store_root, &loc.store_id, &loc, &shared.dirs)?;
         let file = open_write(&path)
             .map_err(|e| BusError::new(ErrorCode::StoreFailure, format!("staging: {e}")))?;
         Ok(ArtifactWriter {

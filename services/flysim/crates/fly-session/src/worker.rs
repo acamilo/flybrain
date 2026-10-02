@@ -519,6 +519,17 @@ enum Answer {
     Local(tokio::sync::oneshot::Sender<LocalReply>),
 }
 
+/// What answering a call came to.
+enum Sent {
+    /// Answered, or the caller is gone (nothing more can reach it), with the writers a sealing
+    /// reply recycled.
+    Done(Vec<flybus::ArtifactWriter>),
+    /// The router refused the reply that was to seal the handler's artifacts (a store failure:
+    /// quota, IO, a writer gone). Nothing reached the caller and the call is still open: the
+    /// answer comes back to send the failure on (BUS-02 review N1).
+    SealRefused(Answer, flybus::BusError),
+}
+
 impl Answer {
     /// Answers the call. Over the bus, the artifacts left unsealed by [`HandlerCtx::seal`] are
     /// sealed by the reply itself and their writers come back recycled, for the pool (BUS-02).
@@ -527,23 +538,23 @@ impl Answer {
         outcome: SessionRpcOutcome,
         artifacts: &[(String, flybus::Artifact)],
         unsealed: Vec<flybus::Unsealed>,
-    ) -> Vec<flybus::ArtifactWriter> {
+    ) -> Sent {
         match self {
             Answer::Bus(responder) => {
                 let list: Vec<(&str, &flybus::Artifact)> =
                     artifacts.iter().map(|(n, a)| (n.as_str(), a)).collect();
                 if unsealed.is_empty() {
                     let _ = responder.reply(outcome.to_outcome(), &list).await;
-                    return Vec::new();
+                    return Sent::Done(Vec::new());
                 }
                 match responder.reply_sealing(outcome.to_outcome(), &list, unsealed, true).await {
-                    Ok(sealed) => sealed.writers,
-                    Err(_) => Vec::new(),
+                    Ok(sealed) => Sent::Done(sealed.writers),
+                    Err(error) => Sent::SealRefused(Answer::Bus(responder), error),
                 }
             }
             Answer::Local(tx) => {
                 let _ = tx.send(LocalReply { outcome, artifacts: artifacts.to_vec() });
-                Vec::new()
+                Sent::Done(Vec::new())
             }
         }
     }
@@ -1039,20 +1050,83 @@ async fn execute<E: WorkerEndpoint>(
             }
             let cache_span = crate::profile::span("shell.record.cache");
             let cached = CachedReply::with_artifacts(outcome.clone(), holds);
+            let unsealed = std::mem::take(&mut *unsealed.lock().expect("never poisoned"));
+            // The cache records the reply before it is sent, so a duplicate never re-executes;
+            // but until the reply that seals this handler's artifacts is admitted they are
+            // still writers, and a replay attaching one would seal it into the duplicate's
+            // reply (or be refused) and refuse the original (BUS-02 review N2). So a sealing
+            // reply is sent with the cache held: a duplicate waits for it in admission and
+            // replays sealed handles, or the failure below. A reply that seals nothing (the
+            // lane's, or a handler's without artifacts of its own) holds nothing.
+            let mut held = Some(cache.lock().await);
             {
-                let mut c = cache.lock().await;
+                let c = held.as_mut().expect("just taken");
                 match class {
-                    OpClass::StepMutation => c.record(key, serial, body, cached),
-                    OpClass::Lifecycle => c.record_lifecycle(serial, body, cached),
-                    OpClass::ReadOnly => c.record_readonly(serial, cached),
+                    OpClass::StepMutation => {
+                        c.record(key.clone(), serial.clone(), body.clone(), cached)
+                    }
+                    OpClass::Lifecycle => c.record_lifecycle(serial.clone(), body.clone(), cached),
+                    OpClass::ReadOnly => c.record_readonly(serial.clone(), cached),
                 }
             }
             status.set_completed(request.request_id.clone());
+            if unsealed.is_empty() {
+                held = None;
+            }
             drop(cache_span);
+            #[cfg(test)]
+            sealing_tests::gate(worker_id).await;
             let reply_span = crate::profile::span("shell.reply");
-            let unsealed = std::mem::take(&mut *unsealed.lock().expect("never poisoned"));
-            let recycled = answer.send(outcome, &reply.artifacts, unsealed).await;
+            let sent = answer.send(outcome, &reply.artifacts, unsealed).await;
             drop(reply_span);
+            let recycled = match sent {
+                Sent::Done(recycled) => {
+                    drop(held);
+                    recycled
+                }
+                Sent::SealRefused(answer, error) => {
+                    // The handler's artifacts could not be stored. Before BUS-02 the handler's
+                    // own seal failed and returned this error; it is answered, cached and
+                    // reported exactly as that was (BUS-02 review N1), instead of reaching the
+                    // caller as a bus-level failed call.
+                    eprintln!(
+                        "worker {worker_id}: {method}: the reply's artifacts were not sealed ({}: {}); \
+answering BACKEND_FAILURE",
+                        error.code.as_str(),
+                        error.message
+                    );
+                    let e = crate::media::store_error("seal", &error.message);
+                    let mut c = held.take().expect("a sealing reply holds the cache");
+                    match class {
+                        OpClass::StepMutation => c.record(
+                            key,
+                            serial,
+                            body,
+                            CachedReply::new(failure_outcome(
+                                &request.request_id,
+                                worker_id,
+                                incarnation_id,
+                                request.scope.clone(),
+                                e.clone(),
+                            )),
+                        ),
+                        OpClass::Lifecycle => c.forget_lifecycle(&serial),
+                        OpClass::ReadOnly => c.forget_readonly(&serial),
+                    }
+                    drop(c);
+                    status.set_state(WorkerState::Failed);
+                    status.set_active(None);
+                    let outcome = failure(
+                        &request.request_id,
+                        worker_id,
+                        incarnation_id,
+                        request.scope.clone(),
+                        e,
+                    );
+                    let _ = answer.send(outcome, &[], Vec::new()).await;
+                    Vec::new()
+                }
+            };
             // The next step's writers: the ones the reply recycled, and any shape without one
             // allocated while the caller goes on (bus requests only: the lane seals nothing into
             // the store).
@@ -1264,3 +1338,7 @@ async fn acknowledge(
     let result = AcknowledgeResult { acknowledged };
     Ok(object(result.to_json()))
 }
+
+#[cfg(test)]
+#[path = "worker_sealing_tests.rs"]
+mod sealing_tests;

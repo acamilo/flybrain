@@ -335,23 +335,40 @@ async fn read_loop<R: AsyncRead + Unpin>(
                 // The writers a sending command attaches are sealed before it is admitted
                 // (bus-v1 section 12 amendment 2026-10-02): the copies run here, outside the
                 // state lock, and this connection's next command waits for the admission, so
-                // its commands stay in order. A recycled writer's staging file is kept and
-                // renamed for the artifact it becomes; otherwise it goes with the copy.
+                // its commands stay in order. A recycled writer's staging file is kept,
+                // renamed for the artifact it becomes and reset to zeros, as a fresh allocation
+                // is (BUS-02 review N3); otherwise it goes with the copy.
                 let total: u64 = job.seals.iter().map(|s| s.len).sum();
-                let plan: Vec<(u64, u64, Option<u64>)> =
-                    job.seals.iter().map(|s| (s.serial, s.len, s.recycle)).collect();
+                let plan: Vec<(u64, u64, u64, Option<u64>)> = job
+                    .seals
+                    .iter()
+                    .map(|s| (s.serial, s.len, s.capacity, s.recycle))
+                    .collect();
                 let i = inner.clone();
                 let run = move || {
                     plan.into_iter()
-                        .map(|(serial, len, recycle)| {
+                        .map(|(serial, len, capacity, recycle)| {
                             let r = i.store.seal_prefix(serial, len);
+                            let staging = crate::store::staging_rel(serial);
                             match recycle {
-                                Some(next) if r.is_ok() => i
-                                    .store
-                                    .rename(&crate::store::staging_rel(serial), &crate::store::staging_rel(next))
-                                    .map_err(crate::store::SealFailure::Io),
+                                Some(next) if r.is_ok() => {
+                                    match i.store.rename(&staging, &crate::store::staging_rel(next)) {
+                                        // A failed reset is a failed seal: the send is refused
+                                        // and `finish_sealing_send` unlinks the renamed file.
+                                        Ok(()) => i
+                                            .store
+                                            .reset_staging(next, capacity)
+                                            .map_err(SealFailure::Io),
+                                        // Not renamed: the staging file is still under its
+                                        // own name, and nothing else would unlink it (N5).
+                                        Err(e) => {
+                                            i.store.remove(&staging);
+                                            Err(SealFailure::Io(e))
+                                        }
+                                    }
+                                }
                                 _ => {
-                                    i.store.remove(&crate::store::staging_rel(serial));
+                                    i.store.remove(&staging);
                                     r
                                 }
                             }

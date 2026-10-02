@@ -231,15 +231,29 @@ async fn hoarding_subscriber() -> Outcome {
     // Every subscription the seat may open, each keeping every delivery at the in-flight cap:
     // the worst case the store has to hold (`feedbus::limits`, flybus.md "Feed sizing").
     let seats = feedbus::limits().max_subscriptions_per_client;
+    // The publisher declares the topic on its own task after `start` returns: under load the
+    // first subscribe can get there first (NO_TOPIC), so it waits for the topic (BUS-02 review
+    // N7).
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut hoards = Vec::new();
     for _ in 0..seats {
-        let mut subscription = client
-            .subscribe(
-                feedbus::TOPIC,
-                SubscriptionConfig::latest().in_flight(2).replay(true),
-            )
-            .await
-            .unwrap();
+        let mut subscription = loop {
+            match client
+                .subscribe(
+                    feedbus::TOPIC,
+                    SubscriptionConfig::latest().in_flight(2).replay(true),
+                )
+                .await
+            {
+                Ok(subscription) => break subscription,
+                Err(error)
+                    if error.code == flybus::ErrorCode::NoTopic && Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("subscribe: {error:?}"),
+            }
+        };
         hoards.push(tokio::spawn(async move {
             let mut kept = Vec::new();
             while let Some(message) = subscription.next().await {

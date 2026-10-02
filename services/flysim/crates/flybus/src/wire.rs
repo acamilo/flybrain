@@ -38,7 +38,7 @@ frame: u32le length, 1..=65536 bytes of strict UTF-8 JSON
 envelope: protocol major minor id replyTo kind op body attachments
 attachment: name ref ownerId [readLocation(storeId relativePath): in a router delivery only]
 sealing attachment: in rpc.call rpc.reply publish, ownerId may be the sender's own unsealed writer of ref.artifactId; ref.byteLength <= its allocation, digest null; the router seals that prefix on admission and the writer becomes the sender's hold
-recycle: optional boolean member of an rpc.call rpc.reply publish body with a sealing attachment; the reply value then carries writers[name artifactId generation ownerId writeLocation], each sealed writer's staging allocation reissued
+recycle: optional boolean member of an rpc.call rpc.reply publish body with a sealing attachment, refused in any other body; the reply value then carries writers[name artifactId generation ownerId writeLocation], each sealed writer's staging allocation reissued zero-filled as a fresh allocation
 ref: storeId artifactId generation byteLength contentType digest
 reply: ok value | ok error{code message dispatch}
 bus.hello: clientId clientIncarnation supportedMajors -> routerId connectionId selectedMajor selectedMinor contractDigest limits

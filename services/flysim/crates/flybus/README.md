@@ -192,7 +192,9 @@ let kept = frame.retain().await?;              // an independent explicit hold
   `responder.reply_sealing(outcome, attachments, unsealed, recycle)`: the router seals it as it
   admits the reply, with no `artifact.seal` round trip, and with `recycle` hands each staging
   allocation back as a fresh writer (`SealedReply::writers`), with no `artifact.allocate` either.
-  The handle is valid once the reply is admitted. The router accepts sealing attachments on
+  The router empties a reissued staging file first, so a recycled writer reads as zeros like a
+  new allocation and never carries the previous artifact's bytes into the next one, however it
+  is sealed. The handle is valid once the reply is admitted. The router accepts sealing attachments on
   `rpc.call` and `publish` too; the SDK exposes them for replies.
 
 ### Errors
@@ -344,7 +346,7 @@ before admission are `not-dispatched`. A command in flight when the connection i
     attachment may name the sender's own unsealed writer (`ref.byteLength` at most its
     allocation, digest null); the router seals that prefix before admitting the command and the
     writer becomes the sender's hold. A body `recycle: true` reissues each sealed writer's
-    staging file as a new writer, listed in the reply value's `writers`. A refused sealing send
+    staging file, zero-filled, as a new writer, listed in the reply value's `writers`. A refused sealing send
     releases every writer it named. The SDK no longer sends `rpc.responder.release` after a
     reply the router admitted (it was a no-op). `wire::CONTRACT` says so.
 
@@ -411,7 +413,12 @@ socket, through the same router code:
 - `tests/sealing.rs`: sealing sends (amendment 2026-10-02): a reply that seals a writer's
   written prefix and recycles its allocation three times over one staging file, the caller's
   and the responder's handles reading the same bytes; refusals before and after the seal that
-  release every writer named; `recycle` validation; a recycled writer sealing normally.
+  release every writer named; `recycle` validation; a recycled writer sealing normally, and
+  never exposing its previous artifact's bytes (a smaller artifact after a larger one, by prefix
+  and whole); a failed rename leaving no staging file behind.
+- `tests/sealing_lifecycle.rs`: the BUS-02 review's adversarial lifecycle checks: refusal after
+  the seal, quota, a seal failing mid-send, no owner budget, no aliasing, a sender vanishing
+  mid-seal, fan-out.
 - `tests/integration.rs`: two agents called in parallel with a forwarded frame, an environment
   service, committed snapshot publication, a slow latest consumer and a bounded recorder.
 - `tests/bus_acceptance.rs`: the implementation guide's BUS-01/02/03 acceptance bullets that the
